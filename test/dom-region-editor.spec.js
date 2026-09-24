@@ -56,7 +56,7 @@ describe("Weavero — DOM-view region editor", () => {
             assert.isOk(ed, "editor container");
             assert.deepEqual(
                 [...ed.querySelectorAll("button")].map((b) => b.textContent),
-                ["Save Region", "Save Region and Text", "Cancel"]);
+                ["Save Region and Text", "Save Region", "Cancel"], "Save Region and Text first (MJT 2026-09-24)");
             assert.isOk(pv._wvRegionEditor && pv._wvRegionEditor._id === "spec-1");
             pv._wvRegionEditor.destroy();
             assert.isNotOk(d.querySelector(".wv-epub-region-editor"), "destroy removes it");
@@ -81,6 +81,47 @@ describe("Weavero — DOM-view region editor", () => {
             assert.isTrue(got.withText);
             assert.isTrue(got.isRange);
             assert.isNotOk(d.querySelector(".wv-epub-region-editor"), "editor closed on save");
+        }
+        finally { restore(); }
+    });
+
+    it("Enter is the first button's action: Save Region and Text", () => {
+        const { d, range, reader } = fixture();
+        const restore = silenceNote();
+        try {
+            let got = null;
+            wv._wvDomRegionEditorOpen(reader, d, range, {
+                editorId: "spec-enter", noteWord: "title",
+                onCommit: (r, text, withText) => { got = { withText }; },
+            });
+            // The fixture document has no window (createHTMLDocument), so
+            // borrow the main window's KeyboardEvent constructor.
+            const KE = Zotero.getMainWindow().KeyboardEvent;
+            d.dispatchEvent(new KE("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+            assert.isOk(got, "Enter committed");
+            assert.isTrue(got.withText, "with the text, like the first button");
+        }
+        finally { restore(); }
+    });
+
+    // 2026-09-24 (MJT): the first Escape did nothing. The editor opens from
+    // the sidebar menu, focus stays in the sidebar document, and the editor
+    // listened only in the content document. Keys typed in the sidebar must
+    // reach it, and its listener must go away with it.
+    it("Escape typed in the SIDEBAR document closes the editor", () => {
+        const { d, range, reader } = fixture();
+        const side = Zotero.getMainWindow().document.implementation.createHTMLDocument("wv-sidebar");
+        const restore = silenceNote();
+        try {
+            let committed = 0;
+            wv._wvDomRegionEditorOpen(reader, side, range, {
+                editorId: "spec-side", noteWord: "title", onCommit: () => { committed++; },
+            });
+            const KE = Zotero.getMainWindow().KeyboardEvent;
+            side.dispatchEvent(new KE("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+            assert.isNotOk(d.querySelector(".wv-epub-region-editor"), "first Escape closed it");
+            side.dispatchEvent(new KE("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+            assert.equal(committed, 0, "the sidebar listener left with the editor");
         }
         finally { restore(); }
     });

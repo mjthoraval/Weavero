@@ -151,6 +151,17 @@ const RP_USER_SVG =
 // They're scoped under #wv-reader-filter-popup so they can't leak into the
 // reader's own UI. Only the popup-frame chrome is bespoke (the library uses a
 // XUL <panel>; here it's an HTML div inside the reader iframe).
+/** Opt an overlay out of the reader's content zoom. Zotero's snapshot (and
+ *  Reading Mode) view zooms EVERY direct child of <body> with
+ *  `body > :not(#annotation-overlay) { zoom: var(--scale) }` (reader
+ *  snapshot/stylesheets/inject.scss, sdt.scss). Weavero's overlays are placed
+ *  in client-px document coordinates, so at 92 % zoom a flash landed 100 px
+ *  above its heading far down the page (MJT 2026-09-24, "I cannot see the
+ *  highlight"). An inline !important outranks the stylesheet rule. */
+function wvDomNoZoom(el: any) {
+    try { el.style.setProperty("zoom", "1", "important"); } catch (_) {}
+}
+
 const RP_POPUP_CSS = [
     // ---- popup frame ----
     // WIDTH RULE (MJT, 2026-09-21): the reader popups are not tied to a
@@ -1662,6 +1673,18 @@ const RP_OUTLINE_CSS = [
     // not user intent). SumatraPDF's grey treatment is the liked
     // precedent; Acrobat's subtle icon tint is the criticized one.
     ".wv-outline-row.wv-outline-current{box-shadow:inset 2px 0 0 0 var(--fill-secondary,#888);background:rgba(127,127,127,.13);border-radius:4px;}",
+    // Selected AND current: the selection tint wins (the grey wash, declared
+    // later with equal specificity, hid it -- MJT 2026-09-24); the grey
+    // left bar still marks the reading position.
+    ".wv-outline-row.wv-outline-selected.wv-outline-current{background:var(--accent-blue10,rgba(94,106,210,.15));}",
+    // The entry a context menu is open for (right-click keeps the selection
+    // where it was): the collections pane's dashed wv-ctx-row cue. After the
+    // focus ring so it wins while the menu is open. !important: a REAL
+    // right-click also focuses the row (tabindex -1), and the mouse-focus
+    // reset above (`:focus:not(:focus-visible){outline:none}`, specificity
+    // 0,3,0) beat the plain 0,2,0 rule -- the cue showed for scripted menus
+    // only (MJT 2026-09-24, "I do not see the dashed line").
+    ".wv-outline-row.wv-outline-ctx{outline:1px dashed color-mix(in srgb, currentColor 55%, transparent) !important;outline-offset:-2px !important;border-radius:4px;}",
     // Page number at the row's right end -- same treatment as bookmark rows
     // (`.wv-bm-reader-page`): dimmed, 11px, flush right, never wraps.
     ".wv-outline-page{flex:0 0 auto;align-self:center;margin-inline-start:6px;padding-inline-end:2px;opacity:.5;font-size:11px;white-space:nowrap;}",
@@ -4203,12 +4226,12 @@ class _ReaderPanelsMixin {
                     const from = se.scrollTop;
                     const target = Math.max(0, from + rectTop - iwin.innerHeight * 0.25);
                     try { se.scrollTo(Cu.cloneInto({ top: target, behavior: "smooth" }, iwin)); }
-                    catch (_) { iwin.scrollTo(0, target); }
+                    catch (_) { iwin.scrollTo(iwin.scrollX || 0, target); }
                     const w5: any = Zotero.getMainWindow();
                     ((w5 && w5.setTimeout) ? w5.setTimeout.bind(w5) : setTimeout)(() => {
                         try {
                             if (Math.abs(se.scrollTop - from) < 5 && Math.abs(target - from) > 20) {
-                                iwin.scrollTo(0, target);
+                                iwin.scrollTo(iwin.scrollX || 0, target);
                             }
                         } catch (_) {}
                     }, 450);
@@ -4524,6 +4547,17 @@ class _ReaderPanelsMixin {
                     outlineFilter = { q, visible, dimmed };
                 }
             } catch (_) {}
+            // The blue cursor (wv-outline-active) is state, like the selection:
+            // it survives the rebuild. Every menu action re-renders (Reset,
+            // Mark as Box, Re-detect, Fix Spacing, Edit Region...) and each one
+            // dropped the cursor (MJT 2026-09-24, collections-pane parity).
+            // Read HERE, synchronously with the rebuild, so a click that moved
+            // the cursor during the awaits above is what gets kept.
+            let keepActiveKey: string | null = null;
+            try {
+                const act = list.querySelector(".wv-outline-row.wv-outline-active");
+                keepActiveKey = act ? this._wvOutlineRowKey(act) : null;
+            } catch (_) {}
             while (list.firstChild) list.firstChild.remove();
             // Active search with no hits: say so and stop. Falling through to
             // the empty branch would show "No outline for this document" (a
@@ -4590,6 +4624,13 @@ class _ReaderPanelsMixin {
                 return;
             }
             this._wvRenderOutlineEntries(reader, idoc, list, entries, curatedView, outlineFilter);
+            if (keepActiveKey != null) {
+                try {
+                    const back = [...list.querySelectorAll(".wv-outline-row")]
+                        .find((r: any) => this._wvOutlineRowKey(r) === keepActiveKey);
+                    if (back) (back as any).classList.add("wv-outline-active");
+                } catch (_) {}
+            }
             // Scroll-spy: (re)wire the scroll feed and recompute the
             // current-position highlight at every render -- rendering is
             // what expand/collapse and source switches go through, so this
@@ -5498,7 +5539,7 @@ class _ReaderPanelsMixin {
 
     /** Begin an inline rename (double-click / menu). Resolves the entry
      *  (curating if needed), re-renders, then opens the input on its row. */
-    async _wvOutlineBeginRename(reader: any, idoc: any, entry: any, index: number, curatedView: boolean) {
+    async _wvOutlineBeginRename(reader: any, idoc: any, entry: any, index: number, curatedView: boolean, opts?: any) {
         try {
             const att = this._wvReaderAtt(reader);
             if (!att) return;
@@ -5524,7 +5565,7 @@ class _ReaderPanelsMixin {
             const row: any = rows.find((r: any) => r._wvOl && r._wvOl.index === index)
                 || rows.find((r: any) => r._wvOl && r._wvOl.entry && entry && r._wvOl.entry.id != null && r._wvOl.entry.id === entry.id);
             const labelEl = row && row.querySelector(".wv-outline-label");
-            if (labelEl) this._wvOutlineStartRename(reader, idoc, entry, labelEl, resolve);
+            if (labelEl) this._wvOutlineStartRename(reader, idoc, entry, labelEl, resolve, opts);
         } catch (_) {}
     }
 
@@ -5533,16 +5574,26 @@ class _ReaderPanelsMixin {
         try {
             // Landing row (see _wvOutlineDeleteSelected — same focus contract).
             let fromIndex = 0;
+            // Deleting an entry the user was NOT on (right-click on another
+            // row): the cursor and selection stay where they were, as the
+            // collections pane restores the previous selection after deleting
+            // its context row (MJT 2026-09-24). Only deleting the selected /
+            // cursor entry lands on its neighbour.
+            let wasOn = true;
             try {
                 const rowsBefore: any[] = [...idoc.querySelectorAll(".wv-outline-row")];
                 const i = rowsBefore.findIndex((r: any) => r._wvOl && r._wvOl.index === index);
                 if (i >= 0) fromIndex = i;
+                const key = curatedView ? String(entry.id) : ("idx-" + index);
+                const row = i >= 0 ? rowsBefore[i] : null;
+                wasOn = !!((reader._wvOutlineSel && reader._wvOutlineSel.has(key))
+                    || (row && row.classList.contains("wv-outline-active")));
             } catch (_) {}
             const ref = await this._wvOutlineResolveId(reader, entry, index, curatedView);
             if (!ref) return;
             await this._wvOutlineDeleteEntry(ref.att.libraryID, ref.att.itemKey, ref.id);
             await this._wvReaderRenderOutline(reader, idoc);
-            this._wvOutlineLandAfterDelete(reader, idoc, fromIndex);
+            if (wasOn) this._wvOutlineLandAfterDelete(reader, idoc, fromIndex);
         } catch (_) {}
     }
 
@@ -6052,7 +6103,15 @@ class _ReaderPanelsMixin {
             const list = idoc.querySelector(
                 "." + RP_OUTLINE_VIEW_CLASS + " .wv-outline-list");
             if (!list) return;
-            if (Date.now() - (reader._wvOutlineNavTime || 0) < 1500) return;
+            // Suppressed for 1.5 s after an outline jump -- but ONLY until the
+            // user scrolls themselves (wheel/key/pointer on the view): the
+            // window exists to absorb the jump's own scroll, and blocking the
+            // user's scrolling made the marker lag after every landing (MJT
+            // 2026-09-24). `_wvSpyUserInputAt` is a separate stamp because
+            // `_wvOutlineNavTime` also identifies the navigation for the EPUB
+            // pin retry.
+            const navT = reader._wvOutlineNavTime || 0;
+            if (Date.now() - navT < 1500 && !((reader._wvSpyUserInputAt || 0) > navT)) return;
             // READING POSITION = the viewport's TOP EDGE when pdf.js can
             // report it. `currentPageNumber` names the DOMINANT page,
             // `_location` the FIRST VISIBLE one, and they disagree for a
@@ -6211,15 +6270,20 @@ class _ReaderPanelsMixin {
         let shown = false;
         try { shown = !!this._wvOutlineShowDomEntryPin(reader, node, target); } catch (_) {}
         if (shown) return;
-        if ((reader && reader._type) === "epub" && n < 10) {
+        if ((reader && reader._type) === "epub" && n < 14) {   // 4 x 15 ms + 10 x 150 ms: the same ~1.5 s window
             const w: any = Zotero.getMainWindow();
             const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            // Fast first retries: in PAGINATED mode a jump into another
+            // chapter mounts it a moment after the click, and a flat 150 ms
+            // retry showed the pin a visible beat late (158 ms measured, MJT
+            // 2026-09-24 "there is a delay for the pin to appear"). Scrolled
+            // mode and same-chapter jumps resolve on the first try.
             st(() => {
                 try {
                     const lp = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                     if (lp) lp._wvOutlineShowDomEntryPinWhenReady(reader, idoc, node, target, n + 1, stamp);
                 } catch (_) {}
-            }, 150);
+            }, n < 4 ? 15 : 150);
             return;
         }
         // Anchor gone: say it plainly. A snapshot can render differently
@@ -6251,6 +6315,118 @@ class _ReaderPanelsMixin {
         } catch (_) {}
     }
 
+    /** True when an EPUB view is in paginated flow (the reader tags the
+     *  content body with `flow-mode-paginated`, epub/flow.ts). */
+    _wvEpubPaginated(pv: any): boolean {
+        try {
+            const b = pv && pv._iframeWindow && pv._iframeWindow.document && pv._iframeWindow.document.body;
+            return !!(b && b.classList && b.classList.contains("flow-mode-paginated"));
+        } catch (_) { return false; }
+    }
+
+    /** A sortable key for an EPUB CFI: the numeric steps of its path (a
+     *  range CFI contributes its START: parent path + first local path),
+     *  then the character offset. ID assertions `[..]`, and temporal /
+     *  spatial parts are dropped. Keys compare element by element; a key
+     *  that is a prefix of another comes first. Null for anything else. */
+    _wvEpubCfiKey(cfi: any): number[] | null {
+        try {
+            let v = String(cfi || "");
+            const m = /^epubcfi\((.*)\)$/.exec(v);
+            if (!m) return null;
+            v = m[1].replace(/\[[^\]]*\]/g, "");
+            const parts = v.split(",");
+            v = parts.length >= 2 ? parts[0] + parts[1] : parts[0];
+            v = v.replace(/[~@].*$/, "");
+            const key: number[] = [];
+            for (const tok of v.split(/[\/!]/)) {
+                if (!tok) continue;
+                const [step, off] = tok.split(":");
+                const n = parseInt(step, 10);
+                if (!Number.isFinite(n)) return null;
+                key.push(n);
+                if (off != null) { const o = parseInt(off, 10); key.push(Number.isFinite(o) ? o : 0); }
+            }
+            return key.length ? key : null;
+        } catch (_) { return null; }
+    }
+
+    /** CFI key for an EPUB href. In paginated mode the target's chapter is
+     *  usually not mounted, and getCFI on an unmounted node gets only the
+     *  spine step right (measured: `epubcfi(/6/12!/,/4:0,/4:1)`), so an
+     *  unmounted target keys at CHAPTER level -- which is where a contents
+     *  entry points anyway, and a chapter-level key sorts before every
+     *  finer key inside that chapter. */
+    _wvEpubHrefKey(pvw: any, href: string): number[] | null {
+        try {
+            if (typeof pvw._getHrefTarget !== "function" || typeof pvw.getCFI !== "function") return null;
+            const t = pvw._getHrefTarget(href);
+            if (!t || !t.ownerDocument) return null;
+            const rg = t.ownerDocument.createRange();
+            rg.selectNode(t);
+            const cfi = String(pvw.getCFI(rg));
+            if (t.isConnected) return this._wvEpubCfiKey(cfi);
+            const bang = cfi.indexOf("!");
+            return bang > 0 ? this._wvEpubCfiKey(cfi.slice(0, bang) + ")") : null;
+        } catch (_) { return null; }
+    }
+
+    _wvCfiKeyCmp(a: number[], b: number[]): number {
+        const n = Math.min(a.length, b.length);
+        for (let i = 0; i < n; i++) if (a[i] !== b[i]) return a[i] - b[i];
+        return a.length - b.length;
+    }
+
+    /** The current section in a PAGINATED EPUB. Only the current chapter is
+     *  mounted there (the rest have no layout) and the page never scrolls:
+     *  a page turn moves `.sections` by its `left` style (epub/flow.ts
+     *  PaginatedFlow._setOffset). So the rule is the same "last entry the
+     *  reading position has passed", measured in BOOK order: the first
+     *  visible position (`flow.startRange`) against each entry's CFI (MJT
+     *  2026-09-24: "the grey marker is not following ... in paginated
+     *  mode"). Entries without a CFI (an href never resolved) are skipped. */
+    _wvOutlineSpyPickEpubPaged(pv: any, list: any): any {
+        try {
+            const pvw = pv.wrappedJSObject || pv;
+            const flow = pvw.flow;
+            if (!flow || typeof pvw.getCFI !== "function") return null;
+            const sr = flow.startRange;
+            let cur = sr ? this._wvEpubCfiKey(String(pvw.getCFI(sr))) : null;
+            // No visible text (a cover image): the chapter itself is the
+            // position -- spine item i is CFI step /6/(2i+2) -- and entries
+            // are then compared at chapter level too, so the chapter's own
+            // entries count as reached.
+            let chapterOnly = false;
+            if (!cur && Number.isInteger(flow.currentSectionIndex)) {
+                cur = [6, 2 * flow.currentSectionIndex + 2];
+                chapterOnly = true;
+            }
+            if (!cur) return null;
+            let best: any = null, bestKey: number[] | null = null;
+            let first: any = null, firstKey: number[] | null = null;
+            for (const row of [...list.querySelectorAll(".wv-outline-row")] as any[]) {
+                const en = row._wvOl && row._wvOl.entry;
+                if (!en || en.url) continue;
+                const pos = en.resolvedPosition || en.position;
+                let k = pos && typeof pos.value === "string" ? this._wvEpubCfiKey(pos.value) : null;
+                // The book's own contents entries carry only an href: most
+                // chapters were skipped and an early hand-added entry held
+                // the marker for the whole book (2026-09-24).
+                if (!k && en.href) k = this._wvEpubHrefKey(pvw, en.href);
+                if (!k) continue;
+                if (!firstKey || this._wvCfiKeyCmp(k, firstKey) < 0) { first = row; firstKey = k; }
+                const kc = chapterOnly ? k.slice(0, 2) : k;
+                if (this._wvCfiKeyCmp(kc, cur) <= 0 && (!bestKey || this._wvCfiKeyCmp(k, bestKey) > 0)) {
+                    best = row; bestKey = k;
+                }
+            }
+            return best || first;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvOutlineSpyPickEpubPaged err: " + e);
+            return null;
+        }
+    }
+
     /** The current section in a DOM view: the LAST entry whose anchor sits
      *  at or above the viewport top edge — the same "last thing passed"
      *  rule the PDF picker uses, expressed in client coordinates.
@@ -6264,6 +6440,7 @@ class _ReaderPanelsMixin {
             const ir = reader._internalReader;
             const pv = ir && (ir._primaryView || ir._lastView);
             if (!pv) return null;
+            if (this._wvEpubPaginated(pv)) return this._wvOutlineSpyPickEpubPaged(pv, list);
             const cache: Map<string, any> = reader._wvSpyRangeCache
                 || (reader._wvSpyRangeCache = new Map());
             const rows: any[] = [...list.querySelectorAll(".wv-outline-row")];
@@ -6282,6 +6459,7 @@ class _ReaderPanelsMixin {
             const line = ((spyWin && spyWin.innerHeight) || 800) * this._wvOutlineSpyLine;
             let best: any = null, bestTop = -Infinity;
             let firstResolved: any = null, firstTop = Infinity;
+            const far: any[] = [];   // entries in unmounted chapters (see below)
             for (let i = 0; i < rows.length; i++) {
                 const row = rows[i];
                 const en = row._wvOl && row._wvOl.entry;
@@ -6299,13 +6477,50 @@ class _ReaderPanelsMixin {
                 const retryMs = (this as any)._wvSpyMissRetryMs || 3000;
                 // Legacy `null` (cached by a pre-fix build, alive across a
                 // hot upgrade) is retried immediately.
-                if (range === undefined || range === null
+                // A cached range into content the reader has since REBUILT
+                // (an EPUB flow switch recreates every section) is detached:
+                // it measures as a 0x0 rect at the top, every entry then
+                // counted as passed and the first one held the marker (MJT
+                // 2026-09-24, Book EPUB after paginated -> scrolled).
+                let detached = !!(range && !range._wvMissAt && range.startContainer
+                    && range.startContainer.isConnected === false);
+                // ...or COLLAPSED by the rebuild while still connected: the
+                // reader keeps mounting for a while after a flow switch, and
+                // ranges cached in that window measured an empty 0x0 box at
+                // the top (measured: 18/18 cached, fresh ones correct).
+                if (range && !range._wvMissAt && !detached) {
+                    try {
+                        const rc = range.getBoundingClientRect();
+                        if (rc && !rc.width && !rc.height && !rc.top && !rc.left) detached = true;
+                    } catch (_) {}
+                }
+                if (range === undefined || range === null || detached
                     || (range._wvMissAt && Date.now() - range._wvMissAt > retryMs)) {
-                    const fresh = this._wvDomRangeForAnchor(pv, en) || null;
+                    // The SAME anchor navigation uses: an edited region lives
+                    // in resolvedPosition. Resolving `position` (the original)
+                    // put a region moved to the end of the book back in
+                    // chapter II ("UTENBERG", Book EPUB, 2026-09-24).
+                    const fresh = this._wvDomRangeForAnchor(pv,
+                        Object.assign({}, en, { position: en.resolvedPosition || en.position })) || null;
                     range = fresh || { _wvMissAt: Date.now() };
                     cache.set(key, range);
                 }
                 if (range._wvMissAt) continue;
+                // An entry in a chapter the view has not mounted (EPUB loads
+                // chapters lazily in scrolled mode too) resolves into
+                // detached content: its rect is a fake 0 that beat every
+                // entry really scrolled past -- the marker jumped to the
+                // book's last pages at 10 % (Book EPUB, 2026-09-24). Such
+                // entries are never measured; they are ordered by book
+                // position below, only when no mounted entry was passed.
+                if (range.startContainer && range.startContainer.isConnected === false) {
+                    far.push(row);
+                    continue;
+                }
+                try {
+                    const rz = range.getBoundingClientRect();
+                    if (rz && !rz.width && !rz.height && !rz.top && !rz.left) { far.push(row); continue; }
+                } catch (_) {}
                 let top = null;
                 try { top = range.getBoundingClientRect().top; } catch (_) {}
                 if (!Number.isFinite(top)) {
@@ -6320,6 +6535,23 @@ class _ReaderPanelsMixin {
                 if (top < firstTop) { firstTop = top; firstResolved = row; }
                 // +1 tolerance: an entry flush with the line counts as passed.
                 if (top <= line + 1 && top > bestTop) { bestTop = top; best = row; }
+            }
+            // Nothing mounted was passed but unmounted entries exist: the one
+            // latest in BOOK order at or before the view's first position.
+            if (!best && far.length) {
+                const farPick = this._wvOutlineSpyPickEpubPaged(pv, { querySelectorAll: () => far });
+                if (farPick) {
+                    const pvw = pv.wrappedJSObject || pv;
+                    const sr = pvw.flow && pvw.flow.startRange;
+                    const sk = sr ? this._wvEpubCfiKey(String(pvw.getCFI(sr))) : null;
+                    const en = farPick._wvOl && farPick._wvOl.entry;
+                    const pos = en && (en.resolvedPosition || en.position);
+                    const fk = pos && typeof pos.value === "string" ? this._wvEpubCfiKey(pos.value)
+                        : (en && en.href ? this._wvEpubHrefKey(pvw, en.href) : null);
+                    // Only a truly PASSED far entry; the paged picker's
+                    // "first entry" fallback must not override firstResolved.
+                    if (sk && fk && this._wvCfiKeyCmp(fk, sk) <= 0) return farPick;
+                }
             }
             // Above the first heading nothing has been passed; show that first
             // heading rather than nothing, matching the PDF rule.
@@ -6520,6 +6752,24 @@ class _ReaderPanelsMixin {
                 if (tt[hKey]) {
                     try { t.removeEventListener("scroll", tt[hKey]); } catch (e) {}
                 }
+                // User input on the view ends the post-jump suppression (see
+                // _wvOutlineSpyUpdate). Listened on the view's WINDOW: keys go
+                // to the focused document, not to #viewerContainer.
+                const iKey = "_wvOlSpyInput_" + ent.k;
+                const inWin: any = t.document ? t : (t.ownerDocument && t.ownerDocument.defaultView);
+                if (tt[iKey] && tt[iKey].win) {
+                    for (const ty of ["wheel", "keydown", "pointerdown", "touchstart"]) {
+                        try { tt[iKey].win.removeEventListener(ty, tt[iKey].fn, true); } catch (_) {}
+                    }
+                }
+                if (inWin) {
+                    const readerIn = reader;
+                    const onInput = () => { readerIn._wvSpyUserInputAt = Date.now(); };
+                    for (const ty of ["wheel", "keydown", "pointerdown", "touchstart"]) {
+                        try { inWin.addEventListener(ty, onInput, { capture: true, passive: true }); } catch (_) {}
+                    }
+                    tt[iKey] = { win: inWin, fn: onInput };
+                }
                 const readerRef = reader;
                 let tick: any = null;
                 const handler = () => {
@@ -6539,6 +6789,90 @@ class _ReaderPanelsMixin {
                 tt[hKey] = handler;
                 tt[pKey] = this;
             }
+            // Paginated EPUB: no scroll events at all -- a page turn rewrites
+            // `.sections` style (left/top) and a chapter change mounts new
+            // content under it. Watch both, debounced like the scroll feed.
+            // The reader REPLACES `.sections` when the flow mode switches, so
+            // the watcher is re-attached whenever <body>'s children change
+            // (a watcher on the old element saw nothing: the marker froze
+            // after a switch to paginated until the outline re-rendered).
+            try {
+                if ((reader._type || "pdf") === "epub") {
+                    const irS = reader._internalReader;
+                    const pvS = irS && (irS._primaryView || irS._lastView);
+                    const cw: any = pvS && pvS._iframeWindow;
+                    const body = cw && cw.document && cw.document.body;
+                    if (body && reader._wvOlSpyBodyEl !== body) {
+                        const Cu: any = (Components as any).utils;
+                        const readerS = reader;
+                        let tickS: any = null, settleS: any = null;
+                        const run = () => {
+                            try {
+                                const lp = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                                if (lp) lp._wvOutlineSpyUpdate(readerS, idoc);
+                            } catch (_) {}
+                        };
+                        // Quick pass + a SETTLE pass: after a jump into a long
+                        // chapter the flow's startRange still named the old
+                        // page at 150 ms, and with no later mutation the
+                        // marker stayed there (chapter 33 of Book EPUB,
+                        // 2026-09-24).
+                        const kick = () => {
+                            const win = idoc.defaultView;
+                            if (!win) return;
+                            if (!tickS) tickS = win.setTimeout(() => { tickS = null; run(); }, 150);
+                            if (settleS) win.clearTimeout(settleS);
+                            settleS = win.setTimeout(() => { settleS = null; run(); }, 600);
+                        };
+                        const attach = () => {
+                            const secs = body.querySelector(":scope > .sections");
+                            if (!secs || readerS._wvOlSpySecsEl === secs) return;
+                            try { if (readerS._wvOlSpySecsMO) readerS._wvOlSpySecsMO.disconnect(); } catch (_) {}
+                            const mo = new cw.MutationObserver(kick);
+                            const init = { attributes: true, attributeFilter: ["style"], childList: true, subtree: true };
+                            mo.observe(secs, Cu ? Cu.cloneInto(init, cw) : init);
+                            readerS._wvOlSpySecsMO = mo;
+                            readerS._wvOlSpySecsEl = secs;
+                            // New content: every cached range is stale.
+                            try { if (readerS._wvSpyRangeCache) readerS._wvSpyRangeCache.clear(); } catch (_) {}
+                            kick();
+                        };
+                        // Some jumps change neither the offset style nor the
+                        // watched tree (a direct chapter switch at offset 0:
+                        // 0 -> 33 and 33 -> 6 measured, 2026-09-24), and native
+                        // TOC clicks / Back use that path. A cheap probe of
+                        // (chapter, offset) every 500 ms, paginated only,
+                        // catches them all. The timer lives on the sidebar
+                        // window and dies with the reader.
+                        try {
+                            const sw: any = idoc.defaultView;
+                            if (sw && !readerS._wvOlSpyPagedPoll) {
+                                let last = "";
+                                readerS._wvOlSpyPagedPoll = sw.setInterval(() => {
+                                    try {
+                                        const pvP = readerS._internalReader && (readerS._internalReader._primaryView || readerS._internalReader._lastView);
+                                        if (!pvP || !(Zotero as any).Weavero || !(Zotero as any).Weavero.plugin) return;
+                                        const lp = (Zotero as any).Weavero.plugin;
+                                        if (!lp._wvEpubPaginated(pvP)) { last = ""; return; }
+                                        const fl = (pvP.wrappedJSObject || pvP).flow;
+                                        const sc = pvP._iframeWindow.document.querySelector("body > .sections");
+                                        const sig = (fl && fl.currentSectionIndex) + "|" + (sc ? sc.getAttribute("style") : "");
+                                        if (sig !== last) { last = sig; kick(); }
+                                    } catch (_) {}
+                                }, 500);
+                            }
+                        } catch (_) {}
+                        try { if (reader._wvOlSpyBodyMO) reader._wvOlSpyBodyMO.disconnect(); } catch (_) {}
+                        const bmo = new cw.MutationObserver(attach);
+                        const binit = { childList: true };
+                        bmo.observe(body, Cu ? Cu.cloneInto(binit, cw) : binit);
+                        reader._wvOlSpyBodyMO = bmo;
+                        reader._wvOlSpyBodyEl = body;
+                        reader._wvOlSpySecsEl = null;
+                        attach();
+                    }
+                }
+            } catch (_) {}
         } catch (_) {}
     }
 
@@ -6962,6 +7296,7 @@ class _ReaderPanelsMixin {
             ghost.style.cssText = "position:fixed;z-index:2147483646;pointer-events:none;line-height:0;"
                 + "user-select:none;transform:translate(-50%,-100%) scale(1);opacity:0;"
                 + "filter:drop-shadow(0 2px 3px rgba(0,0,0,.45));left:-9999px;top:-9999px;";
+            wvDomNoZoom(ghost);
             (pdoc.body || pdoc.documentElement).appendChild(ghost);
             try { if (viewerC) viewerC.style.cursor = "none"; } catch (_) {}   // replace the mouse
             let onMove: any, onClick: any, onKey: any;
@@ -6971,6 +7306,7 @@ class _ReaderPanelsMixin {
                 try { pdoc.removeEventListener("pointermove", onMove, true); } catch (_) {}
                 try { pdoc.removeEventListener("click", onClick, true); } catch (_) {}
                 try { pdoc.removeEventListener("keydown", onKey, true); } catch (_) {}
+                try { if (idoc && idoc !== pdoc) idoc.removeEventListener("keydown", onKey, true); } catch (_) {}
             };
             onMove = (e: any) => {
                 if (pinStale()) { cleanup(); return; }
@@ -7015,6 +7351,9 @@ class _ReaderPanelsMixin {
             pdoc.addEventListener("pointermove", onMove, true);
             pdoc.addEventListener("click", onClick, true);
             pdoc.addEventListener("keydown", onKey, true);
+            // Armed from the sidebar (+ menu, entry menu): focus is still
+            // there, so Escape must be heard there too (2026-09-24).
+            try { if (idoc && idoc !== pdoc) idoc.addEventListener("keydown", onKey, true); } catch (_) {}
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineArmPinPlacement err: " + e); }
     }
 
@@ -7984,7 +8323,12 @@ class _ReaderPanelsMixin {
                 if (!e0) return;
                 const title0 = String(e0.title || "").trim();
                 if (!title0) return;
-                const found = this._wvDomFindTextRange(pv, title0);
+                let nearR: any = null;
+                try {
+                    nearR = this._wvDomRangeForAnchor(pv,
+                        { position: e0.resolvedPosition || e0.position, href: e0.href });
+                } catch (_) {}
+                const found = this._wvDomFindTextRange(pv, title0, nearR);
                 if (!found) {
                     this._wvReaderPanelNote(idoc,
                         "Couldn\u2019t find that text in the document \u2014 the region is unchanged.");
@@ -8007,7 +8351,7 @@ class _ReaderPanelsMixin {
                 try {
                     const iw = pv._iframeWindow;
                     const rc = found.getBoundingClientRect();
-                    iw.scrollTo(0, Math.max(0, Math.round(rc.top + iw.scrollY
+                    iw.scrollTo(this._wvDomScrollX(iw, rc), Math.max(0, Math.round(rc.top + iw.scrollY
                         - (iw.innerHeight || 800) * 0.25)));
                     this._wvDomHighlightRange(pv, found);
                 } catch (_) {}
@@ -8260,6 +8604,7 @@ class _ReaderPanelsMixin {
             const container = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
             container.className = "wv-epub-region-editor";
             container.style.cssText = "position:absolute;left:0;top:0;width:0;height:0;z-index:2147483645;";
+            wvDomNoZoom(container);
             doc.body.appendChild(container);
 
             const mkDiv = (css: string) => {
@@ -8284,8 +8629,11 @@ class _ReaderPanelsMixin {
                 b.style.setProperty("background-color", bg, "important");
                 bar.appendChild(b); return b;
             };
-            const saveBtn = mkBtn("Save Region", "#2e7d32");
+            // "Save Region and Text" FIRST and the Enter default (MJT 2026-09-24):
+            // after reshaping a region the title usually follows it. It
+            // replaces a hand-renamed title too -- Save Region keeps it.
             const saveTextBtn = mkBtn("Save Region and Text", "#2e7d32");
+            const saveBtn = mkBtn("Save Region", "#2e7d32");
             const cancelBtn = mkBtn("Cancel", "#555");
             const hls: any[] = [];
             const handles: any = {};
@@ -8314,7 +8662,13 @@ class _ReaderPanelsMixin {
                 handles[which] = h; return h;
             };
             mkHandle("start"); mkHandle("end");
+            // A drag's trailing paint (the chrome-timer one below) can fire
+            // AFTER Save/Escape destroyed the editor; it then re-created a
+            // highlight div on <body> that nothing ever removed (an orphan
+            // box found on the Rizuan snapshot, 2026-09-24).
+            let destroyedEd = false;
             const paint = () => {
+                if (destroyedEd) return;
                 const rects = this._wvDomLeafRects(range);
                 if (!rects.length) return;
                 // Reuse the highlight divs in place -- destroying and
@@ -8337,6 +8691,7 @@ class _ReaderPanelsMixin {
                         d.style.cssText = "position:absolute;z-index:2147483644;pointer-events:none;border-radius:2px;";
                         d.style.setProperty("background-color", "#B9DBFF", "important");
                         d.style.setProperty("mix-blend-mode", "multiply", "important");
+                        wvDomNoZoom(d);
                         doc.body.appendChild(d);
                         hls.push(d);
                     }
@@ -8369,9 +8724,11 @@ class _ReaderPanelsMixin {
                 bar.style.top = barTop + "px";
             };
             const destroy = () => {
+                destroyedEd = true;
                 try { container.remove(); } catch (_) {}
                 for (const d of hls.splice(0)) { try { d.remove(); } catch (_) {} }   // they live on the body
                 try { doc.removeEventListener("keydown", onKey, true); } catch (_) {}
+                try { if (idoc && idoc !== doc) idoc.removeEventListener("keydown", onKey, true); } catch (_) {}
                 if (pv._wvRegionEditor && pv._wvRegionEditor._id === opts.editorId) pv._wvRegionEditor = null;
             };
             const commit = (withText?: boolean) => {
@@ -8394,7 +8751,7 @@ class _ReaderPanelsMixin {
             };
             const onKey = (ev: any) => {
                 if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); destroy(); }
-                else if (ev.key === "Enter") { ev.preventDefault(); ev.stopPropagation(); commit(false); }
+                else if (ev.key === "Enter") { ev.preventDefault(); ev.stopPropagation(); commit(true); }
             };
             const wireHandle = (h: any, which: "start" | "end") => {
                 h.addEventListener("pointerdown", (e: any) => {
@@ -8463,15 +8820,23 @@ class _ReaderPanelsMixin {
             saveTextBtn.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (_) {} commit(true); });
             cancelBtn.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (_) {} destroy(); });
             doc.addEventListener("keydown", onKey, true);
+            // ALSO the sidebar document: the editor is opened from the outline
+            // or bookmark menu, so keyboard focus is still in the sidebar and
+            // the first Escape/Enter never reached the content document (MJT
+            // 2026-09-24: "the first escape does not work"). Key events do
+            // not cross frame boundaries, so no key is handled twice.
+            try { if (idoc && idoc !== doc) idoc.addEventListener("keydown", onKey, true); } catch (_) {}
             pv._wvRegionEditor = { _id: opts.editorId, destroy };
             paint();
+            // Zoom / resize: the region's text moves, its overlay follows.
+            this._wvDomOnRelayout(iw, doc, () => { if (destroyedEd) return false; paint(); return true; });
             // Bring the region into view (same 1/4 rule as navigation).
             try {
                 const r0 = range.getClientRects()[0];
-                if (r0) iw.scrollTo(0, Math.max(0, r0.top + iw.scrollY - iw.innerHeight * 0.25));
+                if (r0) iw.scrollTo(this._wvDomScrollX(iw, r0), Math.max(0, r0.top + iw.scrollY - iw.innerHeight * 0.25));
             } catch (_) {}
-            this._wvReaderPanelNote(idoc, "Drag the handles to reshape the region — Save Region, or Save Region and Text to reload the "
-                + (opts.noteWord || "label") + ". (Enter = Save Region, Esc = cancel.)");
+            this._wvReaderPanelNote(idoc, "Drag the handles to reshape the region — Save Region and Text also reloads the "
+                + (opts.noteWord || "label") + "; Save Region keeps it. (Enter = Save Region and Text, Esc = cancel.)");
         } catch (err) { Zotero.debug("[Weavero] _wvDomRegionEditorOpen err: " + err); }
     }
 
@@ -8659,7 +9024,8 @@ class _ReaderPanelsMixin {
             const saveBtn = mkBtn("Save Region", "#2e7d32");
             const saveTextBtn = mkBtn("Save Region and Text", "#2e7d32");
             const cancelBtn = mkBtn("Cancel", "#555");
-            bar.appendChild(saveBtn); bar.appendChild(saveTextBtn); bar.appendChild(cancelBtn);
+            // "Save Region and Text" first and the Enter default (MJT 2026-09-24).
+            bar.appendChild(saveTextBtn); bar.appendChild(saveBtn); bar.appendChild(cancelBtn);
             container.appendChild(bar);
 
             let destroyed = false;
@@ -8707,8 +9073,8 @@ class _ReaderPanelsMixin {
             } catch (_) {}
 
             const onKey = (ev: any) => {
-                if (ev.key === "Escape") { ev.preventDefault(); destroy(); }
-                else if (ev.key === "Enter") { ev.preventDefault(); commit(); }
+                if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); destroy(); }
+                else if (ev.key === "Enter") { ev.preventDefault(); ev.stopPropagation(); commit(true); }
             };
             const destroy = () => {
                 if (destroyed) return;
@@ -8716,6 +9082,7 @@ class _ReaderPanelsMixin {
                 try { offObs && offObs.disconnect(); } catch (_) {}
                 try { container.remove(); } catch (_) {}
                 try { doc.removeEventListener("keydown", onKey, true); } catch (_) {}
+                try { if (idoc && idoc !== doc) idoc.removeEventListener("keydown", onKey, true); } catch (_) {}
                 if (pv._wvRegionEditor && pv._wvRegionEditor._id === opts.editorId) pv._wvRegionEditor = null;
             };
             const commit = (withText?: boolean) => {
@@ -8786,17 +9153,82 @@ class _ReaderPanelsMixin {
             saveTextBtn.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (_) {} commit(true); });
             cancelBtn.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (_) {} destroy(); });
             doc.addEventListener("keydown", onKey, true);
+            // Sidebar document too -- focus is still there after the menu
+            // click (same first-Escape bug as the DOM editor, 2026-09-24).
+            try { if (idoc && idoc !== doc) idoc.addEventListener("keydown", onKey, true); } catch (_) {}
 
             pv._wvRegionEditor = { _id: opts.editorId, destroy };
             // Bring the region into view, then paint.
             try { this._wvOutlineScrollToRect(pv, pageIndex, wvRectsForCharRange(chars, start, end)[0] || base.rects[0]); } catch (_) {}
             rerender();
-            this._wvReaderPanelNote(idoc, "Drag the handles to reshape the region — Save Region, or Save Region and Text to reload the "
-                + (opts.noteWord || "title") + ". (Enter = Save Region, Esc = cancel.)");
+            this._wvReaderPanelNote(idoc, "Drag the handles to reshape the region — Save Region and Text also reloads the "
+                + (opts.noteWord || "title") + "; Save Region keeps it. (Enter = Save Region and Text, Esc = cancel.)");
         } catch (err) { Zotero.debug("[Weavero] _wvRegionEditorOpen err: " + err); }
     }
 
     /** Reset a (curated) entry's name to its frozen original. */
+    /** The entry's ORIGINAL region when it was stored exactly, else null:
+     *  a DOM selector (or pin) on snapshot/EPUB, a real-area rect set (or
+     *  pin) on PDF. A PDF outline's page-top point is NOT exact -- that is
+     *  what the name search exists for. Embedded EPUB/snapshot entries keep
+     *  their imported anchor in `position` (source.position is null). */
+    _wvOutlineExactOriginal(reader: any, e: any): any {
+        try {
+            if (!e) return null;
+            const src = e.source || {};
+            const orig = src.position || (src.origin && src.origin !== "user" ? e.position : null);
+            if (!orig) return null;
+            if (orig.anchor === "point") return orig;
+            if ((reader._type || "pdf") !== "pdf") {
+                return (typeof orig.type === "string" && orig.value) ? orig : null;
+            }
+            if (Array.isArray(orig.rects) && orig.rects.length && !this._wvOutlineIsPointRect(orig)) return orig;
+            return null;
+        } catch (_) { return null; }
+    }
+
+    /** Reset's region half: restore the exact original (see above) and show
+     *  it -- flash in place, the cursor and selection untouched. False when
+     *  there is no exact original, so the caller falls back to the name. */
+    async _wvOutlineRestoreOriginalRegion(reader: any, idoc: any, att: any, id: string): Promise<boolean> {
+        try {
+            const d = this._wvOutlineDoc(att.libraryID, att.itemKey);
+            const e = d && Array.isArray(d.entries) ? d.entries.find((x: any) => x.id === id) : null;
+            const orig = this._wvOutlineExactOriginal(reader, e);
+            if (!orig) return false;
+            const pos = JSON.parse(JSON.stringify(orig));
+            await this._wvOutlineSetEntryPosition(att.libraryID, att.itemKey, id, pos,
+                (e.source && e.source.title) || e.title);
+            try {
+                const ir = reader._internalReader;
+                const pv = ir && (ir._primaryView || ir._lastView);
+                if (pv && (reader._type || "pdf") !== "pdf") {
+                    if (pos.anchor === "point") {
+                        this._wvOutlineShowDomEntryPinWhenReady(reader, idoc, e, pos);
+                    } else {
+                        const rg = this._wvDomRangeForAnchor(pv, { position: pos, href: e.href });
+                        if (rg) {
+                            const iw = pv._iframeWindow;
+                            const rc = rg.getBoundingClientRect();
+                            iw.scrollTo(this._wvDomScrollX(iw, rc), Math.max(0, Math.round(rc.top + iw.scrollY
+                                - (iw.innerHeight || 800) * 0.25)));
+                            this._wvDomHighlightRange(pv, rg);
+                        }
+                    }
+                } else if (pv && Array.isArray(pos.rects) && pos.rects.length) {
+                    const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
+                    this._wvClearStalePin(pv);
+                    this._wvOutlineScrollToRect(pv, pos.pageIndex, pos.rects[0]);
+                    if (pos.anchor !== "point") this._wvOutlineHighlightInPlace(pv, pos.pageIndex, pos.rects, gen, 0);
+                }
+            } catch (_) {}
+            return true;
+        } catch (err) {
+            Zotero.debug("[Weavero] _wvOutlineRestoreOriginalRegion err: " + err);
+            return false;
+        }
+    }
+
     _wvOutlineDoResetName(reader: any, idoc: any, id: string) {
         try {
             const att = this._wvReaderAtt(reader);
@@ -8809,8 +9241,18 @@ class _ReaderPanelsMixin {
                 // (original) title reproduces the region the entry would have had
                 // before any editing, and stamps `regionTitle` so the re-detect
                 // command correctly disappears again.
-                .then(() => this._wvOutlineDetectRegionForId(reader, idoc, att, id))
+                // The ORIGINAL region is stored whenever it was exact (a
+                // selection, a pin, a DOM selector): put THAT back. Only a
+                // coarse original (a PDF outline's page-top point) is found
+                // again from the name. Searching instead moved a chapter
+                // title from page 240 to the table of contents on viii
+                // (MJT 2026-09-24).
+                .then(() => this._wvOutlineRestoreOriginalRegion(reader, idoc, att, id))
+                .then((restored: boolean) => restored ? null : this._wvOutlineDetectRegionForId(reader, idoc, att, id))
                 .then(() => this._wvReaderRenderOutline(reader, idoc))
+                // The name changed, as in a Rename: dashed afterglow, cursor
+                // and selection untouched (collections-pane parity, 2026-09-24).
+                .then(() => this._wvOutlineAfterglow(idoc, String(id)))
                 .catch(() => {});
         } catch (_) {}
     }
@@ -8954,7 +9396,7 @@ class _ReaderPanelsMixin {
                             const want = (iwin.innerHeight || 800) * 0.25;
                             const rc2 = rng.getBoundingClientRect();
                             if (Math.abs(rc2.top - want) > 40) {
-                                iwin.scrollTo(0, Math.max(0, Math.round(rc2.top + iwin.scrollY - want)));
+                                iwin.scrollTo(this._wvDomScrollX(iwin, rc2), Math.max(0, Math.round(rc2.top + iwin.scrollY - want)));
                             }
                         } catch (_) {}
                         if (target && target.anchor === "point") {
@@ -9025,10 +9467,35 @@ class _ReaderPanelsMixin {
     /** Inline-rename: swap the label for a text input. Enter / blur commits,
      *  Escape cancels; a re-render restores the row either way. `entry` is a
      *  curated entry (has id). */
-    _wvOutlineStartRename(reader: any, idoc: any, entry: any, labelEl: any, resolve?: () => Promise<any>) {
+    _wvOutlineStartRename(reader: any, idoc: any, entry: any, labelEl: any, resolve?: () => Promise<any>, opts?: any) {
         try {
             const att = this._wvReaderAtt(reader);
             if (!att || !labelEl || !labelEl.parentNode) return;
+            // Started from the RIGHT-CLICK menu: the user never moved to this
+            // row, so the rename must not move them either -- the blue cursor
+            // and the selection stay where they were and the renamed row gets
+            // the dashed afterglow, as in the collections pane (MJT
+            // 2026-09-24). Enter-to-rename acts on the cursor row already.
+            const fromMenu = !!(opts && opts.fromMenu);
+            let prevActiveKey: string | null = null;
+            try {
+                const act = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS + " .wv-outline-row.wv-outline-active");
+                prevActiveKey = act ? this._wvOutlineRowKey(act) : null;
+            } catch (_) {}
+            const settle = (renamedKey: string | null) => {
+                if (!fromMenu) { this._wvOutlineRefocusRow(idoc, renamedKey, reader, true); return; }
+                try {
+                    const list = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS + " .wv-outline-list");
+                    const rows: any[] = list ? [...list.querySelectorAll(".wv-outline-row")] : [];
+                    const prev = prevActiveKey != null ? rows.find((r: any) => this._wvOutlineRowKey(r) === prevActiveKey) : null;
+                    for (const r of rows) if (r !== prev) r.classList.remove("wv-outline-active");
+                    // preventScroll: the cursor row may be far from the renamed
+                    // one; the list must stay on what was just edited.
+                    if (prev) { prev.classList.add("wv-outline-active"); try { prev.focus({ preventScroll: true }); } catch (_) {} }
+                    else { const v: any = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS); if (v && v.focus) v.focus({ preventScroll: true }); }
+                } catch (_) {}
+                this._wvOutlineAfterglow(idoc, renamedKey);
+            };
             const input = idoc.createElementNS(NS_HTML_RP, "input");
             input.className = "wv-outline-rename-input";
             input.setAttribute("type", "text");
@@ -9062,7 +9529,7 @@ class _ReaderPanelsMixin {
                 // row. Crucially does NOT curate, so the outline source is left
                 // exactly as it was (Embedded/Extracted).
                 Promise.resolve(this._wvReaderRenderOutline(reader, idoc))
-                    .then(() => { try { this._wvOutlineRefocusRow(idoc, rowKey, reader, true); } catch (_) {} });
+                    .then(() => { try { settle(rowKey); } catch (_) {} });
             };
             const finish = async (save: boolean) => {
                 if (done) return; done = true;
@@ -9094,7 +9561,7 @@ class _ReaderPanelsMixin {
                             // outline text was truncated or wrong.
                             this._wvReaderPanelNote(idoc,
                                 "Title updated. To move the highlight to match, right-click → Re-detect Region from Title.");
-                            this._wvOutlineRefocusRow(idoc, String(ref.id), reader, true);
+                            settle(String(ref.id));
                         } catch (_) {}
                         return;
                     }
@@ -9216,6 +9683,7 @@ class _ReaderPanelsMixin {
                 }
             } catch (_) {}
             let n = 0;
+            const changed: string[] = [];
             for (const it of items) {
                 const t = String(it.entry.title || "");
                 const fixed = this._wvCleanTitleSpacing(t);
@@ -9223,9 +9691,12 @@ class _ReaderPanelsMixin {
                 const ref = await this._wvOutlineResolveId(reader, it.entry, it.index, it.curatedView);
                 if (!ref) continue;
                 await this._wvOutlineRenameEntry(ref.att.libraryID, ref.att.itemKey, ref.id, fixed);
+                changed.push(String(ref.id));
                 n++;
             }
             await this._wvReaderRenderOutline(reader, idoc);
+            // Renamed like a Rename: the dashed afterglow shows where (2026-09-24).
+            if (changed.length) this._wvOutlineAfterglow(idoc, changed);
             this._wvReaderPanelNote(idoc, n ? ("Cleaned spacing on " + n + " title" + (n === 1 ? "" : "s") + ".")
                 : "Nothing changed — if a title is already correct, use “Spacing is Correct” to dismiss.");
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineCleanSpacing err: " + e); }
@@ -9283,6 +9754,15 @@ class _ReaderPanelsMixin {
             // Position / Edit Region / Re-detect) need the base view.
             const rmLens = this._wvReadingModeActive(reader);
             this._wvCloseReaderBmContextMenu(idoc);
+            // Mark the entry the menu is for (MJT 2026-09-24): right-click
+            // leaves the selection alone, so without this nothing shows which
+            // entry the menu acts on. Same dashed cue as the collections
+            // pane's wv-ctx-row; _wvCloseReaderBmContextMenu clears it.
+            try {
+                const ctxRow = (ev && ev.target && ev.target.closest && ev.target.closest(".wv-outline-row"))
+                    || [...idoc.querySelectorAll(".wv-outline-row")].find((r: any) => r._wvOl && r._wvOl.entry === entry);
+                if (ctxRow) ctxRow.classList.add("wv-outline-ctx");
+            } catch (_) {}
             const menu = idoc.createElementNS(NS_HTML_RP, "div");
             menu.id = RP_BM_CTX_ID;
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
@@ -9306,15 +9786,50 @@ class _ReaderPanelsMixin {
                 it.addEventListener("click", () => { close(); fn(); });
                 menu.appendChild(it);
             };
-            const sep = () => { const s = idoc.createElementNS(NS_HTML_RP, "div"); s.className = "wv-ctx-sep"; menu.appendChild(s); };
+            // No doubled separator when the entries between two are hidden (multi-selection).
+            const sep = () => { const lc: any = menu.lastElementChild; if (!lc || (lc.classList && lc.classList.contains("wv-ctx-sep"))) return; const s = idoc.createElementNS(NS_HTML_RP, "div"); s.className = "wv-ctx-sep"; menu.appendChild(s); };
             const att0 = this._wvReaderAtt(reader);
             let openIcon = "";
             try { openIcon = att0 && att0.att ? att0.att.getImageSrc() : ""; } catch (_) {}
+            // Right-click INSIDE a multi-selection acts on the whole selection,
+            // as Zotero's collection menu does (zoteroPane.js buildCollection-
+            // ContextMenu: Delete counts the rows, Rename / New Subcollection
+            // are hidden above one row). Outside the selection: this entry only.
+            let multiItems: any[] | null = null;
+            try {
+                const mlist = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS + " .wv-outline-list");
+                const clickedKey = curatedView ? String(entry.id) : ("idx-" + index);
+                const selRows: any[] = mlist ? [...mlist.querySelectorAll(".wv-outline-row.wv-outline-selected")] : [];
+                if (selRows.length > 1 && selRows.some((r: any) => this._wvOutlineRowKey(r) === clickedKey)) {
+                    multiItems = selRows.map((r: any) => r._wvOl).filter(Boolean);
+                }
+            } catch (_) {}
+            const multi = !!(multiItems && multiItems.length > 1);
 
-            mk("Open", openIcon, () => this._wvOutlineNavigate(reader, idoc, entry, null));
+            // Open = a plain left-click on the entry: it becomes the cursor and
+            // the sole selection, then the view jumps (2026-09-24; it used to
+            // navigate with no row, which cleared the cursor altogether).
+            mk("Open", openIcon, () => {
+                try {
+                    const orow: any = [...idoc.querySelectorAll(".wv-outline-row")]
+                        .find((r: any) => r._wvOl && r._wvOl.entry === entry);
+                    if (orow) {
+                        const k = this._wvOutlineRowKey(orow);
+                        const sel: Set<string> = reader._wvOutlineSel || (reader._wvOutlineSel = new Set());
+                        sel.clear();
+                        if (k != null) { sel.add(k); reader._wvOutlineSelAnchor = k; }
+                        for (const r of [...idoc.querySelectorAll(".wv-outline-row.wv-outline-selected")]) {
+                            if (r !== orow) (r as any).classList.remove("wv-outline-selected");
+                        }
+                        orow.classList.add("wv-outline-selected");
+                    }
+                    this._wvOutlineNavigate(reader, idoc, entry, orow || null);
+                    if (orow) { try { orow.focus(); } catch (_) {} }
+                } catch (_) {}
+            });
             mk("Open in New Window", openIcon, () => this._wvOutlineOpenInWindow(reader, entry));
             sep();
-            mk("Rename…", RP_RENAME_SVG, () => this._wvOutlineBeginRename(reader, idoc, entry, index, curatedView));
+            if (!multi) mk("Rename…", RP_RENAME_SVG, () => this._wvOutlineBeginRename(reader, idoc, entry, index, curatedView, { fromMenu: true }));
             // Re-anchor to the selected text. ALWAYS listed and always live:
             // hiding it when nothing was selected made it undiscoverable, and a
             // permanently greyed row is just clutter. If it's used without a
@@ -9334,7 +9849,7 @@ class _ReaderPanelsMixin {
             // again. `regionTitle` is stamped wherever a region is established;
             // entries predating it fall back to the frozen original, which is
             // what the automatic recovery always used.
-            if (this._wvOutlineRegionTitleStale(entry)) {
+            if (!multi && this._wvOutlineRegionTitleStale(entry)) {
                 if (!rmLens) mk("Re-detect Region from Title", RP_REVERT_SVG,
                     () => this._wvOutlineRedetectRegion(reader, idoc, entry, index, curatedView));
             }
@@ -9355,7 +9870,7 @@ class _ReaderPanelsMixin {
             // has NO editable text region, so "Edit Region" doesn't apply -- offer
             // the target modifiers instead. Region/heading entries keep the
             // handle-drag "Edit Region" editor. (2026-07-23)
-            {
+            if (!multi) {
                 const _tgt = (entry && (entry.resolvedPosition || entry.position)) || null;
                 const _anchor = _tgt && _tgt.anchor;
                 const _isDom = (reader._type || "pdf") !== "pdf";
@@ -9391,9 +9906,32 @@ class _ReaderPanelsMixin {
             }
             // "Reset to Original Name" only when the title has been changed from
             // its frozen original (curated entries carry `source.title`).
-            if (curatedView && entry && entry.source && typeof entry.source.title === "string"
+            if (!multi && curatedView && entry && entry.source && typeof entry.source.title === "string"
                     && entry.title !== entry.source.title) {
                 mk("Reset to Original Name and Region", RP_REVERT_SVG, () => this._wvOutlineDoResetName(reader, idoc, entry.id));
+                // Say what the reset brings back BEFORE it is clicked (MJT
+                // 2026-09-24): the frozen original name, on a dimmed second line.
+                // The region is not stored -- it is re-detected from that name.
+                try {
+                    const it: any = menu.lastElementChild;
+                    const lb: any = it && it.lastElementChild;
+                    if (lb) {
+                        const orig = String(entry.source.title).replace(/\s+/g, " ").trim();
+                        const shown = orig.length > 60 ? orig.slice(0, 59) + "…" : orig;
+                        const sub = idoc.createElementNS(NS_HTML_RP, "span");
+                        sub.textContent = "“" + shown + "”";
+                        sub.setAttribute("style", "display:block;font-size:11px;opacity:.7;margin-top:1px;"
+                            + "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:320px;");
+                        lb.setAttribute("style", (lb.getAttribute("style") || "") + "display:flex;flex-direction:column;");
+                        const main = idoc.createElementNS(NS_HTML_RP, "span");
+                        main.textContent = lb.textContent;
+                        lb.textContent = "";
+                        lb.appendChild(main); lb.appendChild(sub);
+                        it.setAttribute("title", this._wvOutlineExactOriginal(reader, entry)
+                            ? "Name and region back to the original: “" + orig + "”."
+                            : "Name back to “" + orig + "”; the region is detected again from that name.");
+                    }
+                } catch (_) {}
             }
             // Content type: tag this entry as a sidebar/box (stored as `kind`,
             // title/position untouched) so it renders distinctly -- or clear it
@@ -9406,7 +9944,12 @@ class _ReaderPanelsMixin {
                 mk("Mark as Box / Sidebar", RP_BOX_SVG, () => this._wvOutlineSetKind(reader, idoc, entry, index, curatedView, "box"));
             }
             sep();
-            mk("Delete", RP_DELETE_SVG, () => this._wvOutlineDoDelete(reader, idoc, entry, index, curatedView), true);
+            if (multi && multiItems) {
+                const items = multiItems;
+                mk("Delete " + items.length + " Entries", RP_DELETE_SVG, () => this._wvOutlineDeleteSelected(reader, idoc, items), true);
+            } else {
+                mk("Delete", RP_DELETE_SVG, () => this._wvOutlineDoDelete(reader, idoc, entry, index, curatedView), true);
+            }
             (idoc.body || idoc.documentElement).appendChild(menu);
             const vw = (idoc.documentElement && idoc.documentElement.clientWidth) || 9999;
             const vh = (idoc.documentElement && idoc.documentElement.clientHeight) || 9999;
@@ -10010,7 +10553,7 @@ class _ReaderPanelsMixin {
                 }
             } catch (_) {}
             const rc2 = rng.getBoundingClientRect();
-            iwin.scrollTo(0, Math.max(0, Math.round(rc2.top + iwin.scrollY
+            iwin.scrollTo(this._wvDomScrollX(iwin, rc2), Math.max(0, Math.round(rc2.top + iwin.scrollY
                 - (iwin.innerHeight || 800) * 0.25)));
             return rng;
         } catch (_) { return null; }
@@ -10037,6 +10580,17 @@ class _ReaderPanelsMixin {
             try { const prev = idoc.querySelector(".wv-outline-row.wv-outline-active"); if (prev) prev.classList.remove("wv-outline-active"); } catch (_) {}
             if (row) row.classList.add("wv-outline-active");
             if (node.url) { try { Zotero.launchURL(node.url); } catch (_) {} return; }
+            // The clicked entry IS the current section now: mark it at once.
+            // The suppression window above only froze the marker, so it sat
+            // on the previous entry for the whole 1.6 s (MJT 2026-09-24,
+            // "the outline position takes time to move"); the settle pass
+            // still corrects it if the landing says otherwise.
+            try {
+                const rowEl = row || [...idoc.querySelectorAll(".wv-outline-row")]
+                    .find((r: any) => r._wvOl && r._wvOl.entry === node);
+                const list = rowEl && rowEl.closest && rowEl.closest(".wv-outline-list");
+                if (list) this._wvOutlineSpyMark(idoc, list, rowEl);
+            } catch (_) {}
             // Reading Mode: navigate the SDT overlay (position-mapped, with the
             // native spotlight + the same 1/4-from-top landing). Fire and forget
             // -- the resolver may need async page-text recovery.
@@ -15453,6 +16007,15 @@ class _ReaderPanelsMixin {
             if (pv._wvDomHlTimer) { try { iwin.clearTimeout(pv._wvDomHlTimer); } catch (_) {} }
             const rects = this._wvDomLeafRects(range);
             if (!rects.length) return;
+            // Host the boxes INSIDE the scrolling/sticky panel the range lives in
+            // (a publisher's right-hand sidebar), positioned in that panel's
+            // content coordinates: the browser then scrolls them with their
+            // text, on the compositor, for the panel's scroll and the page's
+            // alike. A script re-placement after each scroll showed one frame
+            // at the old spot -- a flicker on every page scroll (MJT
+            // 2026-09-24). Plain page ranges keep <body> and document coords.
+            const host = this._wvDomOverlayHost(iwin, doc, range);
+            const boxes: any[] = [];
             for (const r of rects.slice(0, 40)) {
                 const box: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
                 box.className = "wv-dom-heading-flash";
@@ -15460,9 +16023,9 @@ class _ReaderPanelsMixin {
                 // lines and the multiply doubled in the seams, reading as a
                 // stronger colour than the PDF flash (2026-08-26).
                 box.style.cssText = "position:absolute;z-index:2147483645;pointer-events:none;"
-                    + "left:" + (r.left + iwin.scrollX) + "px;"
-                    + "top:" + (r.top + iwin.scrollY) + "px;"
-                    + "width:" + r.width + "px;height:" + r.height + "px;"
+                    + "left:" + host.x(r) + "px;"
+                    + "top:" + host.y(r) + "px;"
+                    + "width:" + (r.width / host.z) + "px;height:" + (r.height / host.z) + "px;"
                     + "background:#B9DBFF;"
                     + "mix-blend-mode:multiply;"
                     + "transition:opacity .3s ease-out;";
@@ -15487,8 +16050,22 @@ class _ReaderPanelsMixin {
                     box.style.setProperty("background", "#B9DBFF", "important");
                     box.style.setProperty("mix-blend-mode", "multiply", "important");
                 } catch (_) {}
-                doc.body.appendChild(box);
+                if (host.el === doc.body) wvDomNoZoom(box);
+                host.el.appendChild(box);
+                boxes.push(box);
             }
+            this._wvDomOnRelayout(iwin, doc, () => {
+                if (!boxes.some((b: any) => b.isConnected)) return false;
+                const h2 = this._wvDomOverlayHost(iwin, doc, range);
+                const rs = this._wvDomLeafRects(range).slice(0, 40);
+                boxes.forEach((b: any, k: number) => {
+                    const r = rs[k];
+                    if (!r) { b.style.display = "none"; return; }
+                    b.style.left = h2.x(r) + "px"; b.style.top = h2.y(r) + "px";
+                    b.style.width = (r.width / h2.z) + "px"; b.style.height = (r.height / h2.z) + "px";
+                });
+                return true;
+            });
             pv._wvDomHlTimer = iwin.setTimeout(() => {
                 try {
                     if (pv._wvDomHlSeq !== seq && gen == null) return;
@@ -15511,7 +16088,7 @@ class _ReaderPanelsMixin {
      *  hit mapped back. Whole-document scan — bounded by document size, run
      *  only on explicit user actions (Re-detect), never per click: click
      *  paths use the entries' EXACT anchors instead. */
-    _wvDomFindTextRange(pv: any, text: string): any {
+    _wvDomFindTextRange(pv: any, text: string, near?: any): any {
         try {
             const doc = pv && pv._iframeDocument;
             if (!doc || !doc.body) return null;
@@ -15529,13 +16106,32 @@ class _ReaderPanelsMixin {
                 }
                 if (map.length > 4000000) break;   // pathological doc: give up honestly
             }
-            const at = buf.indexOf(needle);
-            if (at < 0) return null;
-            const first = map[at], last = map[at + needle.length - 1];
-            const range = doc.createRange();
-            range.setStart(first.node, first.off);
-            range.setEnd(last.node, last.off + 1);
-            return range;
+            const mkRange = (at: number) => {
+                const first = map[at], last = map[at + needle.length - 1];
+                const range = doc.createRange();
+                range.setStart(first.node, first.off);
+                range.setEnd(last.node, last.off + 1);
+                return range;
+            };
+            const at0 = buf.indexOf(needle);
+            if (at0 < 0) return null;
+            // NEAR a reference range: the first occurrence at or after it,
+            // else the last one before it. The first match in the whole
+            // document is usually the table of contents -- a book's chapter
+            // title re-detected to page viii from page 240 (MJT 2026-09-24).
+            // The PDF recovery has always searched near the entry's page.
+            if (near && typeof near.compareBoundaryPoints === "function") {
+                let before: any = null;
+                for (let at = at0, n = 0; at >= 0 && n < 500; at = buf.indexOf(needle, at + 1), n++) {
+                    const r = mkRange(at);
+                    let cmp = 0;
+                    try { cmp = r.compareBoundaryPoints(0 /* START_TO_START */, near); } catch (_) { return mkRange(at0); }
+                    if (cmp >= 0) return r;
+                    before = r;
+                }
+                if (before) return before;
+            }
+            return mkRange(at0);
         } catch (e) {
             Zotero.debug("[Weavero] _wvDomFindTextRange err: " + e);
             return null;
@@ -20159,8 +20755,39 @@ class _ReaderPanelsMixin {
         });
     }
 
+    /** The dashed outline on an outline row a menu action just changed (a
+     *  rename), while the cursor and selection stay where they were -- the
+     *  collections pane's afterglow (pane.ts). Cleared at the next pointer
+     *  or key input in the sidebar, like there. */
+    _wvOutlineAfterglow(idoc: any, key: string | string[] | null) {
+        try {
+            const prevOff = idoc._wvOlAfterglowOff;
+            if (prevOff) { try { prevOff(); } catch (_) {} }
+            idoc._wvOlAfterglowOff = null;
+            if (key == null) return;
+            const keys = new Set(Array.isArray(key) ? key : [key]);
+            const list = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS + " .wv-outline-list");
+            const rows: any[] = list ? [...list.querySelectorAll(".wv-outline-row")]
+                .filter((r: any) => keys.has(this._wvOutlineRowKey(r) as string)) : [];
+            if (!rows.length) return;
+            for (const r of rows) r.classList.add("wv-outline-ctx");
+            const off = () => {
+                for (const r of rows) { try { r.classList.remove("wv-outline-ctx"); } catch (_) {} }
+                for (const ty of ["pointerdown", "keydown"]) {
+                    try { idoc.removeEventListener(ty, off, true); } catch (_) {}
+                }
+                if (idoc._wvOlAfterglowOff === off) idoc._wvOlAfterglowOff = null;
+            };
+            for (const ty of ["pointerdown", "keydown"]) {
+                try { idoc.addEventListener(ty, off, true); } catch (_) {}
+            }
+            idoc._wvOlAfterglowOff = off;
+        } catch (_) {}
+    }
+
     _wvCloseReaderBmContextMenu(idoc: any) {
         try { const m = idoc.getElementById(RP_BM_CTX_ID); if (m) m.remove(); } catch (_) {}
+        try { for (const r of Array.from(idoc.querySelectorAll(".wv-outline-ctx")) as any[]) r.classList.remove("wv-outline-ctx"); } catch (_) {}
         if (this._wvReaderBmCtxDismiss) {
             try {
                 const { docs, wins, onDown, onKey } = this._wvReaderBmCtxDismiss;
@@ -22152,6 +22779,7 @@ class _ReaderPanelsMixin {
                     + "width:2px;border-radius:1px;opacity:.9;transform:translate(-50%,0);"
                     + "transition:opacity .18s ease-out,left .15s ease-out,top .15s ease-out;";
                 c.style.setProperty("background-color", "#e05a2b", "important");
+                wvDomNoZoom(c);
                 doc.body.appendChild(c);
             }
             c.style.left = x + "px";
@@ -22219,6 +22847,7 @@ class _ReaderPanelsMixin {
                 + "user-select:none;line-height:0;transform-origin:50% 100%;"
                 + "transform:translate(-50%,-100%) scale(1);opacity:1;"
                 + "transition:opacity .18s ease-out,transform .18s ease-out;";
+            wvDomNoZoom(pin);
             doc.body.appendChild(pin);
             const w: any = iwin;
             let fadeT: any = null, killT: any = null;
@@ -22296,11 +22925,189 @@ class _ReaderPanelsMixin {
             }
             if (draggable) this._wvWireDomPinDrag(iwin, doc, pin, docX, docY, reader, bm,
                                                  disarm, armIf, opts && opts.commit);
+            this._wvDomPinFollowScroll(iwin, doc, range, pin, caret, opts);
             return true;
         } catch (e) {
             Zotero.debug("[Weavero] _wvReaderDrawDomPin err: " + e);
             return false;
         }
+    }
+
+    /** The pin and its caret are laid out in DOCUMENT coordinates on <body>,
+     *  so they follow the page's own scroll and nothing else. An anchor
+     *  inside a scrolling panel of the page (a publisher's right-hand
+     *  sidebar with overflow:auto) or a fixed/sticky box moves with THAT
+     *  box: the pin drifted with the main page's scroll instead (MJT
+     *  2026-09-24, validation plan A5b). For such anchors, every scroll in
+     *  the document (capture catches element scrolls too) re-derives the
+     *  position from the live range, and the pin hides while its spot is
+     *  scrolled out of the panel. Plain page anchors keep the old path:
+     *  no listener at all. */
+    _wvDomPinFollowScroll(iwin: any, doc: any, range: any, pin: any, caret: any, opts?: any) {
+        const media = !!(opts && opts.mediaOffset);
+        this._wvDomFollowScroll(iwin, doc, range, (visibleIn: (r: any) => boolean) => {
+            if (!pin.isConnected) return false;
+            if (pin._wvDragging) return true;   // the drag owns the position meanwhile
+            const rT = this._wvDomPinLineRect(range, this._wvDomPinTargetRect(range, media), media,
+                !!(opts && opts.endAffinity));
+            if (!rT) return true;
+            const pt = this._wvDomPinDocPoint(rT, iwin.scrollX || 0, iwin.scrollY || 0, opts && opts.mediaOffset);
+            const visible = visibleIn(rT);
+            pin.style.left = pt.x + "px"; pin.style.top = pt.y + "px";
+            pin.style.visibility = visible ? "" : "hidden";
+            const cr: any = caret && caret.isConnected ? caret : null;
+            if (cr) {
+                cr.style.transition = "opacity .18s ease-out";   // no left/top easing while following
+                cr.style.left = pt.x + "px"; cr.style.top = pt.y + "px";
+                cr.style.visibility = visible ? "" : "hidden";
+            }
+            return true;
+        });
+    }
+
+    /** Horizontal scroll for a DOM-view jump to `r` (a viewport rect).
+     *  Every jump scrolled with x = 0: fine at 100 %, but a zoomed-in
+     *  snapshot is wider than the view, and a target in its right-hand
+     *  column (Literature Cited) stayed off-screen -- the jump even undid a
+     *  manual sideways scroll (MJT 2026-09-24). Keep the current x when the
+     *  target is already in view; otherwise bring its left edge in with a
+     *  small margin. */
+    _wvDomScrollX(iwin: any, r: any): number {
+        const sx = iwin.scrollX || 0;
+        try {
+            if (!r) return sx;
+            const de = iwin.document && iwin.document.documentElement;
+            const vw = (de && de.clientWidth) || iwin.innerWidth || 0;
+            if (!vw) return sx;
+            const M = 24;
+            if (r.left >= 0 && r.right <= vw) return sx;                    // fully visible
+            if (r.left >= 0 && r.left <= vw - M && r.width > vw) return sx;  // starts in view, wider than it
+            return Math.max(0, Math.round(sx + r.left - M));
+        } catch (_) { return sx; }
+    }
+
+    /** Run `fn` whenever the view's layout changes under a live overlay:
+     *  the reader's zoom (it writes `--scale` into <html style>, and the
+     *  body-child zoom rule rescales the page) and window resizes. Placed
+     *  overlays keep document coordinates, so without this they stayed put
+     *  while the text moved (MJT 2026-09-24: "as I zoom in/out, the
+     *  highlight region is not moving with it"). `fn` returns false once
+     *  its overlay is gone, which unhooks both listeners. */
+    _wvDomOnRelayout(iwin: any, doc: any, fn: () => boolean) {
+        try {
+            let mo: any = null;
+            const off = () => {
+                try { if (mo) mo.disconnect(); } catch (_) {}
+                try { iwin.removeEventListener("resize", run); } catch (_) {}
+            };
+            const run = () => {
+                let keep = false;
+                try { keep = fn(); } catch (_) { keep = true; }
+                if (!keep) off();
+            };
+            const MO = iwin.MutationObserver;
+            if (MO && doc.documentElement) {
+                mo = new MO(run);
+                const Cu: any = (Components as any).utils;
+                const init = { attributes: true, attributeFilter: ["style"] };
+                mo.observe(doc.documentElement, Cu ? Cu.cloneInto(init, iwin) : init);
+                // Paginated EPUB: a page turn moves `.sections` by its
+                // left/top style. A pin drawn for a target on ANOTHER page
+                // of the mounted chapter was placed before the reader moved
+                // there and stayed off-screen -- it showed only on a second
+                // click (MJT 2026-09-24).
+                try {
+                    const secs = doc.body && doc.body.querySelector(":scope > .sections");
+                    if (secs) mo.observe(secs, Cu ? Cu.cloneInto(init, iwin) : init);
+                } catch (_) {}
+            }
+            iwin.addEventListener("resize", run);
+        } catch (e) { Zotero.debug("[Weavero] _wvDomOnRelayout err: " + e); }
+    }
+
+    /** Overlays (pin, caret, text flash) sit on <body> in DOCUMENT
+     *  coordinates, so they follow the page's scroll only. For a range
+     *  inside a scrolling or fixed/sticky box -- a publisher's right-hand
+     *  sidebar -- `place(visibleIn)` is re-run on every scroll in the
+     *  document (capture catches element scrolls), straight from the event
+     *  (a rAF hop froze in an occluded window); `visibleIn(rect)` says
+     *  whether a viewport rect is inside the scrolling box's visible area.
+     *  `place` returns false once its overlay is gone, which unhooks it.
+     *  Plain page ranges: no listener at all. */
+    _wvDomFollowScroll(iwin: any, doc: any, range: any, place: (visibleIn: (r: any) => boolean) => boolean) {
+        try {
+            let el: any = range && range.startContainer;
+            if (el && el.nodeType !== 1) el = el.parentElement;
+            const root = doc.scrollingElement || doc.documentElement;
+            let clip: any = null, needs = false;
+            for (let e = el; e && e !== doc.body && e !== root; e = e.parentElement) {
+                const cs = iwin.getComputedStyle(e);
+                if (!cs) continue;
+                if (cs.position === "fixed" || cs.position === "sticky") needs = true;
+                if (!clip && /(auto|scroll|hidden)/.test(cs.overflowY + " " + cs.overflowX)
+                        && (e.scrollHeight > e.clientHeight + 1 || e.scrollWidth > e.clientWidth + 1)) {
+                    clip = e; needs = true;
+                }
+            }
+            const visibleIn = (r: any) => {
+                if (!clip) return true;
+                const c = clip.getBoundingClientRect();
+                return r.bottom > c.top && r.top < c.bottom && r.right > c.left && r.left < c.right;
+            };
+            // Zoom / resize move every anchor, page or panel alike.
+            this._wvDomOnRelayout(iwin, doc, () => place(visibleIn));
+            if (!needs) return;
+            const onScroll = () => {
+                let keep = false;
+                try { keep = place(visibleIn); } catch (_) { keep = true; }
+                if (!keep) { try { doc.removeEventListener("scroll", onScroll, true); } catch (_) {} }
+            };
+            doc.addEventListener("scroll", onScroll, true);
+            onScroll();
+        } catch (e) { Zotero.debug("[Weavero] _wvDomFollowScroll err: " + e); }
+    }
+
+    /** Where an overlay for `range` should live so the browser moves it with
+     *  the text: the nearest ancestor that scrolls (overflow with overflowing
+     *  content) or is fixed/sticky, when it is a containing block (not
+     *  position:static); else <body>. `x(r)` / `y(r)` convert a viewport rect
+     *  to that host's content coordinates (host rect, border, own scroll). */
+    _wvDomOverlayHost(iwin: any, doc: any, range: any): { el: any, x: (r: any) => number, y: (r: any) => number, z: number } {
+        // Body host: the overlay opts out of the reader's zoom (wvDomNoZoom),
+        // so client px ARE its CSS px (z = 1).
+        const bodyHost = { el: doc.body, x: (r: any) => r.left + (iwin.scrollX || 0), y: (r: any) => r.top + (iwin.scrollY || 0), z: 1 };
+        try {
+            let el: any = range && range.startContainer;
+            if (el && el.nodeType !== 1) el = el.parentElement;
+            const root = doc.scrollingElement || doc.documentElement;
+            for (let e = el; e && e !== doc.body && e !== root; e = e.parentElement) {
+                const cs = iwin.getComputedStyle(e);
+                if (!cs) continue;
+                const scrolls = /(auto|scroll|hidden)/.test(cs.overflowY + " " + cs.overflowX)
+                    && (e.scrollHeight > e.clientHeight + 1 || e.scrollWidth > e.clientWidth + 1);
+                const pinned = cs.position === "fixed" || cs.position === "sticky";
+                if (!scrolls && !pinned) continue;
+                if (cs.position === "static") return bodyHost;   // not a containing block: keep the page host
+                const host = e;
+                // A panel inside the page lives under the reader's zoomed
+                // body child: its CSS px are `z` client px. Client-space
+                // measurements are divided back into the host's units.
+                let z = 1;
+                try {
+                    for (let a: any = host; a && a !== doc.documentElement; a = a.parentElement) {
+                        const zz = parseFloat(iwin.getComputedStyle(a).zoom);
+                        if (zz > 0) z *= zz;
+                    }
+                } catch (_) {}
+                return {
+                    el: host,
+                    z,
+                    x: (r: any) => { const h = host.getBoundingClientRect(); return (r.left - h.left) / z - host.clientLeft + host.scrollLeft; },
+                    y: (r: any) => { const h = host.getBoundingClientRect(); return (r.top - h.top) / z - host.clientTop + host.scrollTop; },
+                };
+            }
+        } catch (_) {}
+        return bodyHost;
     }
 
     /** Make a DOM-view pin draggable, so a position bookmark can be nudged to
@@ -23595,7 +24402,7 @@ class _ReaderPanelsMixin {
                         // A degenerate rect means the anchor did not really
                         // resolve; leave the view alone rather than jumping.
                         if (rc.height > 0 || rc.width > 0 || docY > 0) {
-                            iwR.scrollTo(0, Math.max(0, Math.round(docY - (iwR.innerHeight || 800) * 0.25)));
+                            iwR.scrollTo(this._wvDomScrollX(iwR, rc), Math.max(0, Math.round(docY - (iwR.innerHeight || 800) * 0.25)));
                             landed = true;
                         }
                     }

@@ -85,6 +85,18 @@ describe("Weavero — outline pin timing", () => {
 			assert.lengthOf(notes, 0, "'target gone' was never claimed");
 		});
 
+		// 2026-09-24 (MJT, paginated EPUB): a jump into another chapter mounts
+		// it a moment after the click; the flat 150 ms retry showed the pin a
+		// visible beat late (158 ms measured). The first retries are fast.
+		it("EPUB: an anchor that resolves on the 2nd try draws within ~60 ms", async () => {
+			let attempts = 0;
+			override("_wvOutlineShowDomEntryPin", () => ++attempts >= 2);
+			override("_wvReaderPanelNote", () => {});
+			wv._wvOutlineShowDomEntryPinWhenReady({ _type: "epub", _wvOutlineNavTime: 1 }, {}, {}, POS);
+			await wait(60);
+			assert.equal(attempts, 2, "second try already happened");
+		});
+
 		it("snapshot: no retry -- an unresolved anchor is reported at once", () => {
 			let attempts = 0;
 			const notes = [];

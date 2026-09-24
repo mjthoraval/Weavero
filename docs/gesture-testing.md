@@ -121,6 +121,26 @@ active), then:
       round-trip; the menu now reads **Show** / **✓ Hide (default)**; a
       document switched to Show from there still shows them.
 
+## Outline entry right-click menu (after touching outline rows, menus or re-renders)
+
+Collections-pane parity (2026-09-24). Any Weavero outline with a few
+entries; click one entry first so it has the blue cursor.
+
+- [ ] **Right-click another entry** → dashed outline on it while the menu
+      is open; the blue cursor and the selection do not move.
+- [ ] **Mark as Box / Sidebar** (or Reset, Fix Spacing, Edit Region → Save)
+      from that menu → after the outline redraws, the blue cursor is still
+      on the entry you clicked first. (Not covered by a spec: the redraw
+      needs a real reader.)
+- [ ] **Rename…** from the menu → Enter → cursor stays; the renamed entry
+      keeps the dashed outline until the next click or key. **Reset to
+      Original Name and Region** does the same.
+- [ ] **Delete** an entry you were not on → the selection and cursor stay.
+- [ ] Ctrl+click two entries, right-click one of them → the menu says
+      **Delete 2 Entries** and has no Rename…, Edit Region… or Reset.
+- [ ] **Open** from the menu → the entry becomes the cursor and the only
+      selection, and the view jumps to it.
+
 ## Bookmarks tab menu (after touching the Bookmarks-tab wiring / page labels)
 
 The Outline tab's page-number menu, on the Bookmarks tab. Open a PDF with

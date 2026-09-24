@@ -158,6 +158,28 @@ const RP_USER_SVG =
  *  in client-px document coordinates, so at 92 % zoom a flash landed 100 px
  *  above its heading far down the page (MJT 2026-09-24, "I cannot see the
  *  highlight"). An inline !important outranks the stylesheet rule. */
+/** The TOP (PDF y, grows upward) of the text line a PDF pin point sits on:
+ *  the nearest char box, vertical distance weighted double so a point
+ *  between two lines picks its own line. Null when no char is within ~20 pt
+ *  (a pin in a figure or a margin keeps its own point). Never below the
+ *  point itself. */
+export function wvPinLineTopFromChars(chars: any, x: number, y: number): number | null {
+    try {
+        if (!Array.isArray(chars) || !chars.length) return null;
+        let best: number[] | null = null, bd = Infinity;
+        for (const c of chars) {
+            const rc = c && c.rect;
+            if (!rc || rc.length < 4) continue;
+            const dx = x < rc[0] ? rc[0] - x : (x > rc[2] ? x - rc[2] : 0);
+            const dy = y < rc[1] ? rc[1] - y : (y > rc[3] ? y - rc[3] : 0);
+            const dd = dx * dx + 4 * dy * dy;
+            if (dd < bd) { bd = dd; best = rc; }
+        }
+        if (!best || bd > 400) return null;
+        return Math.max(best[3], y);
+    } catch (_) { return null; }
+}
+
 function wvDomNoZoom(el: any) {
     try { el.style.setProperty("zoom", "1", "important"); } catch (_) {}
 }
@@ -8136,13 +8158,46 @@ class _ReaderPanelsMixin {
         // resolver — its presence IS the "this is a DOM view" test.
         const domView = !!(pv && typeof pv.toDisplayedRange === "function");
         const geometric = !!(pos && pos.rects && pos.rects.length);
-        const gap = (domView && !geometric)
-            ? this._wvOutlineDomOrderIndex(entries, pos, pv, targetPoint)
-            : this._wvOutlineGeomOrderIndex(entries, pos);
+        // EPUB: order by BOOK position (CFI) whenever the target has one. The
+        // live-range comparison needs every entry mounted; in paginated mode
+        // only the current chapter is, nothing else compared, and a re-filed
+        // entry was appended at the end (MJT 2026-09-24, re-filing three old
+        // entries of Book EPUB). Contents entries (href only) key at chapter
+        // level, like the paginated scroll-spy.
+        const cfiGap = (domView && !geometric) ? this._wvOutlineEpubCfiOrderIndex(entries, pos, pv) : -1;
+        const gap = cfiGap >= 0 ? cfiGap
+            : (domView && !geometric)
+                ? this._wvOutlineDomOrderIndex(entries, pos, pv, targetPoint)
+                : this._wvOutlineGeomOrderIndex(entries, pos);
         const prevIndent = gap > 0 ? Math.max(0, entries[gap - 1].indentLevel || 0) : 0;
         const nextIndent = gap < entries.length ? Math.max(0, entries[gap].indentLevel || 0) : 0;
         const indent = nextIndent > prevIndent ? nextIndent : prevIndent;
         return { gap, indent };
+    }
+
+    /** EPUB document-order index by CFI key: the slot after the LAST entry
+     *  at or before the target (same last-before rule as the DOM version, for
+     *  the same outlier-immunity reason). -1 when this is not an EPUB target
+     *  (no CFI) or no entry carries a key -- the caller then falls back. */
+    _wvOutlineEpubCfiOrderIndex(entries: any[], pos: any, pv: any): number {
+        try {
+            const v = pos && typeof pos.value === "string" ? pos.value : "";
+            const tk = v.indexOf("epubcfi(") === 0 ? this._wvEpubCfiKey(v) : null;
+            if (!tk) return -1;
+            const pvw = (pv && pv.wrappedJSObject) || pv;
+            let lastBefore = -1, keyed = 0;
+            for (let i = 0; i < entries.length; i++) {
+                const en = entries[i];
+                const p = en && (en.resolvedPosition || en.position);
+                let k = p && typeof p.value === "string" ? this._wvEpubCfiKey(p.value) : null;
+                if (!k && en && en.href) k = this._wvEpubHrefKey(pvw, en.href);
+                if (!k) continue;
+                keyed++;
+                if (this._wvCfiKeyCmp(k, tk) <= 0) lastBefore = i;
+            }
+            if (!keyed) return -1;
+            return lastBefore + 1;
+        } catch (_) { return -1; }
     }
 
     /** Document-order index for a DOM view, by resolving each anchor against
@@ -10534,6 +10589,20 @@ class _ReaderPanelsMixin {
             const rng = this._wvDomRangeForAnchor(pv, anchor);
             const rc = rng && rng.getBoundingClientRect();
             if (!rc || (!rc.width && !rc.height)) return null;
+            // The quarter rule is about the TEXT: the top of the first line
+            // of text in the range, not the top of the range's box. A book's
+            // contents entry resolves to its heading ELEMENT, whose box starts
+            // above the glyphs (line height, padding); placing the box put the
+            // heading ~33 px lower than a pin on the same heading, whose range
+            // is a point in the text (MJT 2026-09-24, screenshots of "A
+            // BIOGRAPHICAL NOTE" in the Book EPUB).
+            const textTop = (): number => {
+                try {
+                    const leaf = this._wvDomLeafRects(rng);
+                    if (leaf && leaf.length && Number.isFinite(leaf[0].top)) return leaf[0].top;
+                } catch (_) {}
+                return rng.getBoundingClientRect().top;
+            };
             // NESTED SCROLLERS (MJT 2026-09-07): a pin inside a snapshot's
             // independently scrolling region (#sidebar_right on Annual
             // Reviews) never came into view — the main-window scroll cannot
@@ -10547,13 +10616,12 @@ class _ReaderPanelsMixin {
                     const cs = iwin.getComputedStyle(n);
                     if (/(auto|scroll)/.test(cs.overflowY) && n.scrollHeight > n.clientHeight + 10) {
                         const scR = n.getBoundingClientRect();
-                        const tR = rng.getBoundingClientRect();
-                        n.scrollTop += Math.round((tR.top - scR.top) - n.clientHeight * 0.25);
+                        n.scrollTop += Math.round((textTop() - scR.top) - n.clientHeight * 0.25);
                     }
                 }
             } catch (_) {}
             const rc2 = rng.getBoundingClientRect();
-            iwin.scrollTo(this._wvDomScrollX(iwin, rc2), Math.max(0, Math.round(rc2.top + iwin.scrollY
+            iwin.scrollTo(this._wvDomScrollX(iwin, rc2), Math.max(0, Math.round(textTop() + iwin.scrollY
                 - (iwin.innerHeight || 800) * 0.25)));
             return rng;
         } catch (_) { return null; }
@@ -21701,14 +21769,47 @@ class _ReaderPanelsMixin {
             }
             const scale = vp.scale || viewer.currentScale || 1;
             const pageHeightPts = (vp.viewBox && vp.viewBox[3]) || 0;
-            const fromTopPts = pageHeightPts - rect[3];   // rect[3] = y1 = heading top edge
-            const headingTopDocY = pageView.div.offsetTop + fromTopPts * scale;
-            // Place the heading ONE QUARTER down from the top of the view. This is the
-            // single consistent rule for ALL outline clicks (embedded + extracted) —
-            // deliberately neither native's top-align (`block: 'start'`, outline
-            // sidebar) nor its centre (`block: 'center'`, search/annotations).
-            const target = headingTopDocY - (container.clientHeight / 4);
-            container.scrollTop = Math.max(0, target);
+            // A PIN is a zero-area point in the MIDDLE of its text line (5-7 pt
+            // below the line's top, measured). Placing the point at the quarter
+            // put a pin's text half a line higher than a text entry's (MJT
+            // 2026-09-24: "the position of the pin should follow the same as
+            // the position of the text"). The rule is the TEXT LINE's top at
+            // the quarter, like every text target -- DOM pins already anchor
+            // at their line top. The line comes from the page's char boxes
+            // (async); cached per point, refined after the jump otherwise.
+            const isPoint = rect[0] === rect[2] && rect[1] === rect[3];
+            const cacheKey = pageIndex + ":" + Math.round(rect[0] * 10) + ":" + Math.round(rect[1] * 10);
+            const lineCache: Map<string, number> = pv._wvPinLineTop || (pv._wvPinLineTop = new Map());
+            let topPts = rect[3];   // rect[3] = y1 = heading top edge
+            if (isPoint && lineCache.has(cacheKey)) topPts = lineCache.get(cacheKey) as number;
+            const place = (yTop: number) => {
+                const headingTopDocY = pageView.div.offsetTop + (pageHeightPts - yTop) * scale;
+                // Place the heading ONE QUARTER down from the top of the view. This is the
+                // single consistent rule for ALL outline clicks (embedded + extracted) —
+                // deliberately neither native's top-align (`block: 'start'`, outline
+                // sidebar) nor its centre (`block: 'center'`, search/annotations).
+                const t = Math.max(0, headingTopDocY - (container.clientHeight / 4));
+                container.scrollTop = t;
+                return container.scrollTop;
+            };
+            const setAt = place(topPts);
+            if (isPoint && !lineCache.has(cacheKey)) {
+                try {
+                    const pdfDoc = app.pdfDocument;
+                    const Cu = (Components as any).utils;
+                    if (pdfDoc && typeof pdfDoc.getPageData === "function") {
+                        Promise.resolve(pdfDoc.getPageData(Cu ? Cu.cloneInto({ pageIndex }, win) : { pageIndex }))
+                            .then((pd: any) => {
+                                const top = wvPinLineTopFromChars(pd && pd.chars, rect[0], rect[1]);
+                                if (top == null) return;
+                                lineCache.set(cacheKey, top);
+                                // Only if nothing (the user, another jump) moved the view since.
+                                if (Math.abs(container.scrollTop - setAt) < 2) place(top);
+                            })
+                            .catch(() => {});
+                    }
+                } catch (_) {}
+            }
             return true;
         } catch (e) { return false; }
     }

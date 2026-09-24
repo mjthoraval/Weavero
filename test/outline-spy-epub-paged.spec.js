@@ -43,6 +43,28 @@ describe("Weavero — outline scroll-spy in paginated EPUB", () => {
             "sorts before any position inside that chapter");
     });
 
+    // Re-filing in paginated mode appended entries at the END: the live-range
+    // order needs every chapter mounted. EPUB targets now order by CFI.
+    it("re-files an EPUB entry by book position, contents entries at chapter level", () => {
+        const holder = Zotero.getMainWindow().document.implementation.createHTMLDocument("wv-ord").createElement("section");
+        const chapterEl = holder.ownerDocument.createElement("h2");
+        holder.appendChild(chapterEl);
+        const pv = {
+            toDisplayedRange: () => null,
+            _getHrefTarget: () => chapterEl,
+            getCFI: () => "epubcfi(/6/14!/,/4:0,/4:1)",   // unmounted chapter: spine step only
+        };
+        const entries = [
+            { title: "Front", position: { type: "FragmentSelector", value: "epubcfi(/6/4!/4/2/1:0)" } },
+            { title: "Chapter I", href: "ch1.xhtml#top" },                        // -> [6,14]
+            { title: "Later", position: { type: "FragmentSelector", value: "epubcfi(/6/92!/4/2/1:0)" } },
+        ];
+        const pos = { type: "FragmentSelector", value: "epubcfi(/6/14!/4/6,/1:0,/1:30)" };
+        assert.equal(wv._wvOutlineEpubCfiOrderIndex(entries, pos, pv), 2, "after Chapter I, before Later");
+        assert.equal(wv._wvOutlineEpubCfiOrderIndex(entries, { type: "CssSelector", value: "#x" }, pv), -1,
+            "a non-CFI target (snapshot) keeps the live-range path");
+    });
+
     it("marks the last entry at or before the first visible position", () => {
         const d = Zotero.getMainWindow().document.implementation.createHTMLDocument("wv-paged");
         const list = d.createElement("div");

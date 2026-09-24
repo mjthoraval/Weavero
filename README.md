@@ -141,6 +141,8 @@ Bookmarks across two scopes. **Stored locally** in `<Zotero data dir>/weavero/bo
 
 The reader's **Outline** tab becomes editable. Your edits are **stored locally** in `<Zotero data dir>/weavero/outlines.json` — see the syncing/backup warning near the top of this page; the document's own outline is never modified.
 
+Works in **PDFs, EPUBs and web snapshots**: an EPUB's outline is its table of contents (scrolled and paginated layouts), a snapshot's is built from the page's headings.
+
 - **Sources** — the document's **embedded** outline, the one **Zotero extracts** when a PDF has none, or your own **Weavero outline** (a curated copy, created on the first edit). A chip in the panel header switches between them; *Reset to Original* discards the curated copy.
 - **Edit** — rename entries (the target stays put, so renaming never changes where an entry goes), delete, reorder and re-indent by drag, expand/collapse all with `+` / `-`.
 - **Add your own entries** — from selected text, a **page anchor** (top or bottom of a page), or a **pinned spot** you place in the document. Each kind carries its own glyph, and entries show their page number — something Zotero's own outline doesn't ([zotero/zotero#3752](https://github.com/zotero/zotero/issues/3752)). Don't want the page numbers? Right-click the **Outline** tab to hide them for that document, or turn them off for all documents in Preferences.

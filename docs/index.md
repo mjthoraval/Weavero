@@ -30,7 +30,7 @@ Bookmark items, collections, searches, and URLs from a collections-pane dropdown
 
 ## Reader outline
 
-The reader's Outline tab becomes editable: rename entries, add your own (text selections, page anchors, pinned spots), drag to reorder or nest, and switch between the document's original outline and your curated **Weavero outline**. The outline also **highlights the section you're currently reading** as you scroll — embedded, extracted, and Weavero outlines alike — marking the deepest entry visible in your tree without ever expanding or collapsing it for you. Entries show their page number; right-click the Outline tab to hide the numbers for one document, or turn them off globally in Preferences.
+The reader's Outline tab becomes editable: rename entries, add your own (text selections, page anchors, pinned spots), drag to reorder or nest, and switch between the document's original outline and your curated **Weavero outline**. The outline also **highlights the section you're currently reading** as you scroll — embedded, extracted, and Weavero outlines alike — marking the deepest entry visible in your tree without ever expanding or collapsing it for you. Entries show their page number; right-click the Outline tab to hide the numbers for one document, or turn them off globally in Preferences. Works in PDFs, EPUBs (the book's table of contents, scrolled or paginated) and web snapshots (built from the page's headings).
 
 ## Tabs and windows
 

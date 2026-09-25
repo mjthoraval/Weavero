@@ -117,6 +117,13 @@ name to a Zotero object, window, or document.
   REPLACES what it owns; teardown removes everything it injects; a guard
   spec re-injects after a simulated teardown. Guard:
   `test/plugins-search.spec.js`.
+- A Weavero container that holds elements with native class names (a
+  pinned `.row`, a copied `.cell`) needs a `wv-` ID, not just a `wv-`
+  class: the shutdown sweep `_wvStripWindowChrome` removes `[id^='wv-']`
+  whole but UNWRAPS a class-only `wv-` shell with native-classed children,
+  on the assumption that it wraps native content. The collections-tree
+  pinned rows were dumped into the tree on every reload that way
+  (2026-09-25). Guard: `test/collections-tree-aids.spec.js`.
 - `winOf(node)` from `src/lib/dom.ts`, never `node.ownerGlobal` (renamed in
   FF153/Zotero 11; works on the dev platform, breaks silently later —
   `test/compat.spec.js` enforces this on the bundle).

@@ -65,6 +65,23 @@
         rg.addEventListener("command", write);
     }
 
+    /** A number <input> <-> int pref, clamped to [min, max]. */
+    function bindIntInput(inp, key, min, max, dflt) {
+        if (!inp || inp._wvBound) return;
+        inp._wvBound = true;
+        let v = dflt;
+        try { const p = parseInt(String(Zotero.Prefs.get(key)), 10); if (p >= min && p <= max) v = p; } catch (e) {}
+        inp.value = String(v);
+        const write = () => {
+            let n = parseInt(inp.value, 10);
+            if (!(n >= min)) n = min;
+            if (n > max) n = max;
+            inp.value = String(n);
+            try { Zotero.Prefs.set(key, n); } catch (e) { dbg(key + " write err: " + e); }
+        };
+        inp.addEventListener("change", write);
+    }
+
     /** Ctrl+click split-orientation radiogroup <-> char pref
      *  `weavero.ctrlClickSplit` ("horizontal" default | "vertical"). */
     function bindSplit(rg) {
@@ -414,6 +431,8 @@
         try { bindMode(doc.getElementById("wv-mode")); } catch (e) { dbg("bindMode err: " + e); }
         try { bindSplit(doc.getElementById("wv-ctrlsplit")); } catch (e) { dbg("bindSplit err: " + e); }
         try { bindCharRadio(doc.getElementById("wv-wintitle-name"), "weavero.windowTitleNameMode", ["off", "prefix", "replace"], "off"); } catch (e) { dbg("bindWinTitleName err: " + e); }
+        try { bindCharRadio(doc.getElementById("wv-bm-colscroll"), "weavero.bookmarkCollectionScroll", ["top", "native"], "top"); } catch (e) { dbg("bindBmColScroll err: " + e); }
+        try { bindIntInput(doc.getElementById("wv-coll-sticky-max"), "weavero.collectionsStickyMax", 1, 10, 7); } catch (e) { dbg("bindCollStickyMax err: " + e); }
         try { bindMirrors(doc); } catch (e) { dbg("bindMirrors err: " + e); }
         try { bindMasterDisable(doc); } catch (e) { dbg("bindMasterDisable err: " + e); }
         try { bindSectionNav(doc); } catch (e) { dbg("bindSectionNav err: " + e); }

@@ -4836,6 +4836,18 @@ class _ReaderPanelsMixin {
                 pg.textContent = "p. " + lbl;
                 row.appendChild(pg);
             }
+            else if (showPages && !entry.url && (reader._type || "pdf") === "epub") {
+                // EPUB entries carry a CFI or an href, never a pageIndex, so the
+                // "p. N" labels never showed there (MJT 2026-09-24). The reader's
+                // own page map (the toolbar's "22 / 356") labels a range.
+                const elbl = this._wvEpubEntryPageLabel(reader, entry);
+                if (elbl) {
+                    const pg = idoc.createElementNS(NS, "span");
+                    pg.className = "wv-outline-page";
+                    pg.textContent = "p. " + elbl;
+                    row.appendChild(pg);
+                }
+            }
             if (hasKids) {
                 tw.addEventListener("click", (e: any) => {
                     e.stopPropagation();
@@ -6335,6 +6347,31 @@ class _ReaderPanelsMixin {
                 }
             }
         } catch (_) {}
+    }
+
+    /** "p. N" for an EPUB outline entry from the reader's page map (physical
+     *  page numbers when the book has them, else EPUB locations -- the same
+     *  labels as the toolbar). Cached per entry anchor on the reader; only
+     *  successes are cached, so an entry whose chapter is not mounted yet
+     *  (paginated mode) gets its label on a later render. */
+    _wvEpubEntryPageLabel(reader: any, entry: any): string | null {
+        try {
+            const ir = reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            const pvw = pv && (pv.wrappedJSObject || pv);
+            const pm = pvw && pvw.pageMapping;
+            if (!pm || typeof pm.getPageLabel !== "function") return null;
+            const pos = entry.resolvedPosition || entry.position;
+            const key = String(entry.id) + "|" + (pos && pos.value || "") + "|" + (entry.href || "");
+            const cache: Map<string, string> = reader._wvEpubPageLabels || (reader._wvEpubPageLabels = new Map());
+            if (cache.has(key)) return cache.get(key) as string;
+            const rg = this._wvDomRangeForAnchor(pv, Object.assign({}, entry, { position: pos }));
+            if (!rg || !rg.startContainer || rg.startContainer.isConnected === false) return null;
+            const lbl = pm.getPageLabel(rg);
+            if (lbl == null || lbl === "") return null;
+            cache.set(key, String(lbl));
+            return String(lbl);
+        } catch (_) { return null; }
     }
 
     /** True when an EPUB view is in paginated flow (the reader tags the
@@ -10026,11 +10063,13 @@ class _ReaderPanelsMixin {
         try {
             const att = this._wvReaderAtt(reader);
             if (!att) return;
+            // Name what is at stake (counts). The delete is outright -- no
+            // bespoke archive, no undo (a general outline Undo is a parked TODO),
+            // so the confirm is the only guard and states the loss plainly. ANY
+            // failure around it CANCELS: it used to sit in a swallowed try, and
+            // an error there would have deleted without asking.
+            let ok = false;
             try {
-                // Name what is at stake (counts). Reset deletes the Weavero
-                // outline outright -- no bespoke archive. (A general Undo path for
-                // outline edits, incl. reset, is the parked TODO; until it lands
-                // the confirm is the only guard, so it states the loss plainly.)
                 const d = this._wvOutlineDoc(att.libraryID, att.itemKey);
                 const entries: any[] = (d && d.entries) || [];
                 const renamed = entries.filter((e: any) => e.source
@@ -10039,11 +10078,12 @@ class _ReaderPanelsMixin {
                 let what = entries.length + " entries";
                 if (renamed) what += ", " + renamed + " renamed";
                 if (added) what += ", " + added + " added by you";
-                const ok = Services.prompt.confirm(null, "Weavero",
-                    "Reset the outline to the original for this document?\n\n"
-                    + "This deletes your Weavero outline (" + what + ").");
-                if (!ok) return;
-            } catch (_) {}
+                ok = !!Services.prompt.confirm(null, "Weavero",
+                    "Delete the Weavero outline of this document?\n\n"
+                    + "Your Weavero outline (" + what + ") is deleted and cannot be restored. "
+                    + "The document's own outline is not changed.");
+            } catch (_) { ok = false; }
+            if (!ok) return;
             Promise.resolve(this._wvOutlineRevert(att.libraryID, att.itemKey))
                 .then(() => {
                     reader._wvOutlineViewSource = null;
@@ -10125,7 +10165,9 @@ class _ReaderPanelsMixin {
                     if (idoc.getElementById(RP_BM_CTX_ID)) { this._wvCloseReaderBmContextMenu(idoc); return; }
                     this._wvOutlineShowSourceMenu(reader, idoc, chip, sources, source);
                 });
-                chip.setAttribute("title", "Click to switch source · Right-click to reset the Weavero outline");
+                chip.setAttribute("title", source === "weavero"
+                    ? "Click to switch source · Right-click to delete the Weavero outline"
+                    : "Click to switch source");
             }
             // Reset lives on a RIGHT-CLICK of the chip (the outline-type button,
             // top-right) -- user choice 2026-07-21. The menu no-ops until a
@@ -10135,7 +10177,7 @@ class _ReaderPanelsMixin {
             chip.addEventListener("auxclick", (e: any) => {
                 if (e.button !== 2) return;
                 e.preventDefault(); e.stopPropagation();
-                this._wvOutlineShowChipMenu(reader, idoc, chip);
+                this._wvOutlineShowChipMenu(reader, idoc, chip, source);
             });
             chip.addEventListener("contextmenu", (e: any) => { try { e.preventDefault(); } catch (_) {} }, true);
             // Developer outline-eval quick-mark button -- gated to the testing
@@ -10250,7 +10292,7 @@ class _ReaderPanelsMixin {
     /** Right-click menu on the source chip: outline-level actions. One item for
      *  now -- Reset (delete the Weavero outline). Kept OFF the left-click source
      *  switcher so switching source can't be a destructive mis-click. */
-    _wvOutlineShowChipMenu(reader: any, idoc: any, anchor: any) {
+    _wvOutlineShowChipMenu(reader: any, idoc: any, anchor: any, current?: string) {
         try {
             this._wvCloseReaderBmContextMenu(idoc);
             const att = this._wvReaderAtt(reader);
@@ -10258,8 +10300,13 @@ class _ReaderPanelsMixin {
             const hasCurated = this._wvOutlineHasCurated(att.libraryID, att.itemKey);
             // Eval verdicts (Good/Bad/Scan) live on the dedicated 🧪 button to the
             // chip's LEFT (_wvOeShowMenu) -- NOT duplicated here (2026-07-24). So
-            // this right-click menu only offers Reset, which needs a curated store.
+            // this right-click menu only offers the delete, which needs a curated
+            // store -- and only while the WEAVERO outline is the one shown: on an
+            // Embedded/Extracted chip, "delete" read as deleting THAT outline
+            // (MJT 2026-09-24, "otherwise it is confusing"). The Weavero row of
+            // the source selector passes "weavero" explicitly.
             if (!hasCurated) return;   // nothing to offer
+            if (current !== "weavero") return;
             const menu = idoc.createElementNS(NS_HTML_RP, "div");
             menu.id = RP_BM_CTX_ID;
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
@@ -10275,7 +10322,7 @@ class _ReaderPanelsMixin {
                 it.addEventListener("click", () => { close(); fn(); });
                 menu.appendChild(it);
             };
-            mk("Reset to Original Outline…", RP_REVERT_SVG, () => this._wvOutlineDoRevert(reader, idoc), true);
+            mk("Delete Weavero Outline…", RP_DELETE_SVG, () => this._wvOutlineDoRevert(reader, idoc), true);
             (idoc.body || idoc.documentElement).appendChild(menu);
             const r = anchor.getBoundingClientRect();
             menu.style.left = Math.max(6, r.left) + "px";
@@ -10325,6 +10372,9 @@ class _ReaderPanelsMixin {
     _wvOutlineShowTabMenu(reader: any, idoc: any, anchor: any) {
         try {
             this._wvCloseReaderBmContextMenu(idoc);
+            // A web snapshot has no pages: the menu's only choice would do
+            // nothing there (MJT 2026-09-24). PDFs and EPUBs keep it.
+            if ((reader && reader._type) === "snapshot") return;
             const att = this._wvReaderAtt(reader);
             if (!att || att.libraryID == null || !att.itemKey) return;
             const shown = this._wvOutlinePagesShown(att);
@@ -10404,6 +10454,7 @@ class _ReaderPanelsMixin {
     _wvBmShowTabMenu(reader: any, idoc: any, anchor: any) {
         try {
             this._wvCloseReaderBmContextMenu(idoc);
+            if ((reader && reader._type) === "snapshot") return;   // no pages (see the Outline tab menu)
             const att = this._wvReaderAtt(reader);
             if (!att || att.libraryID == null || !att.itemKey) return;
             const shown = this._wvBmPagesShown(att);
@@ -10538,6 +10589,51 @@ class _ReaderPanelsMixin {
                     it.appendChild(ck);
                 }
                 it.addEventListener("click", () => { close(); this._wvOutlineSwitchSource(reader, idoc, src); });
+                if (src === "weavero") {
+                    // Right-click on the WEAVERO row: its own menu with the delete
+                    // (MJT 2026-09-24) -- whichever source is shown, the row names
+                    // the Weavero outline, so the target is unambiguous. auxclick:
+                    // the reader suppresses contextmenu in the sidebar.
+                    // The dropdown STAYS OPEN (MJT 2026-09-24): the delete opens as
+                    // a submenu INSIDE it, beside the row -- inside, so the menu
+                    // styles apply and the dropdown's outside-click dismiss sees
+                    // clicks on it as clicks in the menu. Any close removes both.
+                    it.addEventListener("auxclick", (e: any) => {
+                        if (e.button !== 2) return;
+                        e.preventDefault(); e.stopPropagation();
+                        try {
+                            const att0 = this._wvReaderAtt(reader);
+                            if (!att0 || !this._wvOutlineHasCurated(att0.libraryID, att0.itemKey)) return;
+                            const old = menu.querySelector(".wv-ctx-sidemenu");
+                            if (old) old.remove();
+                            const sub = idoc.createElementNS(NS_HTML_RP, "div");
+                            sub.className = "wv-ctx-sidemenu";   // NOT .wv-ctx-submenu: that class is hover-only (display:none)
+                            sub.setAttribute("style", "position:absolute;z-index:1;background:Canvas;color:CanvasText;"
+                                + "border:1px solid rgba(127,127,127,.4);border-radius:6px;"
+                                + "box-shadow:0 4px 16px rgba(0,0,0,.3);padding:4px;min-width:160px;"
+                                + "left:" + (menu.offsetWidth - 6) + "px;top:" + (it.offsetTop - 4) + "px;");
+                            const del = idoc.createElementNS(NS_HTML_RP, "div");
+                            del.className = "wv-ctx-item wv-ctx-danger";
+                            const ic = idoc.createElementNS(NS_HTML_RP, "span");
+                            ic.className = "wv-ctx-ic";
+                            ic.innerHTML = RP_DELETE_SVG;
+                            const lb2 = idoc.createElementNS(NS_HTML_RP, "span");
+                            lb2.textContent = "Delete Weavero Outline…";
+                            del.appendChild(ic); del.appendChild(lb2);
+                            del.addEventListener("click", (ev2: any) => {
+                                try { ev2.stopPropagation(); } catch (_) {}
+                                close();
+                                this._wvOutlineDoRevert(reader, idoc);
+                            });
+                            sub.appendChild(del);
+                            // A click on the submenu must not reach the Weavero
+                            // row underneath it (that would switch the source).
+                            sub.addEventListener("click", (ev3: any) => { try { ev3.stopPropagation(); } catch (_) {} });
+                            menu.appendChild(sub);
+                        } catch (_) {}
+                    });
+                    it.addEventListener("contextmenu", (e: any) => { try { e.preventDefault(); } catch (_) {} }, true);
+                }
                 menu.appendChild(it);
             }
             (idoc.body || idoc.documentElement).appendChild(menu);

@@ -1094,6 +1094,16 @@ class WeaveroPlugin {
      *  ON): the library's left pane had no toggle where the item pane and
      *  both reader panes have one (MJT, 2026-09-22). Cascades from the
      *  Extras master. */
+    /** The collections-tree reading aids (pinned parents, full-path
+     *  tooltip, indent guides): each default ON, cascading from Extras. */
+    _getCollectionsTreeAid(key: string) {
+        try {
+            if (!this._getEnableVisualExtras()) return false;
+            const v = Zotero.Prefs.get("weavero." + key);
+            return v === undefined ? true : !!v;
+        } catch (e) { return false; }
+    }
+
     _getCollectionsPaneToggle() {
         try {
             if (!this._getEnableVisualExtras()) return false;
@@ -2239,6 +2249,9 @@ class WeaveroPlugin {
                 "advSearchWindowHidePanes", "collectionsPaneToggle", "advSearchShortcutNewWindow",
                 // Side-pane splitters stop at the minimum width (2026-09-23).
                 "paneDragNoCollapse",
+                // Collections-tree reading aids (MJT 2026-09-25): pinned
+                // parents, full-path tooltip, indent guides.
+                "collectionsStickyParents", "collectionsPathTooltip", "collectionsIndentGuides",
                 // Zotero's own colour/tag/author selector at the foot of the
                 // annotations pane is HIDDEN while the pane funnel replaces it
                 // (MJT, 2026-09-18); untick to keep it.
@@ -2322,6 +2335,12 @@ class WeaveroPlugin {
             // Window-name-in-title mode: "off" (default — current design,
             // user decision 2026-07-16) | "prefix" | "replace".
             try { branch.setCharPref(P + "windowTitleNameMode", "off"); } catch (e) {}
+            // Where a library bookmark leaves its collections-tree row (issue
+            // #45, MJT 2026-09-25): "top" (default -- the row first, under
+            // any pinned parents) | "native" (Zotero's scroll-just-enough).
+            try { branch.setCharPref(P + "bookmarkCollectionScroll", "top"); } catch (e) {}
+            // Pinned parents in the collections tree: at most this many levels.
+            try { branch.setIntPref(P + "collectionsStickyMax", 7); } catch (e) {}
             // Pref-rename migration (2026-07-24): "Multiple main windows"
             // graduated from experimental, so its prefs dropped the historical
             // "dev" prefix. Carry a user's EXPLICIT old value to the new key once
@@ -3860,6 +3879,16 @@ class WeaveroPlugin {
                             for (const w of wins) (this as any)._wvApplyCollectionsPaneToggle(w);
                         } catch (e) {}
                     }
+                    if (data === "extensions.zotero.weavero.collectionsStickyParents"
+                        || data === "extensions.zotero.weavero.collectionsStickyMax"
+                        || data === "extensions.zotero.weavero.collectionsPathTooltip"
+                        || data === "extensions.zotero.weavero.collectionsIndentGuides"
+                        || data === "extensions.zotero.weavero.enableVisualExtras") {
+                        try {
+                            const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+                            for (const w of wins) (this as any)._wvApplyCollectionsTreeAids(w);
+                        } catch (e) {}
+                    }
                     if (data === "extensions.zotero.weavero.paneDragNoCollapse"
                         || data === "extensions.zotero.weavero.enableVisualExtras") {
                         try {
@@ -4498,6 +4527,7 @@ class WeaveroPlugin {
                 try { (this as any)._wvWireAdvSearchNewWindow(w); } catch (e) {}
                 try { (this as any)._wvApplyCollectionsPaneToggle(w); } catch (e) {}
                 try { (this as any)._wvApplyPaneDragNoCollapse(w); } catch (e) {}
+                try { (this as any)._wvApplyCollectionsTreeAids(w); } catch (e) {}
                 try { (this as any)._wvWireCollectionsSearchToggle(w); } catch (e) {}
                 try { (this as any)._wvWireCollectionTreeGestures(w); } catch (e) {}
                 try { (this as any)._wvWireMenuGhostWorkaround(w); } catch (e) {}
@@ -4612,6 +4642,7 @@ class WeaveroPlugin {
             try { (this as any)._wvWireAdvSearchNewWindow(_window); } catch (e) {}
             try { (this as any)._wvApplyCollectionsPaneToggle(_window); } catch (e) {}
             try { (this as any)._wvApplyPaneDragNoCollapse(_window); } catch (e) {}
+            try { (this as any)._wvApplyCollectionsTreeAids(_window); } catch (e) {}
             try { (this as any)._wvWireCollectionsSearchToggle(_window); } catch (e) {}
             try { (this as any)._wvWireCollectionTreeGestures(_window); } catch (e) {}
             try { (this as any)._wvWireMenuGhostWorkaround(_window); } catch (e) {}
@@ -5353,6 +5384,7 @@ class WeaveroPlugin {
         try { (this as any)._wvTeardownMenubarWindowEntries(); } catch (e) {}
         try { (this as any)._wvTeardownCollectionsPaneToggle(); } catch (e) {}
         try { (this as any)._wvTeardownPaneDragNoCollapse(); } catch (e) {}
+        try { (this as any)._wvTeardownCollectionsTreeAids(); } catch (e) {}
         try { (this as any)._wvUnwireCollectionsSearchToggle(); } catch (e) {}
         try { (this as any)._wvUnwireCollectionTreeGestures(); } catch (e) {}
         try { (this as any)._wvUnwireMenuGhostWorkaround(); } catch (e) {}

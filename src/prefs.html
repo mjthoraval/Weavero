@@ -151,6 +151,11 @@
     align-items: center; margin: 2px 0 4px;
   }
   .wv-anntypes-row checkbox { flex: 0 0 33%; margin: 0; }
+  /* "Where a bookmarked collection appears": the description and the three
+     choices sit indented under their title, so they read as one group
+     (MJT 2026-09-25). */
+  .wv-bm-colscroll-block > .wv-desc,
+  .wv-bm-colscroll-block > radiogroup { margin-inline-start: 18px; }
   /* Each box carries its type's glyph -- the chrome SVG the filter chips
      load -- between the tick and the label (MJT, 2026-09-21): the widget's
      own icon slot (`src` -> `.checkbox-icon`), so a click on the glyph
@@ -549,6 +554,14 @@
       <vbox class="wv-dep" data-gated-by="enableLibraryBookmarks">
         <checkbox label="Auto-hide the library bookmarks button when empty" native="true"
           preference="extensions.zotero.weavero.autoHideEmptyLibraryBookmarks"/>
+        <vbox class="wv-bm-colscroll-block">
+          <label><html:h3>Where a bookmarked collection appears</html:h3></label>
+          <html:p class="wv-desc">When a bookmark opens a collection, library or saved search, the collections pane scrolls it to:</html:p>
+          <radiogroup id="wv-bm-colscroll" orient="vertical">
+            <radio value="top" label="The top of the pane (default)"/>
+            <radio value="native" label="Zotero&#8217;s own behaviour: scroll only as far as needed"/>
+          </radiogroup>
+        </vbox>
       </vbox>
       <checkbox label="Document bookmarks" native="true"
         preference="extensions.zotero.weavero.enableReaderBookmarks"/>
@@ -697,6 +710,17 @@
       <checkbox label="Resizing a side pane stops at its minimum width" native="true"
         preference="extensions.zotero.weavero.paneDragNoCollapse"/>
       <html:p class="wv-desc">Dragging the edge of a side pane stops at its narrowest width instead of snapping it shut: the collections pane, the item pane, the context pane of reader tabs and the item pane of reader windows. Collapse them with their buttons or <html:em>View &#8594; Layout</html:em>. Off, all of them snap shut as in Zotero.</html:p>
+      <checkbox label="Keep parent collections pinned at the top while scrolling" native="true"
+        preference="extensions.zotero.weavero.collectionsStickyParents"/>
+      <html:div class="wv-dep" data-gated-by="collectionsStickyParents">
+        <html:label>Up to <html:input id="wv-coll-sticky-max" type="number" min="1" max="10" step="1" style="width:4em"/> levels</html:label>
+      </html:div>
+      <html:p class="wv-desc">The parents of the collections at the top of the pane stay pinned above them, as in VS Code&#8217;s file tree. Click a pinned parent to go to it; its arrow collapses it.</html:p>
+      <checkbox label="Show a collection&#8217;s full path when hovering it" native="true"
+        preference="extensions.zotero.weavero.collectionsPathTooltip"/>
+      <checkbox label="Indent guides in the collections pane" native="true"
+        preference="extensions.zotero.weavero.collectionsIndentGuides"/>
+      <html:p class="wv-desc">A faint vertical line for each level, so sibling collections line up visually.</html:p>
       <label><html:h3>Plugins Manager</html:h3></label>
       <checkbox label="Plugins Manager extras (search box, card details, normal window)" native="true"
         preference="extensions.zotero.weavero.enablePluginsSearch"/>

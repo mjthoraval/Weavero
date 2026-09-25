@@ -135,6 +135,8 @@ describe("Weavero — an orphan keeps its annotation type and colour", () => {
         const byLabel = wv._bmIconInfo(gone({ label: "Ink annotation" }), win);
         assert.include(byLabel.image, "annotate-ink.svg");
         const article = wv._bmIconInfo(gone({ kind: "journalArticle" }), win);
-        assert.include(article.image, "journal-article.svg");
+        // Zotero serves the @2x file on a high-DPI screen (the 0.20.6 release
+        // run: .../16/dark/journal-article@2x.svg) -- either is right.
+        assert.match(article.image, /journal-article(@2x)?\.svg$/);
     });
 });

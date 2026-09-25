@@ -2813,6 +2813,50 @@ class _BookmarksMixin {
         }
     }
 
+    /** Where a library bookmark leaves its row in the collections tree (issue
+     *  #45). Zotero's select only scrolls as far as needed -- a row below the
+     *  view landed at the BOTTOM edge, far from the bookmarks button above
+     *  the pane (Friedsoap, 2026-09-24). Pref `weavero.bookmarkCollectionScroll`:
+     *   "top" (default): the row first, just under any pinned parents, even
+     *     when it was already visible (a row near the end of the tree can
+     *     only rise as far as the scroll range allows);
+     *   "native": Zotero's scroll-just-enough, untouched.
+     *  A "quarter from the top" choice existed during 0.20.6 development and
+     *  was dropped after testing (MJT 2026-09-25: not useful in the tree);
+     *  a value left from it counts as "top".
+     *  Applied after the select and once more on the next tick, so a late
+     *  ensureRowIsVisible from the select cannot undo it. */
+    _bmPlaceCollectionRow(zp: any, rowID: string) {
+        const place = (): boolean => {
+            try {
+                if (String(Zotero.Prefs.get("weavero.bookmarkCollectionScroll") || "top") === "native") return false;
+                const cv = zp && zp.collectionsView;
+                if (!cv || typeof cv.getRowIndexByID !== "function") return false;
+                const idx = cv.getRowIndexByID(rowID);
+                if (idx === false || idx == null || idx < 0) return false;
+                const jw = cv.tree && cv.tree._jsWindow;
+                if (!jw || typeof jw.scrollTo !== "function") return false;
+                const rowTop = typeof jw._getItemPosition === "function"
+                    ? jw._getItemPosition(idx) : idx * ((cv.tree && cv.tree._rowHeight) || 0);
+                // Pinned parents (collections-tree aid) cover the top edge:
+                // the row goes just under them, never beneath.
+                const pinned = typeof (this as any)._wvCollPinnedPx === "function"
+                    ? (this as any)._wvCollPinnedPx(cv, idx) : 0;
+                const target = rowTop - pinned;
+                jw.scrollTo(Math.max(0, Math.round(target)));
+                return true;
+            } catch (e) {
+                Zotero.debug("[Weavero] _bmPlaceCollectionRow err: " + e);
+                return false;
+            }
+        };
+        if (!place()) return;
+        try {
+            const w: any = Zotero.getMainWindow();
+            if (w && w.setTimeout) w.setTimeout(place, 0);
+        } catch (_) {}
+    }
+
     async _bmShowInLibrary(bm: any) {
         try {
             if (!bm) return;
@@ -2833,6 +2877,7 @@ class _BookmarksMixin {
                 const cv = zp.collectionsView;
                 if (cv && typeof cv.selectLibrary === "function") {
                     await cv.selectLibrary(bm.libraryID);
+                    this._bmPlaceCollectionRow(zp, "L" + bm.libraryID);
                 }
                 return;
             }
@@ -2841,6 +2886,7 @@ class _BookmarksMixin {
                 const cv = zp.collectionsView;
                 if (cv && typeof cv.selectByID === "function") {
                     await cv.selectByID(bm.rowID);
+                    this._bmPlaceCollectionRow(zp, String(bm.rowID));
                 }
                 return;
             }
@@ -2851,6 +2897,7 @@ class _BookmarksMixin {
                 if (col && zp.collectionsView
                     && typeof zp.collectionsView.selectCollection === "function") {
                     await zp.collectionsView.selectCollection(col.id);
+                    this._bmPlaceCollectionRow(zp, "C" + col.id);
                 }
                 return;
             }

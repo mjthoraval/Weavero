@@ -495,6 +495,40 @@ describe("Weavero — open a collection in a new window; right-click keeps the s
         }
     });
 
+    it("New Collection… follows the RIGHT-CLICKED row: greyed on a read-only group, back for My Library after", async function () {
+        // MJT 2026-09-25: Zotero sets cmd_zotero_newCollection from the selection
+        // only on its select event, which the silent context skips -- a read-only
+        // group right-clicked from My Library offered New Collection….
+        this.timeout(20000);
+        const g = doc._wvCollTreeGestures, menu = doc.getElementById("zotero-collectionmenu");
+        const cmd = doc.getElementById("cmd_zotero_newCollection");
+        if (!Zotero.Users.getCurrentUserID()) await Zotero.Users.setCurrentUserID(1);
+        if (!Zotero.Users.getName(Zotero.Users.getCurrentUserID())) await Zotero.Users.setName(Zotero.Users.getCurrentUserID(), "Name");
+        const group = new Zotero.Group();
+        Object.assign(group, { id: Zotero.Utilities.rand(10000, 1000000), name: "wv-readonly-group", description: "",
+            editable: false, filesEditable: false, version: Zotero.Utilities.rand(1000, 10000), archived: false });
+        await group.saveTx();
+        try {
+            await cv.selectLibrary(Zotero.Libraries.userLibraryID);
+            const L = "L" + group.libraryID;
+            await waitFor(() => { const i = cv.getRowIndexByID(L); return i !== false && i >= 0; }, 5000, "the group row in the tree");
+            await cv.ensureRowIsVisible(cv.getRowIndexByID(L));
+            await waitFor(() => rowElFor(L), 5000, "the group row rendered");
+            assert.isFalse(cmd.hasAttribute("disabled") && cmd.getAttribute("disabled") === "true", "enabled on My Library");
+            g.onRightDown(evt("mousedown", { button: 2, target: rowElFor(L) }));
+            g.onShowing({ target: menu });
+            assert.strictEqual(cmd.getAttribute("disabled"), "true", "greyed for the read-only group");
+            g.onHidden({ target: menu });
+            g.settle();   // the next click: the previous selection comes back
+            assert.strictEqual(selectedID(), "L" + Zotero.Libraries.userLibraryID);
+            assert.isFalse(cmd.getAttribute("disabled") === "true", "enabled again for My Library");
+        }
+        finally {
+            try { await group.eraseTx(); } catch (e) {}
+            await cv.selectLibrary(Zotero.Libraries.userLibraryID);
+        }
+    });
+
     it("a subcollection created from the menu: you stay where you were, the new row is outlined", async function () {
         this.timeout(20000);
         const g = doc._wvCollTreeGestures, menu = doc.getElementById("zotero-collectionmenu");

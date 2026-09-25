@@ -1139,6 +1139,22 @@ class _PaneMixin {
                 guard.obs.observe(root, { attributes: true, attributeFilter: ["class"], subtree: true, childList: true });
             };
             const idxOf = (id: string) => { const i = win.ZoteroPane.collectionsView.getRowIndexByID(id); return (i === false || i < 0) ? -1 : i; };
+            /** Zotero enables its creation commands (cmd_zotero_newCollection
+             *  -- the menu's New Collection… --, New Item, Import…) from the
+             *  SELECTED rows, in _updateEnabledActionsForCollectionTreeRows,
+             *  which only its select event runs. The silent context skips it:
+             *  a read-only group right-clicked from My Library offered New
+             *  Collection… (MJT 2026-09-25). Run Zotero's own logic for the
+             *  rows the state now says are selected. */
+            const syncCommandStates = (rows?: any[]) => {
+                try {
+                    const zp = win.ZoteroPane;
+                    const r = rows || zp.getCollectionTreeRows();
+                    if (r && r.length && typeof zp._updateEnabledActionsForCollectionTreeRows === "function") {
+                        zp._updateEnabledActionsForCollectionTreeRows(r);
+                    }
+                } catch (_) {}
+            };
             const restore = (c: any) => {
                 try {
                     disarmDetector();
@@ -1146,6 +1162,7 @@ class _PaneMixin {
                     const cur = snapshot();
                     if (cur.ids.length !== 1 || cur.focusedId !== c.ctxId) return;   // Zotero moved it meanwhile: leave it
                     applySilently(c.prev, true);
+                    syncCommandStates();
                     const i = idxOf(c.ctxId); if (i >= 0) repaintRows([i]);
                     fixTabTitle();   // an action may have renamed the library tab to the context row
                 } catch (_) {}
@@ -1162,6 +1179,7 @@ class _PaneMixin {
                     if (pnd && pnd.c === c) { try { if (pnd.timer) win.clearTimeout(pnd.timer); } catch (_) {} doc._wvCollPending = null; }
                     if (doc._wvCollMenuCtx === c) doc._wvCollMenuCtx = null;
                     applySilently(c.prev, true);
+                    syncCommandStates();
                     fixTabTitle();
                     try { win.setTimeout(fixTabTitle, 60); } catch (_) {}
                 } catch (_) {}
@@ -1438,6 +1456,7 @@ class _PaneMixin {
                     if (idx < 0) return;
                     const row = cv.getRow(idx);
                     if (!row) return;
+                    syncCommandStates([row]);   // New Collection… follows its command
                     const setDisabled = (ids: string[], disabled: boolean) => {
                         if (menu.state === "closed" || doc._wvCollMenuCtx !== c) return;
                         for (const id of ids) { const el = menu.querySelector("#" + id); if (el && !el.hidden) el.disabled = !!disabled; }
@@ -2378,6 +2397,353 @@ class _PaneMixin {
                 }
             }
         } catch (e) { Zotero.debug("[Weavero] _wvApplyPaneDragNoCollapse err: " + e); }
+    }
+
+    /** Full path of a collections-tree row, outermost first ("My Library ›
+     *  WV scroll test A › A10 test collection"), or null for a top-level row
+     *  (its name alone says it all). */
+    _wvCollRowPath(cv: any, idx: number): string | null {
+        try {
+            const names: string[] = [];
+            let p = idx, guard = 0;
+            while (p != null && p >= 0 && guard++ < 64) {
+                const row = cv.getRow(p);
+                if (!row) break;
+                names.unshift(String(row.getName()));
+                p = cv.getParentIndex(p);
+            }
+            return names.length > 1 ? names.join(" › ") : null;
+        } catch (_) { return null; }
+    }
+
+    /** The collections-tree reading aids (MJT 2026-09-25, after issue #45):
+     *   - PINNED PARENTS (VS Code's tree "sticky scroll", explorer default on,
+     *     7 levels there): the parents of the rows at the top of the pane stay
+     *     pinned above them, outermost first, at most `collectionsStickyMax`
+     *     levels (default 7, as VS Code) and never more than 40 % of the pane height --
+     *     both VS Code's rules; beyond the cap the DEEPEST parents drop, like
+     *     VS Code (`stickyNodes.slice(0, i)`). A click scrolls the parent's
+     *     own row to just under the remaining pinned rows and selects it (VS
+     *     Code's handleStickyScrollMouseEvent); its arrow collapses it.
+     *   - FULL-PATH TOOLTIP on every row below the top level (the main
+     *     window's root `tooltip="html-tooltip"` shows HTML titles).
+     *   - INDENT GUIDES: one faint vertical line per level, drawn in each
+     *     row's indent (16 px per level, the line at the parent's arrow).
+     *  Zotero's tree offers no hook for any of this: an overlay inside
+     *  #collection-tree, fed by the pane's scroll (capture) and a
+     *  MutationObserver on the rows. Per window, re-applied on pref change. */
+    _wvApplyCollectionsTreeAids(win: any) {
+        try {
+            const doc = win && win.document;
+            const tree: any = doc && doc.getElementById("collection-tree");
+            if (!tree) return;
+            const P: any = this;
+            const sticky = !!P._getCollectionsTreeAid("collectionsStickyParents");
+            const tips = !!P._getCollectionsTreeAid("collectionsPathTooltip");
+            const guides = !!P._getCollectionsTreeAid("collectionsIndentGuides");
+            let st: any = win._wvCollAids;
+            if (!st) st = win._wvCollAids = {};
+            // Stylesheet (once per window).
+            if (!doc.getElementById("wv-coll-aids-sheet")) {
+                const s = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+                s.id = "wv-coll-aids-sheet";
+                s.textContent = [
+                    "#collection-tree { position: relative; }",
+                    "#collection-tree.wv-indent-guides .row .cell-indent {",
+                    "  align-self: stretch; display: inline-block;",
+                    "  background-image: repeating-linear-gradient(to right, transparent 0 7px,",
+                    "    color-mix(in srgb, currentColor 22%, transparent) 7px 8px, transparent 8px 16px);",
+                    // Leading columns whose parent has no arrow (the Group
+                    // Libraries header) carry no guide: --wv-guide-skip.
+                    "  background-repeat: no-repeat;",
+                    "  background-position: var(--wv-guide-skip, 0px) 0;",
+                    "  background-size: calc(100% - var(--wv-guide-skip, 0px)) 100%;",
+                    "}",
+                    ".wv-coll-sticky { position: absolute; top: 0; left: 0; right: 0; z-index: 3;",
+                    "  background: var(--material-sidepane, Canvas);",
+                    "  border-bottom: 1px solid color-mix(in srgb, currentColor 18%, transparent);",
+                    "  box-shadow: 0 2px 4px -2px rgba(0,0,0,.35); }",
+                    ".wv-coll-sticky .row { position: relative; cursor: default; }",
+                    ".wv-coll-sticky .row:hover { background: color-mix(in srgb, currentColor 10%, transparent); }",
+                ].join("\n");
+                (doc.documentElement || doc).appendChild(s);
+            }
+            tree.classList.toggle("wv-indent-guides", guides);
+            const needWiring = sticky || tips || guides;
+            if (!needWiring) { P._wvCollAidsUnwire(win); return; }
+            st.sticky = sticky; st.tips = tips; st.guides = guides;
+            if (!st.wired) {
+                st.wired = true;
+                const schedule = () => {
+                    if (st.pending) return;
+                    st.pending = win.setTimeout(() => { st.pending = null; try { P._wvCollAidsUpdate(win); } catch (_) {} }, 0);
+                };
+                st.onScroll = () => { try { P._wvCollAidsUpdate(win); } catch (_) {} };
+                tree.addEventListener("scroll", st.onScroll, true);
+                st.onResize = schedule;
+                win.addEventListener("resize", st.onResize);
+                st.mo = new win.MutationObserver((recs: any[]) => {
+                    // Our own overlay re-render must not re-trigger itself.
+                    const ov = st.overlay;
+                    if (ov && recs.every((r: any) => ov === r.target || ov.contains(r.target))) return;
+                    schedule();
+                });
+                st.mo.observe(tree, { childList: true, subtree: true });
+                st.onOver = (e: any) => {
+                    try {
+                        if (!st.tips) return;
+                        const rowEl = e.target && e.target.closest && e.target.closest(".row");
+                        if (!rowEl || (st.overlay && st.overlay.contains(rowEl))) return;
+                        const m = /collection-tree-row-(\d+)$/.exec(rowEl.id || "");
+                        if (!m) return;
+                        const cv = win.ZoteroPane && win.ZoteroPane.collectionsView;
+                        const path = cv ? P._wvCollRowPath(cv, parseInt(m[1], 10)) : null;
+                        if (path) { if (rowEl.getAttribute("title") !== path) rowEl.setAttribute("title", path); }
+                        else if (rowEl.hasAttribute("title")) rowEl.removeAttribute("title");
+                    } catch (_) {}
+                };
+                tree.addEventListener("mouseover", st.onOver, true);
+            }
+            st.lastKey = null;
+            P._wvCollAidsUpdate(win);
+        } catch (e) { Zotero.debug("[Weavero] _wvApplyCollectionsTreeAids err: " + e); }
+    }
+
+    /** Recompute + render the pinned parents (VS Code's findStickyState,
+     *  simplified to the collections tree's uniform rows). */
+    _wvCollAidsUpdate(win: any) {
+        const st: any = win && win._wvCollAids;
+        if (!st) return;
+        const doc = win.document;
+        const tree: any = doc.getElementById("collection-tree");
+        const cv = win.ZoteroPane && win.ZoteroPane.collectionsView;
+        const jw = cv && cv.tree && cv.tree._jsWindow;
+        const clear = () => { if (st.overlay) { st.overlay.remove(); st.overlay = null; } st.lastKey = ""; };
+        if (tree && cv) (this as any)._wvCollGuidePass(tree, cv, !!st.guides);
+        if (!st.sticky || !tree || !jw || typeof jw._getItemPosition !== "function") { clear(); return; }
+        const rowH = jw.itemHeight || 22;
+        const P: any = this;
+        P._wvCollHookReveal(jw);
+        const max = P._wvCollStickyMax(jw);
+        const off = jw.scrollOffset || 0;
+        const n = cv.rowCount || 0;
+        const rowAt = (y: number) => {   // index of the row covering content offset y
+            let i = Math.max(0, Math.min(n - 1, Math.floor(y / rowH)));
+            while (i > 0 && jw._getItemPosition(i) > y) i--;
+            while (i + 1 < n && jw._getItemPosition(i + 1) <= y) i++;
+            return i;
+        };
+        let pinned: number[] = [];
+        for (let iter = 0; iter < 12 && n; iter++) {
+            const under = rowAt(off + pinned.length * rowH + 1);
+            const chain: number[] = [];
+            let p = cv.getParentIndex(under), guard = 0;
+            while (p != null && p >= 0 && guard++ < 64) { chain.unshift(p); p = cv.getParentIndex(p); }
+            const next: number[] = [];
+            for (let k = 0; k < chain.length && k < max; k++) {
+                // Pinned only once its own row has scrolled past its slot.
+                if (jw._getItemPosition(chain[k]) - off < k * rowH) next.push(chain[k]); else break;
+            }
+            if (next.length === pinned.length && next.every((x, i) => x === pinned[i])) break;
+            pinned = next;
+        }
+        const key = pinned.map((i) => { const r = cv.getRow(i); return (r && r.id) + ":" + (r && r.getName()); }).join("|");
+        if (key === st.lastKey && (st.overlay || !pinned.length)) return;
+        st.lastKey = key;
+        if (!pinned.length) { clear(); return; }
+        const NS = "http://www.w3.org/1999/xhtml";
+        let ov: any = st.overlay;
+        if (!ov) {
+            ov = st.overlay = doc.createElementNS(NS, "div");
+            ov.className = "wv-coll-sticky";
+            // The wv- ID matters: _wvStripWindowChrome removes [id^='wv-']
+            // elements whole, but UNWRAPS class-only wv- shells holding
+            // native-classed children (.row) — which dumped the pinned rows
+            // into the tree on every reload/update (2026-09-25).
+            ov.id = "wv-coll-sticky";
+            tree.appendChild(ov);
+        }
+        while (ov.firstChild) ov.firstChild.remove();
+        // The rows sit inside the body's side padding (8 px today); without
+        // the same padding the pinned rows ran 8 px left of their twisties
+        // and the indent guides (MJT 2026-09-25). Read, never hard-coded.
+        try {
+            const body = tree.querySelector(".virtualized-table-body");
+            if (body) {
+                const cs = win.getComputedStyle(body);
+                ov.style.paddingInlineStart = cs.paddingInlineStart;
+                ov.style.paddingInlineEnd = cs.paddingInlineEnd;
+            }
+        } catch (_) {}
+        pinned.forEach((idx, slot) => {
+            const r = cv.getRow(idx);
+            const rowEl: any = doc.createElementNS(NS, "div");
+            rowEl.className = "row wv-sticky-row";
+            rowEl.style.height = rowH + "px";
+            const skip = P._wvCollGuideSkipPx(cv, idx);
+            if (skip) rowEl.style.setProperty("--wv-guide-skip", skip + "px");
+            const cell = doc.createElementNS(NS, "span"); cell.className = "cell label primary";
+            const ind: any = doc.createElementNS(NS, "span"); ind.className = "cell-indent";
+            ind.style.paddingInlineStart = (16 * (cv.getLevel(idx) || 0)) + "px";
+            // An arrow only where Zotero draws one (container, not empty) —
+            // the Group Libraries header has a bare spacer (MJT 2026-09-25).
+            let hasArrow = true;
+            try { hasArrow = !!cv.isContainer(idx) && !(cv.isContainerEmpty && cv.isContainerEmpty(idx)); } catch (_) {}
+            const tw: any = doc.createElementNS(NS, "span");
+            tw.className = hasArrow ? "icon icon-css icon-twisty twisty open" : "spacer-twisty";
+            if (hasArrow) tw.style.pointerEvents = "auto";
+            const ic = doc.createElementNS(NS, "span");
+            let iconName = "collection";
+            try { iconName = cv.getIconName(idx) || iconName; } catch (_) {}
+            ic.className = "icon icon-css icon-" + iconName + " cell-icon";
+            const tx = doc.createElementNS(NS, "span"); tx.className = "cell-text"; tx.textContent = r ? r.getName() : "";
+            cell.appendChild(ind); cell.appendChild(tw); cell.appendChild(ic); cell.appendChild(tx);
+            rowEl.appendChild(cell);
+            if (st.tips) { const path = P._wvCollRowPath(cv, idx); if (path) rowEl.setAttribute("title", path); }
+            const id = r && r.id;
+            rowEl.addEventListener("mousedown", (e: any) => { try { e.stopPropagation(); } catch (_) {} });
+            rowEl.addEventListener("click", (e: any) => {
+                try {
+                    e.stopPropagation();
+                    const now = id != null ? cv.getRowIndexByID(id) : -1;
+                    if (now === false || now < 0) return;
+                    if (e.target === tw && hasArrow) { cv.toggleOpenState(now); return; }
+                    // Its own row just under the remaining pinned rows, then select it.
+                    jw.scrollTo(Math.max(0, jw._getItemPosition(now) - slot * rowH));
+                    cv.selection.select(now);
+                } catch (_) {}
+            });
+            ov.appendChild(rowEl);
+        });
+    }
+
+    /** Width of the leading indent columns that get NO guide for row `idx`:
+     *  a guide stands for a parent you can expand or collapse, so a parent
+     *  without an arrow (the Group Libraries header: not a container) draws
+     *  none (MJT 2026-09-25). Zotero shows the arrow for isContainer &&
+     *  !isContainerEmpty; any ancestor has children, so isContainer decides.
+     *  Such parents are top-level, so the skipped columns are a prefix. */
+    _wvCollGuideSkipPx(cv: any, idx: number): number {
+        try {
+            let skipLevels = 0, p = cv.getParentIndex(idx), guard = 0;
+            while (p != null && p >= 0 && guard++ < 64) {
+                if (!cv.isContainer(p)) skipLevels = Math.max(skipLevels, (cv.getLevel(p) || 0) + 1);
+                p = cv.getParentIndex(p);
+            }
+            return skipLevels * 16;
+        } catch (_) { return 0; }
+    }
+
+    /** Stamp --wv-guide-skip on the rendered rows. Zotero REUSES row divs
+     *  for other indices (innerHTML reset), so every pass rewrites or clears
+     *  the stamp; the tree's MutationObserver re-runs it on each re-render. */
+    _wvCollGuidePass(tree: any, cv: any, on: boolean) {
+        try {
+            const body = tree.querySelector(".virtualized-table-body");
+            if (!body) return;
+            for (const rowEl of Array.from(body.querySelectorAll(".row")) as any[]) {
+                const m = on ? /collection-tree-row-(\d+)$/.exec(rowEl.id || "") : null;
+                const skip = m ? (this as any)._wvCollGuideSkipPx(cv, parseInt(m[1], 10)) : 0;
+                const cur = rowEl.style.getPropertyValue("--wv-guide-skip");
+                if (skip) { if (cur !== skip + "px") rowEl.style.setProperty("--wv-guide-skip", skip + "px"); }
+                else if (cur) rowEl.style.removeProperty("--wv-guide-skip");
+            }
+        } catch (_) {}
+    }
+
+    /** How many parent rows can be pinned: the pref (default 7, VS Code's), at most 10,
+     *  never more than 40 % of the pane (VS Code's maxWidgetViewRatio). */
+    _wvCollStickyMax(jw: any): number {
+        const rowH = (jw && jw.itemHeight) || 22;
+        const H = jw && typeof jw.getWindowHeight === "function" ? jw.getWindowHeight() : 0;
+        let max = parseInt(String(Zotero.Prefs.get("weavero.collectionsStickyMax")), 10);
+        if (!(max >= 1)) max = 7;
+        return Math.min(max, 10, Math.max(0, Math.floor((H * 0.4) / rowH)));
+    }
+
+    /** Height the pinned parents cover when row `idx` sits just under them
+     *  (0 with the aid off): every scroll that brings a row to the top edge
+     *  must leave this much room, or the row lands under the pinned rows
+     *  (MJT 2026-09-25: a "top" bookmark jump hid its own collection). */
+    _wvCollPinnedPx(cv: any, idx: number): number {
+        try {
+            if (!(this as any)._getCollectionsTreeAid("collectionsStickyParents")) return 0;
+            const jw = cv && cv.tree && cv.tree._jsWindow;
+            if (!jw) return 0;
+            let depth = 0, p = cv.getParentIndex(idx);
+            while (p != null && p >= 0 && depth < 64) { depth++; p = cv.getParentIndex(p); }
+            return Math.min(depth, (this as any)._wvCollStickyMax(jw)) * (jw.itemHeight || 22);
+        } catch (_) { return 0; }
+    }
+
+    /** Zotero's own reveal (arrow keys, type-to-find, select) goes through
+     *  windowed-list scrollToRow(index, force, topOffset), which already
+     *  takes a top offset for its sticky section headers: widen it by the
+     *  pinned parents. Instance-level, restored by _wvCollAidsUnwire. */
+    _wvCollHookReveal(jw: any) {
+        if (!jw || jw._wvOrigScrollToRow || typeof jw.scrollToRow !== "function") return;
+        const P: any = this;
+        const orig = jw.scrollToRow;
+        jw._wvOrigScrollToRow = orig;
+        jw.scrollToRow = function (this: any, index: number, force?: boolean, topOffset?: number) {
+            let off = topOffset || 0;
+            try {
+                const cv = P._wvCollViewOf(jw);
+                if (cv && !force) off = Math.max(off, P._wvCollPinnedPx(cv, index));
+            } catch (_) {}
+            return orig.call(this, index, force, off);
+        };
+    }
+
+    _wvCollViewOf(jw: any): any {
+        for (const w of ((Zotero as any).getMainWindows ? (Zotero as any).getMainWindows() : [Zotero.getMainWindow()]) as any[]) {
+            const cv = w && w.ZoteroPane && w.ZoteroPane.collectionsView;
+            if (cv && cv.tree && cv.tree._jsWindow === jw) return cv;
+        }
+        return null;
+    }
+
+    _wvCollAidsUnwire(win: any) {
+        const st: any = win && win._wvCollAids;
+        if (!st) return;
+        try {
+            const jw = win.ZoteroPane && win.ZoteroPane.collectionsView
+                && win.ZoteroPane.collectionsView.tree && win.ZoteroPane.collectionsView.tree._jsWindow;
+            if (jw && jw._wvOrigScrollToRow) { jw.scrollToRow = jw._wvOrigScrollToRow; delete jw._wvOrigScrollToRow; }
+        } catch (_) {}
+        try {
+            const tree: any = win.document.getElementById("collection-tree");
+            if (st.wired) {
+                if (tree) {
+                    tree.removeEventListener("scroll", st.onScroll, true);
+                    tree.removeEventListener("mouseover", st.onOver, true);
+                }
+                win.removeEventListener("resize", st.onResize);
+                try { st.mo.disconnect(); } catch (_) {}
+                if (st.pending) { try { win.clearTimeout(st.pending); } catch (_) {} }
+            }
+            if (st.overlay) st.overlay.remove();
+            if (tree) for (const el of Array.from(tree.querySelectorAll(".row[title]")) as any[]) el.removeAttribute("title");
+            if (tree) for (const el of Array.from(tree.querySelectorAll(".row")) as any[]) el.style.removeProperty("--wv-guide-skip");
+        } catch (_) {}
+        win._wvCollAids = { };
+    }
+
+    _wvTeardownCollectionsTreeAids() {
+        try {
+            const wins: any[] = (Zotero as any).getMainWindows ? (Zotero as any).getMainWindows()
+                : [Zotero.getMainWindow()].filter(Boolean);
+            for (const w of wins) {
+                try { (this as any)._wvCollAidsUnwire(w); } catch (_) {}
+                try {
+                    const tree = w.document.getElementById("collection-tree");
+                    if (tree) tree.classList.remove("wv-indent-guides");
+                    const s = w.document.getElementById("wv-coll-aids-sheet");
+                    if (s) s.remove();
+                } catch (_) {}
+                try { delete w._wvCollAids; } catch (_) {}
+            }
+        } catch (_) {}
     }
 
     _wvTeardownPaneDragNoCollapse() {

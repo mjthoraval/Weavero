@@ -37,7 +37,7 @@
     "prosemirror-model": "1.25.2",
     "prosemirror-state": "1.4.3",
     "prosemirror-view": "1.40.1",
-    "tsx": "^4.23.13",
+    "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "zotero-plugin-scaffold": "^0.9.2",
     "zotero-types": "^4.1.3"

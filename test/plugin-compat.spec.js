@@ -259,7 +259,8 @@ describe("Weavero — plugin compat: Zotero Reading List (real XPI)", function (
 // shown for the selected preview with >= 2 headings) and a scroll-target
 // marker for rows taller than the sidebar viewport. Both live on the same
 // sidebar Weavero decorates (sort bar, Bookmarks tab, funnel), so the cases
-// below pin the coexistence rules found live on 0.7.1 (2026-09-17).
+// below pin the coexistence rules found live on 0.7.1 (2026-09-17), all
+// green again on 0.10.0 (2026-09-25).
 // This locks both against the REAL plugin end-to-end in a live reader.
 describe("Weavero — plugin compat: Annotation Markdown (real XPI)", function () {
     this.timeout(90000);
@@ -547,12 +548,16 @@ describe("Weavero — plugin compat: Annotation Markdown (real XPI)", function (
         await waitFor(nav, 5000, "outline back on the Annotations tab");
     });
 
-    it("in-PDF annotation popup: Weavero renders it (AM never claims popups)", async function () {
+    it("in-PDF annotation popup: Weavero renders it (AM's popup rendering is off by default)", async function () {
         // The 2026-07-19 regression: AM's findCommentNodes only claims
         // comments under an annotation-row ancestor; the in-view popup has
         // none, so AM never renders it -- and Weavero yielding there left
         // the popup showing the RAW comment whenever both plugins were on.
         // Guard: with AM active, Weavero's preview must be IN the popup.
+        // AM 0.9.0 added OPT-IN popup rendering (Settings -> Annotation
+        // Markdown -> Reader Annotations, default off); this case runs AM
+        // at its defaults. With that option on, both plugins would render
+        // the popup comment -- not covered here (noted 2026-09-25, 0.10.0).
         // The popup renders only with the sidebar CLOSED, and only a
         // direct _onSetAnnotationPopup drives it reliably (synthetic
         // clicks are untrusted; reference_zotero_reader_annotation_popup).

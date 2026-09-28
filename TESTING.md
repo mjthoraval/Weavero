@@ -397,7 +397,7 @@ companion's data is stable across steps without re-reading it.
 | Plugin | Interop |
 |---|---|
 | **Better Notes** (`Knowledge4Zotero`) | Weavero resolves the legacy `<libraryID>_<key>` link form that old Better Notes links carry, and its note-editor link handling is tested against BN-authored notes |
-| **Zotero Annotation Markdown** (0.4.0) | when AM is active in a reader document, Weavero yields comment-preview rendering to it, injects its clickable-link spans inside AM's rendered previews, and restores the "Add comment" affordance AM hides on empty comments |
+| **Zotero Annotation Markdown** (0.10.0, pinned in the compat tier) | when AM is active in a reader document, Weavero yields comment-preview rendering to it, injects its clickable-link spans inside AM's rendered previews, and restores the "Add comment" affordance AM hides on empty comments |
 | **Better BibTeX** | Weavero's link machinery recognizes BBT's registered export-translator IDs (citekey-based flows) |
 | **PMCID Fetcher** | Weavero deliberately ships **no** DOI/PMID/PMCID columns (PMCID Fetcher provides them); Weavero's *Has PMID / Has PMCID* filters read the same Extra-field convention |
 | **Actions & Tags** | Weavero began life as an Actions & Tags action script and remains compatible with it |

@@ -173,6 +173,17 @@ function wvItemHasFileAttachment(item: any): boolean {
         return out;
     } catch (e) { return false; }
 }
+/** Zotero's own retraction verdict: an in-memory map lookup
+ *  (xpcom/retractions.js), false for items whose "Retract and Replace"
+ *  warning the user dismissed (FLAG_HIDDEN). The same verdict Zotero uses
+ *  to mark the row (itemTreeRow.js) and show the item pane's red box
+ *  (itemBox.js). No cache needed. */
+function wvItemIsRetracted(item: any): boolean {
+    try {
+        const R: any = (Zotero as any).Retractions;
+        return !!(R && typeof R.isRetracted === "function" && R.isRetracted(item));
+    } catch (e) { return false; }
+}
 function wvItemHasPubmedId(item: any, field: string, re: RegExp): boolean {
     try {
         const key = field === "PMID" ? "pmid" : "pmcid";
@@ -1858,7 +1869,9 @@ class _FilterMixin {
                         // excluded so Ctrl+A picks exactly what the
                         // filter targets, not their containers.
                         const state = self._filterState;
-                        if (state && self._isFilterActive(state)) {
+                        // (Not for the ∩ mode alone: it only narrows the
+                        // rows, and Ctrl+A takes what is shown.)
+                        if (state && self._wvUserFilterActive(state)) {
                             try {
                                 if (!self._rowIsPrimary(item, state)) return false;
                             } catch (e) {}
@@ -2671,6 +2684,13 @@ class _FilterMixin {
             hasDOI: null,
             hasPMID: null,
             hasPMCID: null,
+            // Retracted (2026-09-28, forum 133954): Zotero's own verdict,
+            // Zotero.Retractions.isRetracted() -- what the items list marks
+            // and the item pane's red box shows. Dismissed "Retract and
+            // Replace" items do not count. (Zotero's Retracted Items view
+            // also drops items whose CITATION warning was switched off,
+            // flag 2; they stay retracted here.) Parent-level tri-state.
+            retracted: null,
             hasURL: null,
             hasAttachment: null,
             // Attachment-targeting tri-state — file attachments only.
@@ -2746,6 +2766,7 @@ class _FilterMixin {
         if (group.hasDOI != null) return true;
         if (group.hasPMID != null) return true;
         if (group.hasPMCID != null) return true;
+        if (group.retracted != null) return true;
         if (group.hasURL != null) return true;
         if (group.hasAttachment != null) return true;
         if (group.hasAnnotations != null) return true;
@@ -2775,6 +2796,19 @@ class _FilterMixin {
     /** Returns true iff any group has any active condition or any
      *  global filter (Collection / Saved Search) is set. */
     _isFilterActive(state) {
+        if (!state) return false;
+        // The multi-collection mode counts only while a library has 2+
+        // selected collections -- otherwise it is inert (and costs nothing).
+        if (state.collSetMode && this._wvCollSetGroups().size) return true;
+        return this._wvUserFilterActive(state);
+    }
+
+    /** The filter the USER set in the panel -- what the chip bar, the
+     *  funnel dot, the Clear buttons and the Selection Target default
+     *  reflect. The ∩ multi-collection mode rides the same engine
+     *  (_isFilterActive) but stays independent of that UI: it is shown
+     *  and undone on its own header button (MJT 2026-09-28). */
+    _wvUserFilterActive(state) {
         if (!state) return false;
         if (state.collections && state.collections.length) return true;
         if (state.collectionsExclude && state.collectionsExclude.length) return true;
@@ -2878,7 +2912,7 @@ class _FilterMixin {
                 "outlineFlags", "outlineFlagsExclude",
                 "outlineVerdict", "outlineVerdictExclude"],
             parent: ["itemType", "itemTypeExclude", "hasAbstract", "hasDOI",
-                "hasPMID", "hasPMCID", "hasURL",
+                "hasPMID", "hasPMCID", "retracted", "hasURL",
                 "hasAttachment", "publication", "publicationExclude",
                 "readStatus", "readStatusExclude", "inOtherLibrary"],
         };
@@ -2896,7 +2930,7 @@ class _FilterMixin {
             return { parent: !exc.parent, attachment: !exc.attachment, note: !exc.note, annotation: !exc.annotation };
         }
         // --- smart default ---
-        if (!this._isFilterActive(fs)) return { ...ALL };
+        if (!this._wvUserFilterActive(fs)) return { ...ALL };
         // Global (state-level) filters are cross-level → don't narrow.
         if ((fs.collections && fs.collections.length)
             || (fs.collectionsExclude && fs.collectionsExclude.length)
@@ -3038,6 +3072,364 @@ class _FilterMixin {
         } catch (e) {}
     }
 
+    /** The Collection tree's rows: depth-first, each level sorted like the
+     *  collections pane, with depth / parent / has-children. */
+    _wvCollTreeValues(libraryID: number): any[] {
+        const out: any[] = [];
+        const cmp = (a: any, b: any) => (Zotero as any).localeCompare
+            ? (Zotero as any).localeCompare(a.name, b.name) : a.name.localeCompare(b.name);
+        const walk = (cols: any[], depth: number, parentId: number | null) => {
+            for (const c of [...cols].sort(cmp)) {
+                const kids = Zotero.Collections.getByParent(c.id) || [];
+                out.push({ id: c.id, name: c.name, depth, parentId, hasChildren: kids.length > 0 });
+                walk(kids, depth + 1, c.id);
+            }
+        };
+        walk(Zotero.Collections.getByLibrary(libraryID) || [], 0, null);
+        return out;
+    }
+
+    /** Which tree rows show. No text: a row shows when every ancestor is
+     *  expanded. Text: the matching rows plus all their ancestors (the
+     *  caller dims the non-matching ones), whatever the expansion. */
+    _wvCollTreeVisible(all: any[], q: string, matches: (v: any) => boolean, exp: Set<number>): any[] {
+        const byId = new Map(all.map((v: any) => [v.id, v]));
+        if (!q) {
+            return all.filter((v: any) => {
+                for (let p = v.parentId; p != null; p = (byId.get(p) as any)?.parentId) {
+                    if (!exp.has(p)) return false;
+                }
+                return true;
+            });
+        }
+        const keep = new Set<number>();
+        for (const v of all) {
+            if (!matches(v)) continue;
+            for (let c: any = v; c; c = c.parentId != null ? byId.get(c.parentId) : null) keep.add(c.id);
+        }
+        return all.filter((v: any) => keep.has(v.id));
+    }
+
+    /** Expanded collections of the filter panel's Collection tree, kept
+     *  on the plugin while the panel is open (a pick re-renders the whole
+     *  panel) and dropped when it closes. Seeded from the collections
+     *  PANE: a collection starts expanded exactly when its pane row is
+     *  open (MJT 2026-09-28). Toggling here never touches the pane. */
+    _wvCollTreeExpanded(libraryID: number): Set<number> {
+        const st: any = this._wvCollTreeExp;
+        if (st && st.lib === libraryID) return st.set;
+        const set = new Set<number>();
+        try {
+            const cv: any = Zotero.getMainWindow().ZoteroPane.collectionsView;
+            for (const c of (Zotero.Collections.getByLibrary(libraryID, true) || []) as any[]) {
+                const idx = cv.getRowIndexByID("C" + c.id);
+                if (idx !== false && idx != null && idx >= 0 && cv.isContainerOpen(idx)) set.add(c.id);
+            }
+        } catch (e) {}
+        this._wvCollTreeExp = { lib: libraryID, set };
+        return set;
+    }
+
+    /** The collection IDs a Collection filter pick stands for: the picked
+     *  ones, plus all their descendants when Zotero's View > "Show Items
+     *  from Subcollections" (recursiveCollections) is on -- so a picked
+     *  parent covers what its pane row shows (MJT 2026-09-28). Memoised on
+     *  the ids + the setting; the memo is dropped on every apply, so new
+     *  sub-collections count from the next filter pass. */
+    _wvCollFilterIds(ids: number[]): Set<number> {
+        if (!ids || !ids.length) return new Set();
+        let rec = false;
+        try { rec = !!Zotero.Prefs.get("recursiveCollections"); } catch (e) {}
+        const key = (rec ? "r:" : "d:") + ids.join(",");
+        const memo: any = this._wvCollFilterMemo || (this._wvCollFilterMemo = new Map());
+        let set = memo.get(key);
+        if (set) return set;
+        set = new Set<number>(ids);
+        if (rec) {
+            for (const id of ids) {
+                try {
+                    const c: any = Zotero.Collections.get(id);
+                    for (const d of (c ? c.getDescendents(false, "collection", false) : []) as any[]) set.add(d.id);
+                } catch (e) {}
+            }
+        }
+        memo.set(key, set);
+        return set;
+    }
+
+    /** Several collections selected in the collections pane (MJT
+     *  2026-09-28, forum 132772): Zotero shows their UNION; the header's
+     *  ∩ button narrows it to the items in ALL of them ("all") or in some
+     *  but not all ("notAll" = union minus intersection). Per library:
+     *  libraryID -> the selected sources, for every library whose selected
+     *  rows are all collections or saved searches (MJT 2026-09-28: "2
+     *  sources selected" too), 2 or more. A source is a collection id
+     *  (number) or "S<searchID>" (string). Memoised per apply pass (reset
+     *  in _applyItemsListFilter). */
+    _wvCollSetGroups(): Map<number, (number | string)[]> {
+        if (this._wvCollSetMemo) return this._wvCollSetMemo;
+        this._wvCollSetMemo = this._wvCollSetGroupsFor(this._wvFilterTargetWin());
+        return this._wvCollSetMemo;
+    }
+
+    /** The same, for one given main window, unmemoised (the header
+     *  decoration runs per window, outside an apply pass). */
+    _wvCollSetGroupsFor(w: any): Map<number, (number | string)[]> {
+        const out = new Map<number, (number | string)[]>();
+        try {
+            const rows: any[] = (w && w.ZoteroPane && w.ZoteroPane.itemsView
+                && w.ZoteroPane.itemsView.collectionTreeRows) || [];
+            const byLib = new Map<number, any[]>();
+            for (const r of rows) {
+                const lib = r && r.ref && r.ref.libraryID;
+                if (lib == null) continue;
+                if (!byLib.has(lib)) byLib.set(lib, []);
+                byLib.get(lib)!.push(r);
+            }
+            for (const [lib, rs] of byLib) {
+                if (rs.length >= 2 && rs.every((r: any) => (r.isCollection && r.isCollection())
+                    || (r.isSearch && r.isSearch()))) {
+                    out.set(lib, rs.map((r: any) => (r.isSearch() ? "S" + r.ref.id : r.ref.id)));
+                }
+            }
+        } catch (e) {}
+        return out;
+    }
+
+    /** The ∩ mode switches OFF once the selection no longer has 2+ sources
+     *  in a library (MJT 2026-09-28): back on one collection, the button is
+     *  gone, and selecting several again starts from Zotero's union rather
+     *  than silently re-narrowing. Runs at the start of every apply pass
+     *  (each collection switch applies). */
+    _wvCollSetDropIfInert() {
+        try {
+            const st = this._filterState;
+            if (st && st.collSetMode && !this._wvCollSetGroups().size) st.collSetMode = null;
+        } catch (e) {}
+    }
+
+    /** One source's top-level item ids, or null while a saved search's
+     *  first run is pending. Collection: its items, plus its sub-
+     *  collections' when Zotero shows them (_wvCollFilterIds) -- the
+     *  same set Zotero lists; trashed items left out. Saved search: its
+     *  hits lifted to their top-level items, run async and cached (a
+     *  stale entry keeps serving while a refresh runs; a changed result
+     *  re-applies and re-renders the header). Memoised briefly: the
+     *  header re-renders on every scroll. */
+    _wvCollSetSourceSet(src: number | string): Set<number> | null {
+        const cache: Map<string, any> = this._wvCollSetSrcCache || (this._wvCollSetSrcCache = new Map());
+        const rec = Zotero.Prefs.get("recursiveCollections") ? 1 : 0;
+        const key = typeof src === "string" ? src : "C" + src + "|" + rec;
+        const hit = cache.get(key);
+        const fresh = hit && Date.now() - hit.at < (typeof src === "string" ? 3000 : 1500);
+        if (typeof src !== "string") {
+            if (fresh) return hit.set;
+            const s = new Set<number>();
+            for (const c of this._wvCollFilterIds([src])) {
+                try {
+                    const col = Zotero.Collections.get(c);
+                    for (const id of (col ? col.getChildItems(true, false) : [])) s.add(id);
+                } catch (e) {}
+            }
+            cache.set(key, { set: s, at: Date.now() });
+            return s;
+        }
+        if (!fresh && !(hit && hit.pending)) this._wvCollSetFetchSearch(key);
+        return hit ? hit.set : null;
+    }
+
+    async _wvCollSetFetchSearch(key: string) {
+        const cache: Map<string, any> = this._wvCollSetSrcCache;
+        const prev = cache.get(key);
+        cache.set(key, { set: prev ? prev.set : null, at: prev ? prev.at : 0, pending: true });
+        let set: Set<number> | null = null;
+        try {
+            const search: any = Zotero.Searches.get(Number(key.slice(1)));
+            if (search) {
+                set = new Set<number>();
+                for (const id of await search.search()) {
+                    let it: any = Zotero.Items.get(id);
+                    while (it && it.parentItemID) it = Zotero.Items.get(it.parentItemID);
+                    if (it && !it.deleted) set.add(it.id);
+                }
+            }
+        } catch (e) { dbg("[Weavero][filter] collset search err: " + e); }
+        cache.set(key, { set: set || new Set(), at: Date.now() });
+        const old: Set<number> | null = prev ? prev.set : null;
+        const same = !!old && !!set && old.size === set.size && [...set].every((i) => old.has(i));
+        if (same) return;
+        const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+        if (!p || p._wvDestroyed) return;
+        for (const w of Zotero.getMainWindows()) {
+            try {
+                if (!p._wvCollSetGroupsFor(w).size) continue;
+                if (w._wvFilterState && w._wvFilterState.collSetMode) {
+                    const o = p._wvFilterWinOverride;
+                    p._wvFilterWinOverride = w;
+                    try { p._applyItemsListFilter({ cascade: true }); } finally { p._wvFilterWinOverride = o || null; }
+                }
+                (w.ZoteroPane.itemsView as any).tree.invalidate();
+            } catch (e) {}
+        }
+    }
+
+    /** Does the item (via its top-level item) pass the multi-collection
+     *  mode? Counts the library's selected sources it is in and keeps it
+     *  for "all" when that is every one, for "notAll" when fewer.
+     *  Libraries without a 2+ source selection pass untouched, and so
+     *  does everything while a saved search's first run is pending. */
+    _wvCollSetPasses(item: any, mode: string): boolean {
+        const groups = this._wvCollSetGroups();
+        if (!groups.size) return true;
+        let top = item;
+        try {
+            while (top && top.parentItemID) {
+                const p = Zotero.Items.get(top.parentItemID);
+                if (!p) break;
+                top = p;
+            }
+        } catch (e) {}
+        const srcs = top && groups.get(top.libraryID);
+        if (!srcs) return true;
+        let n = 0;
+        for (const src of srcs) {
+            const s = this._wvCollSetSourceSet(src);
+            if (!s) return true;
+            if (s.has(top.id)) n++;
+        }
+        return mode === "notAll" ? n < srcs.length : n >= srcs.length;
+    }
+
+    /** Top-level item counts for the selected sources, before any ∩
+     *  click: `all` = in every one (the intersection), `union` = in any.
+     *  Null while a saved search's first run is pending. */
+    _wvCollSetCounts(srcs: (number | string)[]): { all: number; union: number } | null {
+        const sets = srcs.map((s) => this._wvCollSetSourceSet(s));
+        if (sets.some((s) => !s)) return null;
+        const union = new Set<number>();
+        for (const s of sets) for (const id of s!) union.add(id);
+        let all = 0;
+        for (const id of union) if (sets.every((s) => s!.has(id))) all++;
+        return { all, union: union.size };
+    }
+
+    /** Header row "N collections selected" (Zotero 10's
+     *  LibraryHeaderItemTreeRow): append the ∩ toggle when that
+     *  library's selection is 2+ collections. Click = "in all", Alt+click
+     *  = "not in all", again = back to Zotero's union. Called from the
+     *  wrapped renderRow for every copy of the header, the pinned one too. */
+    _wvCollSetDecorateHeader(row: any, div: any) {
+        try {
+            const lib = row && row.ref && row.ref.libraryID;
+            const doc = div.ownerDocument;
+            const win: any = doc && doc.defaultView;
+            // THIS header's window (the filter is per main window).
+            const ids = lib != null && win && this._wvCollSetGroupsFor(win).get(lib);
+            if (!ids) return;
+            const NS = "http://www.w3.org/1999/xhtml";
+            // The intersection's size, readable before any click (MJT
+            // 2026-09-28), just left of the button. Absent while a saved
+            // search's first run is pending (it re-renders when done).
+            let counts: { all: number; union: number } | null = null;
+            try { counts = this._wvCollSetCounts(ids); } catch (e) {}
+            // Zotero's own word for the selection kind.
+            const nSearch = ids.filter((s: any) => typeof s === "string").length;
+            const what = !nSearch ? "collections" : nSearch === ids.length ? "saved searches" : "sources";
+            const mode = (win._wvFilterState && win._wvFilterState.collSetMode) || null;
+            const cell = div.querySelector(".cell.library-header") || div;
+            const text = cell.querySelector(".cell-text");
+            if (text && mode) text.textContent += mode === "all" ? " — in all" : " — not in all";
+            const btn = doc.createElementNS(NS, "button");
+            btn.type = "button";
+            btn.className = "wv-collset-btn";
+            btn.textContent = "∩";
+            if (mode === "all") btn.dataset.selected = "true";
+            else if (mode === "notAll") btn.dataset.excluded = "true";
+            btn.title = mode === "all"
+                ? `Showing items in ALL selected ${what} — click to show them all again (union)`
+                : mode === "notAll"
+                    ? `Showing items in some but NOT all selected ${what} — Alt+click to show them all again (union)`
+                    : `Show only items in ALL selected ${what} (intersection). Alt+click: items in some but not all.`;
+            if (counts) {
+                const n = (k: number) => k + (k === 1 ? " item" : " items");
+                btn.title += `\nIn all: ${n(counts.all)} · in some but not all: ${n(counts.union - counts.all)}`;
+                // Inside the button, "∩: 2" (MJT 2026-09-28): the count is
+                // the intersection's in every mode, so toggling never
+                // changes the button's width -- it stays under the mouse.
+                const c = doc.createElementNS(NS, "span");
+                c.className = "wv-collset-count";
+                c.textContent = ": " + counts.all;
+                btn.appendChild(c);
+            }
+            // The header row must not take the press (no selection move), and
+            // the press must not take FOCUS: a focused list paints Zotero's
+            // dotted focus ring on its focused row -- row 0, this header --
+            // where a plain Zotero header click leaves focus alone (MJT
+            // 2026-09-28, "consistent with Zotero native").
+            btn.tabIndex = -1;
+            btn.addEventListener("mousedown", (e: any) => { e.preventDefault(); e.stopPropagation(); });
+            // Toggled on and off in place (MJT 2026-09-28): a quick second
+            // click must stay a toggle, never reach the row as a double-click.
+            btn.addEventListener("dblclick", (e: any) => { e.preventDefault(); e.stopPropagation(); });
+            btn.addEventListener("click", (e: any) => {
+                e.stopPropagation(); e.preventDefault();
+                const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                if (!p) return;
+                const prev = p._wvFilterWinOverride;
+                p._wvFilterWinOverride = win;   // act on THIS window's filter
+                try {
+                    const st = p._filterState || (p._filterState = { groups: [] });
+                    const want = e.altKey ? "notAll" : "all";
+                    st.collSetMode = st.collSetMode === want ? null : want;
+                    p._renderFilterBar();
+                    p._applyItemsListFilter({ cascade: true });
+                    try { win.ZoteroPane.itemsView.tree.invalidate(); } catch (er) {}
+                } catch (er) {}
+                finally { p._wvFilterWinOverride = prev || null; }
+            });
+            cell.appendChild(btn);
+        } catch (e) {}
+    }
+
+    /** Wrap LibraryHeaderItemTreeRow.prototype.renderRow (module
+     *  `zotero/itemTreeRow`, per window) so every header copy gets the ∩
+     *  toggle. Version-stamped; the wrapper resolves the LIVE plugin, so a
+     *  reload never runs a stale instance; unwired on teardown. */
+    _wvWireCollSetHeader(win: any) {
+        try {
+            const Mod = win && win.require && win.require("zotero/itemTreeRow");
+            const proto = Mod && Mod.LibraryHeaderItemTreeRow && Mod.LibraryHeaderItemTreeRow.prototype;
+            if (!proto || typeof proto.renderRow !== "function") return;
+            const VER = 1;
+            if (proto._wvCollSetVer === VER) return;
+            const orig = proto._wvCollSetOrig || proto.renderRow;
+            proto._wvCollSetOrig = orig;
+            proto.renderRow = function (this: any, div: any, ...rest: any[]) {
+                const r = orig.call(this, div, ...rest);
+                try {
+                    const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (p && !p._wvDestroyed && typeof p._wvCollSetDecorateHeader === "function") {
+                        p._wvCollSetDecorateHeader(this, div);
+                    }
+                } catch (e) {}
+                return r;
+            };
+            proto._wvCollSetVer = VER;
+        } catch (e) { dbg("[Weavero][filter] collset header wire err: " + e); }
+    }
+
+    _wvUnwireCollSetHeader(win: any) {
+        try {
+            const Mod = win && win.require && win.require("zotero/itemTreeRow");
+            const proto = Mod && Mod.LibraryHeaderItemTreeRow && Mod.LibraryHeaderItemTreeRow.prototype;
+            if (proto && proto._wvCollSetOrig) {
+                proto.renderRow = proto._wvCollSetOrig;
+                delete proto._wvCollSetOrig;
+                delete proto._wvCollSetVer;
+            }
+        } catch (e) {}
+    }
+
     /** True iff the row passes the GLOBAL filters at the bottom of
      *  the panel: Collection membership and Saved Search match.
      *  Both are OR within (any of the selected collections /
@@ -3048,19 +3440,27 @@ class _FilterMixin {
      *  whole subtrees together). */
     _rowPassesGlobalFilters(item, state) {
         if (!item || !state) return true;
+        if (state.collSetMode && !this._wvCollSetPasses(item, state.collSetMode)) return false;
         const owner = (item.isRegularItem && item.isRegularItem())
             ? item
             : this._getEnclosingRegularItem(item);
         const itemCols = owner && owner.getCollections
             ? owner.getCollections()
             : [];
+        // Picked collections, widened to their sub-collections when Zotero
+        // shows items from sub-collections (_wvCollFilterIds).
+        // Several picked collections: the item is in ALL of them (the
+        // intersection -- MJT 2026-09-28), each one counting its sub-
+        // collections when Zotero shows them. Excludes: in none of them.
         if (state.collections && state.collections.length) {
-            const has = itemCols.some(id => state.collections.includes(id));
-            if (!has) return false;
+            for (const cid of state.collections) {
+                const one = this._wvCollFilterIds([cid]);
+                if (!itemCols.some(id => one.has(id))) return false;
+            }
         }
         if (state.collectionsExclude && state.collectionsExclude.length) {
-            const inExc = itemCols.some(
-                id => state.collectionsExclude.includes(id));
+            const exc = this._wvCollFilterIds(state.collectionsExclude);
+            const inExc = itemCols.some(id => exc.has(id));
             if (inExc) return false;
         }
         if ((state.savedSearches && state.savedSearches.length)
@@ -3587,6 +3987,10 @@ class _FilterMixin {
             const isReg = !!(item.isRegularItem && item.isRegularItem());
             if (isReg && wvItemHasPubmedId(item, "PMCID", WV_PMCID_RE) !== group.hasPMCID) return false;
         }
+        if (group.retracted != null) {
+            const isReg = !!(item.isRegularItem && item.isRegularItem());
+            if (isReg && wvItemIsRetracted(item) !== group.retracted) return false;
+        }
         if (group.hasURL != null) {
             const isReg = !!(item.isRegularItem && item.isRegularItem());
             if (isReg && wvItemFieldNonEmpty(item, "url", "url") !== group.hasURL) return false;
@@ -3692,8 +4096,11 @@ class _FilterMixin {
             } else {
                 const tags = (item.getTags && item.getTags()) || [];
                 const names = tags.map(t => t && t.tag).filter(Boolean);
+                // Several picked tags: the row carries ALL of them (multi-
+                // valued, so AND is possible -- MJT 2026-09-28, like
+                // Zotero's tag selector). Excludes stay "any of them".
                 if (wantedTags && wantedTags.length
-                    && !wantedTags.some(t => names.includes(t))) return false;
+                    && !wantedTags.every(t => names.includes(t))) return false;
                 if (wantedTagsX && wantedTagsX.length
                     && wantedTagsX.some(t => names.includes(t))) return false;
             }
@@ -3703,8 +4110,10 @@ class _FilterMixin {
         if ((wantedAuthors && wantedAuthors.length)
             || (wantedAuthorsX && wantedAuthorsX.length)) {
             const authors = this._getItemAuthors(item);
+            // ALL picked authors (item creators are multi-valued; an
+            // annotation has one author, so only a single pick can match it).
             if (wantedAuthors && wantedAuthors.length
-                && !wantedAuthors.some(a => authors.includes(a))) return false;
+                && !wantedAuthors.every(a => authors.includes(a))) return false;
             if (wantedAuthorsX && wantedAuthorsX.length
                 && wantedAuthorsX.some(a => authors.includes(a))) return false;
         }
@@ -4526,6 +4935,9 @@ class _FilterMixin {
         if (group.hasPMCID != null) {
             if ((isReg && wvItemHasPubmedId(root, "PMCID", WV_PMCID_RE)) !== group.hasPMCID) return false;
         }
+        if (group.retracted != null) {
+            if ((isReg && wvItemIsRetracted(root)) !== group.retracted) return false;
+        }
         if (group.hasURL != null) {
             const v = isReg && wvItemFieldNonEmpty(root, "url", "url");
             if (v !== group.hasURL) return false;
@@ -4778,7 +5190,7 @@ class _FilterMixin {
                 const tags = (item.getTags && item.getTags()) || [];
                 const names = tags.map(t => t && t.tag).filter(Boolean);
                 if (group.annotationTag && group.annotationTag.length
-                    && group.annotationTag.some(t => names.includes(t))) {
+                    && group.annotationTag.every(t => names.includes(t))) {
                     return true;
                 }
                 if (group.annotationTagExclude && group.annotationTagExclude.length
@@ -4791,7 +5203,7 @@ class _FilterMixin {
             || (group.annotationAuthorExclude && group.annotationAuthorExclude.length)) {
             const authors = this._getItemAuthors(item);
             if (group.annotationAuthor && group.annotationAuthor.length
-                && group.annotationAuthor.some(a => authors.includes(a))) {
+                && group.annotationAuthor.every(a => authors.includes(a))) {
                 return true;
             }
             if (group.annotationAuthorExclude && group.annotationAuthorExclude.length
@@ -4894,6 +5306,9 @@ class _FilterMixin {
             }
             if (group.hasPMCID != null) {
                 if (wvItemHasPubmedId(item, "PMCID", WV_PMCID_RE) === group.hasPMCID) return true;
+            }
+            if (group.retracted != null) {
+                if (wvItemIsRetracted(item) === group.retracted) return true;
             }
             if (group.hasURL != null) {
                 if (wvItemFieldNonEmpty(item, "url", "url") === group.hasURL) return true;
@@ -5003,6 +5418,7 @@ class _FilterMixin {
                             && group.itemTypeExclude.length)
                         || group.hasAbstract != null
                         || group.hasDOI != null
+                        || group.retracted != null
                         || group.hasURL != null
                         || group.hasAttachment != null
                         || (group.publication && group.publication.length)
@@ -5060,6 +5476,7 @@ class _FilterMixin {
         (this as any)._wvFilterWinOverride = win;
         try { this._setupItemsListFilterIn(win); }
         finally { (this as any)._wvFilterWinOverride = prev || null; }
+        try { this._wvWireCollSetHeader(win); } catch (e) {}
     }
 
     _setupItemsListFilterIn(win: any) {
@@ -5446,6 +5863,9 @@ class _FilterMixin {
             docTop.addEventListener("mousedown", dismissHandler, true);
         });
         panel.addEventListener("popuphidden", () => {
+            // The Collection tree's expansion lives only while the panel is
+            // open; the next opening re-seeds it from the collections pane.
+            try { const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; if (lp) lp._wvCollTreeExp = null; } catch (e) {}
             try {
                 const docTop = panel.ownerDocument;
                 const sb = docTop.getElementById("zotero-tb-search");
@@ -5982,6 +6402,7 @@ class _FilterMixin {
             return;
         }
         if (targetWin.closed) return;
+        try { this._wvUnwireCollSetHeader(targetWin); } catch (e) {}
         const prev = (this as any)._wvFilterWinOverride;
         (this as any)._wvFilterWinOverride = targetWin;
         try { this._teardownItemsListFilterIn(targetWin); }
@@ -6174,7 +6595,7 @@ class _FilterMixin {
             if (!doc) return;
             const btn = doc.getElementById("wv-filter-tb-button");
             if (!btn) return;
-            const active = this._isFilterActive(this._filterState);
+            const active = this._wvUserFilterActive(this._filterState);
             btn.classList.toggle("wv-filter-tb-active", !!active);
             // Pin the dot to the funnel ICON's top-right corner (same
             // spot as the reader filter button). The button also hosts a
@@ -6211,7 +6632,7 @@ class _FilterMixin {
         while (bar.firstChild) bar.removeChild(bar.firstChild);
 
         const state = this._filterState;
-        if (!this._isFilterActive(state)) {
+        if (!this._wvUserFilterActive(state)) {
             bar.style.display = "none";
             return;
         }
@@ -6344,6 +6765,10 @@ class _FilterMixin {
                 bar.appendChild(this._buildHasFieldChip(doc, group, gi,
                     "hasPMCID", "Has PMCID"));
             }
+            if (group.retracted != null) {
+                bar.appendChild(this._buildHasFieldChip(doc, group, gi,
+                    "retracted", "Retracted"));
+            }
             if (group.hasURL != null) {
                 bar.appendChild(this._buildHasFieldChip(doc, group, gi,
                     "hasURL", "Has URL"));
@@ -6444,10 +6869,13 @@ class _FilterMixin {
      *  Re-renders the chip bar (which then hides itself, no chips)
      *  and the open panel (so the section visuals deselect). */
     _clearAllFilters() {
+        // The ∩ mode is not a panel filter: Clear leaves it on.
+        const collSetMode = this._filterState && this._filterState.collSetMode;
         this._filterState = {
             groups: [this._emptyFilterGroup()],
             activeGroupIndex: 0,
         };
+        if (collSetMode) this._filterState.collSetMode = collSetMode;
         this._savedSearchResults = null;
         this._savedSearchExcludeResults = null;
         // Drop the session "recently added" carry-over too — with
@@ -7089,7 +7517,8 @@ class _FilterMixin {
         const tags = exclude ? group.annotationTagExclude : group.annotationTag;
         return this._buildFilterChip(doc, {
             field: "Tag",
-            op: exclude ? "excludes any" : "includes any",
+            // several picks must ALL match (multi-valued); exclusions: any
+            op: exclude ? "excludes any" : (tags.length > 1 ? "includes all" : "includes"),
             fillValue: (valSeg) => { valSeg.textContent = tags.join(", "); },
             onRemove: () => {
                 if (exclude) group.annotationTagExclude = [];
@@ -7104,7 +7533,8 @@ class _FilterMixin {
         const authors = exclude ? group.annotationAuthorExclude : group.annotationAuthor;
         return this._buildFilterChip(doc, {
             field: "Author",
-            op: exclude ? "excludes any" : "includes any",
+            // several picks must ALL match (multi-valued); exclusions: any
+            op: exclude ? "excludes any" : (authors.length > 1 ? "includes all" : "includes"),
             fillValue: (valSeg) => { valSeg.textContent = authors.join(", "); },
             onRemove: () => {
                 if (exclude) group.annotationAuthorExclude = [];
@@ -7763,7 +8193,7 @@ class _FilterMixin {
         // toggles their visibility based on whether any filter is
         // actually set.
         const renderHeader = () => {
-            const active = this._isFilterActive(this._filterState);
+            const active = this._wvUserFilterActive(this._filterState);
             clearTextBtn.style.visibility = active ? "" : "hidden";
             clearBtn.style.visibility = active ? "" : "hidden";
         };
@@ -8252,19 +8682,16 @@ class _FilterMixin {
             valueId: (v) => v,
             valueLabel: (v) => v,
             getLabelById: (id) => id,
+            // One publication per item: several picks are alternatives
+            // (OR), and an exclusion drops the picks and vice versa --
+            // the icon-grid rule (_toggleIncludeExclude).
+            anyOf: true,
             onToggle: (id, sel, altKey) => {
                 const g = this._activeGroup();
                 if (!g) return;
-                const exc = new Set(g.publicationExclude || []);
-                if (altKey) {
-                    if (exc.has(id)) exc.delete(id);
-                    else { exc.add(id); sel.delete(id); }
-                } else {
-                    if (sel.has(id)) sel.delete(id);
-                    else { sel.add(id); exc.delete(id); }
-                }
-                g.publication = [...sel];
-                g.publicationExclude = [...exc];
+                const next = this._toggleIncludeExclude(id, g.publication || [], g.publicationExclude || [], altKey);
+                g.publication = next.include;
+                g.publicationExclude = next.exclude;
                 this._renderFilterBar();
                 this._applyItemsListFilter({ cascade: true });
             },
@@ -8329,19 +8756,15 @@ class _FilterMixin {
                 valueId: (v) => v,
                 valueLabel: (v) => v,
                 getLabelById: (id) => id,
+                // One creator per annotation: OR, exclusion clears picks
+                // (see Publication).
+                anyOf: true,
                 onToggle: (id, sel, altKey) => {
                     const g = this._activeGroup();
                     if (!g) return;
-                    const exc = new Set(g.addedByExclude || []);
-                    if (altKey) {
-                        if (exc.has(id)) exc.delete(id);
-                        else { exc.add(id); sel.delete(id); }
-                    } else {
-                        if (sel.has(id)) sel.delete(id);
-                        else { sel.add(id); exc.delete(id); }
-                    }
-                    g.addedBy = [...sel];
-                    g.addedByExclude = [...exc];
+                    const next = this._toggleIncludeExclude(id, g.addedBy || [], g.addedByExclude || [], altKey);
+                    g.addedBy = next.include;
+                    g.addedByExclude = next.exclude;
                     this._renderFilterBar();
                     this._applyItemsListFilter({ cascade: true });
                 },
@@ -8366,11 +8789,53 @@ class _FilterMixin {
             emptyFiltered: "No matching collections",
             ranked: false,
             verticalList: true,
+            // Indented, expandable tree (MJT 2026-09-28): rows in the
+            // collections pane's order, a twisty per parent, expansion
+            // seeded from the PANE and kept (on the plugin) while the
+            // panel is open -- a pick re-renders the whole panel. Typed
+            // text narrows the tree in place: matches plus their
+            // ancestors, non-matching ancestors dimmed (Zotero's
+            // collection search, collectionTree.jsx `context-row`).
+            // Picked collections stay in place, highlighted.
+            tree: {
+                visible: (all: any[], q: string, matches: (v: any) => boolean) =>
+                    this._wvCollTreeVisible(all, q, matches, this._wvCollTreeExpanded(libraryID)),
+                decorate: (btn: any, v: any, q: string, isMatch: boolean, rerender: () => void) => {
+                    const d = btn.ownerDocument;
+                    const NS = "http://www.w3.org/1999/xhtml";
+                    btn.dataset.wvId = String(v.id);
+                    btn.style.paddingInlineStart = (4 + 16 * v.depth) + "px";
+                    if (q && !isMatch) btn.classList.add("wv-coll-context");
+                    const tw = d.createElementNS(NS, "span");
+                    tw.className = "wv-coll-tw";
+                    if (v.hasChildren) {
+                        const open = q ? true : this._wvCollTreeExpanded(libraryID).has(v.id);
+                        tw.classList.add(open ? "wv-open" : "wv-closed");
+                        tw.textContent = "▸";
+                        if (!q) {
+                            tw.title = open ? "Collapse" : "Expand";
+                            // Keep the focus in the search box (the list hides on blur).
+                            tw.addEventListener("mousedown", (e: any) => { e.preventDefault(); e.stopPropagation(); });
+                            tw.addEventListener("click", (e: any) => {
+                                e.preventDefault(); e.stopPropagation();
+                                const exp = this._wvCollTreeExpanded(libraryID);
+                                if (exp.has(v.id)) exp.delete(v.id); else exp.add(v.id);
+                                rerender();
+                            });
+                        }
+                    }
+                    btn.insertBefore(tw, btn.firstChild);
+                },
+                toggle: (id: number, open?: boolean) => {
+                    const exp = this._wvCollTreeExpanded(libraryID);
+                    const want = open == null ? !exp.has(id) : open;
+                    if (want) exp.add(id); else exp.delete(id);
+                },
+                isOpen: (id: number) => this._wvCollTreeExpanded(libraryID).has(id),
+            },
             getValues: async () => {
                 try {
-                    return (Zotero.Collections.getByLibrary(libraryID, true) || [])
-                        .map(c => ({ id: c.id, name: c.name }))
-                        .sort((a, b) => a.name.localeCompare(b.name));
+                    return this._wvCollTreeValues(libraryID);
                 } catch (e) {
                     dbg("[Weavero][filter] collections enum err: " + e);
                     return [];
@@ -8652,7 +9117,7 @@ class _FilterMixin {
                 selectedList.removeChild(selectedList.firstChild);
             }
             if (!this._pillOrder) this._pillOrder = [];
-            const buildPill = (m, id, isExclude) => {
+            const buildPill = (m, id, isExclude, into?, onKindLine?) => {
                 const label = m.getLabelById
                     ? m.getLabelById(id) : String(id);
                 const pill = doc.createElementNS(NS_HTML, "span");
@@ -8663,7 +9128,9 @@ class _FilterMixin {
                     + m.label + ": " + label;
                 if (m.renderIcon) {
                     m.renderIcon(pill, id);
-                } else {
+                } else if (!onKindLine) {
+                    // (On an "Any <kind>" line the line label already names
+                    // the kind -- MJT 2026-09-28.)
                     const modeLbl = doc.createElementNS(
                         NS_HTML, "span");
                     modeLbl.className = "wv-filter-selected-pill-mode";
@@ -8746,7 +9213,7 @@ class _FilterMixin {
                     refreshAll();   // keep the header's Clear buttons in sync
                 });
                 pill.appendChild(x);
-                selectedList.appendChild(pill);
+                (into || selectedList).appendChild(pill);
             };
             // Build the set of currently-active pills + a lookup
             // from stable key → {mode, id, isExclude}.
@@ -8777,10 +9244,40 @@ class _FilterMixin {
             for (const k of activeMap.keys()) {
                 if (!inOrder.has(k)) this._pillOrder.push(k);
             }
-            // Render in the preserved order.
+            // Render in the preserved order, one LINE per way of combining
+            // (MJT 2026-09-28): "All of" -- every multi-valued pick (Tag,
+            // Author, Collection, Saved Search), all of which must match,
+            // plus their exclusions (the crossed pill already reads "not");
+            // then one line per single-valued kind (Publication, Added By),
+            // whose picks are alternatives -- "Any publication". Such a
+            // line never mixes picks and exclusions (_toggleIncludeExclude),
+            // so an exclusions-only line shows just the kind's name.
+            const lines = new Map();   // key -> { label, entries }
+            const lineFor = (key, label) => {
+                if (!lines.has(key)) lines.set(key, { label, entries: [] });
+                return lines.get(key);
+            };
+            lineFor("all", "All of");
             for (const k of this._pillOrder) {
                 const entry = activeMap.get(k);
-                if (entry) buildPill(entry.m, entry.id, entry.isExclude);
+                if (!entry) continue;
+                if (entry.m.anyOf) {
+                    const ln = lineFor(entry.m.key, entry.isExclude
+                        ? entry.m.label : "Any " + entry.m.label);
+                    ln.entries.push(entry);
+                }
+                else lineFor("all", "All of").entries.push(entry);
+            }
+            for (const ln of lines.values()) {
+                if (!ln.entries.length) continue;
+                const row = doc.createElementNS(NS_HTML, "div");
+                row.className = "wv-filter-selected-line";
+                const lab = doc.createElementNS(NS_HTML, "span");
+                lab.className = "wv-filter-selected-line-label";
+                lab.textContent = ln.label;
+                row.appendChild(lab);
+                for (const e of ln.entries) buildPill(e.m, e.id, e.isExclude, row, !!e.m.anyOf);
+                selectedList.appendChild(row);
             }
         };
 
@@ -8810,7 +9307,14 @@ class _FilterMixin {
             const candidates = cached.filter(
                 v => !v.separator && !isPicked(mode.valueId(v)));
             let list;
-            if (!q) {
+            // Tree mode (Collection): the mode decides which rows show;
+            // picked rows STAY (marked) so the hierarchy has no holes.
+            const treeMatch = (v) => {
+                const label = mode.valueLabel(v);
+                return label.toLowerCase().includes(q) || this._wvAcronymMatch(label, q);
+            };
+            if (mode.tree) list = mode.tree.visible(cached, q, treeMatch);
+            else if (!q) {
                 // Empty query → show full cache, preserving group
                 // separators only between two surviving groups.
                 list = [];
@@ -8831,8 +9335,9 @@ class _FilterMixin {
                 return label.toLowerCase().includes(q)
                     || this._wvAcronymMatch(label, q);
             });
-            const overflow = q ? Math.max(0, list.length - SUGGEST_LIMIT) : 0;
-            list = q ? list.slice(0, SUGGEST_LIMIT) : list;
+            const capped = q && !mode.tree;
+            const overflow = capped ? Math.max(0, list.length - SUGGEST_LIMIT) : 0;
+            list = capped ? list.slice(0, SUGGEST_LIMIT) : list;
             if (!list.length) {
                 const empty = doc.createElementNS(NS_HTML, "span");
                 empty.style.opacity = "0.5";
@@ -8866,6 +9371,18 @@ class _FilterMixin {
                 lblSpan.textContent = label;
                 btn.appendChild(lblSpan);
                 if (mode.styleButton) mode.styleButton(btn, id, selected);
+                if (mode.tree) {
+                    if (selected.has(id)) btn.dataset.selected = "true";
+                    else if (excluded.has(id)) btn.dataset.excluded = "true";
+                    mode.tree.decorate(btn, v, q, !q || treeMatch(v), () => {
+                        const keep = kbActive >= 0 ? (kbButtons()[kbActive] || {}).dataset?.wvId : null;
+                        renderButtons();
+                        if (keep != null) {
+                            const i = kbButtons().findIndex((b) => b.dataset.wvId === keep);
+                            if (i >= 0) kbSetActive(i);
+                        }
+                    });
+                }
                 btn.addEventListener("click", async (e) => {
                     e.stopPropagation();
                     const altKey = !!e.altKey;
@@ -8993,9 +9510,34 @@ class _FilterMixin {
                 e.preventDefault();
                 kbSetActive(kbActive <= 0 ? -1 : kbActive - 1);
             }
+            else if (mode.tree && kbActive >= 0 && (e.key === "ArrowRight" || e.key === "ArrowLeft")) {
+                // Tree keys, only once a row is highlighted (before that the
+                // arrows move the caret in the search text).
+                e.preventDefault();
+                const b = btns[kbActive];
+                const id = Number(b && b.dataset.wvId);
+                const v = cached && cached.find((x) => x.id === id);
+                if (!v) return;
+                let focusId = String(id);
+                if (e.key === "ArrowRight") {
+                    if (v.hasChildren && !mode.tree.isOpen(id)) mode.tree.toggle(id, true);
+                }
+                else if (v.hasChildren && mode.tree.isOpen(id)) mode.tree.toggle(id, false);
+                else if (v.parentId != null) focusId = String(v.parentId);   // Left on a leaf/closed row: up to the parent
+                renderButtons();
+                const i = kbButtons().findIndex((x) => x.dataset.wvId === focusId);
+                if (i >= 0) kbSetActive(i);
+            }
             else if (e.key === "Enter") {
                 const target = kbActive >= 0 ? btns[kbActive] : btns[0];
-                if (target) { e.preventDefault(); target.click(); }
+                if (target) {
+                    e.preventDefault();
+                    // Alt+Enter = Alt+click (exclude) in the Collection tree.
+                    if (mode.tree && e.altKey) {
+                        target.dispatchEvent(new (doc.defaultView as any).MouseEvent("click", { bubbles: true, altKey: true }));
+                    }
+                    else target.click();
+                }
             }
             else if (e.key === "Escape") {
                 if (box.style.display !== "none") {
@@ -10363,6 +10905,16 @@ class _FilterMixin {
                     try { this._wvEnsureLinkedLibCache(winOf(section), true); } catch (e) {}
                 }
             });
+        // Retracted: what the item IS, so LEFT with In Multiple Libraries
+        // (MJT 2026-09-28). The same red circled cross the items list puts
+        // before a retracted title (itemTreeRow.js getCSSIcon('cross') +
+        // .retracted; red = --accent-red as in the citation dialog).
+        buildBtn("retracted", "Retracted",
+            "chrome://zotero/skin/16/universal/cross.svg",
+            "Retracted — regular items Zotero marks as retracted (red "
+            + "retraction notice in the item pane), within the current "
+            + "collection or search. Alt+click to exclude them.",
+            "var(--accent-red)");
         const hasSep = doc.createElementNS(NS_HTML, "div");
         hasSep.className = "wv-filter-vertical-separator";
         hasSep.style.marginLeft = "auto";
@@ -11980,12 +12532,14 @@ class _FilterMixin {
             if (!incIds.length) {
                 this._savedSearchResults = null;
             } else {
-                const all = new Set();
+                // Several picked searches: items matching ALL of them (the
+                // intersection -- MJT 2026-09-28). Excludes stay a union.
+                let all: Set<any> | null = null;
                 for (const sid of incIds) {
-                    const matched = await runOne(sid);
-                    for (const itemID of matched) all.add(itemID);
+                    const matched = new Set(await runOne(sid));
+                    all = all == null ? matched : new Set([...all].filter((x) => matched.has(x)));
                 }
-                this._savedSearchResults = all;
+                this._savedSearchResults = all || new Set();
             }
             if (!excIds.length) {
                 this._savedSearchExcludeResults = null;
@@ -12399,6 +12953,17 @@ class _FilterMixin {
     }
 
     _applyItemsListFilter(opts?) {
+        // Sub-collection sets and the pane's multi-collection selection are
+        // rebuilt per pass (_wvCollFilterIds, _wvCollSetGroups).
+        this._wvCollFilterMemo = null;
+        this._wvCollSetMemo = null;
+        this._wvCollSetDropIfInert();
+        // Collection sets are cheap and exact: rebuild them per pass. Saved-
+        // search sets are async and refresh themselves.
+        try {
+            const c: Map<string, any> | undefined = this._wvCollSetSrcCache;
+            if (c) for (const k of [...c.keys()]) if (k.startsWith("C")) c.delete(k);
+        } catch (e) {}
         // Any EXTERNAL apply while a quick search is live also deserves a
         // final pass at quiescence (a chip applied mid-settle races the
         // same rebuild). Internal applies set `_wvViaSetFilter` — among
@@ -13276,7 +13841,7 @@ class _FilterMixin {
             if (state.collections && state.collections.length) return false;
             if (state.savedSearches && state.savedSearches.length) return false;
             const PARENT = new Set(["itemType", "itemTypeExclude",
-                "hasAbstract", "hasDOI", "hasPMID", "hasPMCID", "hasURL",
+                "hasAbstract", "hasDOI", "hasPMID", "hasPMCID", "retracted", "hasURL",
                 "hasAttachment", "publication", "publicationExclude",
                 "readStatus", "readStatusExclude", "inOtherLibrary"]);
             for (const g of (state.groups || [])) {

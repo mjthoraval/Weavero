@@ -242,6 +242,8 @@
         ["hasDOI", () => { G().hasDOI = true; }],
         ["hasPMID", () => { G().hasPMID = true; }],
         ["hasPMCID", () => { G().hasPMCID = true; }],
+        ["retracted", () => { G().retracted = true; }],
+        ["retracted FALSE", () => { G().retracted = false; }],
         ["hasAbstract", () => { G().hasAbstract = true; }],
         ["inOtherLibrary", () => { G().inOtherLibrary = true; }],
         ["inOtherLibrary FALSE", () => { G().inOtherLibrary = false; }],
@@ -511,6 +513,12 @@
         "hasDOI": () => [["resultLevel", "item", null], ["DOI", "isNotEmpty", null]],
         "hasPMID": () => [["resultLevel", "item", null], ["PMID", "isNotEmpty", null]],
         "hasPMCID": () => [["resultLevel", "item", null], ["PMCID", "isNotEmpty", null]],
+        // Zotero's internal `retracted` condition (hidden from the Advanced
+        // Search menu; retractedItems WHERE flag=0 -- search.js). EXACT
+        // unless the library holds items whose citation warning was
+        // switched off (flag 2): Weavero follows isRetracted(), which keeps
+        // them, the native condition drops them.
+        "retracted": () => [["resultLevel", "item", null], ["retracted", "true", null]],
         "hasAbstract": () => [["resultLevel", "item", null], ["abstractNote", "isNotEmpty", null]],
         "annotationColorEXCL": () => [["resultLevel", "annotation", null], ["annotationColor", "isNot", "#ffd400"]],
         "annotationHasComment": () => [["resultLevel", "annotation", null], ["annotationComment", "isNotEmpty", null]],

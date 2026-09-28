@@ -13,6 +13,14 @@ with `defaultXUL=true`. Not a full document; `ET.parse` won't work.
 blank prefs pane). Only the five XML predefined entities exist; everything
 else is numeric: `&#160;` (nbsp), `&#8212;` (em-dash), etc.
 
+**One search block per setting.** Zotero's Settings search hides each direct
+child of `.main-section` that has no match, so a new setting goes in its own
+`<vbox class="wv-block">` — never appended to a neighbour's block — with
+`data-gated-by` listing every master pref it depends on (space-separated) and
+`data-wv-in` listing every enclosing header key (`data-wv-head`), so its
+section header stays visible when it matches (MJT 2026-09-28: a "firefox"
+search showed three whole sections).
+
 ## After every edit
 
 ```bash

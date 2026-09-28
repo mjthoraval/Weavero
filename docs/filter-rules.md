@@ -6,7 +6,7 @@ The complete rule set, in plain English, with worked screenshots. Read top to bo
 
 - [Vocabulary](#vocabulary)
 - [Reading the screenshots](#reading-the-screenshots)
-- [Rule 1 — Same-level same-category chips OR together](#rule-1--same-level-same-category-chips-or-together)
+- [Rule 1 — Several values in one filter: any or all](#rule-1--several-values-in-one-filter-any-or-all)
 - [Rule 2 — Different-category chips AND across the tree](#rule-2--different-category-chips-and-across-the-tree)
 - [Rule 3 — Cross-level chips have a per-kind scope](#rule-3--cross-level-chips-have-a-per-kind-scope)
 - [Rule 4 — Filter groups OR together at the top level](#rule-4--filter-groups-or-together-at-the-top-level)
@@ -92,13 +92,28 @@ Unfiltered, fully expanded:
 <details open>
 <summary>
 
-## Rule 1 — Same-level same-category chips OR together
+## Rule 1 — Several values in one filter: any or all
 
 </summary>
 
-> When you pick several values within one chip, or when two explicitly paired chips at the same level both fire, the row only has to satisfy **one** of them.
+> **Any** where a row can hold only one value; **all** where it can hold many. An annotation has one colour, an item one publication — asking for *both* of two colours could never match, so several picks there are alternatives. An item can carry many tags, authors and collections — so several picks there must **all** match, as in Zotero's own tag selector.
 
-There are **four** such OR groups. The filter popup tints each one as its own card so they're easy to recognize:
+**All of** — several picks must all match (the search box's first line of picked values, labelled *All of*; their chips read *includes all*):
+
+- **Tag** — the row carries every picked tag (within the Tag filter's categories).
+- **Author** — the item has every picked author among its creators. An annotation has one author, so it can only match a single picked name.
+- **Collection** — the item is in every picked collection: the *intersection*. With Zotero's **View → Show Items from Subcollections** on, each picked collection also covers its sub-collections, as the collections pane shows them.
+- **Saved Search** — the item matches every picked search.
+
+Exclusions of these kinds sit on the same line as crossed-out pills and drop an item carrying *any* of them.
+
+**Any of** — several picks are alternatives (one line per kind in the search box, e.g. *Any Publication*):
+
+- **Publication** and **Added By** (the search box), **Read Status** (its own row).
+
+For these, excluding a value clears the picked ones and vice versa: picking *JFM* already means *not Nature*, so the two directions never mix.
+
+The icon-grid filters follow the same rule, in **four** OR groups. The filter popup tints each one as its own card so they're easy to recognize:
 
 - **Annotation Colour** — picking several colours (e.g. yellow + red) matches an annotation of *any* of them.
 - **Annotation Type** — picking several types (highlight, underline, note, …) matches an annotation of *any* of them.

@@ -32,6 +32,10 @@ const HTML_NS = "http://www.w3.org/1999/xhtml";
 const WV_GROUP_COLORS: Array<{ id: string; hex: string }> = [
     { id: "blue", hex: "#4f7ce0" },
     { id: "red", hex: "#d9534f" },
+    // Firefox's 9th group colour (MJT 2026-09-28). Stored by name like the
+    // others; an older Weavero shows an unknown name as blue (the
+    // _tabGroupColorHex fallback), without rewriting it.
+    { id: "orange", hex: "#dc7633" },
     { id: "yellow", hex: "#c99613" },
     { id: "green", hex: "#2e9e5b" },
     { id: "pink", hex: "#d65db1" },
@@ -39,6 +43,24 @@ const WV_GROUP_COLORS: Array<{ id: string; hex: string }> = [
     { id: "cyan", hex: "#2aa1b3" },
     { id: "gray", hex: "#7a7f87" },
 ];
+
+/** Firefox 157 nova group colours, used while Firefox-style tabs are on:
+ *  --tab-group-<c> = light-dark(--color-<c>-50, --color-<c>-30) and
+ *  --tab-group-<c>-text = light-dark(white, --color-<c>-90) (tab.tokens.css
+ *  nova block; gray from the foundation block), resolved against the nova
+ *  palette in tokens-shared.css. l/d = light/dark background, td = dark-theme
+ *  text (light-theme text is white). */
+const WV_NOVA_GROUP_COLORS: { [id: string]: { l: string; d: string; td: string } } = {
+    blue:   { l: "#455fe7", d: "#7bb2ff", td: "#111524" },
+    red:    { l: "#c52d4f", d: "#ff8998", td: "#211014" },
+    yellow: { l: "#b26100", d: "#f3a81e", td: "#270f00" },
+    green:  { l: "#008865", d: "#4acca6", td: "#001e12" },
+    pink:   { l: "#b32e9f", d: "#f585d3", td: "#1e111b" },
+    purple: { l: "#9540c8", d: "#d490ff", td: "#1a1220" },
+    cyan:   { l: "#0a809f", d: "#4cc4e1", td: "#011c23" },
+    gray:   { l: "#515054", d: "#949297", td: "#121114" },
+    orange: { l: "#cd4208", d: "#ff9565", td: "#250e0b" },
+};
 
 class _TabGroupsMixin {
     [k: string]: any;
@@ -112,8 +134,32 @@ class _TabGroupsMixin {
     }
 
     _tabGroupColorHex(colorID: any) {
-        const c = WV_GROUP_COLORS.find(x => x.id === colorID);
-        return (c || WV_GROUP_COLORS[0]).hex;
+        const c = WV_GROUP_COLORS.find(x => x.id === colorID) || WV_GROUP_COLORS[0];
+        // Firefox-style tabs on: nova's group colours, light or dark
+        // (MJT 2026-09-28, comparison C). Every consumer gets a real hex
+        // (menu dots are generated SVGs), so the choice happens here and
+        // _wvTabGroupApplyEverywhere re-renders on a design or theme switch.
+        try {
+            const n = WV_NOVA_GROUP_COLORS[c.id];
+            if (n && (this as any)._getSelectedTabRing()) return this._wvUiIsDark() ? n.d : n.l;
+        } catch (e) {}
+        return c.hex;
+    }
+
+    /** Text on a group chip: white, except nova's dark text in dark theme
+     *  with Firefox-style tabs (--tab-group-<colour>-text). */
+    _tabGroupTextHex(colorID: any) {
+        try {
+            const c = WV_GROUP_COLORS.find(x => x.id === colorID) || WV_GROUP_COLORS[0];
+            const n = WV_NOVA_GROUP_COLORS[c.id];
+            if (n && (this as any)._getSelectedTabRing() && this._wvUiIsDark()) return n.td;
+        } catch (e) {}
+        return "#ffffff";
+    }
+
+    _wvUiIsDark(): boolean {
+        try { const w: any = Zotero.getMainWindow(); return !!(w && w.matchMedia("(prefers-color-scheme: dark)").matches); }
+        catch (e) { return false; }
     }
 
     /** The LIVE group containing (libraryID, itemKey), or null. SAVED (parked)
@@ -241,9 +287,333 @@ class _TabGroupsMixin {
 
     // ---- Styles -------------------------------------------------------------
 
-    _ensureTabGroupStyles(doc: any) {
+    /** Firefox 157 "nova" tab shape: pill-shaped tabs (MJT 2026-09-25: "I
+     *  want the rounded shape") plus the selected-tab outline (pref
+     *  weavero.selectedTabRing, default ON since 2026-09-28). Firefox draws it as a 1px transparent
+     *  border with the gradient painted into `background-clip: border-area`
+     *  (tabs.css, only for [selected]:not([multiselected])); Zotero's Gecko
+     *  140 lacks border-area and Zotero already uses the tab's border as its
+     *  separator, so the ring is a masked ::before (free on Zotero tabs --
+     *  ::after carries the group line and the anchor mark). Same colours as
+     *  nova: --color-violet-30 #b89cff -> --color-orange-30 #ff9565 at 96deg.
+     *  Multi-selected tabs keep Weavero's accent outlines (Firefox's model);
+     *  high-contrast modes keep Zotero's look (Firefox drops the gradient
+     *  there too). Both strips: Zotero's tab bar and the reader/note-window
+     *  strip, which copies Zotero's selected tab. */
+    _wvEnsureSelectedTabRing(doc: any) {
         try {
-            const STYLE_VERSION = "25";
+            if (!doc) return;
+            const on = !!(this as any)._getSelectedTabRing();
+            // nova's group colours differ per theme: re-render chips and lines
+            // when the theme flips. One listener per window, calling the LIVE
+            // plugin (it survives reloads; a stale instance does nothing).
+            try {
+                const win: any = doc.defaultView;
+                if (win && win.matchMedia && !win._wvThemeMQ) {
+                    const mq = win.matchMedia("(prefers-color-scheme: dark)");
+                    const fn = () => {
+                        try { const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; if (p && !p._wvDestroyed && p._getSelectedTabRing()) p._wvTabGroupApplyEverywhere(); } catch (e) {}
+                    };
+                    mq.addEventListener("change", fn);
+                    win._wvThemeMQ = { mq, fn };
+                }
+            } catch (e) {}
+            // Narrow tabs: close buttons only on the selected tab (Firefox).
+            try { this._wvScheduleCloseButtons(doc.defaultView); } catch (e) {}
+            const old = doc.getElementById("wv-selected-tab-ring");
+            if (!on) { if (old) old.remove(); return; }
+            const VER = "12";
+            if (old && old.getAttribute("data-wv-ver") === VER) return;
+            if (old) old.remove();
+            const st = doc.createElementNS(HTML_NS, "style");
+            st.id = "wv-selected-tab-ring";
+            st.setAttribute("data-wv-ver", VER);
+            // Pinned tabs are drawn by Weavero's MIRRORS (#wv-pinned-mirrors
+            // .wv-pinned-mirror; the real pinned .tab is display:none), with
+            // their own 6px radius + Zotero's raised shadow (tabs.ts
+            // _ensurePinnedTabStyles) -- missed in dev.3 (MJT 2026-09-28).
+            // The #wv-pinned-mirrors id makes these win over that sheet
+            // whatever the insertion order. Mirrors never carry wv-multisel.
+            const MIR = "#tab-bar-container #wv-pinned-mirrors .wv-pinned-mirror";
+            const sel = "#tab-bar-container .tab.selected:not(.wv-multisel),"
+                + " .wv-window-tabs .wv-window-tab.wv-active:not(.wv-multisel),"
+                + " " + MIR + ".selected";
+            const ring = "#tab-bar-container .tab.selected:not(.wv-multisel)::before,"
+                + " .wv-window-tabs .wv-window-tab.wv-active:not(.wv-multisel)::before,"
+                + " " + MIR + ".selected::before";
+            st.textContent = [
+                // nova's pill shape, for EVERY tab (hover, selected, multi-
+                // selected, the group-create drop target): --tab-border-radius
+                // -> --button-border-radius -> --border-radius-xlarge = 24px
+                // (Firefox 157 tokens-shared.css, nova layer; 8px before).
+                // Taller than half a 28px tab, so the ends are fully round.
+                // (.tabs: the group sheet's 6px drop-target radius has the
+                // same specificity and is inserted after this sheet.)
+                "#tab-bar-container .tab, #tab-bar-container .tabs .tab.wv-group-create-target,",
+                ".wv-window-tabs .wv-window-tab { border-radius: 24px; }",
+                MIR + " { border-radius: 24px; position: relative; }",
+                // Pinned tabs are CIRCLES in nova: a square as wide as the tab
+                // is tall, padding (height - icon) / 2 (tabs.css
+                // --tab-collapsed-background-width: var(--tab-min-height),
+                // Firefox 157), and the 24px radius rounds it. Zotero's tab is
+                // 28px tall: 28px pins (Weavero's own are 36px) with 6px
+                // padding around the 16px icon (MJT 2026-09-28). The mirror,
+                // the real pinned tab when unmirrored, and the "will be
+                // pinned" drag preview; never the UNPIN preview, which
+                // restores full width (tabs.ts, 1,4,0) -- hence the :not().
+                MIR + " { width: 28px; }",
+                "#tab-bar-container .tabs .tab.wv-pinned-tab:not([data-wv-pin-preview='unpin']),",
+                "#tab-bar-container .tabs .tab[data-wv-pin-preview='pin'],",
+                "#tab-bar-container .tabs .tab[data-wv-pin-preview='pin'].selected {",
+                "  width: 28px !important; min-width: 28px !important; max-width: 28px !important;",
+                "  flex: 0 0 28px !important;",
+                "  padding-inline-start: 6px !important; padding-inline-end: 6px !important;",
+                "}",
+                // The reader/note-window strip's own pinned tabs (reader.ts,
+                // `.wv-window-tab.wv-pinned`, 36px) -- same circle.
+                ".wv-window-tabs .wv-window-tab.wv-pinned {",
+                "  flex: 0 0 28px; width: 28px; min-width: 28px; max-width: 28px;",
+                "}",
+                // Inside the tab, Firefox 157 compact nova (tabs.css), no change
+                // to the tab's own box (MJT 2026-09-28 comparison #2-#4):
+                // icon -> title gap = --tab-icon-end-margin 5.5px (Zotero 4px);
+                "#tab-bar-container .tab .tab-name,",
+                ".wv-window-tabs .wv-window-tab .wv-window-tab-title { margin-inline-start: 5.5px; }",
+                // close button = 20px (12px glyph + 4px padding) with radius
+                // --tab-border-radius - 3px, i.e. a circle, 3px from the pill's
+                // end (margin-inline-end: -padding/2). Zotero: 16px, 3px
+                // corners, 6px in. The title's end padding grows 22 -> 23px so
+                // it never runs under the bigger button.
+                // :not(:first-child): Zotero hides the LIBRARY tab's close with
+                // `.tab:first-child .tab-close { display: none }` -- a bare
+                // `.tab .tab-close { display: flex }` here out-ranked it and
+                // gave My Library an x (dev.6, caught in the screenshot).
+                "#tab-bar-container .tab:not(:first-child) .tab-close,",
+                ".wv-window-tabs .wv-window-tab .wv-window-tab-close {",
+                "  width: 20px; height: 20px; inset-inline-end: 3px; border-radius: 50%;",
+                "  display: flex; align-items: center; justify-content: center; line-height: normal;",
+                "}",
+                "#tab-bar-container .tabs > .tab:not(.wv-pinned-tab):not(:first-child),",
+                ".wv-window-tabs .wv-window-tab:not(.wv-pinned) { padding-inline-end: 23px; }",
+                // Narrow or overflowing strip (_wvScheduleCloseButtons): only
+                // the selected tab keeps its close button, even on hover
+                // (Firefox closebuttons="activetab", tabs.css), and the others
+                // give its room back to the title -- by letting the TITLE run
+                // 17px into the unchanged 23px end padding (to 6px from the
+                // end), never by changing the padding: Zotero's tabs are
+                // `flex: 1 1 200px; box-sizing: border-box`, so a shrinking
+                // tab with less padding ends up narrower, and the selected tab
+                // (23px) was ~6px wider than the rest -- every switch moved the
+                // tabs sideways (MJT 2026-09-28, dev.13 -> dev.14).
+                "#tab-bar-container[wv-closebuttons=\"activetab\"] .tabs > .tab:not(.selected) .tab-close,",
+                ".wv-window-tabs[wv-closebuttons=\"activetab\"] .wv-window-tab:not(.wv-active) .wv-window-tab-close { display: none; }",
+                "#tab-bar-container[wv-closebuttons=\"activetab\"] .tabs > .tab:not(.selected):not(.wv-pinned-tab):not(:first-child) .tab-name,",
+                ".wv-window-tabs[wv-closebuttons=\"activetab\"] .wv-window-tab:not(.wv-active):not(.wv-pinned) .wv-window-tab-title { margin-inline-end: -17px; }",
+                // title fade = --tab-label-mask-size 1em, 2em while hovered
+                // (Zotero: 20px fixed).
+                "#tab-bar-container .tab .tab-name.overflowing:dir(ltr),",
+                ".wv-window-tabs .wv-window-tab .wv-window-tab-title.overflowing:dir(ltr) {",
+                "  mask-image: linear-gradient(to left, transparent, black 1em);",
+                "}",
+                "#tab-bar-container .tab .tab-name.overflowing:dir(rtl),",
+                ".wv-window-tabs .wv-window-tab .wv-window-tab-title.overflowing:dir(rtl) {",
+                "  mask-image: linear-gradient(to right, transparent, black 1em);",
+                "}",
+                "#tab-bar-container .tab:hover .tab-name.overflowing:dir(ltr),",
+                ".wv-window-tabs .wv-window-tab:hover .wv-window-tab-title.overflowing:dir(ltr) {",
+                "  mask-image: linear-gradient(to left, transparent, black 2em);",
+                "}",
+                "#tab-bar-container .tab:hover .tab-name.overflowing:dir(rtl),",
+                ".wv-window-tabs .wv-window-tab:hover .wv-window-tab-title.overflowing:dir(rtl) {",
+                "  mask-image: linear-gradient(to right, transparent, black 2em);",
+                "}",
+                // #6 (MJT 2026-09-28): unselected tabs are FILLED pills, as in
+                // nova (--tab-background-color: var(--button-background-color));
+                // hover = --toolbarbutton-background-color-hover. Values from
+                // Firefox 157's token files (tokens-platform / tokens-shared,
+                // non-high-contrast chrome) -- read, not rendered: compare by eye.
+                "@media not ((prefers-contrast) or (forced-colors)) {",
+                "#tab-bar-container .tabs > .tab:not(.selected):not(.wv-multisel),",
+                MIR + ":not(.selected),",
+                ".wv-window-tabs .wv-window-tab:not(.wv-active):not(.wv-multisel) {",
+                "  background-color: rgba(207, 207, 216, 0.33);",
+                "}",
+                "#tab-bar-container .tabs > .tab:not(.selected):not(.wv-multisel):hover,",
+                MIR + ":not(.selected):hover,",
+                ".wv-window-tabs .wv-window-tab:not(.wv-active):not(.wv-multisel):hover {",
+                "  background-color: rgba(117, 102, 159, 0.25);",
+                "}",
+                "@media (prefers-color-scheme: dark) {",
+                "  #tab-bar-container .tabs > .tab:not(.selected):not(.wv-multisel),",
+                "  " + MIR + ":not(.selected),",
+                "  .wv-window-tabs .wv-window-tab:not(.wv-active):not(.wv-multisel) {",
+                "    background-color: rgba(0, 0, 0, 0.33);",
+                "  }",
+                "  #tab-bar-container .tabs > .tab:not(.selected):not(.wv-multisel):hover,",
+                "  " + MIR + ":not(.selected):hover,",
+                "  .wv-window-tabs .wv-window-tab:not(.wv-active):not(.wv-multisel):hover {",
+                "    background-color: rgba(182, 170, 217, 0.25);",
+                "  }",
+                "}",
+                "}",   // not high-contrast
+                // #7: multi-selected tabs keep Weavero's accent outline (1px,
+                // 2px on the active one = Firefox's focus-colour outline) but
+                // take the SELECTED background instead of the accent tint
+                // (Firefox: [multiselected] uses --tab-background-color-selected).
+                // Doubled class: out-ranks the tint rules (.wv-multisel and
+                // .wv-multisel.selected / .wv-active, this file) in any sheet
+                // order; the accent box-shadow outlines are untouched.
+                // #8: the selected tab's fill is nova's --background-color-box
+                // = light-dark(--color-white, --color-gray-70) in the brand-nova
+                // layer: #ffffff / #252428 (tokens-brand.css, tokens-shared.css
+                // nova layer, Firefox 157). Zotero: var(--material-button).
+                // Multi-selection outline colour (MJT 2026-09-28): Firefox's
+                // [multiselected] outline is --focus-outline-color =
+                // --color-accent-primary, which nova's browser theme sets to
+                // light-dark(--color-violet-50, --color-violet-30) = #764edd /
+                // #b89cff (tokens-platform/-shared, Firefox 157). Widths stay
+                // Weavero's = Firefox's: 1px, 2px on the selected one.
+                ":root { --wv-ff-tab-selected: #ffffff; --wv-ff-focus: #764edd; }",
+                "@media (prefers-color-scheme: dark) { :root { --wv-ff-tab-selected: #252428; --wv-ff-focus: #b89cff; } }",
+                "@media not ((prefers-contrast) or (forced-colors)) {",
+                sel + " { background: var(--wv-ff-tab-selected); }",
+                "#tab-bar-container .tab.wv-multisel.wv-multisel.wv-multisel,",
+                ".wv-window-tabs .wv-window-tab.wv-multisel.wv-multisel.wv-multisel {",
+                "  background: var(--wv-ff-tab-selected); box-shadow: inset 0 0 0 1px var(--wv-ff-focus);",
+                "}",
+                "#tab-bar-container .tab.wv-multisel.wv-multisel.wv-multisel.selected,",
+                ".wv-window-tabs .wv-window-tab.wv-multisel.wv-multisel.wv-multisel.wv-active {",
+                "  box-shadow: inset 0 0 0 2px var(--wv-ff-focus);",
+                "}",
+                "}",
+                // #9: the group chip as nova's group label -- as tall as a tab
+                // (--tab-group-label-size = --tab-min-height, 28px compact),
+                // pill (size / 2) with a small bottom-start corner (size / 8),
+                // min 28px wide, 8px side padding, semibold at the tab's font
+                // size (tabs.css .tab-group-label, nova block). Colours stay
+                // Weavero's group colour + white text.
+                "#tab-bar-container .wv-tab-group-chip,",
+                ".wv-window-tabs .wv-tab-group-chip {",
+                "  height: 28px; min-width: 28px; box-sizing: border-box; justify-content: center;",
+                "  padding: 0 8px; border-radius: 14px; border-end-start-radius: 3.5px;",
+                "  font-size: inherit; font-weight: 600; line-height: 28px;",
+                // C: nova's label text colour (white / dark in dark theme),
+                // set per chip by _wvTabGroupChipSync.
+                "  color: var(--wv-group-text, #fff);",
+                "}",
+                // D: the group line reaches 2px past each member on BOTH sides
+                // (nova .tab-group-line inset-inline: -tab-overflow-clip-margin),
+                // so adjacent members join across the 4px gap; the first no
+                // longer runs back to the chip, the last overhangs by 2px.
+                // (.tabs / doubled class: this sheet is inserted BEFORE the
+                // tab-group sheet, so equal specificity would lose to its
+                // left: -4px / -7px.)
+                "#tab-bar-container .tabs .tab.wv-grouped-tab::after,",
+                "#tab-bar-container .tabs .tab.wv-group-first::after,",
+                "#tab-bar-container .tabs .tab[data-wv-drag-join]::after,",
+                ".wv-window-tabs .wv-window-tab.wv-grouped-tab.wv-grouped-tab::after,",
+                ".wv-window-tabs .wv-window-tab.wv-group-first.wv-group-first::after { left: -2px; right: -2px; }",
+                "@media not ((prefers-contrast) or (forced-colors)) {",
+                // A: close-button hover = the tab hover tint
+                // (--tab-close-button-background-color-hover ->
+                // --toolbarbutton-background-color-hover, nova).
+                "#tab-bar-container .tab:not(:first-child) .tab-close:hover,",
+                ".wv-window-tabs .wv-window-tab .wv-window-tab-close:hover { background-color: rgba(117, 102, 159, 0.25); }",
+                "@media (prefers-color-scheme: dark) {",
+                "  #tab-bar-container .tab:not(:first-child) .tab-close:hover,",
+                "  .wv-window-tabs .wv-window-tab .wv-window-tab-close:hover { background-color: rgba(182, 170, 217, 0.25); }",
+                "}",
+                // B: the cross takes the tab's text colour
+                // (--tab-close-button-text-color -> --tab-text-color); both
+                // crosses are 8px (Zotero x-8.svg 4..12 of 16, Firefox
+                // close-12.svg 2..10 of 12), so only the colour differs.
+                "#tab-bar-container .tab .tab-close .icon,",
+                ".wv-window-tabs .wv-window-tab .wv-window-tab-close .icon { fill: currentColor; }",
+                "}",
+                "@media not ((prefers-contrast) or (forced-colors)) {",
+                // nova: --tab-box-shadow-selected: none
+                sel + " { box-shadow: none; }",
+                ring + " {",
+                "  content: \"\"; position: absolute; inset: 0; border-radius: inherit;",
+                "  padding: 1px; box-sizing: border-box; pointer-events: none;",
+                "  background: linear-gradient(96deg, #b89cff 20.68%, #ff9565 79.34%);",
+                // keep only the 1px band between the border box and the content box
+                "  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);",
+                "  mask-composite: exclude;",
+                "}",
+                "}",
+            ].join("\n");
+            (doc.head || doc.documentElement).appendChild(st);
+        } catch (e) { Zotero.debug("[Weavero] _wvEnsureSelectedTabRing err: " + e); }
+    }
+
+    /** Firefox's close-button rule (tabs.js _updateCloseButtons, Firefox
+     *  157): when the strip overflows, or the first unpinned tab is at most
+     *  browser.tabs.tabClipWidth (140px) wide, only the SELECTED tab keeps
+     *  its close button -- a click on a narrow tab should select it, not
+     *  close it (MJT 2026-09-28). Measured two frames after a change, like
+     *  Firefox; marks the strip with wv-closebuttons="activetab". Firefox-
+     *  style design only. Main tab bar (overflow = Zotero's `scrollable`
+     *  class on .tab-bar-inner-container) and the reader/note strips. */
+    _wvScheduleCloseButtons(win: any) {
+        if (!win || win._wvCloseBtnPending) return;
+        const doc = win.document;
+        // Tab widths also change on a plain window resize (no mutation):
+        // one ResizeObserver per window, calling the LIVE plugin.
+        try {
+            if (!win._wvCloseBtnRO && win.ResizeObserver) {
+                const ro = new win.ResizeObserver(() => {
+                    try { const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; if (p && !p._wvDestroyed) p._wvScheduleCloseButtons(win); } catch (e) {}
+                });
+                const t1 = doc.querySelector("#tab-bar-container .tab-bar-inner-container");
+                const t2 = doc.querySelector(".wv-window-tabs");
+                if (t1) ro.observe(t1);
+                if (t2) ro.observe(t2);
+                if (t1 || t2) win._wvCloseBtnRO = ro;
+            }
+        } catch (e) {}
+        win._wvCloseBtnPending = true;
+        const run = () => {
+            win._wvCloseBtnPending = false;
+            try {
+                const on = !!(this as any)._getSelectedTabRing();
+                const CLIP = 140;   // browser.tabs.tabClipWidth default (firefox.js)
+                const bar = doc.getElementById("tab-bar-container");
+                if (bar) {
+                    let narrow = false;
+                    if (on) {
+                        const inner = bar.querySelector(".tab-bar-inner-container");
+                        narrow = !!(inner && inner.classList.contains("scrollable"));
+                        if (!narrow) {
+                            const t = Array.from(bar.querySelectorAll(".tabs > .tab") as any[]).find((x: any) =>
+                                x.dataset.id !== "zotero-pane" && !x.classList.contains("wv-pinned-tab") && x.getBoundingClientRect().width > 0);
+                            narrow = !!t && t.getBoundingClientRect().width <= CLIP;
+                        }
+                    }
+                    if (narrow) { if (bar.getAttribute("wv-closebuttons") !== "activetab") bar.setAttribute("wv-closebuttons", "activetab"); }
+                    else if (bar.hasAttribute("wv-closebuttons")) bar.removeAttribute("wv-closebuttons");
+                }
+                const strip = doc.querySelector(".wv-window-tabs");
+                if (strip) {
+                    let narrow = false;
+                    if (on) {
+                        const t = Array.from(strip.querySelectorAll(".wv-window-tab") as any[]).find((x: any) =>
+                            !x.classList.contains("wv-pinned") && x.getBoundingClientRect().width > 0);
+                        narrow = !!t && t.getBoundingClientRect().width <= CLIP;
+                    }
+                    if (narrow) { if (strip.getAttribute("wv-closebuttons") !== "activetab") strip.setAttribute("wv-closebuttons", "activetab"); }
+                    else if (strip.hasAttribute("wv-closebuttons")) strip.removeAttribute("wv-closebuttons");
+                }
+            } catch (e) {}
+        };
+        try { win.requestAnimationFrame(() => win.requestAnimationFrame(run)); }
+        catch (e) { run(); }
+    }
+
+    _ensureTabGroupStyles(doc: any) {
+        try { this._wvEnsureSelectedTabRing(doc); } catch (e) {}
+        try {
+            const STYLE_VERSION = "27";
             const old = doc.getElementById("wv-tab-group-styles");
             if (old) {
                 if (old.getAttribute("data-wv-ver") === STYLE_VERSION) return;
@@ -257,8 +627,16 @@ class _TabGroupsMixin {
                 // 4px flex gap to the previous member (7px for the first member,
                 // reaching the chip), so the group reads as ONE continuous line,
                 // like Firefox. (.tab is position:relative + overflow:visible.)
+                // BELOW the tab, in the gap under it, as Firefox draws its
+                // .tab-group-line: inset-block-end = toolbar-border-distance
+                // (0px in COMPACT density, tabs.css:18) inside the tab's <stack>,
+                // which XUL makes position:relative and which includes the 4px
+                // tab margin -> the line's bottom edge 4px under the pill
+                // (Firefox 157; -3px until 2026-09-28 took the normal-density 1px).
+                // Inside the tab (bottom: 0) it covered the bottom edge of the
+                // selected tab's outline ring (MJT 2026-09-25).
                 "#tab-bar-container .tab.wv-grouped-tab::after {",
-                "  content: \"\"; position: absolute; bottom: 0; height: 2px;",
+                "  content: \"\"; position: absolute; bottom: -4px; height: 2px;",
                 "  left: -4px; right: 0; border-radius: 1px;",
                 "  background: var(--wv-group-color, #4f7ce0);",
                 "  pointer-events: none;",
@@ -270,7 +648,7 @@ class _TabGroupsMixin {
                 // rewrites className on every re-render and would strip a class
                 // mid-drag; it leaves data-* + inline style untouched.
                 "#tab-bar-container .tab[data-wv-drag-join]::after {",
-                "  content: \"\"; position: absolute; bottom: 0; height: 2px;",
+                "  content: \"\"; position: absolute; bottom: -4px; height: 2px;",
                 "  left: -4px; right: 0; border-radius: 1px;",
                 "  background: var(--wv-group-color, #4f7ce0);",
                 "  pointer-events: none;",
@@ -308,7 +686,7 @@ class _TabGroupsMixin {
                 // READER-window strip twins (Weavero-owned .wv-window-tab strip).
                 ".wv-window-tabs .wv-window-tab.wv-grouped-tab { position: relative; }",
                 ".wv-window-tabs .wv-window-tab.wv-grouped-tab::after {",
-                "  content: \"\"; position: absolute; bottom: 0; height: 2px;",
+                "  content: \"\"; position: absolute; bottom: -4px; height: 2px;",
                 "  left: -4px; right: 0; border-radius: 1px;",
                 "  background: var(--wv-group-color, #4f7ce0);",
                 "  pointer-events: none;",
@@ -1293,6 +1671,10 @@ class _TabGroupsMixin {
             const hex = this._tabGroupColorHex(g.color);
             if (chip.style.getPropertyValue("--wv-group-color") !== hex) {
                 chip.style.setProperty("--wv-group-color", hex);
+            }
+            const txt = this._tabGroupTextHex(g.color);
+            if (chip.style.getPropertyValue("--wv-group-text") !== txt) {
+                chip.style.setProperty("--wv-group-text", txt);
             }
             const label = chip.querySelector(".wv-tgchip-label");
             if (label && label.textContent !== (g.name || "")) label.textContent = g.name || "";
@@ -3745,6 +4127,7 @@ class _TabGroupsMixin {
                 chip.style.opacity = "0.8";
                 chip.style.pointerEvents = "none";
                 chip.style.setProperty("--wv-group-color", hex);
+                chip.style.setProperty("--wv-group-text", this._tabGroupTextHex(g && g.color));
                 const label = doc.createElementNS(HTML_NS, "span");
                 label.className = "wv-tgchip-label";
                 label.textContent = (g && g.name) || "Group";
@@ -4707,7 +5090,8 @@ class _TabGroupsMixin {
                 name: g.name || "",
                 placeholder: "Group name",
                 swatches: WV_GROUP_COLORS.map((c: any) => ({
-                    hex: c.hex, selected: c.id === g.color, radius: "4px",
+                    // the colour the chip will show (nova's with Firefox-style tabs)
+                    hex: this._tabGroupColorHex(c.id), selected: c.id === g.color, radius: "4px",
                 })),
                 onAccept: ({ name, swatchIndex }: any) => {
                     try {
@@ -5240,7 +5624,7 @@ class _TabGroupsMixin {
         for (const c of WV_GROUP_COLORS) {
             const sw = doc.createElementNS(HTML_NS, "div");
             sw.className = "wv-tg-swatch" + (c.id === selected ? " wv-selected" : "");
-            sw.style.background = c.hex;
+            sw.style.background = this._tabGroupColorHex(c.id);   // what the chip will show
             sw.setAttribute("title", c.id);
             sw.addEventListener("click", () => {
                 try {

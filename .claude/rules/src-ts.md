@@ -117,6 +117,12 @@ name to a Zotero object, window, or document.
   REPLACES what it owns; teardown removes everything it injects; a guard
   spec re-injects after a simulated teardown. Guard:
   `test/plugins-search.spec.js`.
+- Never vary PADDING between Zotero tabs by state (selected, narrow...):
+  they are `flex: 1 1 200px; box-sizing: border-box`, so while shrinking a
+  tab with more padding comes out wider -- the selected tab grew ~6 px and
+  every switch shifted the strip (2026-09-28). Give a title extra room with
+  a negative margin on the title instead. Guard:
+  `test/selected-tab-ring.spec.js`.
 - A Weavero container that holds elements with native class names (a
   pinned `.row`, a copied `.cell`) needs a `wv-` ID, not just a `wv-`
   class: the shutdown sweep `_wvStripWindowChrome` removes `[id^='wv-']`

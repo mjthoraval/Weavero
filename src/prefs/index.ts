@@ -123,32 +123,39 @@
         for (const el of Array.from(doc.querySelectorAll(".wv-children[data-master]")) as any[]) {
             items.push({ el, pref: el.getAttribute("data-master") });
         }
+        // [data-gated-by] may list several prefs (a search block under a
+        // sub-section: the section master AND the sub-section's): greyed
+        // while ANY of them is off.
         for (const el of Array.from(doc.querySelectorAll("[data-gated-by]")) as any[]) {
             items.push({ el, pref: el.getAttribute("data-gated-by") });
         }
         if (!items.length) return;
         const win = doc.defaultView || (typeof window !== "undefined" ? window : null);
         const observers: any[] = [];
-        const sync = (el, pref) => {
-            let on = true;
+        const isOn = (pref) => {
             try {
                 const v = Zotero.Prefs.get("weavero." + pref);
-                on = v === undefined ? true : !!v;
-            } catch (e) {}
-            el.classList.toggle("wv-disabled", !on);
+                return v === undefined ? true : !!v;
+            } catch (e) { return true; }
+        };
+        const sync = (el, prefs: string[]) => {
+            el.classList.toggle("wv-disabled", !prefs.every(isOn));
         };
         for (const { el, pref } of items) {
             if (!pref || el._wvMasterBound) continue;
             el._wvMasterBound = true;
-            sync(el, pref);
-            try {
-                const full = PREFIX + pref;
-                const obs = {
-                    observe: (_s, _t, data) => { if (data === full) sync(el, pref); }
-                };
-                Services.prefs.addObserver(full, obs, false);
-                observers.push({ full, obs });
-            } catch (e) { dbg("master observer err: " + e); }
+            const prefs = String(pref).split(/\s+/).filter(Boolean);
+            sync(el, prefs);
+            for (const one of prefs) {
+                try {
+                    const full = PREFIX + one;
+                    const obs = {
+                        observe: (_s, _t, data) => { if (data === full) sync(el, prefs); }
+                    };
+                    Services.prefs.addObserver(full, obs, false);
+                    observers.push({ full, obs });
+                } catch (e) { dbg("master observer err: " + e); }
+            }
         }
         if (win && observers.length) {
             win.addEventListener("unload", () => {
@@ -172,8 +179,11 @@
         if (!tabs.length || !mainSec) return;
         nav._wvNavBound = true;
         const targetIds = tabs.map(t => t.getAttribute("data-target"));
+        // Sections are split into search blocks (.wv-block): track them too,
+        // or the strip stops following the scroll inside a long section.
         const groupboxes = Array.from(mainSec.children).filter(
-            (g: any) => g.localName === "groupbox") as any[];
+            (g: any) => g.localName === "groupbox"
+                || (g.classList && g.classList.contains("wv-block"))) as any[];
         // Assign each groupbox a group index = the most recent target id at/above it.
         let gi = 0;
         for (const gb of groupboxes) {
@@ -322,7 +332,7 @@
             const cb: any = head.querySelector("checkbox[preference]");
             const master = cb ? (cb.getAttribute("preference") || "").replace(PREFIX, "") : "";
             const sibs = master
-                ? (Array.from(doc.querySelectorAll('[data-gated-by="' + master + '"]')) as any[])
+                ? (Array.from(doc.querySelectorAll('[data-gated-by~="' + master + '"]')) as any[])
                 : [];
             let arrow: any = head.querySelector(".wv-collapse-arrow");
             if (!arrow) {
@@ -394,6 +404,32 @@
         apply();   // sync now in case the pane mounts with a search already typed
     }
 
+    /** Search blocks: Zotero's Settings search hides every direct child of
+     *  the pane with no match, so each setting is its own block and its
+     *  section / sub-section / group header ([data-wv-head="K"]) is another.
+     *  Keep a header shown while any block under it ([data-wv-in~="K"])
+     *  survives the search -- a CSS :has() rule per key, so there is no race
+     *  with Zotero's async, root-by-root search pass. Zotero's own rule is
+     *  `.hidden-by-search { display: none !important }`; the higher
+     *  specificity here wins, and `revert` restores the element's own
+     *  display. A header with no surviving block stays hidden, so a search
+     *  with no Weavero match still hides the whole pane. */
+    function bindSearchHeaders(doc) {
+        const ms: any = wvMainSection(doc);
+        if (!ms || ms._wvSearchHeadBound) return;
+        ms._wvSearchHeadBound = true;
+        const keys = Array.from(new Set((Array.from(ms.querySelectorAll("[data-wv-head]")) as any[])
+            .map((e) => e.getAttribute("data-wv-head")).filter(Boolean)));
+        if (!keys.length) return;
+        const rules = keys.map((k) =>
+            `.main-section > [data-wv-head="${k}"].hidden-by-search:has(~ [data-wv-in~="${k}"]:not(.hidden-by-search))`
+            + " { display: revert !important; }").join("\n");
+        // Into the pane's existing <style>: a new element in .main-section
+        // would be one more search root of its own.
+        const st: any = ms.querySelector("style");
+        if (st) st.textContent += "\n" + rules;
+    }
+
     /** Don't toggle a checkbox / radio when the user was SELECTING its label
      *  text (drag-to-select, so it can be copied). Native XUL toggles on the
      *  mouseup `click`; if the gesture moved the pointer or left a non-empty
@@ -439,6 +475,7 @@
         try { bindCollapse(doc); } catch (e) { dbg("bindCollapse err: " + e); }
         try { bindReaderIconPreview(doc); } catch (e) { dbg("bindReaderIconPreview err: " + e); }
         try { bindSearchExpand(doc); } catch (e) { dbg("bindSearchExpand err: " + e); }
+        try { bindSearchHeaders(doc); } catch (e) { dbg("bindSearchHeaders err: " + e); }
         try { bindLabelClickGuard(doc); } catch (e) { dbg("bindLabelClickGuard err: " + e); }
     }
 

@@ -4938,7 +4938,9 @@ class _PaneMixin {
             const eff = this._effectiveSelectionTargetKinds();
             const allOn = !!(eff.parent && eff.attachment && eff.note && eff.annotation);
             const state = this._filterState;
-            const filterActive = !!state && this._isFilterActive(state);
+            // The ∩ multi-collection mode only narrows the rows; it paints
+            // no match / non-target styling (independent of the filter).
+            const filterActive = !!state && this._wvUserFilterActive(state);
             const qsValue = this._currentQuickSearchValue;
             const rows: any = tree.querySelectorAll(".row");
             for (const row of rows) {

@@ -1529,15 +1529,64 @@ export const PLUGIN_CSS = [
     "  flex: 0 1 auto; min-width: 0;",
     "  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
     "}",
+    // Collection tree (MJT 2026-09-28): a twisty column before the folder
+    // icon (empty on leaves, so names line up per level), rotated when
+    // open; ancestors that do not match the typed text are dimmed, like
+    // Zotero's collection search (`context-row`).
+    ".wv-filter-tag-list[data-vertical=\"true\"] .wv-coll-tw {",
+    "  flex: 0 0 12px; width: 12px; text-align: center;",
+    "  font-size: 10px; line-height: 1; opacity: 0.7;",
+    "  transition: transform 0.1s ease-out;",
+    "}",
+    ".wv-filter-tag-list[data-vertical=\"true\"] .wv-coll-tw.wv-open { transform: rotate(90deg); }",
+    ".wv-filter-tag-list[data-vertical=\"true\"] .wv-coll-tw.wv-closed:hover,",
+    ".wv-filter-tag-list[data-vertical=\"true\"] .wv-coll-tw.wv-open:hover { opacity: 1; }",
+    ".wv-filter-tag-list[data-vertical=\"true\"] .wv-filter-opt.wv-coll-context { opacity: 0.55; }",
     // Selected-pills row — chips below the search box for values
     // the user has already picked. Each pill carries an × to
     // remove. Hidden when the selected set is empty.
     ".wv-filter-selected-list {",
-    "  display: flex; flex-wrap: wrap; gap: 3px;",
+    "  display: flex; flex-direction: column; gap: 3px;",
     "  margin-top: 2px;",
     "}",
     ".wv-filter-selected-list:empty {",
     "  display: none;",
+    "}",
+    // The ∩ toggle at the right end of Zotero's "N collections selected"
+    // header row (MJT 2026-09-28): lit = items in ALL selected collections,
+    // red + crossed = in some but NOT all (the filters' exclusion look).
+    ".cell.library-header .wv-collset-btn {",
+    "  margin-inline-start: auto; flex: 0 0 auto;",
+    "  height: 18px; min-width: 22px; padding: 0 6px;",
+    "  font-size: 13px; line-height: 16px; font-weight: 600;",
+    "  border: 1px solid rgba(127,127,127,0.45); border-radius: 4px;",
+    "  background: transparent; color: inherit; cursor: default;",
+    "  -moz-window-dragging: no-drag;",
+    // Zotero lifts the header text with padding-bottom: 3px on the cell
+    // (_item-tree.scss); cancel it for the button so its box sits
+    // centred in the ROW, same gap above and below (MJT 2026-09-28).
+    "  margin-block-end: -3px;",
+    "}",
+    // The intersection's item count inside the button: "∩: 2".
+    ".cell.library-header .wv-collset-count { font-variant-numeric: tabular-nums; }",
+    // The line-through of the "not in all" state marks the ∩ only.
+    ".cell.library-header .wv-collset-btn[data-excluded=\"true\"] .wv-collset-count { display: inline-block; text-decoration: none; }",
+    ".cell.library-header .wv-collset-btn:hover { background: rgba(127,127,127,0.18); }",
+    ".cell.library-header .wv-collset-btn[data-selected=\"true\"] {",
+    "  background: var(--color-accent, #4072e5); border-color: var(--color-accent, #4072e5); color: #fff;",
+    "}",
+    ".cell.library-header .wv-collset-btn[data-excluded=\"true\"] {",
+    "  border-color: #d9534f; color: #d9534f; text-decoration: line-through;",
+    "}",
+    // One line per way of combining (MJT 2026-09-28): "All of" (every
+    // pick must match) and "Any <kind>" (alternatives). The label reads
+    // like Zotero's Advanced Search "Match all / any of the following".
+    ".wv-filter-selected-line {",
+    "  display: flex; flex-wrap: wrap; align-items: center; gap: 3px;",
+    "}",
+    ".wv-filter-selected-line-label {",
+    "  flex: 0 0 auto; margin-inline-end: 3px;",
+    "  font-size: 11px; opacity: 0.65; white-space: nowrap;",
     "}",
     ".wv-filter-selected-pill {",
     "  display: inline-flex; align-items: center; gap: 4px;",

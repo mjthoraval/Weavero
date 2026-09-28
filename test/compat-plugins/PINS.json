@@ -18,12 +18,13 @@
     "note": "1.6/1.7 added optional read-status<->tag synchronisation and configurable shortcuts; the Read_Status Extra line and the statuses pref are unchanged (checked in the 1.7.0 bundle, 2026-09-17)"
   },
   "zotero-annotation-markdown": {
-    "file": "zotero-annotation-markdown-0.7.1.xpi",
-    "version": "0.7.1",
+    "file": "zotero-annotation-markdown-0.10.0.xpi",
+    "version": "0.10.0",
     "addonID": "zotero-annotation-markdown@34028312.qq.com",
-    "sha256": "9fda4f1336e7bbafce0191b30ece88c80aa828d61a0909938b30ef5e12f01ad3",
-    "source": "https://github.com/qrkks/zotero-annotation-markdown/releases/tag/v0.7.1",
-    "repo": "qrkks/zotero-annotation-markdown"
+    "sha256": "3f50f16dcee07d71fecaaa53d5420bcf2843016f5afbed9317a6131a3c27d1de",
+    "source": "https://github.com/qrkks/zotero-annotation-markdown/releases/tag/v0.10.0",
+    "repo": "qrkks/zotero-annotation-markdown",
+    "note": "0.9.0 added opt-in (default off) Markdown rendering in the reader's in-page annotation popup, where Weavero renders its own comment preview; 0.10.0 adds a floating outline there. Bumped from 0.7.1 on 2026-09-25."
   },
   "better-notes": {
     "file": "better-notes-3.3.3.xpi",

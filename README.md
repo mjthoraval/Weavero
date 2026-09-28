@@ -91,13 +91,16 @@ Built on Zotero's own reader ([`zotero/reader`](https://github.com/zotero/reader
 - **Attachment file type** — PDF / EPUB / Snapshot / Image / Video / Web Link / Linked File / Other File
 - **Item Type** (native menulist + icon-only chips for the types you use), plus **Standalone Note** and **Standalone Attachment** tiles
 - **Parent flags**: *Has DOI*, *Has URL*, *Has Abstract*, *Has Attachment File*
+- **Retracted** — only the items that carry Zotero's red retraction mark in the items list (Alt+click: hide them), within any collection or search
 - **Attachment / annotation flags**: *Has Bookmarks* (Weavero document bookmarks), *Has Annotations*, *Item Note*
 - **Cross-level**: *Has Tag*, *Has Related*, *Has Link* (a URL in a comment or note) — each with an *Apply to* scope (parent / attachment / annotation)
-- **Multi-select search**: Tag, Publication / Journal (exact match — case matters), Author / Creator, Added By (group libraries), Collection, Saved Search; ranked matching (typing *jfm* finds *Journal of Fluid Mechanics*) with keyboard navigation (↑/↓ + Enter), and selections shown as include/exclude pills like Zotero's tag selector
+- **Multi-select search**: Tag, Publication / Journal (exact match — case matters), Author / Creator, Added By (group libraries), Collection, Saved Search; ranked matching (typing *jfm* finds *Journal of Fluid Mechanics*) with keyboard navigation (↑/↓ + Enter), and selections shown as include/exclude pills like Zotero's tag selector. Collections are listed as an indented tree you can expand, like the collections pane. Several picked tags, authors, collections or saved searches must **all** match (an item in every picked collection); publications and Added By, where an item has only one value, match **any** of the picks
 - **Selection Target**: Parent / Attachment / Annotation tri-state — controls Ctrl+A scope and dims out-of-scope rows
 - Strict per-row matching: OR across groups, AND within a group; filtering keeps only rows that match — ancestors are kept for tree shape, descendants are not auto-pulled.
 
 Active filters show as a **chip bar** above the items tree — one removable chip each, plus **+ Filter**, **+ OR Group**, and **Clear all**. A chevron on a container's first visible child reveals rows the filter hid, and a scope button inside the search box can restrict quick-search to chosen row kinds.
+
+**Intersection of selected collections.** Select several collections or saved searches in the collections pane and Zotero lists every item in *any* of them. The **∩** button in the list's "N collections selected" header shows how many items are in *all* of them (**∩: 2**); click it to list only those, Alt+click for the items in some but not all, and click again to go back. It works per library, independently of the filter popup, and switches off when you go back to a single collection.
 
 See [Filtering rules](docs/filter-rules.md) for the full logic.
 
@@ -239,6 +242,7 @@ That preference is the plugin's **only** copy of those choices — it is not syn
 
 - **Added By for annotations** — in group libraries, a badge showing who created each annotation (annotation rows aren't covered by Zotero's built-in Added By column), optionally tinted with a **per-user colour** so contributors are easy to scan.
 - **Group-library tab glyph + tooltip** — tabs whose item lives in a group library get a small "Group Libraries" cluster glyph on the file-type icon, plus a tooltip showing the tab title and a *library icon + Library Name* header.
+- **Firefox-style tabs** — the tab design of Firefox 157: rounded tabs, round pinned tabs, and a thin violet-to-orange outline around the selected tab; when tabs get narrow, only the selected one keeps its close button, as in Firefox. On by default; uncheck it in *Preferences → Weavero → Extras → Items list & tabs* for Zotero's own tabs.
 
 <div align="center"><img src="docs/screenshots/02-tab-strip.png" width="900" alt="Tab strip with group library badge on the third tab"></div>
 

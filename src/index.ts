@@ -1502,6 +1502,16 @@ class WeaveroPlugin {
             return v === undefined ? true : !!v;
         } catch (e) { return true; }
     }
+    /** Firefox 157 "nova" tabs: pill shape + gradient outline on the
+     *  selected tab (MJT 2026-09-25). Default ON since 2026-09-28; off =
+     *  Zotero's raised, square-cornered tabs. */
+    _getSelectedTabRing() {
+        if (!this._getEnableVisualExtras()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.selectedTabRing");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
     _getEnableGroupLibraryGlyph() {
         if (!this._getEnableVisualExtras()) return false;
         try {
@@ -2252,6 +2262,10 @@ class WeaveroPlugin {
                 // Collections-tree reading aids (MJT 2026-09-25): pinned
                 // parents, full-path tooltip, indent guides.
                 "collectionsStickyParents", "collectionsPathTooltip", "collectionsIndentGuides",
+                // Firefox 157 "nova" tabs: pill shape + gradient outline on the
+                // selected tab. DEFAULT ON (MJT 2026-09-28); unticking restores
+                // Zotero's own raised, square-cornered look.
+                "selectedTabRing",
                 // Zotero's own colour/tag/author selector at the foot of the
                 // annotations pane is HIDDEN while the pane funnel replaces it
                 // (MJT, 2026-09-18); untick to keep it.
@@ -3887,6 +3901,19 @@ class WeaveroPlugin {
                         try {
                             const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
                             for (const w of wins) (this as any)._wvApplyCollectionsTreeAids(w);
+                        } catch (e) {}
+                    }
+                    if (data === "extensions.zotero.weavero.selectedTabRing"
+                        || data === "extensions.zotero.weavero.enableVisualExtras") {
+                        try {
+                            for (const t of ["navigator:browser", "zotero:reader", "zotero:note"]) {
+                                const en = Services.wm.getEnumerator(t);
+                                while (en.hasMoreElements()) {
+                                    try { (this as any)._wvEnsureSelectedTabRing((en.getNext() as any).document); } catch (e) {}
+                                }
+                            }
+                            // Group chips/lines take nova's colours with the design on.
+                            (this as any)._wvTabGroupApplyEverywhere();
                         } catch (e) {}
                     }
                     if (data === "extensions.zotero.weavero.paneDragNoCollapse"

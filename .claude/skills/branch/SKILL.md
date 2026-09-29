@@ -21,6 +21,31 @@ suffixes. This skill is the procedure. (Worked examples: `weavero-defatt`,
   instance with another session, every install states which version
   replaced which.
 
+## 1b. Issue branches and test builds (2026-09-29)
+
+For a fix that a reporter must try before it ships, and for several
+issues in flight at once:
+
+- Branch `issue-<N>` off the **last release tag** (not main), so the
+  reporter tests the fix alone, not main's unrelated work in progress.
+  Branch off main only when the fix needs something unreleased.
+- Versions `<next>-issue<N>.dev.M` (e.g. `0.21.2-issue48.dev.1`), one M
+  per code state, never main's `-dev.N`. Zotero orders these above the
+  last release and below the next one, so the reporter's install updates
+  itself when that release ships (checked with Services.vc.compare).
+- A lighter alternative to a separate clone for this: a git worktree,
+  `git worktree add ../Weavero-issue<N> issue-<N>` -- each branch keeps
+  its own checkout and build directory; the registers still live in the
+  main clone.
+- Hand the build over with `gh workflow run test-build.yml -f issue=<N>
+  --ref issue-<N> [-f note="..."]` once the branch is pushed: the XPI
+  lands on the `test-builds` pre-release (anchored on the first commit,
+  so it sits at the bottom of the Releases page) and the workflow
+  comments on the issue with the link, commit and branch.
+- Merge back as in §3; the branch's suffixed versions are discarded and
+  the branch deleted. Nothing to clean on the release: old XPIs are
+  pruned automatically after 90 days.
+
 ## 2. During
 
 - No commits to the shared clone's `main` — all work in the branch clone.

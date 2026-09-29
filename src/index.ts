@@ -4563,6 +4563,7 @@ class WeaveroPlugin {
                 try { (this as any)._wvWireMenuGhostWorkaround(w); } catch (e) {}
                 try { (this as any)._wvWireReaderFindKey(w); } catch (e) {}
                 try { (this as any)._wvWireColumnPickerMark(w); } catch (e) {}
+                try { (this as any)._wvWireColumnPickerNativeFix(w); } catch (e) {}
                 try { (this as any)._wvWireItemsCrossWindowDrop(w); } catch (e) {}
             }
         } catch (e) {}
@@ -4678,6 +4679,7 @@ class WeaveroPlugin {
             try { (this as any)._wvWireMenuGhostWorkaround(_window); } catch (e) {}
             try { (this as any)._wvWireReaderFindKey(_window); } catch (e) {}
             try { (this as any)._wvWireColumnPickerMark(_window); } catch (e) {}
+            try { (this as any)._wvWireColumnPickerNativeFix(_window); } catch (e) {}
             try { (this as any)._wvWireItemsCrossWindowDrop(_window); } catch (e) {}
             // Per-window taskbar identity (pref-gated, default off).
             try { (this as any)._wvApplyWindowTaskbarIdentity(_window); } catch (e) {}
@@ -5146,6 +5148,7 @@ class WeaveroPlugin {
                 (this as any)._wvUnwireItemCountBreakdown(w);
                 (this as any)._wvUnwireLastViewCloseGuard(w);
                 (this as any)._wvUnwireQuickCopyMultiTab(w);
+                (this as any)._wvUnwireColumnPickerNativeFix(w);
             }
         } catch (e) {}
         // 0. FINAL store capture, then freeze — teardown below dismantles

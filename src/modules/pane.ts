@@ -5324,6 +5324,59 @@ class _PaneMixin {
         }
     }
 
+    /** macOS only (issue #48, pascaloettli, macOS 26 / Zotero 10.0.4):
+     *  Zotero opens the column picker as a CONTEXT menu at a screen point
+     *  -- `openPopupAtScreen(x, y, true)` -- and on Mac Gecko shows context
+     *  menus as native NSMenus (widget.macos.native-context-menus, on by
+     *  default). A native item takes a label, one left-side icon, a key
+     *  equivalent and a tick, nothing else, so the provenance mark above
+     *  (`::after`, right end) never shows there. Opened WITHOUT the context
+     *  flag, Gecko draws the menu itself -- as it already does for every
+     *  anchored popup in Zotero on Mac (toolbar dropdowns; Gecko has no
+     *  native form of those) -- with Zotero's own Mac menu styling, and the
+     *  mark renders as on Windows. The flag otherwise governs only
+     *  positioning flips and which open popups roll up together
+     *  (nsMenuPopupFrame / nsXULPopupManager, esr140).
+     *  Wraps the window's XULPopupElement prototype: Zotero creates the
+     *  picker popup afresh on every open and the header keeps its own bound
+     *  copy of the opener, so neither can be patched instead. Versioned;
+     *  the wrapper resolves the live plugin and passes through once it is
+     *  gone. `_wvForceMacPickerFix` lets the spec and a Windows live check
+     *  exercise the wrap. */
+    _wvWireColumnPickerNativeFix(win: any) {
+        try {
+            if (!win) return;
+            if (!(Zotero as any).isMac && !(this as any)._wvForceMacPickerFix) return;
+            const proto: any = win.XULPopupElement && win.XULPopupElement.prototype;
+            if (!proto || typeof proto.openPopupAtScreen !== "function") return;
+            const VER = 1;
+            if (proto._wvPickerNativeFixVer === VER) return;
+            const orig = proto._wvPickerNativeFixOrig || proto.openPopupAtScreen;
+            proto._wvPickerNativeFixOrig = orig;
+            proto.openPopupAtScreen = function (this: any, x: any, y: any, isContextMenu?: any, ...rest: any[]) {
+                try {
+                    if (isContextMenu && this && this.id === "zotero-column-picker") {
+                        const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (lp && !lp._wvDestroyed) return orig.call(this, x, y, false, ...rest);
+                    }
+                } catch (e) {}
+                return orig.apply(this, arguments as any);
+            };
+            proto._wvPickerNativeFixVer = VER;
+        } catch (e) {}
+    }
+
+    _wvUnwireColumnPickerNativeFix(win: any) {
+        try {
+            const proto: any = win && win.XULPopupElement && win.XULPopupElement.prototype;
+            if (proto && proto._wvPickerNativeFixOrig) {
+                proto.openPopupAtScreen = proto._wvPickerNativeFixOrig;
+                delete proto._wvPickerNativeFixOrig;
+                delete proto._wvPickerNativeFixVer;
+            }
+        } catch (e) {}
+    }
+
     _wvWireColumnPickerMark(win: any) {
         try {
             if (!win || (win as any)._wvColPickWired) return;

@@ -1,0 +1,114 @@
+name: Test build for an issue
+
+# Hands a build to an issue's reporter before any release -- the Better
+# BibTeX pattern: ONE rolling pre-release, `test-builds`, holding every
+# test XPI as an asset, plus a note on the issue with the direct link. Its
+# tag points at Weavero's first commit and never moves, so GitHub lists it
+# at the very bottom of the Releases page (BBT's `builds` tag dates from
+# 2016 for the same reason); the comment carries the real commit and
+# branch. Manual only; nothing here touches the regular releases or the
+# update manifest, and an unmoving tag never triggers test.yml.
+#
+#   gh workflow run test-build.yml -f issue=48 --ref issue-48
+#   gh workflow run test-build.yml -f issue=48 -f note="Please check the column picker."
+#
+# One branch per issue (the `branch` skill): `issue-<N>` off the last
+# release tag, versions `<next>-issue<N>.dev.M` -- Zotero orders those
+# above the last release and below the next one, so the reporter's install
+# updates itself when that release ships. The file is
+# weavero-<version>.xpi, e.g. weavero-0.21.2-issue48.dev.2.xpi; a build
+# from main (`-dev.M`) gets `-issue<N>` appended. Old XPIs are KEPT (MJT
+# 2026-09-29): the links in old issues stay valid, an old build installed
+# later updates itself to the current release, and GitHub's cap is 1,000
+# assets per release with no limit on total size.
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "Issue number the build is for (e.g. 48)"
+        required: true
+      note:
+        description: "One line for the reporter: what to check"
+        required: false
+        default: ""
+
+permissions:
+  contents: write     # the test-builds pre-release and its assets
+  issues: write       # the comment on the issue
+
+# Same Node 24 opt-in as test.yml.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  # Weavero's first commit ("Initial commit: Weavero v0.4.0", 2026-05-03):
+  # the anchor that keeps the test-builds release at the bottom of the list.
+  ANCHOR_SHA: a3923a0ece6b7e37aef97f336d571e59770e58d4
+
+jobs:
+  build:
+    name: Build and hand to the issue
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Unit tests (Node tier)
+        run: npm run test:unit
+
+      - name: Build XPI
+        run: npm run build
+
+      - name: Name the file after the version (and the issue, if the version lacks it)
+        id: name
+        env:
+          ISSUE: ${{ github.event.inputs.issue }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          case "$VERSION" in
+            *issue${ISSUE}*) FILE="weavero-${VERSION}.xpi" ;;
+            *)               FILE="weavero-${VERSION}-issue${ISSUE}.xpi" ;;
+          esac
+          cp .scaffold/build/weavero.xpi "$FILE"
+          echo "file=$FILE" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to the test-builds pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view test-builds --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create test-builds --repo "$GITHUB_REPOSITORY" --prerelease \
+              --target "$ANCHOR_SHA" --title "Test builds" \
+              --notes "Builds made for individual issues, for their reporters to try. Not releases: install one only when an issue asks you to; each one updates itself to the next regular release. The tag is an anchor, not the build's commit -- the issue comment names the commit and branch."
+          fi
+          gh release upload test-builds "${{ steps.name.outputs.file }}" --clobber --repo "$GITHUB_REPOSITORY"
+
+      - name: Tell the reporter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FILE: ${{ steps.name.outputs.file }}
+          ISSUE: ${{ github.event.inputs.issue }}
+          NOTE: ${{ github.event.inputs.note }}
+        run: |
+          URL="https://github.com/$GITHUB_REPOSITORY/releases/download/test-builds/$FILE"
+          {
+            echo "A test build for this issue is ready: **[$FILE]($URL)** (built from \`${GITHUB_SHA::7}\` on \`$GITHUB_REF_NAME\`)."
+            echo
+            echo "To try it: download the file, then in Zotero open **Tools → Plugins**, click the gear icon → **Install Plugin From File…** and pick it. It replaces your current Weavero; the next regular release will replace it in turn (automatic update)."
+            if [ -n "$NOTE" ]; then echo; echo "$NOTE"; fi
+            echo
+            echo "Please say here whether it fixes the problem."
+          } > body.md
+          gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body-file body.md

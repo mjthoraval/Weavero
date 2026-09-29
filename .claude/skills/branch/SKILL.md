@@ -43,8 +43,9 @@ issues in flight at once:
   so it sits at the bottom of the Releases page) and the workflow
   comments on the issue with the link, commit and branch.
 - Merge back as in §3; the branch's suffixed versions are discarded and
-  the branch deleted. Nothing to clean on the release: old XPIs are
-  pruned automatically after 90 days.
+  the branch deleted. Old XPIs stay on the release on purpose: the links
+  in old issues keep working, an old build installed later updates itself,
+  and the cap is 1,000 assets per release (no total-size limit).
 
 ## 2. During
 

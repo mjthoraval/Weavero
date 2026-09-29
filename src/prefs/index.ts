@@ -463,11 +463,51 @@
         }, true);
     }
 
+    /** Outline text size: radios for the mode + a px dropdown for Fixed,
+     *  both writing the one pref `weavero.outlineTextSize`. */
+    function bindOutlineTextSize(doc) {
+        const rg: any = doc.getElementById("wv-outline-textsize-mode");
+        const ml: any = doc.getElementById("wv-outline-textsize-px");
+        if (!rg || !ml || rg._wvBound) return;
+        rg._wvBound = true;
+        const FIXED = ["8", "9", "10", "11", "12", "13", "14", "15", "16", "18", "20", "24"];
+        const plugin: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+        let v = "zotero";
+        try { v = String(Zotero.Prefs.get("weavero.outlineTextSize") || "zotero"); } catch (e) {}
+        try { if (plugin && plugin._wvOutlineTextSizeNorm) v = plugin._wvOutlineTextSizeNorm(v) || "zotero"; } catch (e) {}
+        // Current sizes in the two Zotero labels.
+        try {
+            if (plugin && plugin._wvOutlineSizePx) {
+                for (const r of Array.from(rg.querySelectorAll("radio")) as any[]) {
+                    const m = r.getAttribute("value");
+                    if (m === "zotero") r.setAttribute("label", "Zotero Outline, " + plugin._wvOutlineSizePx("zotero") + " px (default)");
+                    if (m === "itemPane") r.setAttribute("label", "Zotero Item Pane, " + plugin._wvOutlineSizePx("itemPane") + " px");
+                }
+            }
+        } catch (e) {}
+        const fixed = FIXED.includes(v);
+        rg.value = fixed ? "fixed" : v;
+        ml.value = fixed ? v : "13";
+        const write = () => {
+            const mode = rg.value;
+            const out = mode === "fixed" ? (FIXED.includes(ml.value) ? ml.value : "13") : (mode === "itemPane" ? "itemPane" : "zotero");
+            try { Zotero.Prefs.set("weavero.outlineTextSize", out); } catch (e) { dbg("outline size write err: " + e); }
+        };
+        rg.addEventListener("select", write);
+        rg.addEventListener("command", write);
+        // Picking a px size means Fixed.
+        ml.addEventListener("command", () => { rg.value = "fixed"; write(); });
+    }
+
     function bindAll(doc) {
         try { bindMode(doc.getElementById("wv-mode")); } catch (e) { dbg("bindMode err: " + e); }
         try { bindSplit(doc.getElementById("wv-ctrlsplit")); } catch (e) { dbg("bindSplit err: " + e); }
         try { bindCharRadio(doc.getElementById("wv-wintitle-name"), "weavero.windowTitleNameMode", ["off", "prefix", "replace"], "off"); } catch (e) { dbg("bindWinTitleName err: " + e); }
         try { bindCharRadio(doc.getElementById("wv-bm-colscroll"), "weavero.bookmarkCollectionScroll", ["top", "native"], "top"); } catch (e) { dbg("bindBmColScroll err: " + e); }
+        // Outline text size: Zotero Outline / Zotero Item Pane (radio, both
+        // follow View -> Font Size -- labels show their current size) or
+        // Fixed + a px size. One pref: "zotero" | "itemPane" | "<px>".
+        try { bindOutlineTextSize(doc); } catch (e) { dbg("bindOutlineTextSize err: " + e); }
         try { bindIntInput(doc.getElementById("wv-coll-sticky-max"), "weavero.collectionsStickyMax", 1, 10, 7); } catch (e) { dbg("bindCollStickyMax err: " + e); }
         try { bindMirrors(doc); } catch (e) { dbg("bindMirrors err: " + e); }
         try { bindMasterDisable(doc); } catch (e) { dbg("bindMasterDisable err: " + e); }

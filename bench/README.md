@@ -206,6 +206,12 @@ everything 3863 / 3030 (+27%). Clears are single-shot and noisy in both
 directions (native everything-clear once read 6399 ms). Rows differ by ~6%
 (38 030 vs 40 470: Weavero hides context attachment rows by design). This
 is what the native leg above automates; those two runs were ad-hoc.
+**Correction (2026-09-29):** until then the script switched modes through
+`Zotero.Prefs.set(…, true)`, whose `true` writes a stray *global* pref that
+Zotero never reads, so all three "modes" above ran in the mode that happened
+to be selected (here *Everything*: 38 030 rows). The three rows are three
+runs of one mode, not a per-mode comparison. The script now sets Zotero's own
+pref and records the mode each search actually ran as (`modeUsed`).
 
 ### Reader sidebar / PDF scrolling (2026-07, Zotero 10 beta, 200-annotation fixture)
 

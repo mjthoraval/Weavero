@@ -65,8 +65,10 @@ describe("Weavero — reader sort menus are titled", () => {
         const menu = d.querySelector("[data-wv-annsort='1']");
         if (!menu) { this.skip(); return; }
 
+        // "(default)" is its own dimmed span since 2026-09-29: join the parts.
         const labels = [...menu.querySelectorAll(".wv-ctx-item")]
-            .map(el => (el.textContent || "").replace("✓", "").trim());
+            .map(el => [...el.children].filter(c => !c.classList.contains("wv-ctx-ic"))
+                .map(c => (c.textContent || "").trim()).filter(Boolean).join(" "));
         assert.deepEqual(labels, ["Position (default)", "Date Added", "Date Modified"],
             "adding the heading must not disturb the field rows");
     });

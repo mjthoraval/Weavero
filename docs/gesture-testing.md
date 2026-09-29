@@ -120,6 +120,22 @@ active), then:
       every open reader's outline drops the labels without a tab
       round-trip; the menu now reads **Show** / **✓ Hide (default)**; a
       document switched to Show from there still shows them.
+- [ ] **With another sidebar view selected** (Annotations or Bookmarks),
+      right-click the Outline tab → the same menu opens (it does not need
+      the Outline view to be showing).
+- [ ] **TEXT SIZE** section: **Zotero Outline** and **Zotero Item Pane**
+      show their current size in a right-hand column (11 px / 13 px at
+      *View → Font Size → Reset*), **Fixed ▸** opens 8–24 px on hover. The
+      three sizes line up vertically; "(default)" (dimmed) sits at the end
+      of the Settings value's line.
+- [ ] Pick **Fixed ▸ 20 px** → the outline entries grow at once, only in
+      this document; *View → Font Size → Bigger* leaves them at 20 px, while
+      **Zotero Outline** / **Zotero Item Pane** documents grow with it.
+      Pick the "(default)" line → back to Settings, and `outlines.json` no
+      longer carries a `textSize` entry for the document.
+- [ ] **Right-click Outline → Bookmarks → Annotations → Annotations →
+      Outline** in a row → each right-click opens that tab's menu, the
+      second one on the same tab included (no toggle-close).
 
 ## Outline entry right-click menu (after touching outline rows, menus or re-renders)
 

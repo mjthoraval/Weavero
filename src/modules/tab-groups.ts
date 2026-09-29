@@ -322,7 +322,7 @@ class _TabGroupsMixin {
             try { this._wvScheduleCloseButtons(doc.defaultView); } catch (e) {}
             const old = doc.getElementById("wv-selected-tab-ring");
             if (!on) { if (old) old.remove(); return; }
-            const VER = "12";
+            const VER = "13";
             if (old && old.getAttribute("data-wv-ver") === VER) return;
             if (old) old.remove();
             const st = doc.createElementNS(HTML_NS, "style");
@@ -443,11 +443,15 @@ class _TabGroupsMixin {
                 ".wv-window-tabs .wv-window-tab:not(.wv-active):not(.wv-multisel):hover {",
                 "  background-color: rgba(117, 102, 159, 0.25);",
                 "}",
+                // Dark: NO fill -- the strip shows through, as in MJT's
+                // Firefox 157 (screenshot 2026-09-29: unselected pinned tabs
+                // = the strip colour exactly). A 33% black fill here read as
+                // dark as the selected tab and hid it.
                 "@media (prefers-color-scheme: dark) {",
                 "  #tab-bar-container .tabs > .tab:not(.selected):not(.wv-multisel),",
                 "  " + MIR + ":not(.selected),",
                 "  .wv-window-tabs .wv-window-tab:not(.wv-active):not(.wv-multisel) {",
-                "    background-color: rgba(0, 0, 0, 0.33);",
+                "    background-color: transparent;",
                 "  }",
                 "  #tab-bar-container .tabs > .tab:not(.selected):not(.wv-multisel):hover,",
                 "  " + MIR + ":not(.selected):hover,",
@@ -463,10 +467,12 @@ class _TabGroupsMixin {
                 // Doubled class: out-ranks the tint rules (.wv-multisel and
                 // .wv-multisel.selected / .wv-active, this file) in any sheet
                 // order; the accent box-shadow outlines are untouched.
-                // #8: the selected tab's fill is nova's --background-color-box
-                // = light-dark(--color-white, --color-gray-70) in the brand-nova
-                // layer: #ffffff / #252428 (tokens-brand.css, tokens-shared.css
-                // nova layer, Firefox 157). Zotero: var(--material-button).
+                // #8: the selected tab's fill is nova's --background-color-box:
+                // #ffffff / #171519 (nova's --color-gray-80, tokens-shared.css
+                // foundation-nova layer, Firefox 157). MEASURED in MJT's
+                // Firefox (2026-09-29): the selected tab is exactly #171519,
+                // darker than the strip. #252428 (gray-70, from the brand-nova
+                // layer) was a misread -- it made the selected tab lighter.
                 // Multi-selection outline colour (MJT 2026-09-28): Firefox's
                 // [multiselected] outline is --focus-outline-color =
                 // --color-accent-primary, which nova's browser theme sets to
@@ -474,7 +480,7 @@ class _TabGroupsMixin {
                 // #b89cff (tokens-platform/-shared, Firefox 157). Widths stay
                 // Weavero's = Firefox's: 1px, 2px on the selected one.
                 ":root { --wv-ff-tab-selected: #ffffff; --wv-ff-focus: #764edd; }",
-                "@media (prefers-color-scheme: dark) { :root { --wv-ff-tab-selected: #252428; --wv-ff-focus: #b89cff; } }",
+                "@media (prefers-color-scheme: dark) { :root { --wv-ff-tab-selected: #171519; --wv-ff-focus: #b89cff; } }",
                 "@media not ((prefers-contrast) or (forced-colors)) {",
                 sel + " { background: var(--wv-ff-tab-selected); }",
                 "#tab-bar-container .tab.wv-multisel.wv-multisel.wv-multisel,",

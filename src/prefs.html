@@ -160,6 +160,12 @@
   /* "Where a bookmarked collection appears": the description and the three
      choices sit indented under their title, so they read as one group
      (MJT 2026-09-25). */
+  /* Outline text size (MJT 2026-09-29): the radios stacked, the px dropdown
+     on the Fixed line; min-width so the dropdown and its list never wrap
+     "8 px" (the list takes the dropdown's width). */
+  .wv-outline-size-group { margin: 2px 0 4px; }
+  .wv-outline-size-fixed menulist { min-width: 7em; margin-inline-start: 6px; }
+  .wv-outline-size-fixed menupopup menuitem { white-space: nowrap; }
   .wv-bm-colscroll-block > .wv-desc,
   .wv-bm-colscroll-block > radiogroup { margin-inline-start: 18px; }
   /* Each box carries its type's glyph -- the chrome SVG the filter chips
@@ -882,10 +888,37 @@
       preference="extensions.zotero.weavero.enableOutlineTextHighlight"/>
     <html:p class="wv-desc">Flashes the actual heading text on click, in PDFs, EPUBs and snapshots; for embedded PDF outlines Weavero finds the heading on the page. Best-effort matching — scanned pages or unusual fonts may just jump without a highlight.</html:p>
   </vbox>
-  <vbox class="wv-block wv-block-end" data-gated-by="enableVisualExtras" data-wv-in="extras outline">
+  <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-in="extras outline">
     <checkbox label="Show page numbers next to outline entries" native="true"
       preference="extensions.zotero.weavero.outlinePageNumbers"/>
     <html:p class="wv-desc">The “p. N” label at the right of each entry. Right-click the Outline tab in a reader to show or hide them for that document only.</html:p>
+  </vbox>
+  <vbox class="wv-block wv-block-end" data-gated-by="enableVisualExtras" data-wv-in="extras outline">
+    <label><html:h3>Outline text size</html:h3></label>
+    <html:p class="wv-desc"><html:strong>Zotero Outline</html:strong> and <html:strong>Zotero Item Pane</html:strong> follow <html:em>View &#8594; Font Size</html:em> (the sizes shown are the current ones); <html:strong>Fixed</html:strong> stays at the chosen size whatever the Font Size. Right-click the Outline tab in a reader to choose a size for that document only.</html:p>
+    <radiogroup id="wv-outline-textsize-mode" orient="vertical" class="wv-outline-size-group">
+      <radio value="zotero" label="Zotero Outline (default)"/>
+      <radio value="itemPane" label="Zotero Item Pane"/>
+      <hbox align="center" class="wv-outline-size-fixed">
+        <radio value="fixed" label="Fixed:"/>
+        <menulist id="wv-outline-textsize-px" native="true">
+          <menupopup>
+            <menuitem value="8" label="8 px"/>
+            <menuitem value="9" label="9 px"/>
+            <menuitem value="10" label="10 px"/>
+            <menuitem value="11" label="11 px"/>
+            <menuitem value="12" label="12 px"/>
+            <menuitem value="13" label="13 px"/>
+            <menuitem value="14" label="14 px"/>
+            <menuitem value="15" label="15 px"/>
+            <menuitem value="16" label="16 px"/>
+            <menuitem value="18" label="18 px"/>
+            <menuitem value="20" label="20 px"/>
+            <menuitem value="24" label="24 px"/>
+          </menupopup>
+        </menulist>
+      </hbox>
+    </radiogroup>
   </vbox>
 
   <!-- ============================ Reader annotations pane -->

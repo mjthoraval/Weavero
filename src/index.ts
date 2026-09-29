@@ -2353,6 +2353,9 @@ class WeaveroPlugin {
             // #45, MJT 2026-09-25): "top" (default -- the row first, under
             // any pinned parents) | "native" (Zotero's scroll-just-enough).
             try { branch.setCharPref(P + "bookmarkCollectionScroll", "top"); } catch (e) {}
+            // Reader outline text size (issue #47, MJT 2026-09-29): "zotero"
+            // (Zotero's own size, follows View -> Font Size) or a fixed px size.
+            try { branch.setCharPref(P + "outlineTextSize", "zotero"); } catch (e) {}
             // Pinned parents in the collections tree: at most this many levels.
             try { branch.setIntPref(P + "collectionsStickyMax", 7); } catch (e) {}
             // Pref-rename migration (2026-07-24): "Multiple main windows"
@@ -5866,6 +5869,7 @@ Zotero.Weavero = {
                 // Outline tab).
                 try { _Weavero._wvWireOutlineTakeoverPrefWatch(); } catch (e) {}
                 try { _Weavero._wvWireOutlinePagesPrefWatch(); } catch (e) {}
+                try { _Weavero._wvWireOutlineTextSizePrefWatch(); } catch (e) {}
                 try { _Weavero._wvWireBmPagesPrefWatch(); } catch (e) {}
                 // One-shot import of picks from PikaPei/zotero-default-attachment
                 // (guarded by weavero.defaultChildMigrated). Fire-and-forget:

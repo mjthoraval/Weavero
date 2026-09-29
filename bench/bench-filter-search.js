@@ -135,7 +135,7 @@
 
     (async () => {
         const startedSql = Zotero.Date.dateToSQL(new Date(), true);
-        const prevMode = Zotero.Prefs.get("search.quicksearch-mode", true);
+        const prevMode = Zotero.Prefs.get("search.quicksearch-mode");
         const profiling = !!Zotero._wvBenchProfile;
         try {
             if (profiling) {
@@ -230,13 +230,22 @@
                 // is built from), beta.9's three as the fallback.
                 const SCOPE_MODES = scopeModesOf(sb);
                 W.scopeModes = SCOPE_MODES;
+                // Zotero's OWN pref (extensions.zotero.search.quicksearch-mode):
+                // never pass Zotero.Prefs' third `global` argument here. With
+                // it, every call wrote a stray root pref Zotero never reads, so
+                // all three "modes" ran in the user's current mode (found
+                // 2026-09-29 -- the 09-16 and 09-29 per-mode rows were one mode
+                // each). `modeUsed` records what the search actually ran as,
+                // from the collection row Zotero stamps at search time.
                 for (const mode of SCOPE_MODES) {
-                    Zotero.Prefs.set("search.quicksearch-mode", mode, true);
+                    Zotero.Prefs.set("search.quicksearch-mode", mode);
                     await sleep(300);
                     const applyRes = await measure(async () => {
                         sb.value = TERM;
                         sb.dispatchEvent(new Event("command"));   // never `input`
                     }, "search " + mode + " apply");
+                    try { applyRes.modeUsed = zp.getCollectionTreeRow().searchMode; } catch (e) {}
+                    if (applyRes.modeUsed && applyRes.modeUsed !== mode) applyRes.err = "ran as " + applyRes.modeUsed;
                     const clearRes = await measure(async () => {
                         sb.value = "";
                         sb.dispatchEvent(new Event("command"));
@@ -244,7 +253,7 @@
                     W.ops["search " + mode] = { apply: applyRes, clear: clearRes };
                     await sleep(400);
                 }
-                Zotero.Prefs.set("search.quicksearch-mode", "fields", true);
+                Zotero.Prefs.set("search.quicksearch-mode", "fields");
 
                 // ---- scope switch under an active chip + search (menu path) ----
                 // What a user does: term typed, chip on, then a different scope
@@ -260,7 +269,7 @@
                         await sleep(500);
                         sb.value = TERM; sb.dispatchEvent(new Event("command"));
                         await sleep(800);
-                        let cur = Zotero.Prefs.get("search.quicksearch-mode", true) || "fields";
+                        let cur = Zotero.Prefs.get("search.quicksearch-mode") || "fields";
                         for (const k of SCOPE_MODES) {
                             if (k === cur) continue;
                             const name = "scope switch " + cur + "→" + k + " under chip";
@@ -271,7 +280,7 @@
                         sb.value = ""; sb.dispatchEvent(new Event("command"));
                         await sleep(500);
                         W.ops["clear chip after scope switches"] = await measure(clearAll(), "clear chip after scope switches");
-                        Zotero.Prefs.set("search.quicksearch-mode", "fields", true);
+                        Zotero.Prefs.set("search.quicksearch-mode", "fields");
                         await sleep(300);
                     } else {
                         W.ops["scope switch under chip"] = "skipped: scope menu not built for every mode";
@@ -284,7 +293,7 @@
                 // mode -- the same group write + cascade apply the checkbox
                 // handler performs (2026-09-10).
                 for (const mode of SCOPE_MODES) {
-                    Zotero.Prefs.set("search.quicksearch-mode", mode, true);
+                    Zotero.Prefs.set("search.quicksearch-mode", mode);
                     await sleep(300);
                     sb.value = TERM; sb.dispatchEvent(new Event("command"));
                     await sleep(800);
@@ -306,7 +315,7 @@
                     await sleep(400);
                     await measure(clearAll(), "clear after apply-to " + mode);
                 }
-                Zotero.Prefs.set("search.quicksearch-mode", "fields", true);
+                Zotero.Prefs.set("search.quicksearch-mode", "fields");
 
                 // ---- combined: chip + search (the invariant-bearing path) ----
                 await measure(applyGroup(g => { g.itemType = ["journalArticle"]; }), "combined chip apply");
@@ -368,7 +377,7 @@
                     const measure = mkMeasure(win, "native", rp, sleep, false);
                     const TERM = "the";
                     for (const mode of scopeModesOf(sb)) {
-                        Zotero.Prefs.set("search.quicksearch-mode", mode, true);
+                        Zotero.Prefs.set("search.quicksearch-mode", mode);
                         await sleep(300);
                         const applyRes = await measure(async () => {
                             sb.value = TERM;
@@ -381,7 +390,7 @@
                         N.ops["search " + mode] = { apply: applyRes, clear: clearRes };
                         await sleep(400);
                     }
-                    Zotero.Prefs.set("search.quicksearch-mode", "fields", true);
+                    Zotero.Prefs.set("search.quicksearch-mode", "fields");
                     N.status = "done";
                 } catch (e) {
                     N.status = "error: " + e;
@@ -404,7 +413,7 @@
             R.status = "error: " + e;
         } finally {
             try { if (profiling && Services.profiler.IsActive()) Services.profiler.StopProfiler(); } catch (e) {}
-            try { Zotero.Prefs.set("search.quicksearch-mode", prevMode || "fields", true); } catch (e) {}
+            try { Zotero.Prefs.set("search.quicksearch-mode", prevMode || "fields"); } catch (e) {}
             try { delete p._wvFilterWinOverride; } catch (e) {}
             // Safety clear in EVERY main window, explicitly targeted.
             for (const w2 of Zotero.getMainWindows()) {

@@ -40,7 +40,7 @@ const RP_BM_CTX_ID = "wv-bm-reader-ctxmenu";
 // Wiring version for the window-scoped context-menu listeners. Bump to force a
 // clean unhook/re-hook; a plain boolean guard let a plugin reload leave the old
 // instance's handler in place (see the comment at the bookmark ctx wiring).
-const RP_BM_CTX_WIRE_V = 17;   // v17: Bookmarks-tab right-click menu (page numbers, MJT 2026-09-18); v16: Outline-tab right-click menu (#42, page numbers); v11: Tab-out stuck-check includes body (every wired-closure change MUST bump this); v10: Tab-out fallback + clear-x fix + rename-input exclusions (dev.1-7 shipped WITHOUT a bump -- existing readers kept v9 closures and none of those fixes wired; 2026-07-29); v9: Esc keeps focus in the left pane; v8: sidebar click focus; v7-5: search wiring
+const RP_BM_CTX_WIRE_V = 18;   // v18: Outline-tab menu from any tab (gated on the takeover pref, MJT 2026-09-29); v17: Bookmarks-tab right-click menu (page numbers, MJT 2026-09-18); v16: Outline-tab right-click menu (#42, page numbers); v11: Tab-out stuck-check includes body (every wired-closure change MUST bump this); v10: Tab-out fallback + clear-x fix + rename-input exclusions (dev.1-7 shipped WITHOUT a bump -- existing readers kept v9 closures and none of those fixes wired; 2026-07-29); v9: Esc keeps focus in the left pane; v8: sidebar click focus; v7-5: search wiring
 // Wiring version for the reader PANEL DOM (bookmark tab/view, outline view,
 // filter buttons). A hot plugin update (install/reload WITHOUT a Zotero restart)
 // leaves an already-open reader's injected buttons wired to the DEAD instance --
@@ -1510,7 +1510,12 @@ const RP_BM_CSS = [
     ".wv-bm-chip.inactive{opacity:.45;}",
     ".wv-bm-chip-tag-dot{width:7px;height:7px;border-radius:50%;display:inline-block;}",
     ".wv-bm-chip-type.selected svg{opacity:1;}",
-    ".wv-bm-reader-row{position:relative;display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:4px;cursor:pointer;user-select:none;-moz-user-select:none;}",
+    // Panel CONTENT follows View -> Font Size, as Zotero's own sidebar content
+    // does (outline entries, annotation text: rem); chrome -- titles, chips,
+    // search, sort, action buttons, hover cards -- stays fixed like Zotero's
+    // toolbar (measured 2026-09-29, issue #47). rem = the old px at the
+    // default root of 16px, so Font Size 1.00 renders exactly as before.
+    ".wv-bm-reader-row{position:relative;display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:4px;font-size:.8125rem;cursor:pointer;user-select:none;-moz-user-select:none;}",
     // The reader's own CSS sets user-select:auto/text on text-bearing children
     // (the 📌 emoji, the label), so a press-drag on a row starts a text
     // selection despite the row's none. Force none on every descendant with
@@ -1527,7 +1532,7 @@ const RP_BM_CSS = [
     // library bookmark rows exactly.
     ".wv-bm-reader-row .wv-bm-reader-ic svg{width:16px;height:16px;opacity:.85;}",
     ".wv-bm-reader-row .wv-bm-reader-ic img{width:16px;height:16px;}",
-    ".wv-bm-reader-row .wv-bm-reader-ic.wv-bm-emoji{font-size:13px;line-height:16px;opacity:1;}",
+    ".wv-bm-reader-row .wv-bm-reader-ic.wv-bm-emoji{font-size:.8125rem;line-height:16px;opacity:1;}",
     ".wv-bm-reader-row .wv-bm-reader-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}",
     // Inline rename: the input must occupy EXACTLY the label's box or the row
     // changes height and the whole list jumps (2026-07-29). `font:inherit`
@@ -1549,7 +1554,7 @@ const RP_BM_CSS = [
     " :root .wv-bm-reader-label.wv-link-app{color:#c084fc;}",
     "}",
     ".wv-bm-reader-sublabel{opacity:.55;font-style:italic;}",
-    ".wv-bm-reader-row .wv-bm-reader-page{flex:0 0 auto;opacity:.5;font-size:11px;}",
+    ".wv-bm-reader-row .wv-bm-reader-page{flex:0 0 auto;opacity:.5;font-size:.6875rem;}",
     // Comment badge (issue #30): muted speech bubble between label and page
     // number. currentColor so it follows the row's light/dark text colour.
     ".wv-bm-reader-row .wv-bm-comment-badge{flex:0 0 auto;display:flex;align-items:center;opacity:.45;}",
@@ -1558,11 +1563,11 @@ const RP_BM_CSS = [
     ".wv-bm-reader-row:hover .wv-bm-reader-actions{display:flex;}",
     ".wv-bm-reader-actbtn{border:none;background:none;cursor:pointer;opacity:.55;padding:1px 4px;border-radius:3px;color:inherit;font-size:12px;line-height:1;}",
     ".wv-bm-reader-actbtn:hover{opacity:1;background:rgba(127,127,127,.2);}",
-    ".wv-bm-reader-empty{opacity:.5;padding:14px 10px;font-size:12px;text-align:center;line-height:1.5;}",
+    ".wv-bm-reader-empty{opacity:.5;padding:14px 10px;font-size:.75rem;text-align:center;line-height:1.5;}",
     // Per-section how-to hint shown under an empty "This Document" / "Elsewhere"
     // header (so the sections stay visible + addable even with no bookmarks).
-    ".wv-bm-reader-empty-section{opacity:.5;padding:3px 10px 8px;font-size:11px;line-height:1.45;}",
-    ".wv-bm-reader-grouphead{font-size:11px;padding:6px 8px 2px;display:flex;align-items:center;gap:4px;}",
+    ".wv-bm-reader-empty-section{opacity:.5;padding:3px 10px 8px;font-size:.6875rem;line-height:1.45;}",
+    ".wv-bm-reader-grouphead{font-size:.6875rem;padding:6px 8px 2px;display:flex;align-items:center;gap:4px;}",
     ".wv-bm-reader-grouphead .wv-bm-gh-title{flex:1;opacity:.55;}",
     ".wv-bm-reader-newfolder{display:flex;align-items:center;justify-content:center;width:22px;height:20px;border:none;background:none;cursor:pointer;border-radius:3px;color:inherit;opacity:.5;padding:0;flex:0 0 auto;}",
     ".wv-bm-reader-newfolder:hover{opacity:.95;background:rgba(127,127,127,.2);}",
@@ -1615,6 +1620,15 @@ const RP_BM_CSS = [
     "#" + RP_BM_CTX_ID + "{position:absolute;z-index:2147483647;background:Canvas;color:CanvasText;border:1px solid rgba(127,127,127,.4);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.3);padding:4px;min-width:160px;font-size:13px;}",
     "#" + RP_BM_CTX_ID + " .wv-ctx-item{display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:4px;cursor:pointer;white-space:nowrap;}",
     "#" + RP_BM_CTX_ID + " .wv-ctx-item:hover{background:var(--fill-quinary,rgba(128,128,128,.16));}",
+    // Outline tab menu columns (MJT 2026-09-29, "difficult to read"): the
+    // size right-aligned in a dim column, "(default)" at the end of the line.
+    "#" + RP_BM_CTX_ID + " .wv-ctx-hint{margin-left:auto;padding-left:18px;opacity:.6;font-variant-numeric:tabular-nums;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-def{margin-left:-4px;opacity:.6;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-cols{margin-left:auto;padding-left:18px;display:flex;align-items:center;gap:5px;opacity:.6;font-variant-numeric:tabular-nums;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-size{min-width:4.3em;text-align:right;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-defcol{min-width:4.4em;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-arrowcol{width:.8em;text-align:right;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-hint + .wv-ctx-arrow{margin-left:0;padding-left:8px;}",
     "#" + RP_BM_CTX_ID + " .wv-ctx-ic{flex:0 0 auto;width:16px;height:16px;display:flex;align-items:center;justify-content:center;opacity:.8;}",
     // Trailing check (source menu): pushed to the RIGHT so every option's dot +
     // label align on the left, regardless of which is current. min 12px gap
@@ -1654,6 +1668,15 @@ const RP_BM_CSS = [
 // outline viewWrapper (the one whose child is `.outline-view`) and show
 // Weavero's own outline panel in its place. Weavero never touches the native
 // outline's internals -- it just hides the whole wrapper.
+/** Outline text size (issue #47, MJT 2026-09-29), three kinds:
+ *    "zotero"   -- Zotero Outline: Zotero's own outline size (11px at Font
+ *                  Size 1.00), follows View -> Font Size. Weavero's default.
+ *    "itemPane" -- Zotero Item Pane: the item pane's size (13px at 1.00),
+ *                  follows View -> Font Size.
+ *    "<n>"      -- Fixed: n px from RP_OUTLINE_FIXED, ignores Font Size.
+ *  Fixed sizes are spaced like Zotero's own steps, plus 8 and 9. */
+const RP_OUTLINE_FIXED = ["8", "9", "10", "11", "12", "13", "14", "15", "16", "18", "20", "24"];
+
 const RP_OUTLINE_CSS = [
     "#sidebarContainer." + RP_OUTLINE_TAB_ON + " #sidebarContent > .viewWrapper:has(> .outline-view){display:none!important;}",
     "." + RP_OUTLINE_VIEW_CLASS + "{display:none;flex-direction:column;height:100%;min-height:0;overflow:hidden;}",
@@ -1687,7 +1710,7 @@ const RP_OUTLINE_CSS = [
     // Multi-selection tint (Ctrl/Shift+click). Distinct from wv-outline-active
     // (the navigation ring): selection is what Del / a multi-drag operates on.
     ".wv-outline-row.wv-outline-selected{background:var(--accent-blue10,rgba(94,106,210,.15));border-radius:4px;}",
-    ".wv-outline-label{display:block;flex:1 1 auto;min-width:0;font-size:.6875rem;line-height:1.2;padding:.21875rem;white-space:normal;cursor:pointer;user-select:none;-moz-user-select:none;overflow-wrap:anywhere;}",
+    ".wv-outline-label{display:block;flex:1 1 auto;min-width:0;font-size:var(--wv-outline-fs, .6875rem);line-height:1.2;padding:.21875rem;white-space:normal;cursor:pointer;user-select:none;-moz-user-select:none;overflow-wrap:anywhere;}",
     ".wv-outline-row.wv-outline-active .wv-outline-label{outline:3px solid var(--accent-blue50,var(--color-accent,#5e6ad2));border-radius:5px;}",
     // Scroll-spy current-position marker (FR #33, 2026-08-20): grey left
     // bar + faint wash -- DELIBERATELY not the blue family (blue ring =
@@ -1708,8 +1731,11 @@ const RP_OUTLINE_CSS = [
     // only (MJT 2026-09-24, "I do not see the dashed line").
     ".wv-outline-row.wv-outline-ctx{outline:1px dashed color-mix(in srgb, currentColor 55%, transparent) !important;outline-offset:-2px !important;border-radius:4px;}",
     // Page number at the row's right end -- same treatment as bookmark rows
-    // (`.wv-bm-reader-page`): dimmed, 11px, flush right, never wraps.
-    ".wv-outline-page{flex:0 0 auto;align-self:center;margin-inline-start:6px;padding-inline-end:2px;opacity:.5;font-size:11px;white-space:nowrap;}",
+    // (`.wv-bm-reader-page`): dimmed, flush right, never wraps. Sized in rem
+    // like the label (.6875rem = 11px at Zotero's default): the reader's root
+    // follows View -> Font Size, and a fixed 11px stayed small while the
+    // labels grew (measured 2026-09-29: 12.65px vs 11px at 1.15; issue #47).
+    ".wv-outline-page{flex:0 0 auto;align-self:center;margin-inline-start:6px;padding-inline-end:2px;opacity:.5;font-size:var(--wv-outline-fs, .6875rem);white-space:nowrap;}",
     // Twisty (expand/collapse) -- matches .toggle; leaf rows get a spacer.
     ".wv-outline-twisty{flex:0 0 auto;width:9px;height:1.25rem;display:flex;align-items:center;justify-content:center;color:var(--fill-secondary);margin-inline-start:3px;margin-inline-end:3px;transition:transform .12s;}",
     ".wv-outline-twisty.wv-outline-collapsed{transform:rotate(-90deg);}",
@@ -1739,9 +1765,9 @@ const RP_OUTLINE_CSS = [
     // Selection-drop affordance: dashed accent ring while a reader text
     // selection hovers over the panel.
     ".wv-outline-reader-view.wv-outline-drop-sel{outline:2px dashed var(--color-accent,#5e6ad2);outline-offset:-3px;border-radius:6px;}",
-    ".wv-outline-empty{padding:16px 12px;opacity:.6;font-size:12px;text-align:center;}",
+    ".wv-outline-empty{padding:16px 12px;opacity:.6;font-size:.75rem;text-align:center;}",
     ".wv-outline-empty.wv-outline-empty-sub{padding-top:0;}",
-    ".wv-outline-create-btn{margin:0 auto;padding:5px 12px;font-size:12px;border:1px solid var(--color-accent,#5e6ad2);background:transparent;color:var(--color-accent,#5e6ad2);border-radius:5px;cursor:pointer;}",
+    ".wv-outline-create-btn{margin:0 auto;padding:5px 12px;font-size:.75rem;border:1px solid var(--color-accent,#5e6ad2);background:transparent;color:var(--color-accent,#5e6ad2);border-radius:5px;cursor:pointer;}",
     ".wv-outline-create-btn:hover{background:var(--accent-blue10,rgba(94,106,210,.12));}",
     // Header action buttons (edit / revert).
     ".wv-outline-head-btn{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:22px;height:20px;border:none;background:none;color:inherit;opacity:.55;cursor:pointer;border-radius:3px;padding:0;}",
@@ -1772,7 +1798,7 @@ const RP_OUTLINE_CSS = [
     // mode. SCOPED with the view class (0,2,0 specificity) so it beats the
     // reader's `input:not([type=checkbox]){font-size:inherit}` (0,1,1), which
     // would otherwise force the 13px base font-size onto the input.
-    "." + RP_OUTLINE_VIEW_CLASS + " .wv-outline-rename-input{flex:1 1 auto;min-width:0;font-family:inherit;font-size:.6875rem;height:1.25rem;padding:0 .21875rem;box-sizing:border-box;border:1px solid var(--color-accent,#5e6ad2);border-radius:3px;background:Field;color:FieldText;outline:none;}",
+    "." + RP_OUTLINE_VIEW_CLASS + " .wv-outline-rename-input{flex:1 1 auto;min-width:0;font-family:inherit;font-size:var(--wv-outline-fs, .6875rem);height:calc(var(--wv-outline-fs, .6875rem) * 1.82);padding:0 .21875rem;box-sizing:border-box;border:1px solid var(--color-accent,#5e6ad2);border-radius:3px;background:Field;color:FieldText;outline:none;}",
     // Danger (Delete) row in the outline entry context menu.
     "#" + RP_BM_CTX_ID + " .wv-ctx-item.wv-ctx-danger{color:rgb(210,72,72);}",
     "#" + RP_BM_CTX_ID + " .wv-ctx-item.wv-ctx-danger .wv-ctx-ic svg{color:rgb(210,72,72);}",
@@ -2595,7 +2621,8 @@ class _ReaderPanelsMixin {
             // not a compat mouse event), so it is the reliable trigger here;
             // contextmenu is kept for exempt targets and in case upstream
             // drops the preventDefault (dedup guard prevents double-open).
-            if ((idoc as any).__wvAnnSortCtxWired === 3) return;
+            // v4 (2026-09-29): every right-click opens (toggle-close removed).
+            if ((idoc as any).__wvAnnSortCtxWired === 4) return;
             {
                 const prevH = (idoc as any).__wvAnnSortCtxH;
                 if (prevH) {
@@ -2633,16 +2660,11 @@ class _ReaderPanelsMixin {
                     if (!hit) return;
                     e.preventDefault(); e.stopPropagation();
                     const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-                    // TOGGLE: a second right-click on the header closes the
-                    // menu (user call 2026-08-03). The menu's dismiss wiring
-                    // deliberately ignores right-button pointerdowns on the
-                    // strip so the menu is still open when this runs.
-                    const openM = idoc.getElementById(RP_BM_CTX_ID);
-                    if (openM && openM.getAttribute("data-wv-annsort") === "1") {
-                        (idoc as any).__wvAnnSortMenuTs = Date.now();
-                        try { if (P) P._wvCloseReaderBmContextMenu(idoc); } catch (err2) {}
-                        return;
-                    }
+                    // Every right-click OPENS the menu -- also a second one on
+                    // the same tab (MJT 2026-09-29: "click consecutively on the
+                    // 3 tabs to see quickly the 3 menus"; replaces the
+                    // 2026-08-03 toggle-close). _wvShowAnnSortMenu replaces any
+                    // open menu.
                     // Dedup: if contextmenu and auxclick BOTH fire for one
                     // physical click, open once.
                     const now = Date.now();
@@ -2654,7 +2676,7 @@ class _ReaderPanelsMixin {
             };
             idoc.addEventListener("contextmenu", h, true);
             idoc.addEventListener("auxclick", h, true);
-            (idoc as any).__wvAnnSortCtxWired = 3;
+            (idoc as any).__wvAnnSortCtxWired = 4;
             (idoc as any).__wvAnnSortCtxH = h;
         } catch (e) {}
     }
@@ -2669,7 +2691,7 @@ class _ReaderPanelsMixin {
             menu.setAttribute("data-wv-annsort", "1");
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
             const cur = this._wvAnnSort(reader);
-            const row = (label: string, ticked: boolean, onPick: () => void) => {
+            const row = (label: string, ticked: boolean, onPick: () => void, isDefault = false) => {
                 const it = idoc.createElementNS(NS_HTML_RP, "div");
                 it.className = "wv-ctx-item";
                 const ic = idoc.createElementNS(NS_HTML_RP, "span");
@@ -2678,6 +2700,13 @@ class _ReaderPanelsMixin {
                 const lb = idoc.createElementNS(NS_HTML_RP, "span");
                 lb.textContent = label;
                 it.appendChild(ic); it.appendChild(lb);
+                if (isDefault) {
+                    // Dimmed, as in the Outline / Bookmarks tab menus (MJT 2026-09-29).
+                    const df = idoc.createElementNS(NS_HTML_RP, "span");
+                    df.className = "wv-ctx-def";
+                    df.textContent = "(default)";
+                    it.appendChild(df);
+                }
                 it.addEventListener("click", () => { close(); onPick(); });
                 menu.appendChild(it);
             };
@@ -2693,7 +2722,7 @@ class _ReaderPanelsMixin {
             heading("Sort by");
             // Direction lives in the sort BAR (one click on the active chip
             // toggles it) -- the menu stays fields-only (user call 2026-08-03).
-            row("Position (default)", cur.field === "position", () => this._wvAnnSetSort("position", undefined, reader));
+            row("Position", cur.field === "position", () => this._wvAnnSetSort("position", undefined, reader), true);
             row("Date Added", cur.field === "dateAdded", () => this._wvAnnSetSort("dateAdded", undefined, reader));
             row("Date Modified", cur.field === "dateModified", () => this._wvAnnSetSort("dateModified", undefined, reader));
             // Manual is offered only when this document actually HAS a
@@ -3165,8 +3194,11 @@ class _ReaderPanelsMixin {
                         }
                         const tab = t.closest("#viewOutline");
                         if (!tab) return;
-                        const container = idoc.getElementById("sidebarContainer");
-                        if (!container || !container.classList.contains(RP_OUTLINE_TAB_ON)) return;
+                        // Gated on Weavero's outline being ENABLED, not on its
+                        // tab being selected: the menu is for this document's
+                        // outline settings, reachable from any tab (MJT
+                        // 2026-09-29, "does not work if not selected").
+                        if (!P._getEnableOutlineTakeover()) return;
                         e.preventDefault(); e.stopPropagation();
                         P._wvOutlineShowTabMenu(reader, idoc, tab);
                     } catch (_) {}
@@ -10372,13 +10404,8 @@ class _ReaderPanelsMixin {
     _wvOutlineShowTabMenu(reader: any, idoc: any, anchor: any) {
         try {
             this._wvCloseReaderBmContextMenu(idoc);
-            // A web snapshot has no pages: the menu's only choice would do
-            // nothing there (MJT 2026-09-24). PDFs and EPUBs keep it.
-            if ((reader && reader._type) === "snapshot") return;
             const att = this._wvReaderAtt(reader);
             if (!att || att.libraryID == null || !att.itemKey) return;
-            const shown = this._wvOutlinePagesShown(att);
-            const globalOn = this._getOutlinePageNumbers();
             const menu = idoc.createElementNS(NS_HTML_RP, "div");
             menu.id = RP_BM_CTX_ID;
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
@@ -10388,27 +10415,118 @@ class _ReaderPanelsMixin {
                     if (P) P._wvReaderRenderOutline(reader, idoc);
                 } catch (_) {}
             };
-            const row = (label: string, ticked: boolean, value: boolean) => {
-                const it = idoc.createElementNS(NS_HTML_RP, "div");
-                it.className = "wv-ctx-item";
+            // One line: tick, name, and a dim right-aligned size column;
+            // "(default)" goes at the END of the line, as in Settings (MJT
+            // 2026-09-29): after the size when there is one, else after the name.
+            const fill = (it: any, name: string, ticked: boolean, isDefault: boolean, hint: string) => {
                 const ic = idoc.createElementNS(NS_HTML_RP, "span");
                 ic.className = "wv-ctx-ic";
                 ic.textContent = ticked ? "✓" : "";
                 const lb = idoc.createElementNS(NS_HTML_RP, "span");
-                lb.textContent = label;
+                lb.textContent = name;
                 it.appendChild(ic); it.appendChild(lb);
-                it.addEventListener("click", () => {
-                    close();
-                    this._wvOutlineSetPageNumbers(att, value).then(rerender, rerender);
-                });
+                if (isDefault && !hint) {
+                    // Dim like the size column (MJT 2026-09-29).
+                    const df = idoc.createElementNS(NS_HTML_RP, "span");
+                    df.className = "wv-ctx-def";
+                    df.textContent = "(default)";
+                    it.appendChild(df);
+                }
+                if (hint) {
+                    const hn = idoc.createElementNS(NS_HTML_RP, "span");
+                    hn.className = "wv-ctx-hint";
+                    hn.textContent = hint + (isDefault ? " (default)" : "");
+                    it.appendChild(hn);
+                }
+            };
+            // Text-size lines: the size in fixed-width columns -- the number
+            // right-aligned, then "(default)", then the flyout arrow -- so the
+            // sizes line up vertically on every line (MJT 2026-09-29).
+            const fillCols = (it: any, name: string, ticked: boolean, isDefault: boolean, size: string, arrow: boolean) => {
+                const ic = idoc.createElementNS(NS_HTML_RP, "span");
+                ic.className = "wv-ctx-ic";
+                ic.textContent = ticked ? "✓" : "";
+                const lb = idoc.createElementNS(NS_HTML_RP, "span");
+                lb.textContent = name;
+                const cols = idoc.createElementNS(NS_HTML_RP, "span");
+                cols.className = "wv-ctx-cols";
+                const sz = idoc.createElementNS(NS_HTML_RP, "span");
+                sz.className = "wv-ctx-size";
+                sz.textContent = size;
+                const df = idoc.createElementNS(NS_HTML_RP, "span");
+                df.className = "wv-ctx-defcol";
+                df.textContent = isDefault ? "(default)" : "";
+                const ar = idoc.createElementNS(NS_HTML_RP, "span");
+                ar.className = "wv-ctx-arrowcol";
+                ar.textContent = arrow ? "▸" : "";
+                cols.appendChild(sz); cols.appendChild(df); cols.appendChild(ar);
+                it.appendChild(ic); it.appendChild(lb); it.appendChild(cols);
+            };
+            const row = (name: string, ticked: boolean, pick: () => void, isDefault = false, hint = "") => {
+                const it = idoc.createElementNS(NS_HTML_RP, "div");
+                it.className = "wv-ctx-item";
+                fill(it, name, ticked, isDefault, hint);
+                it.addEventListener("click", () => { close(); pick(); });
                 menu.appendChild(it);
             };
-            const hd = idoc.createElementNS(NS_HTML_RP, "div");
-            hd.className = "wv-ctx-heading";
-            hd.textContent = "Page numbers";
-            menu.appendChild(hd);
-            row("Show" + (globalOn ? " (default)" : ""), shown, true);
-            row("Hide" + (globalOn ? "" : " (default)"), !shown, false);
+            const heading = (text: string) => {
+                const hd = idoc.createElementNS(NS_HTML_RP, "div");
+                hd.className = "wv-ctx-heading";
+                hd.textContent = text;
+                menu.appendChild(hd);
+            };
+            // Page numbers: not in a web snapshot, which has no pages (MJT
+            // 2026-09-24). PDFs and EPUBs keep it.
+            if ((reader && reader._type) !== "snapshot") {
+                const shown = this._wvOutlinePagesShown(att);
+                const globalOn = this._getOutlinePageNumbers();
+                const setPages = (v: boolean) => () => { this._wvOutlineSetPageNumbers(att, v).then(rerender, rerender); };
+                heading("Page numbers");
+                row("Show", shown, setPages(true), globalOn);
+                row("Hide", !shown, setPages(false), !globalOn);
+            }
+            // Text size for this document (MJT 2026-09-29): Zotero Outline and
+            // Zotero Item Pane (both follow View -> Font Size, shown with
+            // their current size), and "Fixed" opening the pixel sizes (the
+            // bookmarks menu's hover flyout). The tick marks the current
+            // choice; "(default)" the Settings value -- picking it removes the
+            // document's exception, as for the page numbers.
+            {
+                const cur = this._wvOutlineTextSizeOf(att);
+                const g = this._wvOutlineTextSizeGlobal();
+                const apply = () => { this._wvApplyOutlineTextScale(idoc, reader); };
+                const set = (v: string) => { this._wvOutlineSetTextSize(att, v).then(apply, apply); };
+                const px = (v: string) => this._wvOutlineSizePx(v) + " px";
+                heading("Text size");
+                const sizeRow = (name: string, v: string) => {
+                    const r = idoc.createElementNS(NS_HTML_RP, "div");
+                    r.className = "wv-ctx-item";
+                    fillCols(r, name, cur === v, g === v, px(v), false);
+                    r.addEventListener("click", () => { close(); set(v); });
+                    menu.appendChild(r);
+                };
+                sizeRow("Zotero Outline", "zotero");
+                sizeRow("Zotero Item Pane", "itemPane");
+                const fixedCur = RP_OUTLINE_FIXED.includes(cur);
+                const it = idoc.createElementNS(NS_HTML_RP, "div");
+                it.className = "wv-ctx-item wv-ctx-haschild";
+                fillCols(it, "Fixed", fixedCur, fixedCur && cur === g, fixedCur ? cur + " px" : "", true);
+                const fly = idoc.createElementNS(NS_HTML_RP, "div");
+                fly.className = "wv-ctx-submenu";
+                fly.style.minWidth = "0";
+                for (const v of RP_OUTLINE_FIXED) {
+                    const ci = idoc.createElementNS(NS_HTML_RP, "div");
+                    ci.className = "wv-ctx-item";
+                    fill(ci, v + " px", cur === v, v === g, "");
+                    ci.addEventListener("click", (ev: any) => {
+                        try { ev.stopPropagation(); } catch (_) {}
+                        close(); set(v);
+                    });
+                    fly.appendChild(ci);
+                }
+                it.appendChild(fly);
+                menu.appendChild(it);
+            }
             (idoc.body || idoc.documentElement).appendChild(menu);
             const r = anchor.getBoundingClientRect();
             menu.style.left = Math.max(6, r.left) + "px";
@@ -10468,7 +10586,7 @@ class _ReaderPanelsMixin {
                     if (P) P._wvReaderRenderBmList(reader, idoc);
                 } catch (_) {}
             };
-            const row = (label: string, ticked: boolean, value: boolean) => {
+            const row = (label: string, ticked: boolean, value: boolean, isDefault: boolean) => {
                 const it = idoc.createElementNS(NS_HTML_RP, "div");
                 it.className = "wv-ctx-item";
                 const ic = idoc.createElementNS(NS_HTML_RP, "span");
@@ -10477,6 +10595,13 @@ class _ReaderPanelsMixin {
                 const lb = idoc.createElementNS(NS_HTML_RP, "span");
                 lb.textContent = label;
                 it.appendChild(ic); it.appendChild(lb);
+                if (isDefault) {
+                    // Dimmed, as in the Outline tab menu (MJT 2026-09-29).
+                    const df = idoc.createElementNS(NS_HTML_RP, "span");
+                    df.className = "wv-ctx-def";
+                    df.textContent = "(default)";
+                    it.appendChild(df);
+                }
                 it.addEventListener("click", () => {
                     close();
                     this._wvBmSetPageNumbers(att, value).then(rerender, rerender);
@@ -10487,8 +10612,8 @@ class _ReaderPanelsMixin {
             hd.className = "wv-ctx-heading";
             hd.textContent = "Page numbers";
             menu.appendChild(hd);
-            row("Show" + (globalOn ? " (default)" : ""), shown, true);
-            row("Hide" + (globalOn ? "" : " (default)"), !shown, false);
+            row("Show", shown, true, globalOn);
+            row("Hide", !shown, false, !globalOn);
             (idoc.body || idoc.documentElement).appendChild(menu);
             const r = anchor.getBoundingClientRect();
             menu.style.left = Math.max(6, r.left) + "px";
@@ -10559,6 +10684,116 @@ class _ReaderPanelsMixin {
                 },
             );
         } catch (e) { Zotero.debug("[Weavero] outline pages pref watch err: " + e); }
+    }
+
+    /** Normalise a stored outline size (see RP_OUTLINE_FIXED); values from
+     *  earlier dev builds (names, Font Size factors) map to the nearest. */
+    _wvOutlineTextSizeNorm(v: any): string | null {
+        const s = String(v == null ? "" : v);
+        if (s === "zotero" || s === "itemPane" || RP_OUTLINE_FIXED.includes(s)) return s;
+        const named: any = { default: "zotero", larger: "15" };
+        if (named[s]) return named[s];
+        const f = parseFloat(s);
+        if (!(f > 0 && f < 3)) return null;
+        if (Math.abs(f - 1) < 0.001) return "zotero";
+        const px = f * 11;
+        let best = "11", d = Infinity;
+        for (const c of RP_OUTLINE_FIXED) {
+            if (Math.abs(Number(c) - px) < d) { d = Math.abs(Number(c) - px); best = c; }
+        }
+        return best;
+    }
+
+    /** Current size in px of an outline size value: the two Zotero sizes
+     *  follow View -> Font Size (11px / 13px x the factor). */
+    _wvOutlineSizePx(v: string): number {
+        let f = 1;
+        try { f = parseFloat(String(Zotero.Prefs.get("fontSize"))) || 1; } catch (_) {}
+        const base = v === "zotero" ? 11 : v === "itemPane" ? 13 : NaN;
+        return isNaN(base) ? Number(v) : Math.round(base * f * 100) / 100;
+    }
+
+    /** Display label: "Zotero Outline, 12.65 px", "Zotero Item Pane, 14.95 px", "13 px". */
+    _wvOutlineSizeLabel(v: string): string {
+        if (v === "zotero") return "Zotero Outline, " + this._wvOutlineSizePx(v) + " px";
+        if (v === "itemPane") return "Zotero Item Pane, " + this._wvOutlineSizePx(v) + " px";
+        return v + " px";
+    }
+
+    _wvOutlineTextSizeGlobal(): string {
+        let v: any = "zotero";
+        try { v = Zotero.Prefs.get("weavero.outlineTextSize"); } catch (_) {}
+        return this._wvOutlineTextSizeNorm(v) || "zotero";
+    }
+
+    /** The document's size: its own choice (right-click the Outline tab,
+     *  `outlines.json` -> settings[key].textSize) when set, else the
+     *  Settings value -- the same two levels as the page numbers (MJT
+     *  2026-09-29). `att` null -> the Settings value. */
+    _wvOutlineTextSizeOf(att: any): string {
+        try {
+            if (att && att.libraryID != null && att.itemKey) {
+                const s = this._wvOutlineFileSettings(att.libraryID, att.itemKey);
+                const own = s && this._wvOutlineTextSizeNorm(s.textSize);
+                if (own) return own;
+            }
+        } catch (_) {}
+        return this._wvOutlineTextSizeGlobal();
+    }
+
+    /** Set the reader page's outline size from ITS document's choice:
+     *  `--wv-outline-fs` = the fixed size, or unset for Zotero's own. */
+    _wvApplyOutlineTextScale(idoc: any, reader?: any) {
+        try {
+            const root = idoc && idoc.documentElement;
+            if (!root) return;
+            const rd = reader || (Zotero.Reader._readers || []).find((r: any) => {
+                try { return r._iframeWindow && r._iframeWindow.document === idoc; } catch (_) { return false; }
+            });
+            const v = this._wvOutlineTextSizeOf(rd ? this._wvReaderAtt(rd) : null);
+            if (v === "zotero") root.style.removeProperty("--wv-outline-fs");
+            // 13/16 rem: the item pane's 13px at Font Size 1.00, and it
+            // follows Font Size like the item pane does.
+            else if (v === "itemPane") root.style.setProperty("--wv-outline-fs", ".8125rem");
+            else root.style.setProperty("--wv-outline-fs", v + "px");
+            root.style.removeProperty("--wv-outline-scale");   // earlier dev builds
+        } catch (_) {}
+    }
+
+    /** Set the size for one document; picking the Settings value removes
+     *  the exception (departure-only, as for the page numbers). */
+    async _wvOutlineSetTextSize(att: any, size: string): Promise<string> {
+        const g = this._wvOutlineTextSizeGlobal();
+        await this._wvOutlineSetFileSettings(att.libraryID, att.itemKey,
+            { textSize: size === g ? undefined : size });
+        return this._wvOutlineTextSizeOf(att);
+    }
+
+    /** Propagate `weavero.outlineTextSize` to every OPEN reader at once
+     *  (same lifetime pattern as the page-number pref watch). */
+    _wvWireOutlineTextSizePrefWatch() {
+        try {
+            const g: any = Zotero;
+            const tag = this._wvWireTag();
+            if (g._wvOutlineTextSizePrefObs) {
+                if (g._wvOutlineTextSizePrefObsVer === tag) return;
+                try { Zotero.Prefs.unregisterObserver(g._wvOutlineTextSizePrefObs); } catch (_) {}
+                delete g._wvOutlineTextSizePrefObs;
+            }
+            g._wvOutlineTextSizePrefObsVer = tag;
+            g._wvOutlineTextSizePrefObs = Zotero.Prefs.registerObserver(
+                "weavero.outlineTextSize",
+                () => {
+                    try {
+                        const lp: any = Zotero.Weavero && Zotero.Weavero.plugin;
+                        if (!lp) return;
+                        for (const r of (Zotero.Reader._readers || [])) {
+                            try { lp._wvApplyOutlineTextScale(r._iframeWindow && r._iframeWindow.document, r); } catch (_) {}
+                        }
+                    } catch (_) {}
+                },
+            );
+        } catch (e) { Zotero.debug("[Weavero] outline text size pref watch err: " + e); }
     }
 
     /** Source-switch menu (used when >1 source exists -- Phase 3). Mirrors the
@@ -11200,6 +11435,7 @@ class _ReaderPanelsMixin {
 
     _wvEnsureReaderPanelStyles(idoc: any) {
         const css = RP_POPUP_CSS + RP_BM_CSS + BM_HOVERCARD_CSS + RP_OUTLINE_CSS;
+        this._wvApplyOutlineTextScale(idoc);
         const existing = idoc.getElementById(RP_STYLE_ID);
         if (existing) {
             // A reader left open across a plugin update keeps its stale

@@ -139,12 +139,15 @@ describe("Weavero — selected-tab outline (Firefox nova)", () => {
         const chip = doc.createElementNS(H, "div"); chip.className = "wv-tab-group-chip";
         box.append(plain, multi, sel, chip); bar.appendChild(box);
         try {
-            assert.notEqual(win.getComputedStyle(plain).backgroundColor, "rgba(0, 0, 0, 0)", "unselected tab filled");
+            const dark = win.matchMedia("(prefers-color-scheme: dark)").matches;
+            // Light: filled pills. Dark: no fill, the strip shows through, as
+            // measured in Firefox 157 (MJT 2026-09-29).
+            if (dark) assert.equal(win.getComputedStyle(plain).backgroundColor, "rgba(0, 0, 0, 0)", "dark: unselected tab unfilled");
+            else assert.notEqual(win.getComputedStyle(plain).backgroundColor, "rgba(0, 0, 0, 0)", "light: unselected tab filled");
             const m = win.getComputedStyle(multi);
             assert.equal(m.backgroundColor, win.getComputedStyle(sel).backgroundColor, "no accent tint: the selected background");
-            // #8: Firefox nova's --background-color-box (white / #252428)
-            const dark = win.matchMedia("(prefers-color-scheme: dark)").matches;
-            assert.equal(win.getComputedStyle(sel).backgroundColor, dark ? "rgb(37, 36, 40)" : "rgb(255, 255, 255)");
+            // #8: Firefox nova's --background-color-box (white / #171519, gray-80)
+            assert.equal(win.getComputedStyle(sel).backgroundColor, dark ? "rgb(23, 21, 25)" : "rgb(255, 255, 255)");
             assert.include(m.boxShadow, "inset", "accent outline kept");
             // Firefox nova's focus colour (violet-50 / violet-30), 2px on the selected one
             const dk = win.matchMedia("(prefers-color-scheme: dark)").matches;

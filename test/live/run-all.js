@@ -61,8 +61,8 @@
         try {
             // Etiquette: a polluted quicksearch mode produces phantom
             // failures (test rules); pin it, restore at the end.
-            const prevMode = Zotero.Prefs.get("search.quicksearch-mode", true);
-            Zotero.Prefs.set("search.quicksearch-mode", "fields", true);
+            const prevMode = Zotero.Prefs.get("search.quicksearch-mode");
+            Zotero.Prefs.set("search.quicksearch-mode", "fields");
 
             // Harness FIRST — every suite fails fast without it.
             const hText = await Zotero.File.getContentsAsync(ROOT + "lib\\harness.js");
@@ -117,7 +117,7 @@
                 }
             }
 
-            Zotero.Prefs.set("search.quicksearch-mode", prevMode || "fields", true);
+            Zotero.Prefs.set("search.quicksearch-mode", prevMode || "fields");
 
             // ---- combined report ----
             const ok = (e) => e.summary && (e.summary.status === "done")

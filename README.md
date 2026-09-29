@@ -3,7 +3,7 @@
   Weavero
 </h1>
 
-[![Zotero](https://img.shields.io/badge/Zotero-7%E2%80%9310--beta-brightgreen?logo=zotero&logoColor=red)](https://www.zotero.org)
+[![Zotero](https://img.shields.io/badge/Zotero-7%E2%80%9310-brightgreen?logo=zotero&logoColor=red)](https://www.zotero.org)
 [![Tested on](https://img.shields.io/badge/Tested-Zotero%2010.0--beta-blue?logo=zotero&logoColor=red)](https://www.zotero.org/support/dev/client_coding/zotero_7_for_developers)
 [![CI](https://img.shields.io/github/actions/workflow/status/mjthoraval/Weavero/test.yml?branch=main&label=CI&logo=github)](https://github.com/mjthoraval/Weavero/actions/workflows/test.yml)
 
@@ -11,7 +11,7 @@
 [![Downloads](https://img.shields.io/github/downloads/mjthoraval/Weavero/latest/total?color=brightgreen)](https://github.com/mjthoraval/Weavero/releases)
 [![License](https://img.shields.io/github/license/mjthoraval/Weavero?label=License&color=lightgrey)](LICENSE)
 
-A Zotero 7 to 10-beta plugin that layers convenience features on top of the standard library and reader: clickable links in annotation comments and notes, a fast filter pane, bookmarks, related-item tools, a structured tabs menu, tab and window management, and extra items-tree columns. Everything is individually toggleable in Preferences.
+A Zotero 7 to 10 plugin that layers convenience features on top of the standard library and reader: clickable links in annotation comments and notes, a fast filter pane, bookmarks, related-item tools, a structured tabs menu, tab and window management, and extra items-tree columns. Everything is individually toggleable in Preferences.
 
 > [!NOTE]
 > **Your documents are safe.** Weavero never writes to or modifies your PDF files or attachments on disk — there's no risk of corrupting your documents. It only layers UI on top of Zotero's standard views and keeps its own data (bookmarks, preferences) in separate files. Any feature you turn off is inert.
@@ -19,7 +19,7 @@ A Zotero 7 to 10-beta plugin that layers convenience features on top of the stan
 > [!WARNING]
 > **Weavero is under active development — please report anything that misbehaves** ([open an issue](https://github.com/mjthoraval/Weavero/issues)). A few things to know:
 >
-> - **Built on Zotero's internals, and on a beta.** Weavero hooks deep into Zotero's reader, items tree, tabs menu, and preferences, and is developed and tested against **Zotero 10.0-beta**. A Zotero update (beta or stable) can temporarily break a feature until the plugin catches up.
+> - **Built on Zotero's internals.** Weavero hooks deep into Zotero's reader, items tree, tabs menu, and preferences, and is developed and tested against **Zotero 10.0-beta**. A Zotero update (beta or stable) can temporarily break a feature until the plugin catches up.
 > - **Bookmarks are local-only.** The Bookmarks feature stores its data in `<Zotero data dir>/weavero/bookmarks.json`. Bookmarks are **not synced** across computers and are **not included in Zotero's cloud backup** — they won't appear on your other devices, and they're lost if you start a fresh profile or lose that folder. **Back up your Zotero data directory if your bookmarks matter to you.** (The Zotero developers have said they intend to add plugin-managed synced storage; Weavero will adopt it once it's available.)
 > - **Some features need Zotero 10.** A few rely on Zotero 10 APIs and may be unavailable or behave differently on Zotero 9.
 > - **Experimental, opt-in features.** Some features are off by default and marked *experimental* in Preferences (e.g. *PDF outline text highlight* in the Extras tab) — they may be rough or change.
@@ -152,6 +152,7 @@ Works in **PDFs, EPUBs and web snapshots**: an EPUB's outline is its table of co
 - **Current-section highlight** — as you scroll, the entry for the section you're reading is marked. It works on all three sources, and on entries you added yourself. The tree is never expanded or collapsed for you: the marker sits on the deepest entry *visible in your tree*, and relocates the moment you expand a branch. Zotero's own reader has highlighting since 7.0.11; Weavero's Outline tab replaces the native view, so it brings its own — plus the immediate refresh after expanding that the native one still lacks ([forums #114157](https://forums.zotero.org/discussion/114157/how-to-locate-the-current-position-of-the-pdf-reader)).
 - **…and it follows sections *within* a page.** Native tracking is page-granular — several headings on one page are indistinguishable, in Zotero as in Acrobat and Firefox's viewer. Weavero compares your reading position (a quarter down the view, the same place a click on an entry lands its target) against each heading's own height, so a page of short sections is followed one heading at a time. Where a PDF's embedded outline stores no real heading coordinates — some store only a page — that page falls back to the page-granular behaviour.
 - **Reading Mode** — the outline stays available as a read-only lens, and Reading Mode's own generated outline is offered as an extra source.
+- **Text size** — the outline follows Zotero's *View → Font Size*, like the rest of the reader. To make just the outline bigger, *Preferences → Weavero → Extras → Reader outline → Outline text size*: *Zotero Outline* (default) and *Zotero Item Pane* follow Font Size; *Fixed* (8 to 24 px) stays at the chosen size. Set it for all documents there, or right-click the **Outline** tab to pick a size for one document.
 
 </details>
 
@@ -313,7 +314,7 @@ Build/test tooling is all `devDependencies` (nothing from npm ships in the XPI):
 
 ## Compatibility
 
-- Zotero 7.0+ (declared `strict_min_version: 7.0`, `strict_max_version: 10.*`).
+- Zotero 7.0+ (declared `strict_min_version: 7.0`, `strict_max_version: 10.0.*`).
 - Tested on Zotero 10.0-beta. Some features rely on Zotero 10 APIs and may be unavailable or behave differently on Zotero 9.
 
 ## Support

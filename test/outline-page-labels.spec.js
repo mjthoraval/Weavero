@@ -41,14 +41,18 @@ describe("Weavero — outline page numbers per reader type", () => {
         finally { wv._wvDomRangeForAnchor = orig; }
     });
 
-    it("a snapshot offers no Page numbers menu on the Outline or Bookmarks tab", () => {
+    // Since the outline text size (MJT 2026-09-29) the Outline tab menu does
+    // open in a snapshot -- with the Text size section only.
+    it("a snapshot offers no Page numbers section on the Outline or Bookmarks tab", () => {
         const d = Zotero.getMainWindow().document.implementation.createHTMLDocument("wv-snap-menu");
         const orig = wv._wvReaderAtt;
         wv._wvReaderAtt = () => ({ libraryID: 1, itemKey: "SNAP" });
         try {
             const reader = { _type: "snapshot" };
             wv._wvOutlineShowTabMenu(reader, d, d.body);
-            assert.isNull(d.querySelector(".wv-ctx-heading"), "no outline page-number menu");
+            const heads = [...d.querySelectorAll(".wv-ctx-heading")].map((h) => h.textContent);
+            assert.deepEqual(heads, ["Text size"], "outline menu: text size only, no page numbers");
+            wv._wvCloseReaderBmContextMenu(d);
             wv._wvBmShowTabMenu(reader, d, d.body);
             assert.isNull(d.querySelector(".wv-ctx-heading"), "no bookmarks page-number menu");
         }

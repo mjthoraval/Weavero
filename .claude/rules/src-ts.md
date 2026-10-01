@@ -161,6 +161,21 @@ name to a Zotero object, window, or document.
   `itemtree/refresh` notification); restore by deleting the key when the
   column had none (Zotero's columns have none). Guard:
   `test/items-header-contain.spec.js`.
+- A window that sets `customtitlebar` BY HAND (basicViewer loads no
+  titlebar.js) gets Gecko's CSD -- the WM title bar goes away -- plus only
+  what the PLATFORM skin happens to style: `scss/win/_titleBar.scss` makes
+  `.menubar-container` a row and absolute-positions `.titlebar-buttonbox`;
+  `scss/linux/_titleBar.scss` has no `.menubar-container` rule, keys its
+  row on `#titlebar` and keeps the box in flow, so the Plugins Manager's
+  drawn bar stacked into a 128px column on Ubuntu (issue #50, 2026-09-30;
+  measured 2026-10-01). Drawn chrome ships its own row/box rules for every
+  platform it runs on (the PM block's `@media (-moz-platform: linux)`,
+  copied from the main window's compact-title-bar declarations) -- a rule
+  that "the skin provides" is one platform's skin. And the attribute goes
+  on BEFORE the window is first shown (DOMContentLoaded of the chrome
+  document, as upstream's titlebar.js does at script time): set ~270ms
+  after the show, GTK re-maps the window and it visibly opens, closes and
+  reopens (2026-10-01). Guard: `test/plugins-chrome-platform.spec.js`.
 
 ## fix: commits name their guard
 

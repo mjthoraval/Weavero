@@ -8093,11 +8093,20 @@ class _PaneMixin {
      *  it cascades the LIVE File/Edit/View popups, so every command and
      *  shortcut keeps working. The menus collapse via height-0 (NOT
      *  display:none — the popups must stay renderable, same lesson as the
-     *  compact title bar's Alt-reveal). Skipped on macOS. */
+     *  compact title bar's Alt-reveal). Skipped on macOS. Linux gets the same
+     *  bar through its own rules in the style block below (issue #50). */
     _wvPMSetupChrome(this: any, win: any, _doc: any) {
         try {
             if ((Zotero as any).isMac) return;
-            if (win._wvPMChrome) return;
+            if (win._wvPMChrome) {
+                // Built early (before the page named the window): make sure
+                // the name caught up, whatever the title observer saw.
+                try {
+                    const c = win._wvPMChrome, t = win.document.title;
+                    if (c.titleEl && t && t !== "about:blank" && c.titleEl.textContent !== t) c.titleEl.textContent = t;
+                } catch (e) {}
+                return;
+            }
             const cdoc = win.document;
             const toolbar = cdoc.getElementById("toolbar-menubar");
             const items = cdoc.getElementById("menubar-items");
@@ -8120,6 +8129,34 @@ class _PaneMixin {
                     // absolute-positions the caption buttons.
                     ".menubar-container { padding-right: 138px;",
                     "  -moz-window-dragging: drag; }",
+                    // Linux (issue #50, 2026-09-30): the row and the absolute
+                    // caption-button box above come from scss/win/_titleBar.scss
+                    // (`#titlebar, .menubar-container { flex-direction: row; ... }`,
+                    // `.titlebar-buttonbox { position: absolute; inset-inline-end: 0 }`).
+                    // scss/linux/_titleBar.scss has NO .menubar-container rule,
+                    // keys its row on #titlebar (absent in basicViewer) and keeps
+                    // the buttonbox in flow, so `customtitlebar` stripped the GTK
+                    // title bar while the pieces stacked in a 128px column
+                    // (measured 2026-10-01, Zotero 10.0.5). These are the main
+                    // window's own compact-title-bar declarations
+                    // (_ensureCompactTitleBarStyles: `#zotero-title-bar` row +
+                    // `> .titlebar-buttonbox`), so both windows lay out alike.
+                    // Scoped to Linux: Windows keeps riding its skin untouched.
+                    // Guard: test/plugins-chrome-platform.spec.js.
+                    "@media (-moz-platform: linux) {",
+                    "  .menubar-container { flex-direction: row; position: relative;",
+                    // content-box: the 1px divider sits BELOW the 36px row, as on
+                    // #zotero-title-bar (37px in all) -- the toolbox is border-box.
+                    "    box-sizing: content-box; height: var(--tab-min-height);",
+                    "    background: var(--material-tabbar);",
+                    "    border-bottom: var(--material-panedivider); }",
+                    "  .menubar-container > .titlebar-buttonbox { position: absolute;",
+                    "    top: 0; right: 0; height: 100%; z-index: 5; }",
+                    "  #toolbar-menubar { margin: 0 !important; min-width: 0 !important; }",
+                    // No Z icon on Linux (the skin hides .titlebar-icon-container),
+                    // so the name gets the indent the icon gives it on Windows.
+                    "  .menubar-container > .wv-pm-title { margin-inline-start: 12px; }",
+                    "}",
                     ".wv-pm-title { align-self: center; margin-inline-start: 4px;",
                     "  font-size: 12px; white-space: nowrap; overflow: hidden;",
                     "  text-overflow: ellipsis; -moz-window-dragging: drag; }",
@@ -8174,8 +8211,28 @@ class _PaneMixin {
             toolbox.insertBefore(iconBox, toolbar);
             const titleEl: any = cdoc.createElementNS(NS_HTML, "div");
             titleEl.className = "wv-pm-title";
-            titleEl.textContent = cdoc.title || "Plugins Manager";
+            // No page document yet (`_doc` null) = the early call: the window
+            // is still titled with the app name, so the name starts EMPTY and
+            // the observer below fills it -- "Zotero" would flash in the bar
+            // for the first frames otherwise.
+            titleEl.textContent = _doc ? (cdoc.title || "Plugins Manager") : "";
             toolbox.insertBefore(titleEl, toolbar);
+            // The name FOLLOWS the window title: with the early setup (see
+            // _wvPMOpenViewerNonDialog) the bar exists before the page has
+            // named the window -- the title reads "Zotero", then
+            // "about:blank", and only becomes "Plugins Manager" on
+            // basicViewer.js's `pagetitlechanged` (measured 2026-10-01).
+            // document.title is the root's `title` attribute in a XUL window.
+            let titleObs: any = null;
+            try {
+                titleObs = new win.MutationObserver(() => {
+                    try {
+                        const t = cdoc.title;
+                        if (t && t !== "about:blank" && titleEl.textContent !== t) titleEl.textContent = t;
+                    } catch (e) {}
+                });
+                titleObs.observe(cdoc.documentElement, { attributes: true, attributeFilter: ["title"] });
+            } catch (e) {}
             // Right side: [flex drag area][☰][40px drag spacer][caption buttons]
             const dragFlex: any = cdoc.createElementNS(NS_HTML, "div");
             dragFlex.className = "wv-pm-drag-flex";
@@ -8201,7 +8258,7 @@ class _PaneMixin {
             mkBtn("titlebar-restore", () => { try { win.restore(); } catch (e) {} });
             mkBtn("titlebar-close", () => { try { win.close(); } catch (e) {} });
             toolbox.appendChild(bb);
-            win._wvPMChrome = { toolbar, items, btn, iconBox, titleEl, dragFlex, dragSpacer, bb };
+            win._wvPMChrome = { toolbar, items, btn, iconBox, titleEl, dragFlex, dragSpacer, bb, titleObs };
         } catch (e) { Zotero.debug("[Weavero] _wvPMSetupChrome err: " + e); }
     }
 
@@ -8211,6 +8268,7 @@ class _PaneMixin {
             if (!c) return;
             try { win.document.documentElement.removeAttribute("customtitlebar"); } catch (e) {}
             try { c.items.removeAttribute("wv-pm-hidden"); } catch (e) {}
+            try { if (c.titleObs) c.titleObs.disconnect(); } catch (e) {}
             try { this._wvRemoveHamburger(win); } catch (e) {}
             for (const k of ["iconBox", "titleEl", "dragFlex", "dragSpacer", "bb"]) {
                 try { if (c[k]) c[k].remove(); } catch (e) {}
@@ -8288,6 +8346,30 @@ class _PaneMixin {
         arg.wrappedJSObject = arg;
         const win: any = ww.openWindow(null, "chrome://zotero/content/standalone/basicViewer.xhtml",
             null, "chrome,dialog=no,resizable,centerscreen,menubar,scrollbars", arg);
+        // Draw the bar BEFORE the window is first shown. `customtitlebar`
+        // decides the window's decorations, and upstream sets it at script
+        // time for that reason (titlebar.js: "Set attributes that affect
+        // window chrome sizing immediately"). The injection path only runs
+        // once about:addons has loaded, ~270ms after the window is on screen;
+        // on Linux switching decorations that late makes GTK take the window
+        // down and put it back up -- the manager visibly opened, closed and
+        // reopened (measured 2026-10-01, Zotero 10.0.5-beta.2, Wayland: shown
+        // at 76ms with the native bar, deactivate/activate at 316ms when the
+        // attribute landed; at DOMContentLoaded there is a single activate).
+        // The late call in _wvPMInject stays as the path for a manager that
+        // was already open (plugin reload) -- it no-ops on `_wvPMChrome`.
+        // Guard: test/plugins-chrome-platform.spec.js.
+        try {
+            const early = function (ev: any) {
+                try {
+                    if (!ev || ev.target !== win.document) return;
+                    win.removeEventListener("DOMContentLoaded", early, true);
+                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (lp && lp._getEnablePluginsSearch && lp._getEnablePluginsSearch()) lp._wvPMSetupChrome(win, null);
+                } catch (e) {}
+            };
+            win.addEventListener("DOMContentLoaded", early, true);
+        } catch (e) {}
         if (options && options.onLoad) {
             const func = function () {
                 win.removeEventListener("load", func);
@@ -8381,20 +8463,66 @@ class _PaneMixin {
             if (!win || !win.document || !win.location) return;
             if (!String(win.location.href).includes("basicViewer")) return;
             const self = this;
+            const pageDoc = () => {
+                const br = win.document.querySelector("browser");
+                const cd = br && br.contentDocument;
+                return cd && String(cd.location && cd.location.href).includes("aboutaddons") ? cd : null;
+            };
+            // `_wvPMMo` marks a document _wvPMInject already wired. The search
+            // box cannot: it leaves the DOM on the detail view.
             const check = () => {
                 try {
-                    const br = win.document.querySelector("browser");
-                    const cd = br && br.contentDocument;
-                    if (!cd || !String(cd.location && cd.location.href).includes("aboutaddons")) return false;
+                    const cd = pageDoc();
+                    if (!cd) return false;
+                    if (cd._wvPMMo) return true;
                     if (cd.readyState !== "complete") return false;
                     self._wvPMInject(win, cd);
                     return true;
                 } catch (e) { return false; }
             };
             if (check()) return;
+            // Inject the moment the page creates its <addon-list>, inside the
+            // same mutation batch -- i.e. before that list is ever painted.
+            // The poll below only looks every 250ms and waits for
+            // readyState "complete": the box landed up to a quarter second
+            // after the cards and pushed them down (measured 2026-10-01:
+            // first card 296ms, box 318ms on a lucky tick). The poll stays as
+            // the fallback for a page that opens on a view without a list.
+            let earlyMo: any = null;
+            const armEarly = () => {
+                try {
+                    if (earlyMo) return;
+                    const cd = pageDoc();
+                    if (!cd || !cd.documentElement) return;
+                    const tryNow = () => {
+                        if (cd._wvPMMo) return true;
+                        if (!cd.body || !cd.querySelector("addon-list")) return false;
+                        const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (!lp || !lp._getEnablePluginsSearch || !lp._getEnablePluginsSearch()) return true;
+                        lp._wvPMInject(win, cd);
+                        return true;
+                    };
+                    if (tryNow()) return;
+                    earlyMo = new win.MutationObserver(() => {
+                        try { if (tryNow()) earlyMo.disconnect(); } catch (e) {}
+                    });
+                    earlyMo.observe(cd.documentElement, { childList: true, subtree: true });
+                } catch (e) {}
+            };
+            armEarly();
+            try {
+                const br = win.document.querySelector("browser");
+                if (br) br.addEventListener("DOMContentLoaded", () => armEarly(), true);
+            } catch (e) {}
             let tries = 0;
             const t = win.setInterval(() => {
-                try { if (check() || ++tries > 40) win.clearInterval(t); } catch (e) {}
+                try {
+                    armEarly();
+                    if (check() || ++tries > 40) {
+                        win.clearInterval(t);
+                        try { if (earlyMo) earlyMo.disconnect(); } catch (e) {}
+                    }
+                } catch (e) {}
             }, 250);
         } catch (e) {}
     }

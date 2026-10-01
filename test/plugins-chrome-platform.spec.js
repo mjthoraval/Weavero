@@ -126,6 +126,10 @@ describe("Weavero -- Plugins Manager title bar is one row on every platform", ()
 			// Order along the row: name ... hamburger ... caption buttons.
 			assert.isBelow(rect(title).left, rect(burger).left, "the name sits left of the hamburger");
 			assert.isAtMost(rect(burger).right, rect(bb).left, "the hamburger sits left of the caption buttons");
+			// The 40px drag spacer meets the buttons -- the reservation is the
+			// measured box, not the Windows 138px (a 38px band on Linux before).
+			const dragSpacer = doc.querySelector(".wv-pm-drag-spacer");
+			assert.closeTo(rect(bb).left - rect(dragSpacer).right, 0, 1, "no empty band between the drag spacer and the buttons");
 			// Windows: flush right (the skin's inset-inline-end: 0). Linux: the
 			// skin's 10px buttonbox margin -- the main window's own offset.
 			const gap = win.innerWidth - rect(bb).right;

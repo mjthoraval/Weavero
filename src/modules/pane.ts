@@ -7762,6 +7762,7 @@ class _PaneMixin {
                 mo.observe(menubar, { attributes: true, attributeFilter: ["wv-compact-hidden"] });
                 stash.buttonboxObserver = mo;
             } catch (er) {}
+            stash.captionReserveObserver = (this as any)._wvTrackCaptionReserve(win, zoteroTitleBar, buttonbox);
 
             // Insert the hamburger button just left of the window controls.
             // Inserts before postSpacer (which sits before the buttonbox), so
@@ -7804,7 +7805,11 @@ class _PaneMixin {
             //    menubar attribute, so it doesn't fire mid-revert; and clear the
             //    tab-strip width reservation it may have set.
             try { if (stash.buttonboxObserver) stash.buttonboxObserver.disconnect(); } catch (e) {}
-            try { const ztb = doc.getElementById("zotero-title-bar"); if (ztb) ztb.style.paddingInlineEnd = ""; } catch (e) {}
+            try { if (stash.captionReserveObserver) stash.captionReserveObserver.disconnect(); } catch (e) {}
+            try {
+                const ztb = doc.getElementById("zotero-title-bar");
+                if (ztb) { ztb.style.paddingInlineEnd = ""; ztb.style.removeProperty("--wv-ctl-reserve"); }
+            } catch (e) {}
             // Remove the hamburger button + popup.
             try { (this as any)._wvRemoveHamburger?.(win); } catch (e) {}
 
@@ -7878,6 +7883,36 @@ class _PaneMixin {
         }
     }
 
+    /** Keep `--wv-ctl-reserve` on `row` equal to the caption-button box's
+     *  footprint from the right edge (its width + right margin), so the drag
+     *  spacer before it ends exactly where the buttons begin. Measured, not
+     *  assumed: 138px on Windows (3 x 46, no margin), 100px with GTK's three
+     *  buttons + Zotero's 10px margin, less when the desktop hides some.
+     *  While the box sits elsewhere (Alt menu row shown) the row keeps the
+     *  last value; positionButtonbox's inline padding governs then. Returns
+     *  the observer for teardown. Guard: test/caption-reserve.spec.js. */
+    _wvTrackCaptionReserve(win: any, row: any, box: any): any {
+        try {
+            if (!win || !row || !box) return null;
+            const apply = () => {
+                try {
+                    if (box.parentNode !== row) return;
+                    const w = box.getBoundingClientRect().width;
+                    if (!(w > 0)) return;
+                    const mr = parseFloat(win.getComputedStyle(box).marginRight) || 0;
+                    const v = Math.round(w + mr) + "px";
+                    if (row.style.getPropertyValue("--wv-ctl-reserve") !== v) row.style.setProperty("--wv-ctl-reserve", v);
+                } catch (e) {}
+            };
+            apply();
+            const RO = win.ResizeObserver;
+            if (!RO) return null;
+            const ro = new RO(() => apply());
+            ro.observe(box);
+            return ro;
+        } catch (e) { return null; }
+    }
+
     /** One-time CSS for the compact-title-bar mode. Collapses
      *  `#toolbar-menubar[autohide][inactive]` and the parent `#titlebar`
      *  to zero height; positions the moved buttonbox flush right in the
@@ -7937,9 +7972,21 @@ class _PaneMixin {
                 "}",
                 /* Reserve right-edge space inside the tab strip so tabs and
                    the zotero-tabs-toolbar don't slide under the buttonbox.
-                   138px = buttonbox width (46 × 3). */
+                   The width is MEASURED (_wvTrackCaptionReserve): 138px was
+                   the Windows box (46 x 3), and on Linux the GTK box is 90px +
+                   Zotero's 10px margins, which left a 38px empty band between
+                   the 40px drag spacer and the buttons (2026-10-01). 138px
+                   stays as the fallback until the first measurement. */
                 "#zotero-title-bar:has(> .titlebar-buttonbox) {",
-                "  padding-right: 138px;",
+                "  padding-right: var(--wv-ctl-reserve, 138px);",
+                "}",
+                /* Linux: the spacer meets the buttons, as on Windows and in
+                   Firefox on Linux (browser-shared.css: the 40px .titlebar-spacer
+                   is followed directly by the in-flow button box). Zotero's
+                   Linux skin gives .titlebar-buttonbox `margin: 0 10px`; keep
+                   the right-hand 10px, drop the left. */
+                "@media (-moz-platform: linux) {",
+                "  #zotero-title-bar > .titlebar-buttonbox { margin-inline-start: 0; }",
                 "}",
                 /* The revealed menu-bar row is window-draggable like a real title
                    bar (click-and-hold the empty area to move the window); the
@@ -8127,7 +8174,7 @@ class _PaneMixin {
                     // except the interactive pieces; in-flow content stops
                     // 138px short of the right edge, where the shared skin
                     // absolute-positions the caption buttons.
-                    ".menubar-container { padding-right: 138px;",
+                    ".menubar-container { padding-right: var(--wv-ctl-reserve, 138px);",
                     "  -moz-window-dragging: drag; }",
                     // Linux (issue #50, 2026-09-30): the row and the absolute
                     // caption-button box above come from scss/win/_titleBar.scss
@@ -8151,7 +8198,7 @@ class _PaneMixin {
                     "    background: var(--material-tabbar);",
                     "    border-bottom: var(--material-panedivider); }",
                     "  .menubar-container > .titlebar-buttonbox { position: absolute;",
-                    "    top: 0; right: 0; height: 100%; z-index: 5; }",
+                    "    top: 0; right: 0; height: 100%; z-index: 5; margin-inline-start: 0; }",
                     "  #toolbar-menubar { margin: 0 !important; min-width: 0 !important; }",
                     // No Z icon on Linux (the skin hides .titlebar-icon-container),
                     // so the name gets the indent the icon gives it on Windows.
@@ -8258,7 +8305,9 @@ class _PaneMixin {
             mkBtn("titlebar-restore", () => { try { win.restore(); } catch (e) {} });
             mkBtn("titlebar-close", () => { try { win.close(); } catch (e) {} });
             toolbox.appendChild(bb);
-            win._wvPMChrome = { toolbar, items, btn, iconBox, titleEl, dragFlex, dragSpacer, bb, titleObs };
+            // The reservation follows the real box (138px was the Windows one).
+            const reserveObs = this._wvTrackCaptionReserve(win, toolbox, bb);
+            win._wvPMChrome = { toolbar, items, btn, iconBox, titleEl, dragFlex, dragSpacer, bb, titleObs, reserveObs };
         } catch (e) { Zotero.debug("[Weavero] _wvPMSetupChrome err: " + e); }
     }
 
@@ -8269,6 +8318,8 @@ class _PaneMixin {
             try { win.document.documentElement.removeAttribute("customtitlebar"); } catch (e) {}
             try { c.items.removeAttribute("wv-pm-hidden"); } catch (e) {}
             try { if (c.titleObs) c.titleObs.disconnect(); } catch (e) {}
+            try { if (c.reserveObs) c.reserveObs.disconnect(); } catch (e) {}
+            try { c.toolbar.parentElement.style.removeProperty("--wv-ctl-reserve"); } catch (e) {}
             try { this._wvRemoveHamburger(win); } catch (e) {}
             for (const k of ["iconBox", "titleEl", "dragFlex", "dragSpacer", "bb"]) {
                 try { if (c[k]) c[k].remove(); } catch (e) {}

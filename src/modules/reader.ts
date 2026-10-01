@@ -4078,7 +4078,7 @@ class _ReaderMixin {
             // Version-guarded: bump WV_STRIP_STYLE_VER when the CSS below
             // changes so windows that predate a plugin reload get the new
             // rules re-injected instead of keeping the stale sheet.
-            const WV_STRIP_STYLE_VER = "4";
+            const WV_STRIP_STYLE_VER = "5";
             const prev = doc.getElementById("wv-window-tabstrip-styles");
             if (prev) {
                 if (prev.getAttribute("data-wv-ver") === WV_STRIP_STYLE_VER) return;
@@ -4362,7 +4362,10 @@ class _ReaderMixin {
                    Guard: test/linux-window-chrome.spec.js. */
                 "@media (-moz-platform: linux) {",
                 "  :root[customtitlebar][windowtype=\"zotero:reader\"] > hbox { background-color: var(--material-sidepane); }",
-                "  .wv-window-controls { margin: 0 6px 0 10px; }",   // 6 + the strip's own 4px = the main window's 10px
+                // Right: 6 + the strip's own 4px = the main window's 10px. Left:
+                // none -- the 40px drag spacer meets the buttons, as on Windows
+                // and in Firefox on Linux.
+                "  .wv-window-controls { margin: 0 6px 0 0; }",
                 "  .wv-window-controls.wv-in-menubar { margin: 0 10px; }",
                 "  .wv-window-control { width: 30px; color: inherit; background-size: auto; cursor: default; }",
                 "  .wv-window-control.wv-window-min { --wv-ctl-icon: -moz-symbolic-icon(window-minimize-symbolic);",

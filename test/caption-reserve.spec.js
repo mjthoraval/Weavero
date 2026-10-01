@@ -34,6 +34,31 @@ describe("Weavero -- caption-button reservation", () => {
 			"on Linux the button box loses Zotero's left margin, so the spacer meets it");
 	});
 
+	// Desktops with the window buttons on the LEFT (GNOME button-layout
+	// "close,minimize,maximize:", Gecko's -moz-gtk-csd-reversed-placement):
+	// every bar mirrors -- buttons at the left edge, the 40px drag spacer right
+	// after them, the reservation on the left (2026-10-01; before, the buttons
+	// stayed on the right while the rest of the desktop had them on the left).
+	it("buttons-on-the-left desktops: the main window and reader bars mirror", function () {
+		const mw = Zotero.getMainWindow();
+		const d = mw.document.implementation.createHTMLDocument("wv-caption-reserve-left");
+		wv._ensureCompactTitleBarStyles(d);
+		const main = d.getElementById("wv-compact-titlebar-styles").textContent;
+		const m = main.slice(main.indexOf("@media (-moz-gtk-csd-reversed-placement)"));
+		assert.isAbove(main.indexOf("@media (-moz-gtk-csd-reversed-placement)"), -1, "main window has a left-buttons block");
+		assert.match(m, /\.titlebar-buttonbox\s*\{\s*right:\s*auto;\s*left:\s*0/, "buttons pinned to the left edge");
+		assert.match(m, /padding-left:\s*var\(--wv-ctl-reserve/, "reservation on the left");
+		assert.match(m, /\.wv-titlebar-spacer\s*\{\s*order:\s*-1/, "drag spacer moves next to the buttons");
+		if (typeof wv._ensureReaderWindowTabStripStyles !== "function") return;
+		const d2 = mw.document.implementation.createHTMLDocument("wv-caption-reserve-left-reader");
+		wv._ensureReaderWindowTabStripStyles(d2);
+		const rd = d2.getElementById("wv-window-tabstrip-styles").textContent;
+		const r = rd.slice(rd.indexOf("@media (-moz-gtk-csd-reversed-placement)"));
+		assert.isAbove(rd.indexOf("@media (-moz-gtk-csd-reversed-placement)"), -1, "reader windows have a left-buttons block");
+		assert.match(r, /\.wv-window-controls\s*\{\s*order:\s*-2/, "reader buttons first");
+		assert.match(r, /\.wv-window-drag-spacer\s*\{\s*order:\s*-1/, "then the drag spacer");
+	});
+
 	it("_wvTrackCaptionReserve sets the box's width + right margin and follows resizes", async function () {
 		if (typeof wv._wvTrackCaptionReserve !== "function") this.skip();
 		const win = Zotero.getMainWindow(), doc = win.document;

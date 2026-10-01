@@ -7742,6 +7742,7 @@ class _PaneMixin {
                     if (isCollapsed()) {
                         if (buttonbox.parentNode !== zoteroTitleBar) zoteroTitleBar.appendChild(buttonbox);
                         zoteroTitleBar.style.paddingInlineEnd = "";   // buttonbox reserves its own width
+                        zoteroTitleBar.style.paddingInlineStart = "";
                     } else {
                         // Measure the buttonbox (still in the tab strip) and reserve
                         // that width on the tab strip so moving the controls up to
@@ -7753,7 +7754,14 @@ class _PaneMixin {
                             if (nxt && nxt.parentNode === p) p.insertBefore(buttonbox, nxt);
                             else p.appendChild(buttonbox);
                         }
-                        if (w > 0) zoteroTitleBar.style.paddingInlineEnd = w + "px";
+                        if (w > 0) {
+                            // Buttons on the left (GTK reversed placement): they
+                            // vacate the strip's START, so reserve there.
+                            let rev = false;
+                            try { rev = win.matchMedia("(-moz-gtk-csd-reversed-placement)").matches; } catch (e) {}
+                            if (rev) zoteroTitleBar.style.paddingInlineStart = w + "px";
+                            else zoteroTitleBar.style.paddingInlineEnd = w + "px";
+                        }
                     }
                 } catch (er) {}
             };
@@ -7808,7 +7816,7 @@ class _PaneMixin {
             try { if (stash.captionReserveObserver) stash.captionReserveObserver.disconnect(); } catch (e) {}
             try {
                 const ztb = doc.getElementById("zotero-title-bar");
-                if (ztb) { ztb.style.paddingInlineEnd = ""; ztb.style.removeProperty("--wv-ctl-reserve"); }
+                if (ztb) { ztb.style.paddingInlineEnd = ""; ztb.style.paddingInlineStart = ""; ztb.style.removeProperty("--wv-ctl-reserve"); }
             } catch (e) {}
             // Remove the hamburger button + popup.
             try { (this as any)._wvRemoveHamburger?.(win); } catch (e) {}
@@ -7899,8 +7907,12 @@ class _PaneMixin {
                     if (box.parentNode !== row) return;
                     const w = box.getBoundingClientRect().width;
                     if (!(w > 0)) return;
-                    const mr = parseFloat(win.getComputedStyle(box).marginRight) || 0;
-                    const v = Math.round(w + mr) + "px";
+                    // Width + the margin to the window edge. Only one side has
+                    // a margin (right normally, left with the buttons on the
+                    // left), so the sum is that one.
+                    const cs = win.getComputedStyle(box);
+                    const m = (parseFloat(cs.marginLeft) || 0) + (parseFloat(cs.marginRight) || 0);
+                    const v = Math.round(w + m) + "px";
                     if (row.style.getPropertyValue("--wv-ctl-reserve") !== v) row.style.setProperty("--wv-ctl-reserve", v);
                 } catch (e) {}
             };
@@ -7987,6 +7999,21 @@ class _PaneMixin {
                    the right-hand 10px, drop the left. */
                 "@media (-moz-platform: linux) {",
                 "  #zotero-title-bar > .titlebar-buttonbox { margin-inline-start: 0; }",
+                "}",
+                /* Desktops with the window buttons on the LEFT (GNOME
+                   button-layout "close,minimize,maximize:"; Gecko exposes it as
+                   -moz-gtk-csd-reversed-placement, which Zotero's own Linux skin
+                   honours with `.titlebar-buttonbox { order: -1 }`). Mirror the
+                   group: buttons at the left edge, the 40px drag spacer (and the
+                   anchor drawn in it) right after them, the reservation on the
+                   left. The hamburger is the application menu, not a window
+                   control: it stays at the right end, as Firefox's menu button
+                   does (2026-10-01). */
+                "@media (-moz-gtk-csd-reversed-placement) {",
+                "  #zotero-title-bar > .titlebar-buttonbox { right: auto; left: 0; margin-inline: 10px 0; }",
+                "  #zotero-title-bar:has(> .titlebar-buttonbox) {",
+                "    padding-right: 10px; padding-left: var(--wv-ctl-reserve, 138px); }",
+                "  #zotero-title-bar > .wv-titlebar-spacer { order: -1; }",
                 "}",
                 /* The revealed menu-bar row is window-draggable like a real title
                    bar (click-and-hold the empty area to move the window); the
@@ -8203,6 +8230,16 @@ class _PaneMixin {
                     // No Z icon on Linux (the skin hides .titlebar-icon-container),
                     // so the name gets the indent the icon gives it on Windows.
                     "  .menubar-container > .wv-pm-title { margin-inline-start: 12px; }",
+                    "}",
+                    // Window buttons on the LEFT (GTK reversed placement): the
+                    // main window's mirror -- buttons at the left edge, the 40px
+                    // drag spacer right after them, the name after that, the
+                    // hamburger at the right end (2026-10-01).
+                    "@media (-moz-gtk-csd-reversed-placement) {",
+                    "  .menubar-container > .titlebar-buttonbox { right: auto; left: 0; margin-inline: 10px 0; }",
+                    "  .menubar-container { padding-right: 10px; padding-left: var(--wv-ctl-reserve, 138px); }",
+                    "  .menubar-container > .wv-pm-drag-spacer { order: -1; }",
+                    "  .menubar-container > .wv-pm-title { margin-inline-start: 4px; }",
                     "}",
                     ".wv-pm-title { align-self: center; margin-inline-start: 4px;",
                     "  font-size: 12px; white-space: nowrap; overflow: hidden;",

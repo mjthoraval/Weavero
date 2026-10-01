@@ -4078,7 +4078,7 @@ class _ReaderMixin {
             // Version-guarded: bump WV_STRIP_STYLE_VER when the CSS below
             // changes so windows that predate a plugin reload get the new
             // rules re-injected instead of keeping the stale sheet.
-            const WV_STRIP_STYLE_VER = "7";
+            const WV_STRIP_STYLE_VER = "8";
             const prev = doc.getElementById("wv-window-tabstrip-styles");
             if (prev) {
                 if (prev.getAttribute("data-wv-ver") === WV_STRIP_STYLE_VER) return;
@@ -4392,6 +4392,9 @@ class _ReaderMixin {
                    main window's mirror -- buttons first in the strip, the 40px
                    drag spacer right after them, then the tabs; the hamburger
                    stays at the right end (2026-10-01). */
+                // Staleness probe for _wvWireCsdRefresh (pane.ts).
+                ":root { --wv-csd-rev: 0; }",
+                "@media (-moz-gtk-csd-reversed-placement) { :root { --wv-csd-rev: 1; } }",
                 "@media (-moz-gtk-csd-reversed-placement) {",
                 "  .wv-window-controls { order: -2; margin: 0 0 0 6px; }",   // 6 + the strip's 4px = 10px to the edge
                 "  .wv-window-drag-spacer { order: -1; }",

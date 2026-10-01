@@ -3444,6 +3444,8 @@ class WeaveroPlugin {
         try { (this as any)._registerReopenClosedMenu(); } catch (e) {}
         // Plugins Manager search box (Ctrl+F filter over installed plugins).
         try { (this as any)._registerPluginsSearch(); } catch (e) {}
+        // Windows that miss a desktop button-side change get nudged.
+        try { (this as any)._wvWireCsdRefresh(); } catch (e) {}
         // Standalone reader windows already open (a plugin update or reload):
         // rebuild a reader-window item pane left by another build (its
         // closures are that build's), see _ensureReaderWindowItemPane.
@@ -5426,6 +5428,7 @@ class WeaveroPlugin {
         this._unregisterPinTabMenu();
         try { this._teardownTabGroups(); } catch (e) {}
         try { (this as any)._teardownPluginsSearch(); } catch (e) {}
+        try { (this as any)._wvUnwireCsdRefresh(); } catch (e) {}
         this._unregisterDevNewWindowMenu();
         try { (this as any)._unregisterReopenClosedMenu(); } catch (e) {}
         try { this._wvWindowStoreUnregisterQuitFlush(); } catch (e) {}

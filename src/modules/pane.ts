@@ -7925,6 +7925,90 @@ class _PaneMixin {
         } catch (e) { return null; }
     }
 
+    /** Desktop button side changed while windows are open (GNOME
+     *  button-layout): Gecko notifies `look-and-feel-changed`, but some open
+     *  windows never re-evaluate their media rules -- measured 2026-10-01
+     *  (Zotero 10.0.5-beta.2, Wayland): the Plugins Manager kept the old side
+     *  for Weavero's rules AND for Zotero's own skin rule and the GTK button
+     *  order, its MediaQueryList fired no `change`, and neither focus, a
+     *  forced restyle nor a 1px resize helped; which window was missed varied
+     *  (once the reader window too). A full-zoom round trip in the same task
+     *  makes the window re-evaluate everything, zoom back at exactly 1.
+     *  Only windows whose probe (`--wv-csd-rev` on the root, set by Weavero's
+     *  title-bar stylesheets) disagrees with matchMedia are nudged, so
+     *  windows that did update -- and every look change that does not move
+     *  the buttons (light/dark theme) -- are left alone. Checked twice: the
+     *  main window applied the change ~1s after the notification.
+     *  Long-lived observer on a global service: stamped with _wvWireTag and
+     *  re-registered on mismatch (see the notifier rule in src-ts.md).
+     *  Guard: test/csd-refresh.spec.js. */
+    _wvWireCsdRefresh(this: any) {
+        try {
+            const g: any = Zotero as any;
+            const tag = this._wvWireTag();
+            if (g._wvCsdRefreshObs && g._wvCsdRefreshObs._wvTag === tag) return;
+            this._wvUnwireCsdRefresh();
+            const obs: any = {
+                _wvTag: tag,
+                observe() {
+                    try {
+                        const lp: any = g.Weavero && g.Weavero.plugin;
+                        if (!lp || lp._wvWireTag() !== obs._wvTag) return;
+                        const mw: any = Zotero.getMainWindow();
+                        const later = (fn: () => void, ms: number) => {
+                            try { (mw && mw.setTimeout ? mw.setTimeout.bind(mw) : setTimeout)(fn, ms); } catch (e) {}
+                        };
+                        later(() => { try { lp._wvRefreshStaleCsdWindows(); } catch (e) {} }, 400);
+                        later(() => { try { lp._wvRefreshStaleCsdWindows(); } catch (e) {} }, 1500);
+                    } catch (e) {}
+                },
+            };
+            Services.obs.addObserver(obs, "look-and-feel-changed");
+            g._wvCsdRefreshObs = obs;
+        } catch (e) { Zotero.debug("[Weavero] _wvWireCsdRefresh err: " + e); }
+    }
+
+    _wvUnwireCsdRefresh(this: any) {
+        try {
+            const g: any = Zotero as any;
+            if (g._wvCsdRefreshObs) {
+                try { Services.obs.removeObserver(g._wvCsdRefreshObs, "look-and-feel-changed"); } catch (e) {}
+                delete g._wvCsdRefreshObs;
+            }
+        } catch (e) {}
+    }
+
+    /** Nudge every open window whose title-bar rules are evaluated for the
+     *  other button side. Returns the number nudged. */
+    _wvRefreshStaleCsdWindows(this: any): number {
+        let n = 0;
+        try {
+            const en = Services.wm.getEnumerator(null);
+            while (en.hasMoreElements()) {
+                const w: any = en.getNext();
+                try {
+                    if (!w || w.closed || !w.document || !w.document.documentElement) continue;
+                    const root = w.document.documentElement;
+                    const probe = String(w.getComputedStyle(root).getPropertyValue("--wv-csd-rev")).trim();
+                    if (probe !== "0" && probe !== "1") continue;   // no Weavero title bar here
+                    const want = w.matchMedia("(-moz-gtk-csd-reversed-placement)").matches ? "1" : "0";
+                    if (probe === want) continue;
+                    const bc = w.browsingContext;
+                    if (!bc) continue;
+                    const z = bc.fullZoom;
+                    bc.fullZoom = z * 1.001;
+                    root.getBoundingClientRect();   // flush with the changed zoom
+                    bc.fullZoom = z;
+                    n++;
+                    Zotero.debug("[Weavero] re-evaluated window chrome after a button-side change: " + (root.getAttribute("windowtype") || w.location.href));
+                }
+                catch (e) {}
+            }
+        }
+        catch (e) {}
+        return n;
+    }
+
     /** One-time CSS for the compact-title-bar mode. Collapses
      *  `#toolbar-menubar[autohide][inactive]` and the parent `#titlebar`
      *  to zero height; positions the moved buttonbox flush right in the
@@ -8009,6 +8093,10 @@ class _PaneMixin {
                    left. The hamburger is the application menu, not a window
                    control: it stays at the right end, as Firefox's menu button
                    does (2026-10-01). */
+                // Staleness probe for _wvWireCsdRefresh: the root says which
+                // side these rules were last evaluated for.
+                ":root { --wv-csd-rev: 0; }",
+                "@media (-moz-gtk-csd-reversed-placement) { :root { --wv-csd-rev: 1; } }",
                 "@media (-moz-gtk-csd-reversed-placement) {",
                 "  #zotero-title-bar > .titlebar-buttonbox { right: auto; left: 0; margin-inline: 10px 0; }",
                 "  #zotero-title-bar:has(> .titlebar-buttonbox) {",
@@ -8235,6 +8323,9 @@ class _PaneMixin {
                     // main window's mirror -- buttons at the left edge, the 40px
                     // drag spacer right after them, the name after that, the
                     // hamburger at the right end (2026-10-01).
+                    // Staleness probe for _wvWireCsdRefresh.
+                    ":root { --wv-csd-rev: 0; }",
+                    "@media (-moz-gtk-csd-reversed-placement) { :root { --wv-csd-rev: 1; } }",
                     "@media (-moz-gtk-csd-reversed-placement) {",
                     "  .menubar-container > .titlebar-buttonbox { right: auto; left: 0; margin-inline: 10px 0; }",
                     "  .menubar-container { padding-right: 10px; padding-left: var(--wv-ctl-reserve, 138px); }",

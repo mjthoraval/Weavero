@@ -168,11 +168,22 @@ describe("Weavero -- Plugins Manager title bar is one row on every platform", ()
 			for (let i = 0; i < 30 && win.windowState !== win.STATE_MAXIMIZED; i++) await sleep(100);
 			if (win.windowState !== win.STATE_MAXIMIZED) this.skip();   // the test display refuses to maximize
 			await sleep(600);
+			// Every size the window takes after the restore, while NORMAL: the
+			// first fix corrected after the fact and the window visibly went
+			// 1920 -> 1052 -> 1000 (MJT: "flickers", 2026-10-01). It must land
+			// on the old size in one step.
+			const seen = [];
+			const rec = () => { if (win.windowState === win.STATE_NORMAL) seen.push(win.innerWidth + "x" + win.innerHeight); };
+			win.addEventListener("resize", rec);
 			win.restore();
 			for (let i = 0; i < 30 && win.windowState !== win.STATE_NORMAL; i++) await sleep(100);
-			await sleep(1200);   // the correction runs ~200ms after the mode change
+			await sleep(1200);   // past the fallback correction and the minimum's return
+			win.removeEventListener("resize", rec);
 			assert.closeTo(win.innerWidth, w0, 1, "width back to " + w0);
 			assert.closeTo(win.innerHeight, h0, 1, "height back to " + h0);
+			const detours = seen.filter((sz) => { const [w, h] = sz.split("x").map(Number); return Math.abs(w - w0) > 1 || Math.abs(h - h0) > 1; });
+			assert.deepEqual(detours, [], "no intermediate size after the restore (sizes seen: " + seen.join(", ") + ")");
+			assert.equal(win.document.documentElement.style.minWidth, "1000px", "the declared minimum is back");
 		}
 		finally {
 			try { win.close(); } catch (e) {}

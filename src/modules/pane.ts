@@ -8446,22 +8446,48 @@ class _PaneMixin {
      *  on Linux (GTK, Zotero 10.0.5-beta.2, measured 2026-10-01) the window
      *  came back 52x52px larger, 1000x700 -> 1052x752 inner, every time --
      *  on leaving maximized each dimension became max(previous, declared
-     *  minimum 1000x700 + the 52px CSD margin); a plain resize back sticks.
-     *  So: remember the last SETTLED normal INNER size and put it back after
-     *  a restore (resizeBy the difference). Inner, not outer: the outer size
-     *  includes the CSD decoration, which was still settling after the
-     *  window opened -- an outer-based restore came back 1px short once. "Settled" = unchanged for
-     *  300ms: maximizing first fires a resize to full screen while
-     *  windowState still reads NORMAL (3ms before sizemodechange), and
-     *  restoring fires the grown size as NORMAL right after the mode
-     *  change -- recording either would undo the fix. Returns a teardown.
+     *  minimum 1000x700 + the 52px CSD margin); with the minimum lowered it
+     *  came back at exactly the previous size (measured).
+     *  1. PREVENT: while the window is maximized its declared minimum
+     *     (root min-width / min-height) is lowered, so the restore lands on
+     *     the previous size in one step; the minimum is put back once the
+     *     window is normal again. The first version only CORRECTED after the
+     *     restore (resizeBy ~200ms later): the window visibly went
+     *     1920 -> 1052 -> 1000, the flicker MJT reported (2026-10-01).
+     *  2. CORRECT, as a fallback only: remember the last SETTLED normal INNER
+     *     size and resize back by the difference if the restore still missed.
+     *     Inner, not outer: the outer size includes the CSD decoration, which
+     *     was still settling after the window opened (an outer-based restore
+     *     came back 1px short once). "Settled" = unchanged for 300ms:
+     *     maximizing first fires a resize to full screen while windowState
+     *     still reads NORMAL (3ms before sizemodechange), and restoring fires
+     *     the transitional size as NORMAL right after the mode change --
+     *     recording either would undo the fix. Returns a teardown.
      *  Guard: test/plugins-chrome-platform.spec.js. */
     _wvPMKeepRestoreSize(this: any, win: any): (() => void) | null {
         try {
             if (!win || typeof win.addEventListener !== "function") return null;
             let saved: [number, number] | null = null;
-            let commitT: any = null, fixT: any = null, holdUntil = 0;
+            let commitT: any = null, fixT: any = null, minT: any = null, holdUntil = 0;
             const isNormal = () => { try { return win.windowState === win.STATE_NORMAL; } catch (e) { return false; } };
+            const root: any = win.document && win.document.documentElement;
+            let origMin: [string, string] | null = null;   // the declared minimum while it is lowered
+            const lowerMin = () => {
+                try {
+                    if (!root || origMin) return;
+                    origMin = [root.style.minWidth, root.style.minHeight];
+                    root.style.minWidth = "300px";
+                    root.style.minHeight = "200px";
+                } catch (e) {}
+            };
+            const restoreMin = () => {
+                try {
+                    if (!root || !origMin) return;
+                    root.style.minWidth = origMin[0];
+                    root.style.minHeight = origMin[1];
+                    origMin = null;
+                } catch (e) {}
+            };
             const commitSoon = () => {
                 try {
                     if (commitT) win.clearTimeout(commitT);
@@ -8479,7 +8505,13 @@ class _PaneMixin {
                 try {
                     if (commitT) { win.clearTimeout(commitT); commitT = null; }
                     if (fixT) { win.clearTimeout(fixT); fixT = null; }
-                    if (!isNormal()) return;   // entering maximized/minimized: keep `saved`
+                    if (minT) { win.clearTimeout(minT); minT = null; }
+                    if (!isNormal()) {
+                        // Entering maximized (or minimized): keep `saved`, and lower
+                        // the minimum so the coming restore lands on it directly.
+                        lowerMin();
+                        return;
+                    }
                     // Back to normal: the grown size arrives as NORMAL just after
                     // this event -- correct it once it has, and record nothing
                     // until the correction is through.
@@ -8495,6 +8527,10 @@ class _PaneMixin {
                         } catch (e) {}
                         win.setTimeout(() => { holdUntil = 0; commitSoon(); }, 450);
                     }, 200);
+                    // The declared minimum comes back once the size is settled
+                    // (raising it while the window is already at least that
+                    // large does not move the window -- measured).
+                    minT = win.setTimeout(() => { minT = null; if (isNormal()) restoreMin(); }, 700);
                 } catch (e) {}
             };
             win.addEventListener("resize", commitSoon);
@@ -8503,7 +8539,8 @@ class _PaneMixin {
             return () => {
                 try { win.removeEventListener("resize", commitSoon); } catch (e) {}
                 try { win.removeEventListener("sizemodechange", onMode); } catch (e) {}
-                try { if (commitT) win.clearTimeout(commitT); if (fixT) win.clearTimeout(fixT); } catch (e) {}
+                try { if (commitT) win.clearTimeout(commitT); if (fixT) win.clearTimeout(fixT); if (minT) win.clearTimeout(minT); } catch (e) {}
+                restoreMin();
             };
         } catch (e) { return null; }
     }

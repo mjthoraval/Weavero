@@ -4078,7 +4078,7 @@ class _ReaderMixin {
             // Version-guarded: bump WV_STRIP_STYLE_VER when the CSS below
             // changes so windows that predate a plugin reload get the new
             // rules re-injected instead of keeping the stale sheet.
-            const WV_STRIP_STYLE_VER = "3";
+            const WV_STRIP_STYLE_VER = "4";
             const prev = doc.getElementById("wv-window-tabstrip-styles");
             if (prev) {
                 if (prev.getAttribute("data-wv-ver") === WV_STRIP_STYLE_VER) return;
@@ -4333,6 +4333,58 @@ class _ReaderMixin {
                 "#wv-hamburger-popup > menuitem { padding-inline: 12px; }",
                 ".wv-window-control.wv-window-close:hover { background-color: #e81123; color: #fff; }",
                 ".wv-window-control.wv-window-close:active { background-color: #c50f1f; color: #fff; }",
+                /* Linux (survey 2026-10-01, Ubuntu 26.04, Zotero 10.0.5-beta.2).
+                   Two things the rules above take from Windows do not exist here:
+                   1. chrome://browser/skin/window-controls/*.svg are NOT in the
+                      Linux build (0 entries in omni.ja; Zotero references them
+                      from scss/win/_titleBar.scss only) -- the three buttons
+                      were laid out and clickable but drew nothing. Use what
+                      scss/linux/_titleBar.scss gives the main window's
+                      .titlebar-button: GTK symbolic icons, 30px slots, a 24px
+                      round hover (15% / 30% of currentColor), no red close,
+                      the button box's 10px margin, and the GTK layout (which
+                      buttons exist, and their order). The icon goes through a
+                      custom property so the hover layer can repeat it.
+                   2. Zotero paints reader windows with `window:root
+                      { background: var(--material-sidepane) }`, and the Linux
+                      skin turns that off for any self-decorated window
+                      (`:root[customtitlebar] { background-color: transparent;
+                      appearance: -moz-window-decorations }`, for the main
+                      window's rounded corners). `customtitlebar` is OUR doing
+                      here, so every strip nothing paints over was see-through
+                      to the desktop: the 5px item-pane splitter (MJT
+                      screenshot, 2026-10-01) and the note outline pane --
+                      drawWindow returned the fill colour there, i.e. nothing
+                      painted. A background-color on the ROOT does not help: the
+                      native decoration appearance replaces it (measured). So
+                      the content row under the strip carries it instead. The
+                      Alt menu row paints itself already.
+                   Guard: test/linux-window-chrome.spec.js. */
+                "@media (-moz-platform: linux) {",
+                "  :root[customtitlebar][windowtype=\"zotero:reader\"] > hbox { background-color: var(--material-sidepane); }",
+                "  .wv-window-controls { margin: 0 6px 0 10px; }",   // 6 + the strip's own 4px = the main window's 10px
+                "  .wv-window-controls.wv-in-menubar { margin: 0 10px; }",
+                "  .wv-window-control { width: 30px; color: inherit; background-size: auto; cursor: default; }",
+                "  .wv-window-control.wv-window-min { --wv-ctl-icon: -moz-symbolic-icon(window-minimize-symbolic);",
+                "    background-image: var(--wv-ctl-icon); order: env(-moz-gtk-csd-minimize-button-position); }",
+                "  .wv-window-control.wv-window-max { --wv-ctl-icon: -moz-symbolic-icon(window-maximize-symbolic);",
+                "    background-image: var(--wv-ctl-icon); order: env(-moz-gtk-csd-maximize-button-position); }",
+                "  .wv-window-control.wv-window-max[data-state='maximized'] { --wv-ctl-icon: -moz-symbolic-icon(window-restore-symbolic);",
+                "    background-image: var(--wv-ctl-icon); }",
+                "  .wv-window-control.wv-window-close { --wv-ctl-icon: -moz-symbolic-icon(window-close-symbolic);",
+                "    background-image: var(--wv-ctl-icon); order: env(-moz-gtk-csd-close-button-position); }",
+                "  .wv-window-control:hover, .wv-window-control.wv-window-close:hover {",
+                "    background-color: transparent; color: inherit;",
+                "    background-image: var(--wv-ctl-icon), radial-gradient(circle 12px at center,",
+                "      color-mix(in srgb, currentColor 15%, transparent) 12px, transparent 12.5px); }",
+                "  .wv-window-control:hover:active, .wv-window-control.wv-window-close:hover:active {",
+                "    background-color: transparent; color: inherit;",
+                "    background-image: var(--wv-ctl-icon), radial-gradient(circle 12px at center,",
+                "      color-mix(in srgb, currentColor 30%, transparent) 12px, transparent 12.5px); }",
+                "  @media not (-moz-gtk-csd-minimize-button) { .wv-window-control.wv-window-min { display: none; } }",
+                "  @media not (-moz-gtk-csd-maximize-button) { .wv-window-control.wv-window-max { display: none; } }",
+                "  @media not (-moz-gtk-csd-close-button) { .wv-window-control.wv-window-close { display: none; } }",
+                "}",
                 /* Library-aware tab tooltip — same visual rules as the
                    main-window tooltip from constants.ts PLUGIN_CSS,
                    scoped to our reader-window tooltip ID. */

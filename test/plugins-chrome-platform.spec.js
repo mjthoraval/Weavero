@@ -149,4 +149,33 @@ describe("Weavero -- Plugins Manager title bar is one row on every platform", ()
 			try { win.close(); } catch (e) {}
 		}
 	});
+	// Maximize -> restore gives back the size the manager had (Weavero adds
+	// the maximize button: Zotero opens the manager as a dialog without one).
+	// On Linux the window came back 52x52px larger every time (1000x700 ->
+	// 1052x752, measured 2026-10-01); _wvPMKeepRestoreSize puts it back.
+	it("maximize then restore returns the manager to its previous size", async function () {
+		if (Zotero.isMac) this.skip();
+		this.timeout(30000);
+		const mw = Zotero.getMainWindow();
+		const sleep = (ms) => new Promise(r => mw.setTimeout(r, ms));
+		const win = /** @type {any} */ (Zotero.openInViewer("chrome://mozapps/content/extensions/aboutaddons.html"));
+		try {
+			for (let i = 0; i < 120 && !win._wvPMChrome; i++) await sleep(100);
+			assert.isOk(win._wvPMChrome, "drawn bar applied");
+			await sleep(800);   // let the opening size settle (recorded after 300ms stable)
+			const w0 = win.innerWidth, h0 = win.innerHeight;
+			win.maximize();
+			for (let i = 0; i < 30 && win.windowState !== win.STATE_MAXIMIZED; i++) await sleep(100);
+			if (win.windowState !== win.STATE_MAXIMIZED) this.skip();   // the test display refuses to maximize
+			await sleep(600);
+			win.restore();
+			for (let i = 0; i < 30 && win.windowState !== win.STATE_NORMAL; i++) await sleep(100);
+			await sleep(1200);   // the correction runs ~200ms after the mode change
+			assert.closeTo(win.innerWidth, w0, 1, "width back to " + w0);
+			assert.closeTo(win.innerHeight, h0, 1, "height back to " + h0);
+		}
+		finally {
+			try { win.close(); } catch (e) {}
+		}
+	});
 });

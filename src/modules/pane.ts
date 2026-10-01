@@ -8435,8 +8435,77 @@ class _PaneMixin {
             toolbox.appendChild(bb);
             // The reservation follows the real box (138px was the Windows one).
             const reserveObs = this._wvTrackCaptionReserve(win, toolbox, bb);
-            win._wvPMChrome = { toolbar, items, btn, iconBox, titleEl, dragFlex, dragSpacer, bb, titleObs, reserveObs };
+            const restoreSize = this._wvPMKeepRestoreSize(win);
+            win._wvPMChrome = { toolbar, items, btn, iconBox, titleEl, dragFlex, dragSpacer, bb, titleObs, reserveObs, restoreSize };
         } catch (e) { Zotero.debug("[Weavero] _wvPMSetupChrome err: " + e); }
+    }
+
+    /** Maximize -> restore must give back the size the window had. Zotero
+     *  opens the manager as a dialog with no maximize at all; the maximize
+     *  button is Weavero's (dialog=no reroute + drawn bar), so is this:
+     *  on Linux (GTK, Zotero 10.0.5-beta.2, measured 2026-10-01) the window
+     *  came back 52x52px larger, 1000x700 -> 1052x752 inner, every time --
+     *  on leaving maximized each dimension became max(previous, declared
+     *  minimum 1000x700 + the 52px CSD margin); a plain resize back sticks.
+     *  So: remember the last SETTLED normal INNER size and put it back after
+     *  a restore (resizeBy the difference). Inner, not outer: the outer size
+     *  includes the CSD decoration, which was still settling after the
+     *  window opened -- an outer-based restore came back 1px short once. "Settled" = unchanged for
+     *  300ms: maximizing first fires a resize to full screen while
+     *  windowState still reads NORMAL (3ms before sizemodechange), and
+     *  restoring fires the grown size as NORMAL right after the mode
+     *  change -- recording either would undo the fix. Returns a teardown.
+     *  Guard: test/plugins-chrome-platform.spec.js. */
+    _wvPMKeepRestoreSize(this: any, win: any): (() => void) | null {
+        try {
+            if (!win || typeof win.addEventListener !== "function") return null;
+            let saved: [number, number] | null = null;
+            let commitT: any = null, fixT: any = null, holdUntil = 0;
+            const isNormal = () => { try { return win.windowState === win.STATE_NORMAL; } catch (e) { return false; } };
+            const commitSoon = () => {
+                try {
+                    if (commitT) win.clearTimeout(commitT);
+                    if (!isNormal() || Date.now() < holdUntil) { commitT = null; return; }
+                    const w = win.innerWidth, h = win.innerHeight;
+                    commitT = win.setTimeout(() => {
+                        commitT = null;
+                        try {
+                            if (isNormal() && Date.now() >= holdUntil && win.innerWidth === w && win.innerHeight === h) saved = [w, h];
+                        } catch (e) {}
+                    }, 300);
+                } catch (e) {}
+            };
+            const onMode = () => {
+                try {
+                    if (commitT) { win.clearTimeout(commitT); commitT = null; }
+                    if (fixT) { win.clearTimeout(fixT); fixT = null; }
+                    if (!isNormal()) return;   // entering maximized/minimized: keep `saved`
+                    // Back to normal: the grown size arrives as NORMAL just after
+                    // this event -- correct it once it has, and record nothing
+                    // until the correction is through.
+                    holdUntil = Date.now() + 700;
+                    const target = saved;
+                    fixT = win.setTimeout(() => {
+                        fixT = null;
+                        try {
+                            if (target && isNormal()) {
+                                const dw = target[0] - win.innerWidth, dh = target[1] - win.innerHeight;
+                                if (dw || dh) win.resizeBy(dw, dh);
+                            }
+                        } catch (e) {}
+                        win.setTimeout(() => { holdUntil = 0; commitSoon(); }, 450);
+                    }, 200);
+                } catch (e) {}
+            };
+            win.addEventListener("resize", commitSoon);
+            win.addEventListener("sizemodechange", onMode);
+            commitSoon();
+            return () => {
+                try { win.removeEventListener("resize", commitSoon); } catch (e) {}
+                try { win.removeEventListener("sizemodechange", onMode); } catch (e) {}
+                try { if (commitT) win.clearTimeout(commitT); if (fixT) win.clearTimeout(fixT); } catch (e) {}
+            };
+        } catch (e) { return null; }
     }
 
     _wvPMTeardownChrome(this: any, win: any) {
@@ -8447,6 +8516,7 @@ class _PaneMixin {
             try { c.items.removeAttribute("wv-pm-hidden"); } catch (e) {}
             try { if (c.titleObs) c.titleObs.disconnect(); } catch (e) {}
             try { if (c.reserveObs) c.reserveObs.disconnect(); } catch (e) {}
+            try { if (c.restoreSize) c.restoreSize(); } catch (e) {}
             try { c.toolbar.parentElement.style.removeProperty("--wv-ctl-reserve"); } catch (e) {}
             try { this._wvRemoveHamburger(win); } catch (e) {}
             for (const k of ["iconBox", "titleEl", "dragFlex", "dragSpacer", "bb"]) {

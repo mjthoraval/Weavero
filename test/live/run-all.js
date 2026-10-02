@@ -65,7 +65,10 @@
             Zotero.Prefs.set("search.quicksearch-mode", "fields");
 
             // Harness FIRST — every suite fails fast without it.
-            const hText = await Zotero.File.getContentsAsync(ROOT + "lib\\harness.js");
+            // PathUtils.join, not ROOT + "lib\\harness.js": the backslash
+            // made the path a single file name `lib\harness.js` on Linux/macOS
+            // (2026-10-02, first live run on Linux).
+            const hText = await Zotero.File.getContentsAsync(PathUtils.join(ROOT, "lib", "harness.js"));
             new Function(hText)();
 
             for (const s of SUITES) {
@@ -74,7 +77,7 @@
                 const entry = { file: s.file, startedAt: new Date().toISOString() };
                 RUN.suites.push(entry);
                 try {
-                    const text = await Zotero.File.getContentsAsync(ROOT + s.file);
+                    const text = await Zotero.File.getContentsAsync(PathUtils.join(ROOT, s.file));
                     new Function(text)();
                     const t0 = Date.now();
                     while (Zotero[s.global] && Zotero[s.global].status === "running"

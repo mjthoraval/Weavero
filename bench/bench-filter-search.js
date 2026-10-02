@@ -191,12 +191,18 @@
                 };
                 const clearAll = () => async () => { p._clearAllFilters(); };
 
+                // Ops are spaced >= 900 ms (test/live/README.md rule 1): an
+                // apply inside the 300 ms post-apply suppression window is
+                // bounced, so with 400 ms spacing some runs and resets
+                // measured nothing -- "runsWithNoChange: 1" on 2026-10-02
+                // (itemType run 2 started from the still-filtered view;
+                // annotationColor run 1 never applied).
                 async function loopOp(name, fireFactory, resetFactory) {
                     const runs = [];
                     for (let i = 0; i < LOOPS; i++) {
+                        await sleep(900);
                         runs.push(await measure(fireFactory(), name));
-                        if (resetFactory) await measure(resetFactory(), name + " reset");
-                        await sleep(400);
+                        if (resetFactory) { await sleep(900); await measure(resetFactory(), name + " reset"); }
                     }
                     const firsts = runs.map(r => r.firstChangeMs).filter(v => v != null);
                     const settleds = runs.map(r => r.settledMs).filter(v => v != null);
@@ -244,8 +250,17 @@
                         sb.value = TERM;
                         sb.dispatchEvent(new Event("command"));   // never `input`
                     }, "search " + mode + " apply");
-                    try { applyRes.modeUsed = zp.getCollectionTreeRow().searchMode; } catch (e) {}
-                    if (applyRes.modeUsed && applyRes.modeUsed !== mode) applyRes.err = "ran as " + applyRes.modeUsed;
+                    // The row's `searchMode` is only evidence when it holds a
+                    // MODE name: Zotero 10.0 initialises it to "search" and
+                    // leaves it there, which read as "ran as search" on every
+                    // mode while the three modes really ran (25 / 402 / 473
+                    // rows, 2026-10-02). Otherwise record the pref in force.
+                    try {
+                        const sm = zp.getCollectionTreeRow().searchMode;
+                        if (SCOPE_MODES.includes(sm)) applyRes.modeUsed = sm;
+                        else applyRes.modeUsed = Zotero.Prefs.get("search.quicksearch-mode") + " (pref; row not stamped)";
+                    } catch (e) {}
+                    if (SCOPE_MODES.includes(applyRes.modeUsed) && applyRes.modeUsed !== mode) applyRes.err = "ran as " + applyRes.modeUsed;
                     const clearRes = await measure(async () => {
                         sb.value = "";
                         sb.dispatchEvent(new Event("command"));
@@ -278,7 +293,7 @@
                             await sleep(400);
                         }
                         sb.value = ""; sb.dispatchEvent(new Event("command"));
-                        await sleep(500);
+                        await sleep(900);   // >= 900 ms: see loopOp
                         W.ops["clear chip after scope switches"] = await measure(clearAll(), "clear chip after scope switches");
                         Zotero.Prefs.set("search.quicksearch-mode", "fields");
                         await sleep(300);

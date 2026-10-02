@@ -12,7 +12,7 @@
 // to the heavy document to see content-dependence.
 (async () => {
   try {
-    const ITEM_ID = 187;
+    const ITEM_ID = (Zotero._wvBenchLightID || 187);   // override: Zotero._wvBenchLightID
     const w = Zotero.getMainWindow(), ZT = w.Zotero_Tabs;
     // Ensure the item is open as a LOADED main-window tab.
     let R = Zotero.Reader._readers.find(r => r.itemID === ITEM_ID);

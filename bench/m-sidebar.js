@@ -1,5 +1,5 @@
 // Edit ITEM_ID to your heavy test document (see README).
-const ITEM_ID = 276;
+const ITEM_ID = (Zotero._wvBenchHeavyID || 276);   // override: Zotero._wvBenchHeavyID
 // Sidebar probe — anchored on FIXED CARD INDEXES (not scrollHeight
 // fractions) so every configuration scrolls the same annotations:
 // scrollHeight varies per config (which plugin's clamped previews are

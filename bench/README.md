@@ -18,8 +18,11 @@ measure any plugin that touches the reader sidebar or the tab system.
 - Python 3 and Node/npx if you use the bundled `rdp-probe.py` runner.
 - Test documents **in your own library** — a **heavy** one (a long PDF,
   ~1000 pages, that will carry 200 generated annotations) and a **light**
-  one. Edit the `ITEM_ID` constants at the top of the scripts to your
-  item IDs before running. Use a scratch profile/library, not your real
+  one. The scripts default to the maintainer's item IDs (heavy 276, light
+  187); for your own library predefine `Zotero._wvBenchHeavyID` and
+  `Zotero._wvBenchLightID` (and, for `bench-reader-load.js`,
+  `Zotero._wvBenchItemID` / `Zotero._wvBenchWantAnns`) before loading a
+  script, instead of editing the files. Use a scratch profile/library, not your real
   one: the fixture generator writes 200 annotations.
 
 ## Scripts

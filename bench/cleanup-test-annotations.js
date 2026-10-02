@@ -1,7 +1,7 @@
 // Remove every benchmark annotation (they all carry the tag below).
 (async () => {
   const TAG = "wv-am-perf-test";
-  const ITEM_ID = 276;
+  const ITEM_ID = (Zotero._wvBenchHeavyID || 276);   // override: Zotero._wvBenchHeavyID
   const att = await Zotero.Items.getAsync(ITEM_ID);
   await att.loadAllData();
   const anns = att.getAnnotations().filter(a => a.hasTag(TAG));

@@ -7,8 +7,12 @@
 //               pass / AM lazy pass for VISIBLE cards; 0 = no plugin)
 (async () => {
   try {
-    const ITEM_ID = 276;     // heavy: 276 (200 LaTeX/MD anns) | light: 187
-    const WANT_ANNS = ITEM_ID === 276 ? 200 : 1;
+    // heavy: 276 (200 LaTeX/MD anns) | light: 187 on the maintainer's library.
+    // Other libraries: predefine Zotero._wvBenchItemID (or _wvBenchHeavyID /
+    // _wvBenchLightID) and, if needed, Zotero._wvBenchWantAnns.
+    const HEAVY = (Zotero._wvBenchHeavyID || 276);
+    const ITEM_ID = Zotero._wvBenchItemID || HEAVY;
+    const WANT_ANNS = Zotero._wvBenchWantAnns || (ITEM_ID === HEAVY ? 200 : 1);
     const w = Zotero.getMainWindow(), ZT = w.Zotero_Tabs;
     const old = Zotero.Reader._readers.find(r => r.itemID === ITEM_ID);
     if (old && old.tabID) { ZT.close(old.tabID); await Zotero.Promise.delay(1200); }

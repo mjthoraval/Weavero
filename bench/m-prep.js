@@ -1,10 +1,10 @@
 // Edit ITEM_ID to your heavy test document (see README).
-const ITEM_ID = 276;
+const ITEM_ID = (Zotero._wvBenchHeavyID || 276);   // override: Zotero._wvBenchHeavyID
 (async () => { try {
   const w = Zotero.getMainWindow(), ZT = w.Zotero_Tabs;
   const old = Zotero.Reader._readers.find(r => r.itemID === ITEM_ID);
   if (old && old.tabID) { ZT.close(old.tabID); await Zotero.Promise.delay(1200); }
-  await Zotero.Reader.open(276);
+  await Zotero.Reader.open(ITEM_ID);
   await Zotero.Promise.delay(800);
   const R = Zotero.Reader._readers.find(r => r.itemID === ITEM_ID);
   await R._waitForReader();

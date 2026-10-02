@@ -1,6 +1,6 @@
 (async () => {
   try {
-    const att = await Zotero.Items.getAsync(276);
+    const att = await Zotero.Items.getAsync((Zotero._wvBenchHeavyID || 276));   // override: Zotero._wvBenchHeavyID
     await att.loadAllData();
     const pad = (n, w) => String(n).padStart(w, "0");
 

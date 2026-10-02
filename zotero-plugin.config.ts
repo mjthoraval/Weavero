@@ -16,6 +16,22 @@ function wvTestEntries(): string[] {
   return [dir];
 }
 
+/** Local test runs on Linux use Gecko's own headless mode (MOZ_HEADLESS --
+ *  nothing to install, unlike the scaffold's `test.headless`, which runs
+ *  `sudo apt install` for Xvfb). On a desktop session -- GNOME/Wayland,
+ *  measured 2026-10-01 -- the runner's window is never the active one and
+ *  no code may activate it, so focus()/blur() fire NO events and the
+ *  focus-dependent specs failed every time (collections search: 3 tests,
+ *  the same on main 019dd71); results also changed whenever the user typed
+ *  or clicked during a run. Headless, the windows are activatable and
+ *  nothing pops up over the user's work. CI (Ubuntu/Xvfb) is untouched.
+ *  `WV_TEST_HEADED=1 npm test` shows the window again. Only for `test`:
+ *  the same config serves `npm start`, which must stay visible. */
+if (process.platform === "linux" && !process.env.CI && process.env.WV_TEST_HEADED !== "1"
+    && process.argv.includes("test")) {
+  process.env.MOZ_HEADLESS ??= "1";
+}
+
 export default defineConfig({
   // Plain-JS plugin: scaffold copies src/* into the build verbatim
   // — no esbuild, no transpilation. The XPI it produces is

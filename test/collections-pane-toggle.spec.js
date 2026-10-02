@@ -1,4 +1,4 @@
-/* global describe, it, before, after, assert, Zotero */
+/* global describe, it, before, beforeEach, after, assert, Zotero, Services */
 
 // Collapse / expand button for the collections pane (v0.20.2). The library's
 // left pane had no toggle where the item pane (sidenav) and both reader panes
@@ -33,6 +33,21 @@ describe("Weavero — collections-pane toggle button", () => {
         savedState = state();
         Zotero.Prefs.set("weavero.collectionsPaneToggle", true);
         wv._wvApplyCollectionsPaneToggle(win);
+    });
+
+    // Focus-driven tests (the search box closes on blur, Ctrl+F follows the
+    // focused pane) need Zotero's MAIN window to be the active one, and the
+    // scaffold's runner page takes the activation ~800 ms into a run
+    // (measured 2026-10-01, headless). An inactive window gets no
+    // focus/blur events at all, so re-activate the main window before each
+    // test and wait until it is. A desktop session that refuses activation
+    // (GNOME/Wayland) is why local Linux runs go headless
+    // (zotero-plugin.config.ts).
+    beforeEach(async () => {
+        for (let i = 0; i < 30 && Services.focus.activeWindow !== win; i++) {
+            win.focus();
+            await new Promise(r => win.setTimeout(r, 100));
+        }
     });
 
     after(() => {

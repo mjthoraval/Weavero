@@ -128,7 +128,16 @@
                 && !e.timedOut;
             RUN.finished = new Date().toISOString();
             RUN.zotero = Zotero.version;
-            RUN.weavero = (Zotero.Weavero && Zotero.Weavero.version) || null;
+            // From the add-on manager, as filter-matrix.js does:
+            // `Zotero.Weavero.version` does not exist, so every report read
+            // "Weavero null" (2026-10-02).
+            RUN.weavero = null;
+            try {
+                const { AddonManager } = ChromeUtils.importESModule("resource://gre/modules/AddonManager.sys.mjs");
+                const a = await AddonManager.getAddonByID("weavero@mjthoraval");
+                RUN.weavero = (a && a.version) || null;
+            }
+            catch (e) {}
             RUN.green = RUN.suites.every(e => ok(e));
             RUN.status = "done";
             RUN.current = null;

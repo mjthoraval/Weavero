@@ -3074,13 +3074,18 @@ class _FilterMixin {
 
     /** The Collection tree's rows: depth-first, each level sorted like the
      *  collections pane, with depth / parent / has-children. */
-    _wvCollTreeValues(libraryID: number): any[] {
+    _wvCollTreeValues(libraryID: number, win?: any): any[] {
         const out: any[] = [];
+        // Collections hidden in this window's tree stay out here too, with
+        // their sub-collections (MJT 2026-10-05).
+        const P: any = this;
+        const hidden = (c: any) => !!(win && P._wvHidIsHidden && P._wvHidIsHidden(c, win));
         const cmp = (a: any, b: any) => (Zotero as any).localeCompare
             ? (Zotero as any).localeCompare(a.name, b.name) : a.name.localeCompare(b.name);
         const walk = (cols: any[], depth: number, parentId: number | null) => {
             for (const c of [...cols].sort(cmp)) {
-                const kids = Zotero.Collections.getByParent(c.id) || [];
+                if (hidden(c)) continue;
+                const kids = (Zotero.Collections.getByParent(c.id) || []).filter((k: any) => !hidden(k));
                 out.push({ id: c.id, name: c.name, depth, parentId, hasChildren: kids.length > 0 });
                 walk(kids, depth + 1, c.id);
             }
@@ -8835,7 +8840,7 @@ class _FilterMixin {
             },
             getValues: async () => {
                 try {
-                    return this._wvCollTreeValues(libraryID);
+                    return this._wvCollTreeValues(libraryID, doc.defaultView);
                 } catch (e) {
                     dbg("[Weavero][filter] collections enum err: " + e);
                     return [];
@@ -8890,6 +8895,7 @@ class _FilterMixin {
             getValues: async () => {
                 try {
                     return ((Zotero.Searches as any).getByLibrary(libraryID) || [])
+                        .filter(s => !(this as any)._wvHidIsHidden(s, doc.defaultView))
                         .map(s => ({ id: s.id, name: s.name }))
                         .sort((a, b) => a.name.localeCompare(b.name));
                 } catch (e) {
@@ -12337,6 +12343,7 @@ class _FilterMixin {
         let cols = [];
         try {
             cols = (Zotero.Collections.getByLibrary(libraryID, true) || [])
+                .filter(c => !(this as any)._wvHidCollHiddenDeep(c, win))
                 .map(c => ({ id: c.id, name: c.name }))
                 .sort((a, b) => a.name.localeCompare(b.name));
         } catch (e) {
@@ -12432,6 +12439,7 @@ class _FilterMixin {
         let searches = [];
         try {
             searches = ((Zotero.Searches as any).getByLibrary(libraryID) || [])
+                .filter(s => !(this as any)._wvHidIsHidden(s, win))
                 .map(s => ({ id: s.id, name: s.name }))
                 .sort((a, b) => a.name.localeCompare(b.name));
         } catch (e) {

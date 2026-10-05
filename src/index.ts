@@ -3929,6 +3929,9 @@ class WeaveroPlugin {
                             const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
                             for (const w of wins) (this as any)._wvApplyCollectionsTreeAids(w);
                         } catch (e) {}
+                        if (data === "extensions.zotero.weavero.enableVisualExtras") {
+                            try { (this as any)._wvHidRefreshAll(); } catch (e) {}
+                        }
                     }
                     if (data === "extensions.zotero.weavero.selectedTabRing"
                         || data === "extensions.zotero.weavero.enableVisualExtras") {
@@ -4585,6 +4588,7 @@ class WeaveroPlugin {
                 try { (this as any)._wvApplyCollectionsPaneToggle(w); } catch (e) {}
                 try { (this as any)._wvApplyPaneDragNoCollapse(w); } catch (e) {}
                 try { (this as any)._wvApplyCollectionsTreeAids(w); } catch (e) {}
+                try { (this as any)._wvHidApply(w); (this as any)._wvHidLoad(); } catch (e) {}
                 try { (this as any)._wvWireCollectionsSearchToggle(w); } catch (e) {}
                 try { (this as any)._wvWireCollectionTreeGestures(w); } catch (e) {}
                 try { (this as any)._wvWireMenuGhostWorkaround(w); } catch (e) {}
@@ -4702,6 +4706,9 @@ class WeaveroPlugin {
             try { (this as any)._wvApplyCollectionsPaneToggle(_window); } catch (e) {}
             try { (this as any)._wvApplyPaneDragNoCollapse(_window); } catch (e) {}
             try { (this as any)._wvApplyCollectionsTreeAids(_window); } catch (e) {}
+            // Hidden collections: per window (the store loads once, then
+            // refreshes every window that has something hidden).
+            try { (this as any)._wvHidApply(_window); (this as any)._wvHidLoad(); } catch (e) {}
             try { (this as any)._wvWireCollectionsSearchToggle(_window); } catch (e) {}
             try { (this as any)._wvWireCollectionTreeGestures(_window); } catch (e) {}
             try { (this as any)._wvWireMenuGhostWorkaround(_window); } catch (e) {}
@@ -5445,6 +5452,7 @@ class WeaveroPlugin {
         this._teardownTreeClickDelegate();
         this._teardownItemsListContextMenu();
         this._teardownCollectionsContextMenu();
+        try { (this as any)._wvHidTeardown(); } catch (e) {}
         this._teardownTabContextMenu();
         try { (this as any)._wvTeardownMenubarWindowEntries(); } catch (e) {}
         try { (this as any)._wvTeardownCollectionsPaneToggle(); } catch (e) {}

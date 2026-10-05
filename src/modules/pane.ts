@@ -2427,6 +2427,497 @@ class _PaneMixin {
         } catch (_) { return null; }
     }
 
+    // ---- Hidden collections, saved searches and group libraries ----------
+    // (MJT 2026-10-05.) PER WINDOW: each main window has its own set, so two
+    // windows can show different parts of the library. Display-only, this
+    // computer only: <data dir>/weavero/hidden-collections.json, one entry
+    // per window keyed by its index among the open main windows -- the
+    // convention of the custom window titles (_wvWindowIndex), so a restored
+    // session gets each window's set back; cached on the window while open.
+    // Objects are keyed by library + key (renames and moves keep them
+    // hidden). Zotero's data is untouched: without Weavero everything shows.
+    // Zotero's own pattern for its virtual views (zoteroPane.js
+    // buildCollectionContextMenu): "Hide" on the row, "Show ..." on the
+    // library row in the sep2 group, only when something is hidden. The tree
+    // asks `_includedInTree()` before adding each group library, collection
+    // and saved search (collectionTree.jsx refresh / _expandRow): answering
+    // "no" leaves the object out, and a hidden collection's sub-collections
+    // with it (they are only added while its row expands). Extras master.
+
+    _wvHidOn(): boolean {
+        try { return !!(this as any)._getEnableVisualExtras(); } catch (_) { return false; }
+    }
+
+    _wvHidPath(): string {
+        return PathUtils.join(Zotero.DataDirectory.dir, "weavero", "hidden-collections.json");
+    }
+
+    /** The file: {version: 2, windows: {"<index>": {groups, hidden}}}. */
+    _wvHidDocGet(): any {
+        const P: any = this;
+        if (!P._wvHidDoc) P._wvHidDoc = { version: 2, windows: {} };
+        return P._wvHidDoc;
+    }
+
+    _wvHidBlank(): any { return { groups: [], hidden: {} }; }
+
+    /** One window's set: {groups: libraryID[], hidden: {libraryID: ["C<key>" | "S<key>"]}}. */
+    _wvHidState(win: any): any {
+        if (!win) return this._wvHidBlank();
+        if (!win._wvHid) {
+            const idx = (this as any)._wvWindowIndex ? (this as any)._wvWindowIndex(win) : -1;
+            const saved = idx >= 0 ? this._wvHidDocGet().windows[String(idx)] : null;
+            win._wvHid = saved ? {
+                groups: Array.isArray(saved.groups) ? saved.groups.map(Number).filter((n: number) => n > 0) : [],
+                hidden: (saved.hidden && typeof saved.hidden === "object") ? JSON.parse(JSON.stringify(saved.hidden)) : {},
+            } : this._wvHidBlank();
+        }
+        return win._wvHid;
+    }
+
+    _wvHidHasAny(st: any): boolean {
+        return !!st && (st.groups.length > 0 || Object.keys(st.hidden).some(k => (st.hidden[k] || []).length > 0));
+    }
+
+    async _wvHidLoad() {
+        const P: any = this;
+        if (P._wvHidLoaded || P._wvHidLoading) return;
+        P._wvHidLoading = true;
+        let doc: any = null;
+        try {
+            const parsed = JSON.parse(await IOUtils.readUTF8(this._wvHidPath()));
+            if (parsed && typeof parsed === "object" && parsed.windows && typeof parsed.windows === "object") doc = parsed;
+        } catch (_) { /* missing file = nothing hidden */ }
+        if (P._wvDestroyed) return;
+        P._wvHidDoc = { version: 2, windows: doc ? doc.windows : {} };
+        P._wvHidLoaded = true;
+        P._wvHidLoading = false;
+        const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+        for (const w of wins) {
+            try { delete w._wvHid; if (this._wvHidHasAny(this._wvHidState(w))) await this._wvHidRefreshWin(w); } catch (_) {}
+        }
+    }
+
+    /** Write one window's set into the file under its current index. */
+    async _wvHidSave(win: any) {
+        try {
+            const idx = (this as any)._wvWindowIndex ? (this as any)._wvWindowIndex(win) : -1;
+            if (idx < 0) return;
+            const doc = this._wvHidDocGet();
+            const st = this._wvHidState(win);
+            if (this._wvHidHasAny(st)) doc.windows[String(idx)] = st;
+            else delete doc.windows[String(idx)];
+            const path = this._wvHidPath();
+            try { await IOUtils.makeDirectory(PathUtils.parent(path), { ignoreExisting: true }); } catch (_) {}
+            await IOUtils.writeUTF8(path, JSON.stringify(doc), { tmpPath: path + ".tmp" });
+        } catch (e) { Zotero.debug("[Weavero] hidden-collections save err: " + e); }
+    }
+
+    /** "C<key>" / "S<key>" for a collection / saved search (duck-typed: the
+     *  plugin sandbox's `instanceof Zotero.Collection` fails across realms). */
+    _wvHidKey(ref: any): string | null {
+        try {
+            if (!ref || !ref.key) return null;
+            const t = ref.objectType || ref._objectType;
+            if (t === "collection") return "C" + ref.key;
+            if (t === "search") return "S" + ref.key;
+        } catch (_) {}
+        return null;
+    }
+
+    _wvHidIsGroup(ref: any): boolean {
+        return !!ref && ref.libraryType === "group" && ref.groupID != null && ref.libraryID > 0;
+    }
+
+    /** Whether `win`'s tree leaves this object out. `object` is what
+     *  `_includedInTree` receives: a Zotero.Group, Collection, Search, a
+     *  CollectionTreeRow, or a plain {libraryID} for My Library. */
+    _wvHidIsHidden(object: any, win: any): boolean {
+        try {
+            if (!win || !this._wvHidOn()) return false;
+            const ref = (object && object.ref !== undefined && typeof object.isCollection === "function") ? object.ref : object;
+            if (!ref) return false;
+            const st = this._wvHidState(win);
+            if (this._wvHidIsGroup(ref)) return st.groups.includes(ref.libraryID);
+            const k = this._wvHidKey(ref);
+            if (!k) return false;
+            const list = st.hidden[String(ref.libraryID)];
+            return !!list && list.includes(k);
+        } catch (_) { return false; }
+    }
+
+    /** `win`'s hidden objects of one library that still exist, as
+     *  {key, obj, label}; deleted ones are dropped from its set. */
+    _wvHidListLibrary(libraryID: number, win: any): any[] {
+        const st = this._wvHidState(win);
+        const keys: string[] = st.hidden[String(libraryID)] || [];
+        const out: any[] = [];
+        const keep: string[] = [];
+        for (const k of keys) {
+            try {
+                const obj: any = k[0] === "C"
+                    ? (Zotero.Collections as any).getByLibraryAndKey(libraryID, k.slice(1))
+                    : (Zotero.Searches as any).getByLibraryAndKey(libraryID, k.slice(1));
+                if (!obj || obj.deleted) continue;
+                keep.push(k);
+                let label = String(obj.name);
+                if (k[0] === "C") {
+                    const names: string[] = [label];
+                    let p: any = obj.parentID ? Zotero.Collections.get(obj.parentID) : null, g = 0;
+                    while (p && g++ < 64) { names.unshift(String(p.name)); p = p.parentID ? Zotero.Collections.get(p.parentID) : null; }
+                    label = names.join(" › ");
+                }
+                out.push({ key: k, obj, label });
+            } catch (_) {}
+        }
+        if (keep.length !== keys.length) {
+            if (keep.length) st.hidden[String(libraryID)] = keep; else delete st.hidden[String(libraryID)];
+            this._wvHidSave(win);
+        }
+        return out.sort((a, b) => Zotero.localeCompare(a.label, b.label));
+    }
+
+    /** `win`'s hidden group libraries that still exist. */
+    _wvHidListGroups(win: any): any[] {
+        const st = this._wvHidState(win);
+        const out: any[] = [];
+        const keep: number[] = [];
+        for (const id of st.groups) {
+            try {
+                const g: any = Zotero.Groups.getByLibraryID(id);
+                if (!g) continue;
+                keep.push(id);
+                out.push({ libraryID: id, label: String(g.name) });
+            } catch (_) {}
+        }
+        if (keep.length !== st.groups.length) { st.groups = keep; this._wvHidSave(win); }
+        return out.sort((a, b) => Zotero.localeCompare(a.label, b.label));
+    }
+
+    /** A collection hidden in `win` itself or through a hidden ancestor
+     *  (Weavero's own pickers; the tree gets this from _expandRow). */
+    _wvHidCollHiddenDeep(col: any, win: any): boolean {
+        try {
+            let c: any = col, g = 0;
+            while (c && g++ < 64) {
+                if (this._wvHidIsHidden(c, win)) return true;
+                c = c.parentID ? Zotero.Collections.get(c.parentID) : null;
+            }
+        } catch (_) {}
+        return false;
+    }
+
+    async _wvHidHide(objs: any[], win: any) {
+        const st = this._wvHidState(win);
+        let changed = false;
+        for (const o of objs) {
+            if (this._wvHidIsGroup(o)) {
+                if (!st.groups.includes(o.libraryID)) { st.groups.push(o.libraryID); changed = true; }
+                continue;
+            }
+            const k = this._wvHidKey(o);
+            if (!k) continue;
+            const lk = String(o.libraryID);
+            const list = st.hidden[lk] || (st.hidden[lk] = []);
+            if (!list.includes(k)) { list.push(k); changed = true; }
+        }
+        if (!changed) return;
+        await this._wvHidSave(win);
+        await this._wvHidRefreshWin(win);
+    }
+
+    /** Show again in `win`: `keys` of one library (null = all of them),
+     *  and/or `groups` (libraryIDs). */
+    async _wvHidShow(win: any, libraryID: number | null, keys: string[] | null, groups?: number[] | null) {
+        const st = this._wvHidState(win);
+        if (libraryID != null) {
+            const lk = String(libraryID);
+            if (keys == null) delete st.hidden[lk];
+            else st.hidden[lk] = (st.hidden[lk] || []).filter((k: string) => !keys.includes(k));
+            if (st.hidden[lk] && !st.hidden[lk].length) delete st.hidden[lk];
+        }
+        if (groups) st.groups = st.groups.filter((id: number) => !groups.includes(id));
+        await this._wvHidSave(win);
+        await this._wvHidRefreshWin(win);
+    }
+
+    /** Rebuild one window's collections tree; a selection that just
+     *  disappeared moves to its library row (or My Library) -- the pattern of
+     *  Zotero's toggleVirtualCollection (refresh, then select by ID). */
+    async _wvHidRefreshWin(win: any) {
+        try {
+            const cv = win && win.ZoteroPane && win.ZoteroPane.collectionsView;
+            if (!cv || !cv.tree) return;
+            const cur = cv.getRow(cv.selection.focused);
+            const curID = cur ? cur.id : null;
+            const curLib = cur && cur.ref ? cur.ref.libraryID : null;
+            await cv.refresh();
+            cv.tree.invalidate();
+            let ok: any = false;
+            if (curID && cv.getRowIndexByID(curID) !== false) ok = await cv.selectByID(curID, false);
+            if (!ok && curLib > 0) ok = await cv.selectLibrary(curLib);
+            if (!ok) await cv.selectLibrary(Zotero.Libraries.userLibraryID);
+            cv.selection.selectEventsSuppressed = false;
+            this._wvHidDecorate(win);
+        } catch (e) { Zotero.debug("[Weavero] hidden-collections refresh err: " + e); }
+    }
+
+    async _wvHidRefreshAll() {
+        const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+        for (const w of wins) await this._wvHidRefreshWin(w);
+    }
+
+    /** Per window: the tree filter, the menu entries, the Group Libraries
+     *  line's menu, and the blue dots. Idempotent; re-run on pref change. */
+    _wvHidApply(win: any) {
+        try {
+            const doc = win && win.document;
+            const cv = win && win.ZoteroPane && win.ZoteroPane.collectionsView;
+            if (!doc || !cv || typeof cv._includedInTree !== "function") return;
+            const P: any = this;
+            const live = (): any => {
+                const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                return p && !p._wvDestroyed ? p : null;
+            };
+            // 1. Tree filter: an instance property over the prototype method
+            //    (teardown deletes it), always calling the PROTOTYPE -- so a
+            //    re-apply after a hot reload never stacks wrappers.
+            const proto = Object.getPrototypeOf(cv)._includedInTree;
+            cv._includedInTree = function (object: any, resetCache: any) {
+                try { const p = live(); if (p && p._wvHidIsHidden(object, win)) return false; } catch (_) {}
+                return proto.call(this, object, resetCache);
+            };
+            // 2. Stylesheet for the dots.
+            if (!doc.getElementById("wv-hid-sheet")) {
+                const s = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+                s.id = "wv-hid-sheet";
+                s.textContent = [
+                    ".wv-hid-dot { flex: none; width: 7px; height: 7px; border-radius: 50%;",
+                    "  margin-inline: auto 8px; background: var(--accent-blue, #4072e5); }",
+                    "#collection-tree .row .cell.primary:has(> .wv-hid-dot) > .cell-text { flex: 0 1 auto; }",
+                ].join("\n");
+                (doc.documentElement || doc).appendChild(s);
+            }
+            // 3. Context-menu entries (the menu's OWN popupshowing/hidden only).
+            const menu = doc.getElementById("zotero-collectionmenu");
+            if (menu) {
+                if (menu._wvHidH) {
+                    menu.removeEventListener("popupshowing", menu._wvHidH.onShow);
+                    menu.removeEventListener("popuphidden", menu._wvHidH.onHide);
+                }
+                const onShow = (ev: any) => { if (ev.target !== menu) return; const p = live(); if (p) p._wvHidBuildMenu(win, menu); };
+                const onHide = (ev: any) => { if (ev.target !== menu) return; for (const el of Array.from(menu.querySelectorAll(".wv-hid-entry")) as any[]) el.remove(); };
+                menu.addEventListener("popupshowing", onShow);
+                menu.addEventListener("popuphidden", onHide);
+                menu._wvHidH = { onShow, onHide };
+            }
+            // 4. The Group Libraries line: not selectable, so Zotero opens no
+            //    menu there -- Weavero's own, when groups are hidden.
+            const tree = doc.getElementById("collection-tree");
+            if (tree) {
+                if (tree._wvHidCtx) tree.removeEventListener("contextmenu", tree._wvHidCtx, true);
+                const onCtx = (e: any) => {
+                    try {
+                        const p = live(); if (!p || !p._wvHidOn()) return;
+                        const el = e.target && e.target.closest && e.target.closest(".row[id^='collection-tree-row-']");
+                        if (!el) return;
+                        const c2 = win.ZoteroPane.collectionsView;
+                        const row = c2.getRow(parseInt(el.id.slice("collection-tree-row-".length), 10));
+                        if (!row || !row.isHeader() || row.ref.id !== "group-libraries-header") return;
+                        if (!p._wvHidListGroups(win).length) return;
+                        e.preventDefault(); e.stopPropagation();
+                        p._wvHidOpenGroupsMenu(win, e.screenX, e.screenY);
+                    } catch (_) {}
+                };
+                tree.addEventListener("contextmenu", onCtx, true);
+                tree._wvHidCtx = onCtx;
+            }
+            // 5. Dots, re-applied after every tree render (mutation-quiet).
+            if (tree && !win._wvHidMO) {
+                let pending: any = null;
+                const mo = new win.MutationObserver((recs: any[]) => {
+                    if (recs.every((r: any) => [...(r.addedNodes || []), ...(r.removedNodes || [])]
+                        .every((n: any) => n.classList && n.classList.contains("wv-hid-dot")))) return;
+                    if (pending) return;
+                    pending = win.setTimeout(() => { pending = null; const p = live(); if (p) p._wvHidDecorate(win); }, 0);
+                });
+                mo.observe(tree, { childList: true, subtree: true });
+                win._wvHidMO = mo;
+            }
+            P._wvHidDecorate(win);
+        } catch (e) { Zotero.debug("[Weavero] _wvHidApply err: " + e); }
+    }
+
+    /** Blue dot at the end of a library row with hidden collections or
+     *  searches (My Library also counts hidden group libraries, which have
+     *  nowhere else to show once all are hidden), and of the Group Libraries
+     *  line with hidden groups. Writes only on a real change. */
+    _wvHidDecorate(win: any) {
+        try {
+            const doc = win.document;
+            const cv = win.ZoteroPane && win.ZoteroPane.collectionsView;
+            const tree = doc.getElementById("collection-tree");
+            if (!cv || !tree) return;
+            const on = this._wvHidOn();
+            const groups = on ? this._wvHidListGroups(win).length : 0;
+            for (const el of Array.from(tree.querySelectorAll(".row[id^='collection-tree-row-']")) as any[]) {
+                let n = 0, what = "";
+                if (on) {
+                    const row = cv.getRow(parseInt(el.id.slice("collection-tree-row-".length), 10));
+                    if (row && row.isLibrary(true)) {
+                        n = this._wvHidListLibrary(row.ref.libraryID, win).length;
+                        what = n ? (n === 1 ? "1 hidden collection or saved search" : n + " hidden collections or saved searches") : "";
+                        if (row.ref.libraryID === Zotero.Libraries.userLibraryID && groups) {
+                            what += (n ? ", " : "") + (groups === 1 ? "1 hidden group library" : groups + " hidden group libraries");
+                            n += groups;
+                        }
+                    }
+                    else if (row && row.isHeader() && row.ref.id === "group-libraries-header" && groups) {
+                        n = groups;
+                        what = groups === 1 ? "1 hidden group library" : groups + " hidden group libraries";
+                    }
+                }
+                let dot: any = el.querySelector(".wv-hid-dot");
+                if (!n) { if (dot) dot.remove(); continue; }
+                const cell = el.querySelector(".cell.primary") || el;
+                if (!dot) {
+                    dot = doc.createElementNS("http://www.w3.org/1999/xhtml", "span");
+                    dot.className = "wv-hid-dot";
+                    cell.appendChild(dot);
+                }
+                const tip = "In this window: " + what + " — right-click to show";
+                if (dot.getAttribute("title") !== tip) dot.setAttribute("title", tip);
+            }
+        } catch (_) {}
+    }
+
+    /** Hide / Show entries in Zotero's collections menu. It acts on the
+     *  selected rows -- the right-clicked row, which Weavero's right-click
+     *  handling makes the selection while the menu is open, or the whole
+     *  multi-selection when the right-click lands inside it. */
+    _wvHidBuildMenu(win: any, menu: any) {
+        try {
+            for (const el of Array.from(menu.querySelectorAll(".wv-hid-entry")) as any[]) el.remove();
+            if (!this._wvHidOn()) return;
+            const doc = win.document;
+            const zp = win.ZoteroPane;
+            const rows: any[] = (zp.getCollectionTreeRows && zp.getCollectionTreeRows()) || [];
+            if (!rows.length) return;
+            const P: any = this;
+            const mk = (label: string, fn: () => void, cls = true) => {
+                const mi = doc.createXULElement("menuitem");
+                if (cls) mi.classList.add("wv-hid-entry");
+                mi.setAttribute("label", label);
+                mi.addEventListener("command", () => { try { fn(); } catch (e) { Zotero.debug("[Weavero] hide cmd err: " + e); } });
+                return mi;
+            };
+            const anchor = menu.querySelector("#deleteCollection") || null;
+            // Hide: collections / saved searches (several at once) / group libraries.
+            const objs = rows.map((r: any) => r.ref);
+            if (rows.every((r: any) => r.isCollection() || r.isSearch())) {
+                const nc = rows.filter((r: any) => r.isCollection()).length, ns = rows.length - nc;
+                const label = rows.length === 1 ? (nc ? "Hide Collection" : "Hide Saved Search")
+                    : !ns ? "Hide " + nc + " Collections"
+                    : !nc ? "Hide " + ns + " Saved Searches"
+                    : "Hide " + rows.length + " Collections and Saved Searches";
+                menu.insertBefore(mk(label, () => P._wvHidHide(objs, win)), anchor);
+            }
+            else if (rows.every((r: any) => r.isGroup())) {
+                menu.insertBefore(mk(rows.length === 1 ? "Hide Group Library" : "Hide " + rows.length + " Group Libraries",
+                    () => P._wvHidHide(objs, win)), anchor);
+            }
+            // Show: on a library row, in the group of Zotero's own "Show ..." items.
+            if (rows.length === 1 && rows[0].isLibrary(true)) {
+                const libID = rows[0].ref.libraryID;
+                const hidden = this._wvHidListLibrary(libID, win);
+                const groups = libID === Zotero.Libraries.userLibraryID ? this._wvHidListGroups(win) : [];
+                if (hidden.length || groups.length) {
+                    const sm = doc.createXULElement("menu");
+                    sm.classList.add("wv-hid-entry");
+                    sm.setAttribute("label", "Show Hidden Collections");
+                    const pp = doc.createXULElement("menupopup");
+                    const total = hidden.length + groups.length;
+                    pp.appendChild(mk("Show All (" + total + ")", () => P._wvHidShow(win, libID, null, groups.map((g: any) => g.libraryID)), false));
+                    pp.appendChild(doc.createXULElement("menuseparator"));
+                    for (const h of hidden) {
+                        pp.appendChild(mk(h.key[0] === "S" ? h.label + " (saved search)" : h.label, () => P._wvHidShow(win, libID, [h.key]), false));
+                    }
+                    if (groups.length) {
+                        if (hidden.length) pp.appendChild(doc.createXULElement("menuseparator"));
+                        const hd = mk("Group Libraries", () => {}, false); hd.setAttribute("disabled", "true");
+                        pp.appendChild(hd);
+                        for (const g of groups) pp.appendChild(mk(g.label, () => P._wvHidShow(win, null, null, [g.libraryID]), false));
+                    }
+                    sm.appendChild(pp);
+                    const sep3 = menu.querySelector("#sep3");
+                    const exp = menu.querySelector("#exportFile");
+                    const before = (sep3 && !sep3.hidden) ? sep3 : exp;
+                    const sep2 = menu.querySelector("#sep2");
+                    if (!sep2 || sep2.hidden) {
+                        const s = doc.createXULElement("menuseparator");
+                        s.classList.add("wv-hid-entry");
+                        menu.insertBefore(s, before);
+                    }
+                    menu.insertBefore(sm, before);
+                }
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvHidBuildMenu err: " + e); }
+    }
+
+    /** The Group Libraries line's own menu. */
+    _wvHidOpenGroupsMenu(win: any, x: number, y: number) {
+        try {
+            const doc = win.document;
+            const old = doc.getElementById("wv-hid-groups-menu");
+            if (old) old.remove();
+            const groups = this._wvHidListGroups(win);
+            if (!groups.length) return;
+            const P: any = this;
+            const pop = doc.createXULElement("menupopup");
+            pop.id = "wv-hid-groups-menu";
+            const mk = (label: string, fn: () => void) => {
+                const mi = doc.createXULElement("menuitem");
+                mi.setAttribute("label", label);
+                mi.addEventListener("command", () => { try { fn(); } catch (_) {} });
+                return mi;
+            };
+            const sm = doc.createXULElement("menu");
+            sm.setAttribute("label", "Show Hidden Group Libraries");
+            const pp = doc.createXULElement("menupopup");
+            pp.appendChild(mk("Show All (" + groups.length + ")", () => P._wvHidShow(win, null, null, groups.map((g: any) => g.libraryID))));
+            pp.appendChild(doc.createXULElement("menuseparator"));
+            for (const g of groups) pp.appendChild(mk(g.label, () => P._wvHidShow(win, null, null, [g.libraryID])));
+            sm.appendChild(pp);
+            pop.appendChild(sm);
+            pop.addEventListener("popuphidden", (ev: any) => { if (ev.target === pop) pop.remove(); });
+            (doc.querySelector("popupset") || doc.documentElement).appendChild(pop);
+            pop.openPopupAtScreen(x, y, true);
+        } catch (e) { Zotero.debug("[Weavero] _wvHidOpenGroupsMenu err: " + e); }
+    }
+
+    /** Shutdown / disable: unwrap every window and show everything again. */
+    async _wvHidTeardown() {
+        const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+        for (const w of wins) {
+            try {
+                const doc = w.document;
+                const cv = w.ZoteroPane && w.ZoteroPane.collectionsView;
+                if (cv && Object.prototype.hasOwnProperty.call(cv, "_includedInTree")) delete cv._includedInTree;
+                const menu: any = doc.getElementById("zotero-collectionmenu");
+                if (menu && menu._wvHidH) {
+                    menu.removeEventListener("popupshowing", menu._wvHidH.onShow);
+                    menu.removeEventListener("popuphidden", menu._wvHidH.onHide);
+                    delete menu._wvHidH;
+                }
+                const tree: any = doc.getElementById("collection-tree");
+                if (tree && tree._wvHidCtx) { tree.removeEventListener("contextmenu", tree._wvHidCtx, true); delete tree._wvHidCtx; }
+                if (w._wvHidMO) { try { w._wvHidMO.disconnect(); } catch (_) {} delete w._wvHidMO; }
+                for (const el of Array.from(doc.querySelectorAll(".wv-hid-dot, .wv-hid-entry, #wv-hid-groups-menu, #wv-hid-sheet")) as any[]) el.remove();
+                if (cv && cv.tree) { await cv.refresh(); cv.tree.invalidate(); cv.selection.selectEventsSuppressed = false; }
+            } catch (_) {}
+        }
+    }
+
     /** The collections-tree reading aids (MJT 2026-09-25, after issue #45):
      *   - PINNED PARENTS (VS Code's tree "sticky scroll", explorer default on,
      *     7 levels there): the parents of the rows at the top of the pane stay

@@ -441,6 +441,26 @@ Synthetic drags do not move Gecko splitters, so these are hands-only. Setting:
 - [ ] **Collections-pane button on, pane collapsed** → the band at the left
       edge is 1 px; button off → Zotero's 8/10 px band is back.
 
+## Hidden collections (after touching the collections menu or tree filter)
+
+Real right-click menus; the spec builds them without opening.
+
+- [ ] Right-click a collection → **Hide Collection** (next to Delete); it
+      and its sub-collections vanish, a **blue dot** appears at the end of
+      the My Library line (hover: "In this window: 1 hidden …").
+- [ ] Ctrl+click two collections and a saved search, right-click inside the
+      selection → **Hide 3 Collections and Saved Searches**.
+- [ ] Right-click **My Library** → **Show Hidden Collections ▸** (after
+      Zotero's own Show items) → **Show All (n)**, then each by path; pick
+      one → it is back, the dot goes when none are left.
+- [ ] Right-click a group library → **Hide Group Library**; dots on the
+      **Group Libraries** line and My Library. Right-click the Group
+      Libraries line → **Show Hidden Group Libraries ▸**. Hide every group →
+      the line goes; My Library's Show menu lists them under "Group
+      Libraries".
+- [ ] A second main window (Ctrl+N) shows everything: the set is per
+      window. Restart → each window gets its own set back.
+
 ## Popups (after touching popup code)
 
 Run `test/popups.spec.js` first, then by hand:

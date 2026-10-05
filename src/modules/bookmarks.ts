@@ -557,7 +557,7 @@ class _BookmarksMixin {
         try {
             await this._bmInit();
             if (this._bmDoc && (this._bmDoc as any).readerOutlines) delete (this._bmDoc as any).readerOutlines;
-            await this._bmPersist();
+            await this._bmPersistSilent(); /* load-time migration: never an undo step */
         } catch (_) {}
     }
 
@@ -1204,7 +1204,7 @@ class _BookmarksMixin {
                 }
             };
             walk(doc.local); walk(doc.global);
-            if (changed) this._bmPersist();
+            if (changed) this._bmPersistSilent();   // automatic, not a user action
         } catch (_) {}
     }
 
@@ -1338,7 +1338,296 @@ class _BookmarksMixin {
         const loc = this._bmLocate(id, doc.local) || this._bmLocate(id, doc.global);
         if (!loc || loc.entry.type !== "folder") return;
         loc.entry.expanded = !loc.entry.expanded;
-        await this._bmPersist();
+        await this._bmPersistSilent();
+    }
+
+    // ---- Bookmark undo: steps recorded at the write choke point ------------
+    // Every bookmark write -- some forty call sites across the reader pane,
+    // the library popup and the editors -- ends in `_bmPersist()`. Undo is
+    // recorded THERE (MJT 2026-10-01, slice 2), by diffing each store
+    // against the state it had after the previous persist: the library tree
+    // (key "lib") and each document's {local, global} trees (key
+    // "rb:<libraryID>:<itemKey>"). A step is record-level data -- for every
+    // touched id, the record before and after (own fields, no children) and
+    // its anchored position (section, parent, previous sibling) -- so it
+    // replays on whatever the tree looks like later, can be run selectively
+    // when later steps touched other ids, and survives a plugin reload like
+    // the outline's. Automatic writes (label sync, migrations, folder
+    // expand / collapse) go through `_bmPersistSilent` and record nothing;
+    // `expanded` is view state and never counts as a change. One gesture
+    // that writes several times runs inside `_wvUndoBatch`, which defers
+    // the capture to the end of the gesture (one step per store, linked).
+
+    /** The persist used by writes that are NOT user actions. */
+    _bmPersistSilent() {
+        this._wvBmUndoSilent = (this._wvBmUndoSilent || 0) + 1;
+        try { return this._bmPersist(); }
+        finally { this._wvBmUndoSilent--; }
+    }
+
+    _wvBmUndoScope(key: string): string {
+        return key === "lib" ? "bookmarks:lib" : "bookmarks:" + key.slice(3);
+    }
+
+    _wvBmUndoKeys(): string[] {
+        const out = ["lib"];
+        try {
+            const rb = (this._bmDoc && this._bmDoc.readerBookmarks) || {};
+            for (const k of Object.keys(rb)) {
+                const v = rb[k];
+                if (v && typeof v === "object" && !Array.isArray(v)) out.push("rb:" + k);
+            }
+        } catch (_) {}
+        return out;
+    }
+
+    /** The LIVE section arrays of a store key, or null when the key holds
+     *  nothing (a document whose last bookmark went away). */
+    _wvBmUndoTree(key: string, create?: boolean): { [section: string]: any[] } | null {
+        if (!this._bmDoc) return null;
+        if (key === "lib") return { root: this._bmRootArray() };
+        const k = key.slice(3);
+        if (create) {
+            const i = k.indexOf(":");
+            const doc = this._bmReaderDoc(parseInt(k.slice(0, i), 10), k.slice(i + 1));
+            return { local: doc.local, global: doc.global };
+        }
+        const v = this._bmDoc.readerBookmarks && this._bmDoc.readerBookmarks[k];
+        if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+        return { local: v.local || [], global: v.global || [] };
+    }
+
+    /** Remember the current state of every store key (or the given ones) as
+     *  the state the next capture diffs against. */
+    _wvBmUndoBaseline(keys?: string[]) {
+        const last = this._wvBmUndoLast || (this._wvBmUndoLast = {});
+        for (const key of (keys || this._wvBmUndoKeys())) {
+            const t = this._wvBmUndoTree(key);
+            if (t) last[key] = JSON.stringify(t); else delete last[key];
+        }
+    }
+
+    /** Fields Weavero DERIVES and maintains itself (the reading-order key
+     *  and its bookkeeping): never part of an undo step -- a change to them
+     *  alone is no step, and an undo keeps the live values (they are
+     *  recomputed for the restored position anyway). 2026-10-05: the
+     *  background sortIndex save after "Add Selected Text to Bookmarks"
+     *  showed up as a second step, "Edit Bookmark". */
+    _wvBmUndoDerived(k: string): boolean {
+        return k === "sortIndex" || k === "sortIndexPos" || k === "sortIndexAlgo" || k === "_sortIndexTried"
+            || k === "sortIndexAnn" || k === "sortIndexAnnAlgo";
+    }
+
+    /** id -> {rec, pos} for every node of a tree; `rec` = own fields without
+     *  children / expanded / derived fields; `pos` = where it sits. */
+    _wvBmUndoFlat(sections: { [section: string]: any[] }): Map<string, { rec: any; pos: any }> {
+        const out = new Map<string, { rec: any; pos: any }>();
+        const walk = (arr: any[], section: string, parentId: string | null, depth: number) => {
+            for (let i = 0; i < arr.length; i++) {
+                const n = arr[i];
+                if (!n || n.id == null) continue;
+                const rec: any = {};
+                for (const k of Object.keys(n)) if (k !== "children" && k !== "expanded" && !this._wvBmUndoDerived(k)) rec[k] = n[k];
+                const prev = i > 0 && arr[i - 1] && arr[i - 1].id != null ? String(arr[i - 1].id) : null;
+                out.set(String(n.id), { rec, pos: { section, parentId, prevId: prev, index: i, depth } });
+                if (n.type === "folder" && Array.isArray(n.children)) walk(n.children, section, String(n.id), depth + 1);
+            }
+        };
+        for (const s of Object.keys(sections)) walk(sections[s] || [], s, null, 0);
+        return out;
+    }
+
+    /** Ids of `a` that are NOT in the longest common subsequence of `a` and
+     *  `b` -- the ones that moved among their surviving siblings. */
+    _wvBmUndoMovedIds(a: string[], b: string[]): Set<string> {
+        const n = a.length, m = b.length;
+        const L: number[][] = [];
+        for (let i = 0; i <= n; i++) { L.push(new Array(m + 1).fill(0)); }
+        for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) {
+            L[i][j] = a[i] === b[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+        }
+        const kept = new Set<string>();
+        let i = 0, j = 0;
+        while (i < n && j < m) {
+            if (a[i] === b[j]) { kept.add(a[i]); i++; j++; }
+            else if (L[i + 1][j] >= L[i][j + 1]) i++;
+            else j++;
+        }
+        const moved = new Set<string>();
+        for (const id of a) if (!kept.has(id)) moved.add(id);
+        return moved;
+    }
+
+    /** Record-level changes between two states of one store. A node is
+     *  "moved" when its section or parent changed, or when its order among
+     *  the siblings present on both sides changed (a deleted neighbour does
+     *  not move it). */
+    _wvBmUndoDiff(before: { [section: string]: any[] }, after: { [section: string]: any[] }): any[] {
+        const A = this._wvBmUndoFlat(before), B = this._wvBmUndoFlat(after);
+        // Order among common siblings, per parent slot.
+        const slot = (p: any) => p.section + "/" + (p.parentId || "");
+        const seqA = new Map<string, string[]>(), seqB = new Map<string, string[]>();
+        for (const [id, a] of A) if (B.has(id)) { const k = slot(a.pos); (seqA.get(k) || seqA.set(k, []).get(k)!).push(id); }
+        for (const [id, b] of B) if (A.has(id)) { const k = slot(b.pos); (seqB.get(k) || seqB.set(k, []).get(k)!).push(id); }
+        const moved = new Set<string>();
+        for (const [k, a] of seqA) {
+            const b = (seqB.get(k) || []).filter(id => slot(A.get(id)!.pos) === k);
+            const aa = a.filter(id => slot(B.get(id)!.pos) === k);
+            // Unchanged order (nearly every slot of every write): no LCS --
+            // its table is O(n*m) and a 2000-row root would cost ~32 MB per
+            // keystroke-sized change (pre-release review 2026-10-05).
+            if (aa.length === b.length && aa.every((id, i) => id === b[i])) continue;
+            for (const id of this._wvBmUndoMovedIds(aa, b)) moved.add(id);
+        }
+        const changes: any[] = [];
+        for (const [id, a] of A) {
+            const b = B.get(id);
+            if (!b) { changes.push({ id, before: a.rec, bpos: a.pos, after: null, apos: null }); continue; }
+            const parentMoved = slot(a.pos) !== slot(b.pos);
+            const isMoved = parentMoved || moved.has(id);
+            if (isMoved || JSON.stringify(a.rec) !== JSON.stringify(b.rec)) {
+                changes.push({ id, before: a.rec, bpos: a.pos, after: b.rec, apos: b.pos, moved: isMoved });
+            }
+        }
+        for (const [id, b] of B) if (!A.has(id)) changes.push({ id, before: null, bpos: null, after: b.rec, apos: b.pos });
+        return changes;
+    }
+
+    /** "Add Bookmark", "Delete 2 Bookmarks", "Rename Folder", "Move
+     *  Bookmark", "Edit Bookmark"; a mix reads "Edit Bookmarks". */
+    _wvBmUndoLabel(changes: any[]): string {
+        let added = 0, removed = 0, renamed = 0, moved = 0, edited = 0;
+        let folders = 0, bms = 0;
+        const removedIds = new Set(changes.filter(c => c.before && !c.after).map(c => String(c.id)));
+        for (const c of changes) {
+            const rec = c.after || c.before;
+            const isFolder = !!(rec && rec.type === "folder");
+            if (!c.before) added++;
+            else if (!c.after) {
+                // A deleted folder takes its contents with it: count the
+                // folder, not each descendant.
+                if (c.bpos && c.bpos.parentId && removedIds.has(String(c.bpos.parentId))) continue;
+                removed++;
+            }
+            else {
+                const a = c.before, b = c.after;
+                const strip = (r: any) => { const o: any = {}; for (const k of Object.keys(r)) if (k !== "label" && k !== "name" && k !== "renamed") o[k] = r[k]; return JSON.stringify(o); };
+                const nameA = isFolder ? a.name : a.label, nameB = isFolder ? b.name : b.label;
+                const sameRest = strip(a) === strip(b);
+                if (!c.moved && nameA !== nameB && sameRest) renamed++;
+                else if (c.moved && JSON.stringify(a) === JSON.stringify(b)) moved++;
+                else edited++;
+            }
+            if (isFolder) folders++; else bms++;
+        }
+        const all: Array<[string, number]> = [["Add", added], ["Delete", removed], ["Rename", renamed], ["Move", moved], ["Edit", edited]];
+        const kinds = all.filter(k => k[1] > 0);
+        if (kinds.length !== 1) return "Edit Bookmarks";
+        const [verb, n] = kinds[0];
+        const noun = folders && !bms ? "Folder" : "Bookmark";
+        return n === 1 ? verb + " " + noun : verb + " " + n + " " + noun + "s";
+    }
+
+    /** Called by `_bmPersist` before it writes: diff every store key against
+     *  the last persisted state and record a step per changed key. Inside a
+     *  batch the capture waits for the end of the gesture. */
+    _wvBmUndoCapture(flush?: boolean) {
+        try {
+            if (!this._bmDoc) return;
+            if (!this._wvBmUndoLast) { this._wvBmUndoBaseline(); return; }
+            if (!flush && typeof this._wvUndoInBatch === "function" && this._wvUndoInBatch()) {
+                this._wvUndoOnBatchEnd("bookmarks", () => this._wvBmUndoCapture(true));
+                return;
+            }
+            const silent = (this._wvBmUndoSilent || 0) > 0;
+            const last = this._wvBmUndoLast;
+            const keys = new Set<string>([...Object.keys(last), ...this._wvBmUndoKeys()]);
+            for (const key of keys) {
+                const tree = this._wvBmUndoTree(key);
+                const cur = tree ? JSON.stringify(tree) : null;
+                const prev = last[key];
+                if (cur === prev || (cur == null && prev == null)) continue;
+                if (cur == null) delete last[key]; else last[key] = cur;
+                if (silent) continue;
+                // A document key the baseline never saw was EMPTY (the store
+                // drops a document without bookmarks): its first bookmark is
+                // a step like any other. The library tree is always there.
+                if (prev == null && key === "lib") continue;
+                const before = prev != null ? JSON.parse(prev) : { local: [], global: [] };
+                const after = cur != null ? JSON.parse(cur) : Object.keys(before).reduce((o: any, s: string) => { o[s] = []; return o; }, {});
+                const changes = this._wvBmUndoDiff(before, after);
+                if (!changes.length) continue;
+                this._wvUndoPush(this._wvBmUndoScope(key), {
+                    label: this._wvBmUndoLabel(changes),
+                    type: key === "lib" ? "bookmarks.lib" : "bookmarks.doc",
+                    data: { key, changes },
+                });
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvBmUndoCapture err: " + e); }
+    }
+
+    /** Put one store back to the `side` ("before" = undo, "after" = redo) of
+     *  a step's changes, record by record on the CURRENT tree: nodes the
+     *  other side added are removed, nodes it removed are re-inserted at
+     *  their anchored positions (parents before children), changed nodes get
+     *  their fields back and move if they had moved. Persists silently and
+     *  re-baselines the key. Returns the ids present on `side`. */
+    async _wvBmUndoApply(key: string, changes: any[], side: "before" | "after"): Promise<string[]> {
+        await this._bmInit();
+        const other = side === "before" ? "after" : "before";
+        const posOf = (c: any) => side === "before" ? c.bpos : c.apos;
+        const tree = this._wvBmUndoTree(key, true);
+        if (!tree) return [];
+        const locate = (id: string) => {
+            for (const s of Object.keys(tree)) { const l = this._bmLocate(id, tree[s]); if (l) return l; }
+            return null;
+        };
+        const insertAt = (node: any, pos: any) => {
+            let arr: any[] | null = null;
+            if (pos && pos.parentId) {
+                const pl = locate(String(pos.parentId));
+                if (pl && pl.entry.type === "folder") { pl.entry.children = pl.entry.children || []; arr = pl.entry.children; }
+            }
+            if (!arr) { const s = pos && tree[pos.section] ? pos.section : Object.keys(tree)[0]; arr = tree[s]; }
+            let at: number;
+            if (pos && pos.prevId) {
+                const pi = arr.findIndex((x: any) => x && String(x.id) === String(pos.prevId));
+                at = pi >= 0 ? pi + 1 : Math.min(pos.index || 0, arr.length);
+            }
+            else at = pos && pos.prevId === null && pos.index === 0 ? 0 : Math.min((pos && pos.index) || 0, arr.length);
+            arr.splice(at, 0, node);
+        };
+        const clone = (r: any) => JSON.parse(JSON.stringify(r));
+        // 1. Nodes present on the other side only: remove.
+        for (const c of changes) {
+            if (c[other] && !c[side]) { const l = locate(String(c.id)); if (l) l.parentArr.splice(l.index, 1); }
+        }
+        // 2. Nodes present on this side only: re-insert, parents first.
+        const ins = changes.filter(c => c[side] && !c[other]).sort((x, y) => (posOf(x).depth - posOf(y).depth) || (posOf(x).index - posOf(y).index));
+        for (const c of ins) {
+            if (locate(String(c.id))) continue;
+            const node = clone(c[side]);
+            if (node.type === "folder") { node.children = []; node.expanded = true; }
+            insertAt(node, posOf(c));
+        }
+        // 3. Nodes on both sides: fields back, then the position if it moved.
+        for (const c of changes) {
+            if (!c[side] || !c[other]) continue;
+            const l = locate(String(c.id));
+            if (!l) { const node = clone(c[side]); if (node.type === "folder") { node.children = []; node.expanded = true; } insertAt(node, posOf(c)); continue; }
+            const e = l.entry;
+            for (const k of Object.keys(e)) if (k !== "children" && k !== "expanded" && !this._wvBmUndoDerived(k)) delete e[k];
+            Object.assign(e, clone(c[side]));
+            if (c.moved) { l.parentArr.splice(l.index, 1); insertAt(e, posOf(c)); }
+        }
+        // The reader store drops a document whose two sections are empty.
+        if (key !== "lib") {
+            const k = key.slice(3);
+            if (!tree.local.length && !tree.global.length && this._bmDoc.readerBookmarks) delete this._bmDoc.readerBookmarks[k];
+        }
+        await this._bmPersistSilent();
+        this._wvBmUndoBaseline([key]);
+        return changes.filter(c => c[side]).map(c => String(c.id));
     }
 
     /** Load the file into `_bmDoc` once (cached promise). Missing → fresh;
@@ -1370,6 +1659,9 @@ class _BookmarksMixin {
             try { this._bmStampItemKinds(); } catch (e) {
                 Zotero.debug("[Weavero] _bmStampItemKinds err: " + e);
             }
+            // The loaded (migrated) state is what the first user write is
+            // diffed against for undo.
+            try { this._wvBmUndoBaseline(); } catch (_) {}
             // Now that the bookmarks store is loaded, re-evaluate the
             // Bookmarks tab on every open reader. Two things need
             // catching up:
@@ -1442,7 +1734,7 @@ class _BookmarksMixin {
             walk(doc.global);
         }
         if (changed) {
-            try { this._bmPersist(); } catch (_) {}
+            try { this._bmPersistSilent(); /* load-time migration: never an undo step */ } catch (_) {}
         }
     }
 
@@ -1506,7 +1798,7 @@ class _BookmarksMixin {
                 else { walk(doc.local); walk(doc.global); }
             }
         } catch (_) {}
-        if (changed) { try { this._bmPersist(); } catch (_) {} }
+        if (changed) { try { this._bmPersistSilent(); /* load-time migration: never an undo step */ } catch (_) {} }
     }
 
     _bmMigrateSectionPlacement() {
@@ -1551,7 +1843,7 @@ class _BookmarksMixin {
             }
         }
         if (changed) {
-            try { this._bmPersist(); } catch (_) {}
+            try { this._bmPersistSilent(); /* load-time migration: never an undo step */ } catch (_) {}
         }
     }
 
@@ -1998,6 +2290,9 @@ class _BookmarksMixin {
     _bmPersist() {
         if (!this._bmDoc) return Promise.resolve();
         this._bmAttBmSet = null;   // bookmark set changed → drop the "has bookmarks" cache
+        // Undo: every user write lands here -- record the step before the
+        // file is written (silent writes update the baseline only).
+        try { this._wvBmUndoCapture(); } catch (_) {}
         const snapshot = JSON.stringify(this._bmDoc, null, 2);
         const dir = this._bmDir();
         const path = this._bmFilePath();
@@ -2182,7 +2477,7 @@ class _BookmarksMixin {
         const f = this._bmFindFolder(id);
         if (!f) return;
         f.expanded = !f.expanded;
-        await this._bmPersist();
+        await this._bmPersistSilent();
     }
 
     /** Count every entry nested inside a folder (bookmarks + subfolders,
@@ -2545,7 +2840,8 @@ class _BookmarksMixin {
                 const newComment = hasComment ? String(commentInput.value || "") : null;
                 const newUrl = hasUrl ? (urlInput.value || "").trim() : null;
                 close();
-                try { if (opts.onSave) await opts.onSave(newTitle, newComment, newUrl); }
+                // One Save = one undo step, however many fields it writes.
+                try { if (opts.onSave) await this._wvUndoBatch(() => opts.onSave(newTitle, newComment, newUrl)); }
                 catch (e) { Zotero.debug("[Weavero] bm edit save err: " + e); }
             };
             cancelBtn.addEventListener("click", close);
@@ -2692,7 +2988,10 @@ class _BookmarksMixin {
                         if (ann) {
                             let cur = ""; try { cur = String(ann.annotationComment || ""); } catch (_) {}
                             if (newComment !== cur) {
-                                try { ann.annotationComment = newComment; await ann.saveTx(); }
+                                // A Zotero DATA write: Zotero's own history
+                                // undoes it (Edit > Undo in the main window),
+                                // labelled with its edit-field message.
+                                try { ann.annotationComment = newComment; await ann.saveTx({ undoAction: "undo-action-edit-field", undoActionArgs: { field: "Comment", count: 1 } }); }
                                 catch (e) { Zotero.debug("[Weavero] bm comment save err: " + e); }
                             }
                         } else if (newComment !== String(entry.comment || "")) {

@@ -27,6 +27,7 @@ import { bookmarksMethods } from "./modules/bookmarks";
 import { readerPanelsMethods } from "./modules/reader-panels";
 import { tabGroupsMethods } from "./modules/tab-groups";
 import { sessionsMethods } from "./modules/sessions";
+import { undoMethods } from "./modules/undo";
 import { outlineEvalMethods } from "./modules/outline-eval";
 import { attachmentsMethods } from "./modules/attachments";
 
@@ -2300,6 +2301,8 @@ class WeaveroPlugin {
                 // Default ON since 2026-08-18 (MJT: discoverability) —
                 // was in the OFF list; the getter fallback flipped with it.
                 "enableOpenExternalViewer",
+                // Reader toolbar Undo / Redo arrows (MJT 2026-10-02).
+                "readerUndoButtons",
                 // Hidden prefs (no Settings checkbox) whose getters also read
                 // TRUE when unset — registered for the same invariant.
                 "readerOutlineTakeover", "recolorAmLinks",
@@ -2356,6 +2359,10 @@ class WeaveroPlugin {
             // Reader outline text size (issue #47, MJT 2026-09-29): "zotero"
             // (Zotero's own size, follows View -> Font Size) or a fixed px size.
             try { branch.setCharPref(P + "outlineTextSize", "zotero"); } catch (e) {}
+            // Saved-session list order (MJT 2026-09-29): "created" (the stored
+            // order), "name" or "lastUsed".
+            try { branch.setCharPref(P + "sessionSort", "created"); } catch (e) {}
+            try { branch.setBoolPref(P + "sessionSortReverse", false); } catch (e) {}
             // Pinned parents in the collections tree: at most this many levels.
             try { branch.setIntPref(P + "collectionsStickyMax", 7); } catch (e) {}
             // Pref-rename migration (2026-07-24): "Multiple main windows"
@@ -3444,6 +3451,8 @@ class WeaveroPlugin {
         try { (this as any)._registerReopenClosedMenu(); } catch (e) {}
         // Plugins Manager search box (Ctrl+F filter over installed plugins).
         try { (this as any)._registerPluginsSearch(); } catch (e) {}
+        // Windows that miss a desktop button-side change get nudged.
+        try { (this as any)._wvWireCsdRefresh(); } catch (e) {}
         // Standalone reader windows already open (a plugin update or reload):
         // rebuild a reader-window item pane left by another build (its
         // closures are that build's), see _ensureReaderWindowItemPane.
@@ -4564,6 +4573,7 @@ class WeaveroPlugin {
                 try { (this as any)._wvWireReaderFindKey(w); } catch (e) {}
                 try { (this as any)._wvWireColumnPickerMark(w); } catch (e) {}
                 try { (this as any)._wvWireColumnPickerNativeFix(w); } catch (e) {}
+                try { (this as any)._wvWireEditUndoMenu(w); } catch (e) {}
                 try { (this as any)._wvWireItemsCrossWindowDrop(w); } catch (e) {}
             }
         } catch (e) {}
@@ -5145,10 +5155,14 @@ class WeaveroPlugin {
         // own count string back.
         try {
             for (const w of Zotero.getMainWindows()) {
-                (this as any)._wvUnwireItemCountBreakdown(w);
-                (this as any)._wvUnwireLastViewCloseGuard(w);
-                (this as any)._wvUnwireQuickCopyMultiTab(w);
-                (this as any)._wvUnwireColumnPickerNativeFix(w);
+                // Each unwire guarded on its own: one throwing must not leave
+                // the next one's wrap (e.g. the macOS openPopupAtScreen
+                // prototype wrap) in place (pre-release review 2026-10-05).
+                try { (this as any)._wvUnwireItemCountBreakdown(w); } catch (e) {}
+                try { (this as any)._wvUnwireLastViewCloseGuard(w); } catch (e) {}
+                try { (this as any)._wvUnwireQuickCopyMultiTab(w); } catch (e) {}
+                try { (this as any)._wvUnwireColumnPickerNativeFix(w); } catch (e) {}
+                try { (this as any)._wvUnwireEditUndoMenu(w); } catch (e) {}
             }
         } catch (e) {}
         // 0. FINAL store capture, then freeze — teardown below dismantles
@@ -5426,6 +5440,7 @@ class WeaveroPlugin {
         this._unregisterPinTabMenu();
         try { this._teardownTabGroups(); } catch (e) {}
         try { (this as any)._teardownPluginsSearch(); } catch (e) {}
+        try { (this as any)._wvUnwireCsdRefresh(); } catch (e) {}
         this._unregisterDevNewWindowMenu();
         try { (this as any)._unregisterReopenClosedMenu(); } catch (e) {}
         try { this._wvWindowStoreUnregisterQuitFlush(); } catch (e) {}
@@ -5820,6 +5835,10 @@ Object.defineProperties(
 );
 Object.defineProperties(
     WeaveroPlugin.prototype,
+    undoMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
     outlineEvalMethods,
 );
 Object.defineProperties(
@@ -5873,6 +5892,7 @@ Zotero.Weavero = {
                 try { _Weavero._wvWireOutlineTakeoverPrefWatch(); } catch (e) {}
                 try { _Weavero._wvWireOutlinePagesPrefWatch(); } catch (e) {}
                 try { _Weavero._wvWireOutlineTextSizePrefWatch(); } catch (e) {}
+                try { _Weavero._wvWireUndoButtonsPrefWatch(); } catch (e) {}
                 try { _Weavero._wvWireBmPagesPrefWatch(); } catch (e) {}
                 // One-shot import of picks from PikaPei/zotero-default-attachment
                 // (guarded by weavero.defaultChildMigrated). Fire-and-forget:

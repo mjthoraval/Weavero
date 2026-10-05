@@ -28,6 +28,7 @@ import {
     WV_FUNNEL_DATA_URI,
 } from "./constants";
 import { winOf, wvIsHiddenOrCollapsed, wvSetBoolAttr } from "../lib/dom";
+import { wvStageNativeUndo } from "./undo";
 
 class _ReaderMixin {
     [k: string]: any;
@@ -2177,6 +2178,8 @@ class _ReaderMixin {
                 const ctlBox = strip2 && strip2.querySelector(":scope > .wv-window-controls");
                 if (strip2) {
                     this._wvEnsureHamburger(win, strip2, ctlBox);
+                    // Edit > Undo / Redo for the active tab's outline (MJT 2026-09-30).
+                    try { (this as any)._wvWireEditUndoMenu(win); } catch (e) {}
                     // "List all tabs" button, just left of the hamburger.
                     const ham = strip2.querySelector(":scope > .wv-hamburger-btn");
                     this._wvWTEnsureTabListButton(win, strip2, ham || ctlBox);
@@ -3628,6 +3631,7 @@ class _ReaderMixin {
             try { stash.mergeAbsorberOff?.(); } catch (e) {}
             // Remove the hamburger button + popup.
             try { this._wvRemoveHamburger(win); } catch (e) {}
+            try { (this as any)._wvUnwireEditUndoMenu(win); } catch (e) {}
             try { this._wvRemoveReaderMenubarExtras(win); } catch (e) {}
             // Remove the "list all tabs" panel (the button goes with the strip).
             try { const tlp = doc.getElementById("wv-window-tablist-panel"); if (tlp) tlp.remove(); } catch (e) {}
@@ -3871,6 +3875,8 @@ class _ReaderMixin {
                 const ctlBox = strip.querySelector(":scope > .wv-window-controls");
                 this._wvEnsureHamburger(win, strip, ctlBox);
             } catch (e) {}
+            // Edit > Undo / Redo for the active tab's outline (MJT 2026-09-30).
+            try { (this as any)._wvWireEditUndoMenu(win); } catch (e) {}
 
             // Merge-MIME drag absorber — keeps the OS forbidden cursor off
             // the strip while the user drags this tab over its own window
@@ -3899,6 +3905,7 @@ class _ReaderMixin {
                 }
             } catch (e) {}
             try { this._wvRemoveHamburger(win); } catch (e) {}
+            try { (this as any)._wvUnwireEditUndoMenu(win); } catch (e) {}
             try { this._wvRemoveReaderMenubarExtras(win); } catch (e) {}
             try {
                 const winEl = doc.documentElement;
@@ -4078,7 +4085,7 @@ class _ReaderMixin {
             // Version-guarded: bump WV_STRIP_STYLE_VER when the CSS below
             // changes so windows that predate a plugin reload get the new
             // rules re-injected instead of keeping the stale sheet.
-            const WV_STRIP_STYLE_VER = "3";
+            const WV_STRIP_STYLE_VER = "8";
             const prev = doc.getElementById("wv-window-tabstrip-styles");
             if (prev) {
                 if (prev.getAttribute("data-wv-ver") === WV_STRIP_STYLE_VER) return;
@@ -4333,6 +4340,75 @@ class _ReaderMixin {
                 "#wv-hamburger-popup > menuitem { padding-inline: 12px; }",
                 ".wv-window-control.wv-window-close:hover { background-color: #e81123; color: #fff; }",
                 ".wv-window-control.wv-window-close:active { background-color: #c50f1f; color: #fff; }",
+                /* Linux (survey 2026-10-01, Ubuntu 26.04, Zotero 10.0.5-beta.2).
+                   Two things the rules above take from Windows do not exist here:
+                   1. chrome://browser/skin/window-controls/*.svg are NOT in the
+                      Linux build (0 entries in omni.ja; Zotero references them
+                      from scss/win/_titleBar.scss only) -- the three buttons
+                      were laid out and clickable but drew nothing. Use what
+                      scss/linux/_titleBar.scss gives the main window's
+                      .titlebar-button: GTK symbolic icons, 30px slots, a 24px
+                      round hover (15% / 30% of currentColor), no red close,
+                      the button box's 10px margin, and the GTK layout (which
+                      buttons exist, and their order). The icon goes through a
+                      custom property so the hover layer can repeat it.
+                   2. Zotero paints reader windows with `window:root
+                      { background: var(--material-sidepane) }`, and the Linux
+                      skin turns that off for any self-decorated window
+                      (`:root[customtitlebar] { background-color: transparent;
+                      appearance: -moz-window-decorations }`, for the main
+                      window's rounded corners). `customtitlebar` is OUR doing
+                      here, so every strip nothing paints over was see-through
+                      to the desktop: the 5px item-pane splitter (MJT
+                      screenshot, 2026-10-01) and the note outline pane --
+                      drawWindow returned the fill colour there, i.e. nothing
+                      painted. A background-color on the ROOT does not help: the
+                      native decoration appearance replaces it (measured). So
+                      the content row under the strip carries it instead. The
+                      Alt menu row paints itself already.
+                   Guard: test/linux-window-chrome.spec.js. */
+                "@media (-moz-platform: linux) {",
+                "  :root[customtitlebar][windowtype=\"zotero:reader\"] > hbox { background-color: var(--material-sidepane); }",
+                // Right: 6 + the strip's own 4px = the main window's 10px. Left:
+                // none -- the 40px drag spacer meets the buttons, as on Windows
+                // and in Firefox on Linux.
+                "  .wv-window-controls { margin: 0 6px 0 0; }",
+                "  .wv-window-controls.wv-in-menubar { margin: 0 10px; }",
+                "  .wv-window-control { width: 30px; color: inherit; background-size: auto; cursor: default; }",
+                "  .wv-window-control.wv-window-min { --wv-ctl-icon: -moz-symbolic-icon(window-minimize-symbolic);",
+                "    background-image: var(--wv-ctl-icon); order: env(-moz-gtk-csd-minimize-button-position); }",
+                "  .wv-window-control.wv-window-max { --wv-ctl-icon: -moz-symbolic-icon(window-maximize-symbolic);",
+                "    background-image: var(--wv-ctl-icon); order: env(-moz-gtk-csd-maximize-button-position); }",
+                "  .wv-window-control.wv-window-max[data-state='maximized'] { --wv-ctl-icon: -moz-symbolic-icon(window-restore-symbolic);",
+                "    background-image: var(--wv-ctl-icon); }",
+                "  .wv-window-control.wv-window-close { --wv-ctl-icon: -moz-symbolic-icon(window-close-symbolic);",
+                "    background-image: var(--wv-ctl-icon); order: env(-moz-gtk-csd-close-button-position); }",
+                "  .wv-window-control:hover, .wv-window-control.wv-window-close:hover {",
+                "    background-color: transparent; color: inherit;",
+                "    background-image: var(--wv-ctl-icon), radial-gradient(circle 12px at center,",
+                "      color-mix(in srgb, currentColor 15%, transparent) 12px, transparent 12.5px); }",
+                "  .wv-window-control:hover:active, .wv-window-control.wv-window-close:hover:active {",
+                "    background-color: transparent; color: inherit;",
+                "    background-image: var(--wv-ctl-icon), radial-gradient(circle 12px at center,",
+                "      color-mix(in srgb, currentColor 30%, transparent) 12px, transparent 12.5px); }",
+                "  @media not (-moz-gtk-csd-minimize-button) { .wv-window-control.wv-window-min { display: none; } }",
+                "  @media not (-moz-gtk-csd-maximize-button) { .wv-window-control.wv-window-max { display: none; } }",
+                "  @media not (-moz-gtk-csd-close-button) { .wv-window-control.wv-window-close { display: none; } }",
+                "}",
+                /* Window buttons on the LEFT (GTK reversed placement): the
+                   main window's mirror -- buttons first in the strip, the 40px
+                   drag spacer right after them, then the tabs; the hamburger
+                   stays at the right end (2026-10-01). */
+                // Staleness probe for _wvWireCsdRefresh (pane.ts).
+                ":root { --wv-csd-rev: 0; }",
+                "@media (-moz-gtk-csd-reversed-placement) { :root { --wv-csd-rev: 1; } }",
+                "@media (-moz-gtk-csd-reversed-placement) {",
+                "  .wv-window-controls { order: -2; margin: 0 0 0 6px; }",   // 6 + the strip's 4px = 10px to the edge
+                "  .wv-window-drag-spacer { order: -1; }",
+                // The hamburger is now the strip's last item: 6 + the strip's 4px
+                // = the 10px the main window and the Plugins Manager keep.
+                "  .wv-window-tabstrip > .wv-hamburger-btn { margin-inline-end: 6px; }",
+                "}",
                 /* Library-aware tab tooltip — same visual rules as the
                    main-window tooltip from constants.ts PLUGIN_CSS,
                    scoped to our reader-window tooltip ID. */
@@ -7149,7 +7225,7 @@ class _ReaderMixin {
                 return row;
             };
 
-            popup.appendChild(makeRow("_tabsMenuGroupByLibrary", "Sort by Library"));
+            popup.appendChild(makeRow("_tabsMenuGroupByLibrary", "Sort Tabs by Library"));
             popup.appendChild(makeRow("_tabsMenuShowAnnotationCount", "Show Annotations Count"));
             wrapper.appendChild(popup);
 
@@ -9533,6 +9609,7 @@ class _ReaderMixin {
             }
 
             await Zotero.DB.executeTransaction(async () => {
+                let changed = false;
                 for (const ann of list) {
                     for (const target of targets) {
                         // Skip self-relation. addRelatedItem also
@@ -9542,12 +9619,17 @@ class _ReaderMixin {
                         if (target.id === ann.id) continue;
                         if (ann.addRelatedItem(target)) {
                             await ann.save({ skipDateModifiedUpdate: true });
+                            changed = true;
                         }
                         if (target.addRelatedItem(ann)) {
                             await target.save({ skipDateModifiedUpdate: true });
+                            changed = true;
                         }
                     }
                 }
+                // Zotero's own history undoes this (Edit > Undo Add Related
+                // in the main window), with Zotero's own label.
+                if (changed) wvStageNativeUndo("undo-action-add-related");
             });
         } catch (e) {
             Zotero.debug("[Weavero] _addRelatedItemDialog err: " + e.message);
@@ -9563,12 +9645,16 @@ class _ReaderMixin {
     async _removeRelatedItem(itemA, itemB) {
         if (!itemA || !itemB) return;
         await Zotero.DB.executeTransaction(async () => {
+            let changed = false;
             if (itemA.removeRelatedItem(itemB)) {
                 await itemA.save({ skipDateModifiedUpdate: true });
+                changed = true;
             }
             if (itemB.removeRelatedItem(itemA)) {
                 await itemB.save({ skipDateModifiedUpdate: true });
+                changed = true;
             }
+            if (changed) wvStageNativeUndo("undo-action-remove-related");
         });
     }
 

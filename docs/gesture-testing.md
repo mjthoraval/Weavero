@@ -104,9 +104,117 @@ with an outline, switch the sidebar to **Outline** (Weavero takeover
 active), then:
 
 - [ ] **Right-click the Outline tab button** → a menu in the annotations
-      sort-menu format opens under it: heading **PAGE NUMBERS**, rows
-      **✓ Show (default)** and **Hide**. (Left-click and double-click keep
-      their native meanings: switch tab, expand/collapse all.)
+      sort-menu format opens under it: heading **ENTRIES TREE**, then
+      heading **PAGE NUMBERS** with rows **✓ Show (default)** and **Hide**. No
+      History section there. (Left-click and double-click keep their
+      native meanings: switch tab, expand/collapse all.)
+- [ ] **Outline undo keys**: add an entry (any "+" flow) → Ctrl+Z with
+      the outline focused → the entry disappears, the note strip says
+      "Undone: Add Outline Entry"; Ctrl+Y (Windows; ⇧⌘Z on macOS,
+      Ctrl+Shift+Z on Linux) brings it back. Select two entries, Del →
+      Ctrl+Z → both are back at their places, selected. Right-click on the
+      outline's header strip → nothing (the history lives on the toolbar
+      arrows since 2026-10-01); the source chip keeps its own menu. The
+      history is per document and lasts this Zotero run — a plugin reload
+      or update keeps it, a Zotero restart clears it.
+- [ ] **One history per tab, the most recent action first** (2026-10-01):
+      Ctrl+Z does the same thing from the page, the Outline tab and the
+      Bookmarks tab. Add an entry from a text selection (focus stays in the
+      page) → Ctrl+Z right away undoes that entry ("Undone: Add Outline
+      Entry"); make a highlight after an entry → Ctrl+Z removes the
+      highlight first ("Undone: Add Annotation" on the strip), the next
+      Ctrl+Z the entry. With the outline focused, a highlight made after
+      the entry is undone first too. **Visible**: collapse the sidebar,
+      press Ctrl+Z after deleting an entry → the sidebar reopens on the
+      Outline tab with the entry back and selected. **Hidden panes count
+      too** (2026-10-02): delete an outline entry, switch to the
+      **Bookmarks tab**, press Ctrl+Z → the sidebar switches to the
+      Outline tab with the entry back; the History list shows outline,
+      bookmark and annotation steps together whichever tab is showing.
+- [ ] **Bookmarks undo**: in the Bookmarks tab add a bookmark (pin, page,
+      selection) → **Undo Add Bookmark** (toolbar arrow, Ctrl+Z, Edit
+      menu); rename → **Undo Rename Bookmark**; drag into a folder →
+      **Undo Move Bookmark**; delete a folder with contents → **Undo Delete
+      Folder** puts the folder and its children back where they were;
+      select three rows, Del → one **Undo Delete 3 Bookmarks**. Drag a
+      document bookmark into the Library section (move) → ONE step: undo
+      it from either scope (Ctrl+Z in library scope or document scope) →
+      the library copy goes, the document's bookmark is back. Expanding
+      and collapsing folders records nothing. Right-click on the pane's
+      header → no history menu (toolbar arrows only).
+- [ ] **Reach back and pick**: after several steps, right-click a
+      toolbar Undo / Redo arrow → **HISTORY** opens at the pointer; below
+      Undo/Redo, **UNDO HISTORY** lists the 12 most
+      recent steps, newest first, each with its age; a last row **Show 12
+      older steps** ("N more") extends it by 12 per click, as often as
+      needed, keeping ticks; a long list scrolls inside the menu. Each row (and the
+      Undo / Redo rows) carries the glyph of the stack it belongs to — the
+      Outline tab's dot-and-line motif, the bookmark ribbon, Zotero's
+      annotation icon — and names it first in the tooltip ("Annotations —
+      Undo this step and the 2 that go with it"). **Click a row** → that
+      step and exactly the rows its hover bracket shows are undone, an
+      unrelated newer step (e.g. a bookmark deletion between annotation
+      steps) stays. **Pick one or several**: tick the
+      box at the left of a row (or Ctrl+click the row) → the menu stays
+      open, the row is ticked, and every later step that touched the same
+      entries is ticked with it, dimmer (hover: "Needed by your pick");
+      a footer reads **Undo N selected**. Make steps on two different
+      entries (add A, add B, rename A) → tick "add B" alone → **Undo 1
+      selected** → B is gone, A keeps its new name, Ctrl+Y brings B back;
+      tick "add A" → "rename A" ticks with it. **Groups are visible
+      before ticking**: hover any row → it and every row that must go
+      with it get a blue left bracket and a tint (the hovered one
+      darker); a row that cannot go alone says why in its tooltip. Untick
+      a dimmer row → the pick that needed it is unticked too. Annotation
+      steps group only by the annotations they changed (2026-10-02): make
+      highlight A, highlight B, then change A's colour → tick "add A" →
+      "edit A" ticks with it, "add B" does not; tick "add B" alone →
+      **Undo 1 selected** removes B and leaves A (with its colour). Click the footer → the ticked steps
+      are undone newest first, the others stay ("Undone: N steps" on the
+      strip). After two or more undos, a **REDO HISTORY** list (8 rows)
+      follows, the next redo first, with the same boxes and its own
+      **Redo N selected** footer; the tick box is a full-height zone
+      from the row's left edge to the glyph, so a click beside the box
+      ticks rather than runs the row.
+- [ ] **Annotation undo shows where it happened** (2026-10-02): with
+      the Outline or Bookmarks tab showing (or the sidebar collapsed),
+      delete a highlight on another page, scroll away, Ctrl+Z → the
+      sidebar opens on **Annotations**, the highlight is back and
+      selected, the page scrolls to it. Ctrl+Y → the highlight goes again
+      and the page stays at its place. Same from the toolbar arrows and
+      the History list.
+- [ ] **Toolbar arrows** (PDF, EPUB, snapshot; main window and reader
+      window): after the annotation tools (right of the colour picker),
+      behind a divider, an **Undo** and a **Redo** arrow (Acrobat's
+      placement: tools, then the arrows); nothing overlaps the page
+      count. The lower part of each curve is Weavero amber, like the
+      funnel's stem, so they don't read as Zotero's Back button. Greyed when there is nothing
+      to do; hover → "Undo Add Outline Entry (Ctrl+Z) / Right-click:
+      history". Click → same as Ctrl+Z (strip note, reveal), the arrows
+      swap their greyed state at once; make a highlight → Undo lights up
+      without any other action. Right-click either arrow → the
+      **HISTORY** menu at the pointer — also on a greyed arrow (then
+      Undo / Redo greyed, no lists).
+- [ ] **Right-click in the page**: no Undo / Redo items (removed
+      2026-10-01; the toolbar arrows carry them).
+- [ ] **Edit menu** (menubar or the hamburger's Edit ▸) shows the tab's
+      choice, like Ctrl+Z: after deleting an entry → **Undo Delete Outline
+      Entry — Ctrl+Z** enabled and working, **Redo** greyed until something
+      was undone; after a highlight → **Undo Add Annotation**. Never the
+      library's own actions ("Redo Trash 2 Items") while a reader tab is
+      selected. Click into a text field (the quick search, a note, an
+      annotation comment) → Zotero's own Undo, even right after a library
+      action that Zotero could undo too. With focus in the outline or
+      bookmarks, holding Ctrl+Z down undoes one step, not a burst. Library tab → Zotero's own; there, **Add
+      Related** / **Remove Related** done from Weavero's relations popup
+      and an annotation comment edited from a bookmark's editor appear as
+      Zotero's own **Undo Add Related** / **Undo Edit of “Comment”**
+      (Zotero 10+).
+- [ ] **ENTRIES TREE** section: **Expand All** and **Collapse All**, their
+      shortcuts dimmed at the right (`+` / `−`); "Double-click, " prefixes
+      the one the tab's double-click would do now (any entry collapsed →
+      Expand All). Click one → the outline follows, the menu closes;
+      right-click again → the "Double-click" hint has moved to the other row.
 - [ ] **Click "Hide"** → the labels disappear at once, the menu closes.
       Right-click again → the tick is on **Hide**; "(default)" stays on
       **Show**.
@@ -249,6 +357,31 @@ stroke, Annotations tab active.
       disappears, the pane shows every annotation again, Zotero's selector
       comes back. Re-checking restores the funnel and the document's own
       filter.
+
+## Session list sort (after touching the Sessions section of the List-all-tabs panel)
+
+Open the List-all-tabs dropdown; the **Sessions** header carries the
+annotations-pane sort control at its right: a dropdown chip naming the
+kind (**Created ▾**) and an arrow chip (**↑** / **↓**).
+
+- [ ] Click the chip → a menu with *Created*, *Name*, *Last used*; the
+      current kind ticked; "(default)" dimmed at the right of *Created*.
+- [ ] Pick *Name* → the saved sessions re-order in place, the panel stays
+      open, the chip reads **Name ▾**; the current session stays the header
+      at the top and *Last workspace (auto)* stays last.
+- [ ] Hover the arrow → the tooltip says which way the list runs ("A to Z",
+      "Oldest first", "Most recent first"…) and "(click to reverse)". Click
+      it → the list flips, the arrow turns. Pick another kind → its natural
+      direction again (Name ↑; Created and Last used ↓, newest / most
+      recent first).
+- [ ] Sort by *Created* or *Last used* → each session shows that date under
+      its name (time only when it is today's); *Name* shows no date line.
+      Hover a row → the tooltip carries the action, then "Created: …" and
+      "Last used: …" in full, in every mode.
+- [ ] Reopen the panel after a restart → the chosen kind and direction are
+      still in force.
+- [ ] Clicking a session row still switches to it (the two chips are the
+      only new click targets).
 
 ## Items-list width (after touching the table CSS or registering columns)
 

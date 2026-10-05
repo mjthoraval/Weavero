@@ -6,7 +6,7 @@
 //   out (per-library tickbox).
 // - File-type filter popup: funnel button + per-attachment-kind
 //   tristate toggles, mirrored on the items-tree filter pane.
-// - Settings popup: gear button with "Sort by Library" + "Show
+// - Settings popup: gear button with "Sort Tabs by Library" + "Show
 //   Annotations Count" toggles.
 // - Tab-bar decoration: group-library glyph + tinted background +
 //   custom tooltip on tabs whose item lives in a non-User library.
@@ -1738,9 +1738,16 @@ class _TabsMixin {
     _wvDecorateWindowTargetMenuitem(doc: any, mi: any, targetWin: any, isReader: boolean) {
         try {
             this._wvEnsureMvWinGlyphStyles(doc);
-            const anchor = !isReader && this._wvIsAnchorWindow(targetWin)
-                && this._wvAnchorDecorVisible();
-            if (anchor) { mi.classList.add("wv-mvwin-anchor"); return; }
+            // The anchor window never carries a colour: ⚓ when there is more
+            // than one window, NOTHING when it is alone -- the same rule as its
+            // taskbar icon, title glyph and badge (a lone window has nothing
+            // to be told apart from). Falling through to the colour branch
+            // painted pool colour 0 (blue) on "Window 1" in a one-window
+            // session (MJT 2026-09-29).
+            if (!isReader && this._wvIsAnchorWindow(targetWin)) {
+                if (this._wvAnchorDecorVisible()) mi.classList.add("wv-mvwin-anchor");
+                return;
+            }
             const color = WV_WIN_BADGE_COLORS[
                 this._wvTitleGlyphIdx(targetWin, isReader) % WV_WIN_BADGE_COLORS.length];
             mi.classList.add(isReader ? "wv-mvwin-reader" : "wv-mvwin-main");
@@ -3608,8 +3615,12 @@ class _TabsMixin {
         // position as the anchor's ⚓ mark below (user request 2026-07-13):
         // square = main, circle = reader, colour from the shared pool that
         // also drives the taskbar icon and title-bar dot.
+        // ...except for the anchor window: ⚓ (iconType "anchor") with 2+
+        // windows, no dot at all when alone -- the rule its taskbar icon,
+        // title glyph and the Open-in / Move menus follow (2026-09-29).
         if (winRef && iconType !== "anchor"
-            && (iconType === "main" || iconType === "reader" || iconType === "window")) {
+            && (iconType === "main" || iconType === "reader" || iconType === "window")
+            && !(iconType !== "reader" && this._wvIsAnchorWindow(winRef))) {
             try {
                 const isReader = iconType === "reader";
                 const color = WV_WIN_BADGE_COLORS[
@@ -3928,8 +3939,11 @@ class _TabsMixin {
             // consistent no matter which window the tabs list is opened from.
             const count = wrap.querySelectorAll(".row[data-tab-id]").length;
             const w: any = doc.defaultView;
-            // Anchor mark only with >1 main window (matches the library-tab gate).
-            const isAnchor = this._wvIsAnchorWindow(w) && Zotero.getMainWindows().length > 1;
+            // Anchor mark under the same rule as the taskbar / title and the
+            // all-windows list (reader windows count too) -- one main window
+            // plus a reader window had neither dot nor anchor here
+            // (pre-release review 2026-10-05).
+            const isAnchor = this._wvIsAnchorWindow(w) && this._wvAnchorDecorVisible();
             const collapseKey = "live|current";
             if (this._wvTabsMenuIsWindowCollapsed(collapseKey)) wrap.classList.add("wv-win-collapsed");
             const hdr = this._wvTabsMenuWindowHeader(doc, this._wvWindowName(w), count, "wv-curwin-header", isAnchor ? "anchor" : "main", "", collapseKey, panel, w);
@@ -12403,7 +12417,7 @@ class _TabsMixin {
 
         popup.appendChild(makeRow(
             "_tabsMenuGroupByLibrary",
-            "Sort by Library",
+            "Sort Tabs by Library",   // "Tabs": the Sessions header has its own sort (MJT 2026-09-29)
             refresh));
         popup.appendChild(makeRow(
             "_tabsMenuShowAnnotationCount",

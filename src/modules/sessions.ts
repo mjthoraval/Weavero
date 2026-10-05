@@ -37,9 +37,12 @@
 // path (the same machinery startup restore uses).
 //
 // UI: a "Sessions" section in the "List all tabs" dropdown panel (mirrors the
-// Tab Groups section) — a "Save current tabs" row + one row per saved session
-// (left-click switches, right-click manages). Rendered by
-// `_wvTabSessionsMenuSection`, hooked into the panel-refresh path in tabs.ts.
+// Tab Groups section) — a "+ New session" row (fresh empty workspace; the
+// current session stays in the list), the current session's header, then one
+// row per saved session (left-click switches, right-click renames/deletes).
+// There is no explicit Save/Overwrite: the current session always holds the
+// live tabs (tracking flushes them). Rendered by `_wvTabSessionsMenuSection`,
+// hooked into the panel-refresh path in tabs.ts.
 //
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
@@ -52,6 +55,16 @@ const HTML_NS = "http://www.w3.org/1999/xhtml";
 
 /** Reserved id for the "snapshot before a switch" safety-net slot. */
 const WV_TABSESSION_AUTOSAVE_ID = "__wv_autosave__";
+
+/** Orders for the saved-session list (pref `weavero.sessionSort`, MJT
+ *  2026-09-29). "created" is the default: the stored (creation) order, newest
+ *  first -- the list was oldest first, the bare stored order, until then. */
+const WV_TABSESSION_SORTS: Array<{ id: string; label: string }> = [
+    { id: "created", label: "Created" },
+    { id: "name", label: "Name" },
+    { id: "lastUsed", label: "Last used" },
+];
+const WV_TABSESSION_SORT_DEFAULT = "created";
 
 class _TabSessionsMixin {
     [k: string]: any;
@@ -130,6 +143,106 @@ class _TabSessionsMixin {
     /** The user-visible sessions (the auto-save slot is rendered separately). */
     _wvTabSessionNamedList() {
         return this._wvTabSessionList().filter((s: any) => s.id !== WV_TABSESSION_AUTOSAVE_ID);
+    }
+
+    // ---- Sort order of the saved-session list ------------------------------
+
+    _wvTabSessionSortMode(): string {
+        let v: any = WV_TABSESSION_SORT_DEFAULT;
+        try { v = Zotero.Prefs.get("weavero.sessionSort"); } catch (e) {}
+        return WV_TABSESSION_SORTS.some(o => o.id === v) ? v : WV_TABSESSION_SORT_DEFAULT;
+    }
+
+    _wvTabSessionSortLabel(mode: string): string {
+        const o = WV_TABSESSION_SORTS.find(x => x.id === mode);
+        return o ? o.label : String(mode);
+    }
+
+    /** A kind starts in its natural direction; changing kind clears the flag
+     *  (a reversed Name order carried over to Created would surprise). */
+    _wvTabSessionSetSortMode(mode: string) {
+        try {
+            if (!WV_TABSESSION_SORTS.some(o => o.id === mode)) return;
+            if (mode !== this._wvTabSessionSortMode()) this._wvTabSessionSetSortReverse(false);
+            Zotero.Prefs.set("weavero.sessionSort", mode);
+        } catch (e) { Zotero.debug("[Weavero] _wvTabSessionSetSortMode err: " + e); }
+    }
+
+    /** "Reverse order" (MJT 2026-09-29): flips the current kind's direction. */
+    _wvTabSessionSortReverse(): boolean {
+        try { return Zotero.Prefs.get("weavero.sessionSortReverse") === true; } catch (e) { return false; }
+    }
+
+    _wvTabSessionSetSortReverse(on: boolean) {
+        try { Zotero.Prefs.set("weavero.sessionSortReverse", !!on); }
+        catch (e) { Zotero.debug("[Weavero] _wvTabSessionSetSortReverse err: " + e); }
+    }
+
+    /** The direction a kind currently runs in, for the arrow chip: "asc" is
+     *  oldest first / A to Z / least recent first. Name is naturally
+     *  ascending; the two dates are naturally descending (newest / most
+     *  recent first, MJT 2026-09-29); the reverse flag flips whichever it is. */
+    _wvTabSessionSortDirInfo(mode: string, reverse: boolean): { asc: boolean; arrow: string; label: string } {
+        const asc = mode === "name" ? !reverse : !!reverse;
+        const labels: any = {
+            created: ["Oldest first", "Newest first"],
+            name: ["A to Z", "Z to A"],
+            lastUsed: ["Least recent first", "Most recent first"],
+        };
+        const pair = labels[mode] || ["Ascending", "Descending"];
+        return { asc, arrow: asc ? "↑" : "↓", label: asc ? pair[0] : pair[1] };
+    }
+
+    /** "Last used" = the last time the session was the active one (`lastUsed`,
+     *  stamped on activation and on every tracking flush). Sessions from before
+     *  the stamp fall back to `modified` (their last flush), then `created`. */
+    _wvTabSessionUsedAt(s: any): number {
+        const v = s && (s.lastUsed || s.modified || s.created);
+        return typeof v === "number" && isFinite(v) ? v : 0;
+    }
+
+    /** A session timestamp as Zotero's own Date Added / Modified columns
+     *  render it (toLocaleString, comma included); `short` = time only when
+     *  the date is today, as the annotations pane's date line. "" when there
+     *  is no usable stamp. */
+    _wvTabSessionDateLabel(ts: any, short: boolean): string {
+        if (typeof ts !== "number" || !isFinite(ts) || ts <= 0) return "";
+        try {
+            const d = new Date(ts);
+            if (short) {
+                const now = new Date();
+                const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+                if (sameDay) return d.toLocaleTimeString();
+            }
+            return d.toLocaleString();
+        } catch (e) { return ""; }
+    }
+
+    /** A sorted COPY of `list`. The stored order is never rewritten: it IS the
+     *  creation order (oldest first) and the tie-breaker of the other two
+     *  (Array#sort is stable). Created shows it newest first (MJT 2026-09-29);
+     *  names compare locale-aware, numeric ("Session 2" before "Session 10")
+     *  and case-insensitive; last used is most recent first. `reverse`
+     *  (default: the pref) flips the whole result, ties included. */
+    _wvTabSessionSorted(list: any[], mode?: string, reverse?: boolean): any[] {
+        const out = (list || []).slice();
+        const m = mode || this._wvTabSessionSortMode();
+        try {
+            if (m === "name") {
+                let coll: any = null;
+                try { coll = new Intl.Collator(Zotero.locale || undefined, { numeric: true, sensitivity: "base" }); } catch (e) {}
+                const key = (s: any) => String((s && s.name) || "");
+                out.sort((a, b) => coll ? coll.compare(key(a), key(b)) : key(a).localeCompare(key(b)));
+            }
+            else if (m === "lastUsed") {
+                out.sort((a, b) => this._wvTabSessionUsedAt(b) - this._wvTabSessionUsedAt(a));
+            }
+            else if (m === "created") {
+                out.reverse();   // the stored order is oldest first; newest first is the natural view
+            }
+            if (reverse === undefined ? this._wvTabSessionSortReverse() : !!reverse) out.reverse();
+        } catch (e) { Zotero.debug("[Weavero] _wvTabSessionSorted err: " + e); }
+        return out;
     }
 
     /** Atomic, serialized write of the current doc to disk. */
@@ -381,25 +494,13 @@ class _TabSessionsMixin {
             name: name,
             created: now,
             modified: now,
+            lastUsed: now,
             windows: this._wvTabSessionCaptureWindows(),
             tabGroups: this._wvTabSessionCaptureGroups(),
         };
         this._wvTabSessionDoc.sessions.push(sess);
         // A freshly-saved session becomes the active (tracked) one.
         this._wvTabSessionDoc.activeSessionId = sess.id;
-        await this._wvTabSessionPersist();
-        return sess;
-    }
-
-    /** Replace an existing session's tabs with the current workspace. */
-    async _wvTabSessionOverwrite(id: string) {
-        await this._wvTabSessionInit();
-        const sess = this._wvTabSessionList().find((s: any) => s.id === id);
-        if (!sess) return null;
-        sess.windows = this._wvTabSessionCaptureWindows();
-        sess.tabGroups = this._wvTabSessionCaptureGroups();
-        delete sess.tabs;
-        sess.modified = Date.now();
         await this._wvTabSessionPersist();
         return sess;
     }
@@ -464,6 +565,11 @@ class _TabSessionsMixin {
     async _wvTabSessionSetActiveId(id: string | null) {
         await this._wvTabSessionInit();
         this._wvTabSessionDoc.activeSessionId = id || null;
+        // Becoming active = being used (the "Last used" sort order).
+        if (id) {
+            const s = this._wvTabSessionList().find((x: any) => x.id === id);
+            if (s) s.lastUsed = Date.now();
+        }
         await this._wvTabSessionPersist();
     }
 
@@ -513,6 +619,7 @@ class _TabSessionsMixin {
             sess.tabGroups = this._wvTabSessionCaptureGroups();
             delete sess.tabs;
             sess.modified = Date.now();
+            sess.lastUsed = sess.modified;   // still in use
             await this._wvTabSessionPersist();
         } catch (e) { Zotero.debug("[Weavero] _wvTabSessionTrackingFlush err: " + e); }
     }
@@ -782,20 +889,6 @@ class _TabSessionsMixin {
         try { return Array.isArray(s && s.windows) ? s.windows.length : 0; } catch (e) { return 0; }
     }
 
-    _wvTabSessionPromptSaveAs(win: any) {
-        try {
-            const valObj = { value: this._wvTabSessionDefaultName() };
-            const ok = Services.prompt.prompt(win, "Save Session",
-                "Name this session:", valObj, null, {});
-            if (!ok) return;
-            const name = (valObj.value || "").trim() || this._wvTabSessionDefaultName();
-            this._wvTabSessionSaveAs(name).then((s: any) => {
-                this._wvTabSessionToast("Saved “" + s.name + "” ("
-                    + this._wvTabSessionTabCountLabel(this._wvTabSessionCountTabs(s)) + ")");
-            });
-        } catch (e) { Zotero.debug("[Weavero] _wvTabSessionPromptSaveAs err: " + e); }
-    }
-
     /** "New session": preserve the CURRENT workspace in the current session, then
      *  open a FRESH empty workspace (one main window, library tab only) as a new
      *  current session. The session you were in stays saved in the list — nothing
@@ -816,7 +909,7 @@ class _TabSessionsMixin {
             const sess = {
                 id: this._wvTabSessionNewId(),
                 name: this._wvTabSessionDefaultName(),
-                created: now, modified: now,
+                created: now, modified: now, lastUsed: now,
                 windows: [{ kind: "main", tabs: [] }],
                 tabGroups: [],
             };
@@ -845,21 +938,6 @@ class _TabSessionsMixin {
             if (!sess) return;
             this._wvTabSessionSwitch(id);
         } catch (e) { Zotero.debug("[Weavero] _wvTabSessionConfirmSwitch err: " + e); }
-    }
-
-    _wvTabSessionConfirmOverwrite(win: any, id: string) {
-        try {
-            const sess = this._wvTabSessionList().find((s: any) => s.id === id);
-            if (!sess) return;
-            const ok = Services.prompt.confirm(win, "Overwrite Session",
-                "Replace the tabs saved in “" + sess.name
-                + "” with the current tabs?");
-            if (!ok) return;
-            this._wvTabSessionOverwrite(id).then((s: any) => {
-                if (s) this._wvTabSessionToast("Updated “" + s.name + "” ("
-                    + this._wvTabSessionTabCountLabel(this._wvTabSessionCountTabs(s)) + ")");
-            });
-        } catch (e) { Zotero.debug("[Weavero] _wvTabSessionConfirmOverwrite err: " + e); }
     }
 
     _wvTabSessionPromptRename(win: any, id: string) {
@@ -897,11 +975,27 @@ class _TabSessionsMixin {
         try {
             const HTML = "http://www.w3.org/1999/xhtml";
             const css = [
+                // The dimming sits on the title, not the header, so the sort
+                // chips keep full contrast (border pre-dimmed to match).
                 ".wv-sessmenu-header {",
                 "  margin: 8px 4px 2px; padding: 4px 6px 2px;",
-                "  border-top: 1px solid rgba(127,127,127,0.3);",
-                "  font-size: 11px; font-weight: 600; opacity: 0.7;",
+                "  border-top: 1px solid rgba(127,127,127,0.21);",
+                "  font-size: 11px; font-weight: 600;",
+                "  display: flex; align-items: center; gap: 4px;",
                 "}",
+                ".wv-sessmenu-header-title { flex: 1 1 auto; opacity: 0.7; }",
+                // Sort control: the annotations pane's dropdown chip + direction
+                // arrow (reader-panels .wv-outline-src-chip / .wv-ann-sortchip).
+                ".wv-sessmenu-sortdrop, .wv-sessmenu-sortdir {",
+                "  appearance: none; -moz-appearance: none; flex: 0 0 auto; margin: 0;",
+                "  font: inherit; font-size: 10.5px; font-weight: 500; color: inherit;",
+                "  background: transparent; border: 1px solid rgba(127,127,127,0.3);",
+                "  border-radius: 10px; padding: 1px 7px; cursor: pointer; white-space: nowrap;",
+                "}",
+                ".wv-sessmenu-sortdrop { display: inline-flex; align-items: center; gap: 4px; }",
+                ".wv-sessmenu-sortcaret { font-size: 9px; opacity: 0.8; }",
+                ".wv-sessmenu-sortdir { font-weight: 600; padding: 1px 6px; background: rgba(127,127,127,0.18); }",
+                ".wv-sessmenu-sortdrop:hover, .wv-sessmenu-sortdir:hover { background: rgba(127,127,127,0.26); }",
                 ".wv-sessmenu-row {",
                 "  display: flex; align-items: center; gap: 7px;",
                 "  padding: 4px 8px; margin: 0 4px; border-radius: 5px; cursor: pointer;",
@@ -926,6 +1020,10 @@ class _TabSessionsMixin {
                 "  white-space: nowrap; font-size: 12px;",
                 "}",
                 ".wv-sessmenu-count { flex: 0 0 auto; font-size: 11px; opacity: 0.6; }",
+                // Name over its date (only while sorting on that date).
+                ".wv-sessmenu-namebox { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }",
+                ".wv-sessmenu-namebox .wv-sessmenu-name { flex: 0 0 auto; }",
+                ".wv-sessmenu-date { font-size: 10px; opacity: 0.6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }",
                 ".wv-sessmenu-auto .wv-sessmenu-name { font-style: italic; opacity: 0.8; }",
                 // Active session: bold name.
                 ".wv-sessmenu-active .wv-sessmenu-name { font-weight: 700; }",
@@ -1082,10 +1180,17 @@ class _TabSessionsMixin {
             } catch (er) {}
             // No "Current session" eyebrow tag — the top position already
             // says it (user request 2026-07-13).
-            // Right-click → rename the current session (or save the live tabs as a
-            // new one) — same affordance the saved-session rows already have.
-            hdr.setAttribute("title", "Right-click to rename or save this session");
-            hdr.style.cursor = "context-menu";
+            // Right-click → rename the current session — the same affordance the
+            // saved-session rows have. Nothing to "save": the current session
+            // always holds the live tabs (stale "or save" wording removed 2026-09-29).
+            const createdFull = sess ? this._wvTabSessionDateLabel(sess.created, false) : "";
+            // Only an ACTIVE session can be renamed; with none, no promise
+            // and no empty menu (pre-release review 2026-10-05).
+            if (sess) {
+                hdr.setAttribute("title", "Right-click to rename this session"
+                    + (createdFull ? "\nCreated: " + createdFull : ""));
+                hdr.style.cursor = "context-menu";
+            }
             hdr.addEventListener("contextmenu", (e: any) => {
                 try {
                     e.preventDefault(); e.stopPropagation();
@@ -1113,7 +1218,52 @@ class _TabSessionsMixin {
 
             const header = doc.createElementNS(HTML_NS, "div");
             header.className = "wv-sessmenu-header";
-            header.textContent = "Sessions";
+            const hTitle = doc.createElementNS(HTML_NS, "span");
+            hTitle.className = "wv-sessmenu-header-title";
+            hTitle.textContent = "Sessions";
+            header.appendChild(hTitle);
+            // Sort control at the header's right, the annotations pane's
+            // pattern (MJT 2026-09-29, "like the annotations pane"): a
+            // dropdown chip naming the kind (menu: Created / Name / Last used)
+            // and a direction arrow that flips it. Prefs `weavero.sessionSort`
+            // and `sessionSortReverse`, so both hold across restarts.
+            const sortMode = this._wvTabSessionSortMode();
+            const sortRev = this._wvTabSessionSortReverse();
+            const dirInfo = this._wvTabSessionSortDirInfo(sortMode, sortRev);
+            const drop = doc.createElementNS(HTML_NS, "button");
+            drop.className = "wv-sessmenu-sortdrop";
+            drop.setAttribute("title", "Sort sessions");
+            drop.setAttribute("data-wv-sort", sortMode + (sortRev ? " reversed" : ""));
+            const dropLab = doc.createElementNS(HTML_NS, "span");
+            dropLab.textContent = this._wvTabSessionSortLabel(sortMode);
+            drop.appendChild(dropLab);
+            const caret = doc.createElementNS(HTML_NS, "span");
+            caret.className = "wv-sessmenu-sortcaret";
+            caret.textContent = "▾";   // ▾
+            drop.appendChild(caret);
+            drop.addEventListener("click", (e: any) => {
+                try {
+                    e.preventDefault(); e.stopPropagation();
+                    const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (p) p._wvTabSessionSortMenuOpen(win, panel, drop);
+                } catch (er) {}
+            });
+            header.appendChild(drop);
+            const dir = doc.createElementNS(HTML_NS, "button");
+            dir.className = "wv-sessmenu-sortdir";
+            dir.textContent = dirInfo.arrow;
+            dir.setAttribute("title", dirInfo.label + " (click to reverse)");
+            dir.setAttribute("data-wv-dir", dirInfo.asc ? "asc" : "desc");
+            dir.addEventListener("click", (e: any) => {
+                try {
+                    e.preventDefault(); e.stopPropagation();
+                    const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (!p) return;
+                    p._wvTabSessionSetSortReverse(!p._wvTabSessionSortReverse());
+                    p._wvTabSessionsMenuSection(panel);
+                } catch (er) {}
+            });
+            header.appendChild(dir);
             list.appendChild(header);
 
             // "New session" action row. The current tabs are always saved in the
@@ -1151,9 +1301,15 @@ class _TabSessionsMixin {
                 row.className = "wv-sessmenu-row"
                     + (autoSlot ? " wv-sessmenu-auto" : "")
                     + (isActive ? " wv-sessmenu-active" : "");
-                row.setAttribute("title", isActive
+                // Tooltip: the action, then when the session was created and
+                // last used (MJT 2026-09-29), in Zotero's Date Added format.
+                const createdFull = this._wvTabSessionDateLabel(s.created, false);
+                const usedFull = this._wvTabSessionDateLabel(this._wvTabSessionUsedAt(s), false);
+                row.setAttribute("title", (isActive
                     ? "Current session — updates automatically as you open & close tabs"
-                    : "Switch to this session");
+                    : "Switch to this session")
+                    + (createdFull ? "\nCreated: " + createdFull : "")
+                    + (usedFull ? "\nLast used: " + usedFull : ""));
                 const sid = s.id;
                 // Disclosure twisty (expand to see the tabs). Empty spacer when 0 tabs.
                 const tw = doc.createElementNS(HTML_NS, "span");
@@ -1177,7 +1333,22 @@ class _TabSessionsMixin {
                 const name = doc.createElementNS(HTML_NS, "span");
                 name.className = "wv-sessmenu-name";
                 name.textContent = s.name || "Untitled session";
-                row.appendChild(name);
+                // Sorting on a date: that date under the name (MJT 2026-09-29),
+                // short form (time only when today), as the annotations pane.
+                const dateKind = sortMode === "created" ? "Created" : sortMode === "lastUsed" ? "Last used" : "";
+                const dateShort = dateKind
+                    ? this._wvTabSessionDateLabel(sortMode === "created" ? s.created : this._wvTabSessionUsedAt(s), true) : "";
+                if (dateShort) {
+                    const box = doc.createElementNS(HTML_NS, "span");
+                    box.className = "wv-sessmenu-namebox";
+                    box.appendChild(name);
+                    const date = doc.createElementNS(HTML_NS, "span");
+                    date.className = "wv-sessmenu-date";
+                    date.textContent = dateKind + " " + dateShort;
+                    box.appendChild(date);
+                    row.appendChild(box);
+                }
+                else row.appendChild(name);
                 const count = doc.createElementNS(HTML_NS, "span");
                 count.className = "wv-sessmenu-count";
                 const suffix = autoSlot ? " · auto" : "";
@@ -1217,12 +1388,12 @@ class _TabSessionsMixin {
             // The active session is shown as the live workspace at the TOP of the
             // panel (the "Current session" header), so it's omitted here to avoid
             // listing it twice.
-            for (const s of this._wvTabSessionNamedList()) {
+            for (const s of this._wvTabSessionSorted(this._wvTabSessionNamedList(), sortMode, sortRev)) {
                 if (s.id === activeId) continue;
                 mkRow(s, false);
             }
             // The auto-save slot is now just a NORMAL session (autoSlot=false): a
-            // default name, no "· auto" suffix, full Rename/Overwrite/Delete menu.
+            // default name, no "· auto" suffix, full Rename/Delete menu.
             // Shown so you can switch BACK to it after visiting another session — but
             // NOT when it's already the active session (then it's the current-session
             // header at the top, and a list row would be a dead, unclickable
@@ -1475,8 +1646,9 @@ class _TabSessionsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvTabSessionOpenTabRecord err: " + e); }
     }
 
-    /** Right-click popup on a session row: Switch / Overwrite / Rename / Delete
-     *  (the auto-save slot only offers Switch / Delete). */
+    /** Right-click popup on a session row: Switch / Rename / Delete (the
+     *  auto-save slot only offers Switch / Delete; the current session's row
+     *  has no Switch). */
     _wvTabSessionsMenuContext(win: any, panel: any, id: string, autoSlot: boolean, isActive: boolean, e: any) {
         try {
             const doc = win.document;
@@ -1540,9 +1712,56 @@ class _TabSessionsMixin {
             if (activeId) {
                 mk("Rename Session…", (p: any) => p._wvTabSessionPromptRename(win, activeId));
             }
+            if (!pop.childElementCount) return;   // nothing to offer: no empty menu
             (doc.querySelector("popupset") || doc.documentElement).appendChild(pop);
             pop.openPopupAtScreen(e.screenX, e.screenY, true);
         } catch (er) { Zotero.debug("[Weavero] _wvTabSessionCurrentHeaderContext err: " + er); }
+    }
+
+    /** The sort menu behind the Sessions header's dropdown chip: one radio
+     *  entry per kind, the current one checked, "(default)" in the default's
+     *  acceltext slot (XUL's dimmed right-aligned column -- the HTML menus'
+     *  dimmed span has no XUL equivalent). Built apart from opening so the
+     *  spec can inspect it without a popup. A pick re-renders the section in
+     *  place while the panel is open; otherwise the next open reads the pref. */
+    _wvTabSessionSortMenuBuild(doc: any, panel?: any) {
+        let pop: any = doc.getElementById("wv-sessmenu-sort");
+        if (pop) pop.remove();
+        pop = doc.createXULElement("menupopup");
+        pop.id = "wv-sessmenu-sort";
+        const cur = this._wvTabSessionSortMode();
+        for (const o of WV_TABSESSION_SORTS) {
+            const mi = doc.createXULElement("menuitem");
+            mi.setAttribute("type", "radio");
+            mi.setAttribute("name", "wv-sessmenu-sort");
+            mi.setAttribute("label", o.label);
+            mi.setAttribute("data-wv-sort", o.id);
+            if (o.id === WV_TABSESSION_SORT_DEFAULT) mi.setAttribute("acceltext", "(default)");
+            if (o.id === cur) mi.setAttribute("checked", "true");
+            mi.addEventListener("command", (ev: any) => {
+                try {
+                    ev.stopPropagation();
+                    const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (!p) return;
+                    p._wvTabSessionSetSortMode(o.id);
+                    if (panel && panel.state === "open") p._wvTabSessionsMenuSection(panel);
+                } catch (er) {}
+            });
+            pop.appendChild(mi);
+        }
+        // Direction is the arrow chip next to the dropdown (the annotations
+        // pane's pattern), not a menu entry.
+        // No submenu here, but the target check stays the rule for menus.
+        pop.addEventListener("popuphidden", (ev: any) => { try { if (ev.target === pop) pop.remove(); } catch (er) {} });
+        (doc.querySelector("popupset") || doc.documentElement).appendChild(pop);
+        return pop;
+    }
+
+    _wvTabSessionSortMenuOpen(win: any, panel: any, anchor: any) {
+        try {
+            const pop = this._wvTabSessionSortMenuBuild(win.document, panel);
+            pop.openPopup(anchor, "after_end", 0, 2, false, false);
+        } catch (e) { Zotero.debug("[Weavero] _wvTabSessionSortMenuOpen err: " + e); }
     }
 }
 

@@ -2485,4 +2485,20 @@ export const PLUGIN_CSS = [
     "#zotero-collections-splitter[state=\"collapsed\"][wv-thin] {",
     "  --draggable-size: 1px !important;",
     "}",
+    // Linux: the menu bar of an EXTRA main window (survey 2026-10-01). A window
+    // from Zotero.openMainWindow comes up with chrome flags TITLEBAR / CLOSE /
+    // RESIZE only (measured: no CHROME_MENUBAR, although the call passes
+    // `chrome,all`), so its root carries chromehidden="menubar ..." and the
+    // toolkit's `:root[chromehidden~="menubar"] .chromeclass-menubar
+    // { display: none }` removes #toolbar-menubar -- the only element it hits.
+    // Zotero's Windows skin overrides that (scss/win/_titleBar.scss:
+    // `#toolbar-menubar { display: initial; }`, "Need this to force show the
+    // menubar"); the Linux skin does not. With Hide Title Bar on, Alt then
+    // revealed an EMPTY row and #titlebar's justify-content: center moved the
+    // caption buttons to the middle of it (915px from the right); with it off
+    // the window had no menus at all. `block` is what the primary window
+    // computes. Guard: test/linux-window-chrome.spec.js.
+    "@media (-moz-platform: linux) {",
+    "  :root[chromehidden~=\"menubar\"] #toolbar-menubar { display: block; }",
+    "}",
 ].join("\n");

@@ -40,7 +40,7 @@ const RP_BM_CTX_ID = "wv-bm-reader-ctxmenu";
 // Wiring version for the window-scoped context-menu listeners. Bump to force a
 // clean unhook/re-hook; a plain boolean guard let a plugin reload leave the old
 // instance's handler in place (see the comment at the bookmark ctx wiring).
-const RP_BM_CTX_WIRE_V = 18;   // v18: Outline-tab menu from any tab (gated on the takeover pref, MJT 2026-09-29); v17: Bookmarks-tab right-click menu (page numbers, MJT 2026-09-18); v16: Outline-tab right-click menu (#42, page numbers); v11: Tab-out stuck-check includes body (every wired-closure change MUST bump this); v10: Tab-out fallback + clear-x fix + rename-input exclusions (dev.1-7 shipped WITHOUT a bump -- existing readers kept v9 closures and none of those fixes wired; 2026-07-29); v9: Esc keeps focus in the left pane; v8: sidebar click focus; v7-5: search wiring
+const RP_BM_CTX_WIRE_V = 21;   // v20: the strip's history menu opens at the pointer (the shim now passes the event); v19: history menu on the outline header strip's right-click (MJT 2026-09-30); v18: Outline-tab menu from any tab (gated on the takeover pref, MJT 2026-09-29); v17: Bookmarks-tab right-click menu (page numbers, MJT 2026-09-18); v16: Outline-tab right-click menu (#42, page numbers); v11: Tab-out stuck-check includes body (every wired-closure change MUST bump this); v10: Tab-out fallback + clear-x fix + rename-input exclusions (dev.1-7 shipped WITHOUT a bump -- existing readers kept v9 closures and none of those fixes wired; 2026-07-29); v9: Esc keeps focus in the left pane; v8: sidebar click focus; v7-5: search wiring
 // Wiring version for the reader PANEL DOM (bookmark tab/view, outline view,
 // filter buttons). A hot plugin update (install/reload WITHOUT a Zotero restart)
 // leaves an already-open reader's injected buttons wired to the DEAD instance --
@@ -559,6 +559,36 @@ const RP_BM_TAB_ON = "wv-bm-tab-on";
 const RP_OUTLINE_VIEW_TYPES = new Set(["pdf", "snapshot", "epub"]);
 const RP_OUTLINE_VIEW_CLASS = "wv-outline-reader-view";
 const RP_OUTLINE_TAB_ON = "wv-outline-tab-on";
+
+/** Put Edit > Undo / Redo back as Zotero had them after Weavero owned them
+ *  for one popup (see _wvEditUndoMenuApply). Module-level so a popuphidden
+ *  listener can restore even when no plugin instance is live: the saved
+ *  state rides on the menuitems themselves. */
+function wvEditUndoMenuRestore(popup: any) {
+    try {
+        const doc = popup.ownerDocument;
+        for (const id of ["menu_undo", "menu_redo"]) {
+            const mi: any = doc.getElementById(id);
+            if (!mi || !mi._wvUndoSaved) continue;
+            const s = mi._wvUndoSaved;
+            delete mi._wvUndoSaved;
+            if (mi._wvUndoCmdH) { try { mi.removeEventListener("command", mi._wvUndoCmdH); } catch (_) {} delete mi._wvUndoCmdH; }
+            mi.removeAttribute("data-wv-undo");
+            if (s.command) mi.setAttribute("command", s.command);
+            // Back to what Zotero had; its next update recomputes anyway.
+            if (s.disabled === "true") mi.setAttribute("disabled", "true"); else mi.removeAttribute("disabled");
+            // The saved label first: Fluent re-translates from the id
+            // asynchronously (or not at all when the id is unchanged), and the
+            // popup may reopen before that -- measured 2026-09-30, "Undo
+            // Probe" stayed on the item after the id was put back.
+            if (s.label != null) mi.setAttribute("label", s.label);
+            if (s.l10n) {
+                try { doc.l10n.setAttributes(mi, s.l10n); }
+                catch (_) { mi.setAttribute("data-l10n-id", s.l10n); }
+            }
+        }
+    } catch (_) {}
+}
 // Down-chevron twisty (rotated -90deg when collapsed via CSS).
 const RP_OUTLINE_CHEVRON = '<svg viewBox="0 0 10 10" fill="currentColor"><path d="M1 3.5L5 7.5L9 3.5Z"/></svg>';
 // Revert (curved arrow) + small ✕ (delete a row / menu item).
@@ -599,6 +629,27 @@ const RP_BM_RIBBON_TAB =
     + 'd="' + BOOKMARK_PATH_20 + '"/></svg>';
 const RP_PLUS_SVG =
     '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M7 7V2h2v5h5v2H9v5H7V9H2V7z"/></svg>';
+// Zotero's own annotation glyph (zotero/zotero, AGPL-3.0:
+// chrome/skin/default/zotero/16/universal/annotation.svg), inlined with
+// the menu's text colour. The reader document will not load a chrome://
+// image into an <img> (an empty square, MJT 2026-10-01), so the shape is
+// carried here like the bookmark ribbon.
+// Toolbar Undo / Redo arrows (Acrobat-style curved arrows, drawn here on
+// the reader's 20-px icon grid, stroke = currentColor). The lower part of
+// the curve is Weavero's amber, like the stem of its filter funnel, so the
+// arrows are not mistaken for Zotero's own Back button next to them (MJT
+// 2026-10-02): a second copy of the curve clipped to y >= 11, below the
+// horizontal stroke, so the arrowhead and the junction stay neutral.
+const wvArrowSvg = (head: string, curve: string, clipId: string) =>
+    '<svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    + '<clipPath id="' + clipId + '"><rect x="0" y="11" width="20" height="9"/></clipPath>'
+    + '<path d="' + head + '"/><path d="' + curve + '"/>'
+    + '<path clip-path="url(#' + clipId + ')" stroke="' + WV_FUNNEL_STEM_COLOR + '" d="' + curve + '"/></svg>';
+const RP_UNDO_ARROW_SVG = wvArrowSvg("M7.5 6 4 9.5l3.5 3.5", "M4 9.5h8.5a3.5 3.5 0 0 1 0 7H10", "wvUndoStem");
+const RP_REDO_ARROW_SVG = wvArrowSvg("M12.5 6 16 9.5 12.5 13", "M16 9.5H7.5a3.5 3.5 0 0 0 0 7H10", "wvRedoStem");
+const RP_ANN_SVG =
+    '<svg viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" '
+    + 'd="M3 3V0H16V13H13V15.5V16H12.5H6.5H6.29289L6.14645 15.8536L0.146447 9.85355L0 9.70711V9.5V3.5V3H0.5H3ZM4 3H12.5H13V3.5V12H15V1H4V3ZM1 9V4H12V15H7V9.5V9H6.5H1ZM1.70711 10L6 14.2929V10H1.70711Z"/></svg>';
 // 20-unit "+" specifically for the sidebar toolbar add button, which
 // renders at 20×20. Same shape as BM_ADD_ICON (library toolbar +) —
 // arms 2 units thick going edge-to-edge — so the same path is pixel-
@@ -1306,6 +1357,11 @@ const RP_BM_CSS = [
     "." + RP_BM_TAB_CLASS + " svg{width:20px;height:20px;}",
     ".wv-bm-reader-head{display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid rgba(127,127,127,.2);}",
     ".wv-bm-reader-head .wv-bm-reader-htitle{flex:1;font-weight:600;opacity:.75;font-size:11px;text-transform:uppercase;letter-spacing:.04em;}",
+    // Toolbar Undo / Redo (Acrobat-style, MJT 2026-10-01): greyed when
+    // there is nothing to do, but still right-clickable for the history.
+    ".toolbar .wv-undo-btn.wv-undo-off{opacity:.35;cursor:default;}",
+    ".toolbar .wv-undo-btn.wv-undo-off:hover{background:transparent;}",
+    ".toolbar .wv-undo-btn svg{width:20px;height:20px;}",
     ".wv-bm-reader-add{display:flex;align-items:center;justify-content:center;border:none;background:none;cursor:pointer;border-radius:5px;color:var(--fill-secondary);}",
     ".wv-bm-reader-add:hover{background-color:var(--fill-quinary);}",
     ".wv-bm-reader-add:active{background-color:var(--fill-quarternary);}",
@@ -1620,6 +1676,31 @@ const RP_BM_CSS = [
     "#" + RP_BM_CTX_ID + "{position:absolute;z-index:2147483647;background:Canvas;color:CanvasText;border:1px solid rgba(127,127,127,.4);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.3);padding:4px;min-width:160px;font-size:13px;}",
     "#" + RP_BM_CTX_ID + " .wv-ctx-item{display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:4px;cursor:pointer;white-space:nowrap;}",
     "#" + RP_BM_CTX_ID + " .wv-ctx-item:hover{background:var(--fill-quinary,rgba(128,128,128,.16));}",
+    // Greyed row (nothing to undo / redo): no hover, no pointer.
+    "#" + RP_BM_CTX_ID + " .wv-ctx-item.wv-ctx-off{opacity:.45;cursor:default;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-item.wv-ctx-off:hover{background:transparent;}",
+    // The History list: a step per row, its age on the right, and an
+    // "only this" control for steps that can be undone alone.
+    "#" + RP_BM_CTX_ID + " .wv-ctx-item.wv-ctx-hist .wv-ctx-hint{min-width:0;}",
+    // Multi-select: a check box before the stack glyph; auto-ticked
+    // dependants are dimmer; the footer runs the selection.
+    // The hit zone (`.wv-ctx-check`) spans the row's full height from its
+    // left edge to the glyph; the box inside is what is drawn.
+    "#" + RP_BM_CTX_ID + " .wv-ctx-check{flex:0 0 auto;align-self:stretch;display:inline-flex;align-items:center;justify-content:center;padding:0 8px 0 10px;margin:-6px -8px -6px -10px;cursor:pointer;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-box{width:12px;height:12px;border:1px solid rgba(127,127,127,.6);border-radius:3px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;line-height:1;color:transparent;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-check:hover .wv-ctx-box{border-color:var(--fill-primary,currentColor);}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-check.on .wv-ctx-box{background:var(--accent-blue,#5e6ad2);border-color:transparent;color:#fff;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-check.on.auto .wv-ctx-box{opacity:.55;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-item.wv-ctx-more{opacity:.75;font-style:italic;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-item.wv-ctx-more:hover{opacity:1;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-item.wv-ctx-run{font-weight:600;border-top:1px solid rgba(127,127,127,.3);margin-top:3px;padding-top:5px;}",
+    // A group that goes together: the hovered row and its dependants share
+    // a left bracket and a tint; a ticked group keeps the bracket. The
+    // dependent row's tag says with how many.
+    "#" + RP_BM_CTX_ID + " .wv-ctx-hist{box-shadow:inset 3px 0 0 transparent;transition:box-shadow .08s,background-color .08s;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-hist.wv-ctx-group{box-shadow:inset 3px 0 0 var(--accent-blue,#5e6ad2);background:rgba(94,106,210,.14);}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-hist.wv-ctx-group-head{background:rgba(94,106,210,.24);}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-hist.wv-ctx-picked{box-shadow:inset 3px 0 0 var(--accent-blue,#5e6ad2);}",
     // Outline tab menu columns (MJT 2026-09-29, "difficult to read"): the
     // size right-aligned in a dim column, "(default)" at the end of the line.
     "#" + RP_BM_CTX_ID + " .wv-ctx-hint{margin-left:auto;padding-left:18px;opacity:.6;font-variant-numeric:tabular-nums;}",
@@ -2754,7 +2835,7 @@ class _ReaderPanelsMixin {
             const { docs, wins } = this._wvReaderReachableDocs(reader, idoc);
             for (const d of docs) { try { d.addEventListener("pointerdown", onDown, true); } catch (_) {} }
             for (const w of wins) { try { w.addEventListener("keydown", onKey, true); } catch (_) {} }
-            this._wvReaderBmCtxDismiss = { docs, wins, onDown, onKey };
+            this._wvSetBmCtxDismiss(idoc, { docs, wins, onDown, onKey });
         } catch (e) {}
     }
 
@@ -2914,7 +2995,7 @@ class _ReaderPanelsMixin {
                 // above (the 2026-07-22 outline-takeover disable fix).
                 const ROOTS = ".wv-reader-filter-btn, ." + RP_BM_TAB_CLASS + ", ." + RP_BM_VIEW_CLASS
                     + ", ." + RP_OUTLINE_VIEW_CLASS + ", .wv-bm-chip-popup, .wv-bm-hover-card"
-                    + ", [id^='wv-'], [id^='weavero']";
+                    + ", [id^='wv-'], [id^='weavero'], .toolbar [data-wv-undo]";
                 for (const el of [...idoc.querySelectorAll(ROOTS)]) { try { el.remove(); } catch (_) {} }
                 for (const el of [...idoc.querySelectorAll("[class*='wv-']")]) {
                     try { for (const c of [...el.classList]) if (c.startsWith("wv-")) el.classList.remove(c); } catch (_) {}
@@ -2942,6 +3023,11 @@ class _ReaderPanelsMixin {
                     try { w[ref] = null; w[stamp] = null; } catch (_) {}
                 }
             }
+            // The reader instance's undo / redo wrappers (most-recent-wins)
+            // and the history-point stamping callback.
+            try { this._wvReaderUnwrapUndo(reader); } catch (_) {}
+            try { this._wvReaderUnstampHistory(reader); } catch (_) {}
+            try { const d0 = reader._iframeWindow && reader._iframeWindow.document; if (d0) this._wvReaderRemoveUndoButtons(d0); } catch (_) {}
             // Selection capture on the PDF-view doc.
             try {
                 const ir = reader._internalReader;
@@ -3108,6 +3194,13 @@ class _ReaderPanelsMixin {
             // every hot reload would stack another copy; a stacked dblclick
             // handler toggle-alls TWICE = visibly nothing). Live-plugin
             // resolution keeps a surviving listener inert after disable.
+            // The reader's undo / redo take Weavero's newer steps (MJT
+            // 2026-10-01). Outside the tab-wiring stamp below: that stamp
+            // survives a plugin reload, this wrap carries its own instance
+            // tag and must be re-laid by every new instance.
+            try { this._wvReaderWrapUndo(reader); } catch (_) {}
+            try { this._wvReaderStampHistory(reader); } catch (_) {}
+            try { this._wvReaderEnsureUndoButtons(reader, idoc); } catch (_) {}
             if ((idoc as any)._wvOutlineTabWired !== RP_BM_CTX_WIRE_V) {
                 try { if ((idoc as any)._wvOutlineTabClickH) idoc.removeEventListener("click", (idoc as any)._wvOutlineTabClickH, true); } catch (_) {}
                 try { if ((idoc as any)._wvOutlineTabDblH) idoc.removeEventListener("dblclick", (idoc as any)._wvOutlineTabDblH, true); } catch (_) {}
@@ -3192,6 +3285,9 @@ class _ReaderPanelsMixin {
                             P._wvBmShowTabMenu(reader, idoc, bmTab);
                             return;
                         }
+                        // The history menu lives on the toolbar arrows only
+                        // (MJT 2026-10-01, removed from the outline and
+                        // bookmarks header strips).
                         const tab = t.closest("#viewOutline");
                         if (!tab) return;
                         // Gated on Weavero's outline being ENABLED, not on its
@@ -5657,7 +5753,9 @@ class _ReaderPanelsMixin {
             } catch (_) {}
             const ref = await this._wvOutlineResolveId(reader, entry, index, curatedView);
             if (!ref) return;
+            const snaps = this._wvOutlineSnapshotIds(ref.att, [String(ref.id)]);
             await this._wvOutlineDeleteEntry(ref.att.libraryID, ref.att.itemKey, ref.id);
+            this._wvOutlineRecordDelete(ref.att, snaps);
             await this._wvReaderRenderOutline(reader, idoc);
             if (wasOn) this._wvOutlineLandAfterDelete(reader, idoc, fromIndex);
         } catch (_) {}
@@ -5730,6 +5828,21 @@ class _ReaderPanelsMixin {
                 e.preventDefault(); e.stopPropagation();
                 this._wvOutlineDeleteSelected(reader, idoc, items);
                 return;
+            }
+            // Undo / redo (MJT 2026-09-29): Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, and
+            // Ctrl+Y off the Mac. Same reach as Delete (Outline tab active,
+            // not typing). The reader's own undo fires only from the view or
+            // the Annotations sidebar (reader keyboard-manager.js), so nothing
+            // is taken from it here. The TAB's merged choice runs (2026-10-01).
+            if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+                const lk = String(k).toLowerCase();
+                if (lk === "z" || (lk === "y" && !e.shiftKey && !e.metaKey)) {
+                    e.preventDefault(); e.stopPropagation();
+                    // A held key would start overlapping async undos.
+                    if (e.repeat) return;
+                    this._wvTabUndoRedo(reader, idoc, lk === "z" && !e.shiftKey ? "undo" : "redo");
+                    return;
+                }
             }
             // +/- = expand-all / collapse-all. GLOBAL to the outline (not row-specific), so
             // they fire whenever the Outline tab is active and the key reaches this handler
@@ -5972,7 +6085,9 @@ class _ReaderPanelsMixin {
                 if (ref && ref.id != null && !ids.includes(ref.id)) { att = ref.att; ids.push(ref.id); }
             }
             if (!att || !ids.length) return;
+            const snaps = this._wvOutlineSnapshotIds(att, ids);
             for (const id of ids) await this._wvOutlineDeleteEntry(att.libraryID, att.itemKey, id);
+            this._wvOutlineRecordDelete(att, snaps);
             try { if (reader._wvOutlineSel) reader._wvOutlineSel.clear(); } catch (_) {}
             await this._wvReaderRenderOutline(reader, idoc);
             this._wvOutlineLandAfterDelete(reader, idoc, fromIndex);
@@ -5999,6 +6114,1122 @@ class _ReaderPanelsMixin {
                 for (const r of rows) r.classList.toggle("wv-outline-selected", r === row);
             }
             try { row.focus(); } catch (_) {}
+        } catch (_) {}
+    }
+
+    // ---- Outline undo (MJT 2026-09-29, first slice of Weavero-wide undo) ----
+    // One history per document (scope "outline:<lib>:<key>", modules/undo.ts).
+    // Add and delete record a step AFTER they succeed, from snapshots of the
+    // stored entries (deep copies with their ids and indices): undo of an add
+    // deletes those ids, undo of a delete re-inserts the copies at their old
+    // indices -- `_wvOutlineInsertEntry` keeps an entry's own id, so the
+    // expanded set, the selection and later steps keep matching.
+
+    _wvOutlineUndoScope(att: any): string {
+        return "outline:" + att.libraryID + ":" + att.itemKey;
+    }
+
+    /** Every open reader of the attachment, with its iframe document. */
+    _wvOutlineReadersOf(att: any): Array<{ reader: any; idoc: any }> {
+        const out: Array<{ reader: any; idoc: any }> = [];
+        try {
+            for (const r of ((Zotero as any).Reader._readers || [])) {
+                const a = this._wvReaderAtt(r);
+                if (!a || a.libraryID !== att.libraryID || a.itemKey !== att.itemKey) continue;
+                const idoc = r._iframeWindow && r._iframeWindow.document;
+                if (idoc) out.push({ reader: r, idoc });
+            }
+        } catch (_) {}
+        return out;
+    }
+
+    /** After an undo / redo: re-render the outline in every open reader of the
+     *  document, selecting `selectIds` (the restored entries) with their
+     *  ancestors expanded so they are visible. */
+    async _wvOutlineAfterUndo(att: any, selectIds: string[]) {
+        for (const { reader, idoc } of this._wvOutlineReadersOf(att)) {
+            try {
+                reader._wvOutlineViewSource = null;
+                if (selectIds.length) {
+                    const dd = this._wvOutlineDoc(att.libraryID, att.itemKey);
+                    const ce: any[] = (dd && dd.entries) || [];
+                    const expandedSet: Set<string> = reader._wvOutlineExpanded || (reader._wvOutlineExpanded = new Set());
+                    for (const id of selectIds) {
+                        const idx = ce.findIndex((x: any) => String(x.id) === id);
+                        if (idx < 0) continue;
+                        let lvl = Math.max(0, ce[idx].indentLevel || 0);
+                        for (let j = idx - 1; j >= 0 && lvl > 0; j--) {
+                            const jl = Math.max(0, ce[j].indentLevel || 0);
+                            if (jl < lvl) { expandedSet.add(String(ce[j].id)); lvl = jl; }
+                        }
+                    }
+                    reader._wvOutlineSel = new Set(selectIds);
+                    reader._wvOutlineSelAnchor = selectIds[0];
+                }
+                else {
+                    try { if (reader._wvOutlineSel) reader._wvOutlineSel.clear(); } catch (_) {}
+                }
+                await this._wvReaderRenderOutline(reader, idoc);
+                try {
+                    const first = selectIds[0];
+                    const row: any = first && [...idoc.querySelectorAll(".wv-outline-row")]
+                        .find((r: any) => r._wvOl && r._wvOl.entry && String(r._wvOl.entry.id) === first);
+                    if (row) row.scrollIntoView({ block: "nearest" });
+                } catch (_) {}
+            } catch (e) { Zotero.debug("[Weavero] _wvOutlineAfterUndo err: " + e); }
+        }
+    }
+
+    /** Deep copies of the stored entries with the given ids, with their
+     *  indices and the id of the entry just BEFORE each (the anchor a
+     *  restore lands after), ascending -- what a step needs to put them back. */
+    _wvOutlineSnapshotIds(att: any, ids: string[]): Array<{ entry: any; index: number; prevId: string | null }> {
+        const d = this._wvOutlineDoc(att.libraryID, att.itemKey);
+        const ce: any[] = (d && d.entries) || [];
+        const out: Array<{ entry: any; index: number; prevId: string | null }> = [];
+        for (const id of ids) {
+            const i = ce.findIndex((x: any) => String(x.id) === String(id));
+            if (i >= 0) out.push({ entry: JSON.parse(JSON.stringify(ce[i])), index: i, prevId: i > 0 && ce[i - 1] && ce[i - 1].id != null ? String(ce[i - 1].id) : null });
+        }
+        return out.sort((a, b) => a.index - b.index);
+    }
+
+    /** Put snapshots back, ANCHORED: each lands right after the entry that
+     *  preceded it when the snapshot was taken (design review 2026-09-30 --
+     *  a bare index misplaces the entry once the outline changed in
+     *  between). No previous entry = the top; anchor gone = the old index,
+     *  clamped. Ascending order, so a run of neighbours re-chains on itself. */
+    async _wvOutlineRestoreSnapshots(att: any, snaps: Array<{ entry: any; index: number; prevId?: string | null }>) {
+        for (const s of snaps) {
+            const d = this._wvOutlineDoc(att.libraryID, att.itemKey);
+            const ce: any[] = (d && d.entries) || [];
+            let at: number;
+            if (s.prevId == null) at = s.prevId === null ? 0 : Math.min(s.index, ce.length);
+            else {
+                const pi = ce.findIndex((x: any) => String(x.id) === s.prevId);
+                at = pi >= 0 ? pi + 1 : Math.min(s.index, ce.length);
+            }
+            await this._wvOutlineInsertEntry(att.libraryID, att.itemKey, JSON.parse(JSON.stringify(s.entry)), at);
+        }
+    }
+
+    async _wvOutlineRemoveIds(att: any, ids: string[]) {
+        for (const id of ids) await this._wvOutlineDeleteEntry(att.libraryID, att.itemKey, id);
+    }
+
+    /** The outline's step types for the undo engine: data-only steps
+     *  ({att, snaps}) replayed by whichever build is live (a reload keeps the
+     *  history -- see modules/undo.ts). */
+    _wvUndoRegisterAll() {
+        const attOf = (d: any) => ({ libraryID: d.att.libraryID, itemKey: d.att.itemKey });
+        const idsOf = (d: any) => (d.snaps || []).map((s: any) => String(s.entry.id));
+        this._wvUndoRegisterType("outline.add", {
+            undo: async function (this: any, d: any) { await this._wvOutlineRemoveIds(attOf(d), idsOf(d)); await this._wvOutlineAfterUndo(attOf(d), []); },
+            redo: async function (this: any, d: any) { await this._wvOutlineRestoreSnapshots(attOf(d), d.snaps); await this._wvOutlineAfterUndo(attOf(d), idsOf(d)); },
+            ids: idsOf,
+        });
+        this._wvUndoRegisterType("outline.delete", {
+            undo: async function (this: any, d: any) { await this._wvOutlineRestoreSnapshots(attOf(d), d.snaps); await this._wvOutlineAfterUndo(attOf(d), idsOf(d)); },
+            redo: async function (this: any, d: any) { await this._wvOutlineRemoveIds(attOf(d), idsOf(d)); await this._wvOutlineAfterUndo(attOf(d), []); },
+            ids: idsOf,
+        });
+        // Bookmark steps: record-level diffs captured at the store's write
+        // choke point (modules/bookmarks.ts, `_wvBmUndoCapture`); the same
+        // handlers serve a document's store and the library's.
+        // A step touches its own records AND the folders it put them in or
+        // took them out of: "Add Folder F" then "Move X into F" must not let
+        // the add be undone alone -- it would take X with F (pre-release
+        // review 2026-10-05).
+        const bmIds = (d: any) => {
+            const out = new Set<string>();
+            for (const c of (d.changes || [])) {
+                out.add(String(c.id));
+                if (c.bpos && c.bpos.parentId) out.add(String(c.bpos.parentId));
+                if (c.apos && c.apos.parentId) out.add(String(c.apos.parentId));
+            }
+            return [...out];
+        };
+        for (const t of ["bookmarks.doc", "bookmarks.lib"]) {
+            this._wvUndoRegisterType(t, {
+                undo: async function (this: any, d: any) { const ids = await this._wvBmUndoApply(d.key, d.changes, "before"); await this._wvBmUndoAfter(d.key, ids); },
+                redo: async function (this: any, d: any) { const ids = await this._wvBmUndoApply(d.key, d.changes, "after"); await this._wvBmUndoAfter(d.key, ids); },
+                ids: bmIds,
+            });
+        }
+    }
+
+    /** After a bookmark step ran: re-render every pane that shows the store
+     *  (the document's readers, or every reader's library view and the
+     *  main windows' popup), selecting the rows the step put back so the
+     *  change is visible. */
+    async _wvBmUndoAfter(key: string, ids: string[]) {
+        try {
+            const Z: any = Zotero as any;
+            let att: any = null;
+            if (key !== "lib") {
+                const k = key.slice(3), i = k.indexOf(":");
+                att = { libraryID: parseInt(k.slice(0, i), 10), itemKey: k.slice(i + 1) };
+                try { this._wvReaderRefreshBookmarksTabAll(att.libraryID, att.itemKey); } catch (_) {}
+            }
+            for (const r of ((Z.Reader && Z.Reader._readers) || [])) {
+                const idoc = r._iframeWindow && r._iframeWindow.document;
+                if (!idoc) continue;
+                if (att) {
+                    const a = this._wvReaderAtt(r);
+                    if (!a || a.libraryID !== att.libraryID || a.itemKey !== att.itemKey) continue;
+                    if (ids.length) {
+                        try {
+                            const sel: Set<string> = r._wvBmSel || (r._wvBmSel = new Set());
+                            sel.clear();
+                            for (const id of ids) sel.add(id);
+                            r._wvBmSelAnchor = ids[0]; r._wvBmActiveId = ids[0];
+                            this._wvMarkBmFocus(r, ids[0]);
+                        } catch (_) {}
+                    }
+                }
+                try { this._wvReaderRenderBmList(r, idoc); } catch (_) {}
+            }
+            if (!att) {
+                const wins: any[] = (Z.getMainWindows && Z.getMainWindows()) || [];
+                for (const w of wins) { try { this._bmRefreshPopupList(w); } catch (_) {} }
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvBmUndoAfter err: " + e); }
+    }
+
+    /** Record "entries added" -- call AFTER the insert with the new ids. */
+    _wvOutlineRecordAdd(att: any, ids: string[]) {
+        try {
+            const snaps = this._wvOutlineSnapshotIds(att, ids);
+            if (!snaps.length) return;
+            // "Outline" in the label: the Edit menu is app-wide (MJT 2026-09-30).
+            const label = snaps.length === 1 ? "Add Outline Entry" : "Add " + snaps.length + " Outline Entries";
+            this._wvUndoPush(this._wvOutlineUndoScope(att), {
+                label, type: "outline.add",
+                data: { att: { libraryID: att.libraryID, itemKey: att.itemKey }, snaps },
+            });
+        } catch (e) { Zotero.debug("[Weavero] _wvOutlineRecordAdd err: " + e); }
+    }
+
+    /** Record "entries deleted" -- call AFTER the delete with the snapshots
+     *  taken BEFORE it (`_wvOutlineSnapshotIds`). */
+    _wvOutlineRecordDelete(att: any, snaps: Array<{ entry: any; index: number }>) {
+        try {
+            if (!snaps.length) return;
+            const label = snaps.length === 1 ? "Delete Outline Entry" : "Delete " + snaps.length + " Outline Entries";
+            this._wvUndoPush(this._wvOutlineUndoScope(att), {
+                label, type: "outline.delete",
+                data: { att: { libraryID: att.libraryID, itemKey: att.itemKey }, snaps },
+            });
+        } catch (e) { Zotero.debug("[Weavero] _wvOutlineRecordDelete err: " + e); }
+    }
+
+    // ---- One undo choice per tab (MJT 2026-10-01, slice 2) ------------------
+    // "Ctrl+Z and the Edit > Undo menu should work the same for all the
+    // panes of a tab": the stacks stay per pane, the CHOICE merges the
+    // stacks of ALL the tab's panes -- the outline's, the document's
+    // bookmarks (plus the library's while the Bookmarks pane shows it), and
+    // the reader's own annotation history -- whichever sidebar tab is
+    // selected (2026-10-02; until then only the visible pane's stack
+    // joined), and the most recent action wins. Every step is made
+    // VISIBLE: the sidebar reopens, switches to the step's pane and shows
+    // what changed. Per tab and per window by construction: the
+    // scopes are the document's, the choice is made for the window's
+    // current tab. Zotero's own history (items) is never in the merge --
+    // the Edit menu hands the items back to it when no reader is behind
+    // the tab (undoHistory.js owns cmd_undo there).
+
+    /** The Weavero scopes a tab's undo merges right now. */
+    _wvTabUndoScopes(reader: any, idoc?: any): Array<{ scope: string; pane: "outline" | "bookmarks" }> {
+        const out: Array<{ scope: string; pane: "outline" | "bookmarks" }> = [];
+        try {
+            const att = this._wvReaderAtt(reader);
+            if (!att) return out;
+            // ALL the tab's panes, whichever sidebar tab is showing (MJT
+            // 2026-10-02: "even the undo/redo from the panes not visible
+            // (annotation, outline and bookmarks all together)" -- the stack
+            // glyph says which pane a step belongs to, and the reveal
+            // switches the sidebar to it). The library bookmarks history is
+            // shared by every document, so it joins only while the Bookmarks
+            // pane is set to show the library.
+            out.push({ scope: this._wvOutlineUndoScope(att), pane: "outline" });
+            out.push({ scope: this._wvBmUndoScope("rb:" + att.libraryID + ":" + att.itemKey), pane: "bookmarks" });
+            const s = this._wvReaderBmScope();
+            if (s === "library" || s === "both") out.push({ scope: this._wvBmUndoScope("lib"), pane: "bookmarks" });
+        } catch (_) {}
+        return out;
+    }
+
+    /** "Add Annotation", "Delete 2 Annotations": the reader's history point
+     *  actions (annotation-manager.js) in words. */
+    _wvReaderPointLabel(p: any): string {
+        const n = (p && Number(p.count)) || 1;
+        const verbs: { [k: string]: string } = { "add-annotations": "Add", "update-annotations": "Edit", "delete-annotations": "Delete", "convert-annotations": "Convert", "merge-annotations": "Merge" };
+        const verb = verbs[p && p.action] || "Edit";
+        // An edit names what changed when it was one field (MJT 2026-10-05:
+        // "Edit Annotation" -> "Edit Annotation Comment").
+        const f = p && p.action === "update-annotations" ? p._wvField : null;
+        if (f) return n === 1 ? "Edit Annotation " + f : "Edit " + f + " of " + n + " Annotations";
+        return verb + " " + (n === 1 ? "Annotation" : n + " Annotations");
+    }
+
+    /** The one field an edit point changed ("Comment", "Color", ...), or
+     *  null for several / unknown. The point keeps the states BEFORE; the
+     *  current annotations are the states after it while it is the undo
+     *  stack's top (true whenever the reader reports a change). */
+    _wvReaderPointField(am: any, p: any): string | null {
+        try {
+            const names: { [k: string]: string } = { comment: "Comment", color: "Color", tags: "Tags", text: "Text", pageLabel: "Page Number", position: "Position", sortIndex: "Position" };
+            const ignore = new Set(["dateModified", "image", "id", "lastModifiedByUser", "readOnly", "isExternal"]);
+            const cur = new Map(((am._annotations || []) as any[]).map((a: any) => [a.id, a]));
+            const fields = new Set<string>();
+            for (const [id, before] of p.annotations) {
+                const after: any = cur.get(id);
+                if (!before || !after) return null;
+                const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+                const changed: string[] = [];
+                for (const k of keys) {
+                    if (ignore.has(k)) continue;
+                    if (JSON.stringify(before[k]) !== JSON.stringify(after[k])) changed.push(k);
+                }
+                // A text annotation's box follows its comment (the reader
+                // refits it on every comment edit).
+                const own = changed.includes("comment") && after.type === "text"
+                    ? changed.filter(k => k !== "position" && k !== "sortIndex") : changed;
+                for (const k of own) { if (!names[k]) return null; fields.add(names[k]); }
+            }
+            return fields.size === 1 ? [...fields][0] : null;
+        } catch (_) { return null; }
+    }
+
+    /** The reader's history points carry no time of their own; stamp each
+     *  one as it appears so the merged choice and the history list can
+     *  order them against Weavero's steps. The annotation manager's
+     *  `onChangeHistory` callback is unused by Zotero today (reader d6c791f
+     *  added it for PR #6021: once Zotero passes its own,
+     *  `_externalUndoHistory` is true and Weavero leaves the reader's
+     *  history alone). Points already there at wiring time: the top keeps
+     *  the manager's `_lastChange`, the rest read as oldest. */
+    _wvReaderStampHistory(reader: any) {
+        try {
+            const ir = reader && reader._internalReader;
+            const am = ir && ir._annotationManager;
+            if (!am || ir._externalUndoHistory) return;
+            const tag = this._wvWireTag();
+            const cur = am._onChangeHistory;
+            if (cur && cur._wvTag === tag) { this._wvReaderStampPoints(am, false); return; }
+            if (cur && !cur._wvTag) return;   // Zotero's own: not ours to replace
+            const cb: any = () => {
+                try {
+                    const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (P && !P._wvDestroyed) P._wvReaderStampPoints(am, false);
+                } catch (_) {}
+            };
+            cb._wvTag = tag;
+            am._onChangeHistory = cb;
+            this._wvReaderStampPoints(am, true);
+        } catch (_) {}
+    }
+
+    _wvReaderStampPoints(am: any, initial: boolean) {
+        try {
+            const now = Date.now();
+            const undo: any[] = am._undoStack || [], redo: any[] = am._redoStack || [];
+            for (let i = 0; i < undo.length; i++) {
+                const p = undo[i]; if (!p) continue;
+                if (p._wvAt == null) p._wvAt = initial ? (i === undo.length - 1 ? (Number(am._lastChange) || 0) : 0) : now;
+                else if (p._wvRev !== p.revision || p._wvUndoneAt != null) p._wvAt = now;   // joined change, or redone
+                // Field of an edit: read while the point is the top (current
+                // state = its after state), again when a change joins it.
+                // Undo / redo copy the point ({...p}), so it travels along.
+                if (i === undo.length - 1 && p.action === "update-annotations" && p._wvFieldRev !== p.revision) {
+                    p._wvField = this._wvReaderPointField(am, p);
+                    p._wvFieldRev = p.revision;
+                }
+                p._wvRev = p.revision;
+                delete p._wvUndoneAt;
+            }
+            for (const p of redo) {
+                if (!p) continue;
+                if (p._wvAt == null) p._wvAt = 0;
+                if (p._wvUndoneAt == null) p._wvUndoneAt = initial ? 0 : now;
+                p._wvRev = p.revision;
+            }
+            if (!initial) this._wvUndoAfterChange();
+        } catch (_) {}
+    }
+
+    _wvReaderUnstampHistory(reader: any) {
+        try {
+            const am = reader && reader._internalReader && reader._internalReader._annotationManager;
+            const cur = am && am._onChangeHistory;
+            if (cur && cur._wvTag) am._onChangeHistory = undefined;
+        } catch (_) {}
+    }
+
+    /** Which history the tab's undo / redo acts on right now, by recency:
+     *  the newest top across the visible Weavero scopes and the reader's
+     *  own history (its top point's stamp, else the manager's
+     *  `_lastChange` / the time of its last undo). null = nothing to do. */
+    _wvTabUndoChoice(reader: any, dir: "undo" | "redo", idoc?: any): { kind: "weavero" | "reader"; scope?: string; pane?: string; stepId?: string; label: string | null; at: number } | null {
+        try {
+            let best: any = null;
+            // Two steps stamped in the same millisecond (one gesture writing
+            // two panes, or a quick sequence) order by the engine's recording
+            // sequence, which the step ids carry ("u" + base-36 counter).
+            const seqOf = (id: any) => { const n = parseInt(String(id || "").slice(1), 36); return Number.isFinite(n) ? n : 0; };
+            for (const { scope, pane } of this._wvTabUndoScopes(reader, idoc)) {
+                const top = this._wvUndoTop(scope, dir);
+                if (!top) continue;
+                const at = (dir === "undo" ? top.at : top.undoneAt) || 0;
+                const seq = seqOf(top.id);
+                if (!best || at > best.at || (at === best.at && seq > best.seq)) best = { kind: "weavero", scope, pane, stepId: top.id, label: top.label, at, seq };
+            }
+            const ir = reader && reader._internalReader;
+            const am = ir && ir._annotationManager;
+            if (am && (dir === "undo" ? am.canUndo : am.canRedo)) {
+                const st: any[] = (dir === "undo" ? am._undoStack : am._redoStack) || [];
+                const p = st.length ? st[st.length - 1] : null;
+                let at = p ? Number(dir === "undo" ? p._wvAt : p._wvUndoneAt) : NaN;
+                if (!Number.isFinite(at)) at = dir === "undo" ? (Number(am._lastChange) || 0) : (Number(ir._wvReaderUndoneAt) || 0);
+                if (!best || at > best.at) best = { kind: "reader", label: p ? this._wvReaderPointLabel(p) : null, at };
+            }
+            return best;
+        } catch (_) { return null; }
+    }
+
+    /** Make a Weavero step visible (MJT 2026-10-01: "I always want an undo
+     *  action to be made visible to the user"): reopen a collapsed sidebar
+     *  and show the pane the step belongs to. The step's own after-hook
+     *  then selects and scrolls to the entries it put back. */
+    _wvTabUndoReveal(reader: any, idoc: any, pane: string) {
+        try {
+            const ir = reader && reader._internalReader;
+            try { if (ir && ir._state && !ir._state.sidebarOpen && typeof ir.toggleSidebar === "function") ir.toggleSidebar(true); } catch (_) {}
+            const sc = idoc && idoc.getElementById("sidebarContainer");
+            if (!sc) return;
+            if (pane === "outline" && !sc.classList.contains(RP_OUTLINE_TAB_ON)) {
+                try { if (ir && typeof ir.setSidebarView === "function") ir.setSidebarView("outline"); } catch (_) {}
+                this._wvReaderActivateOutlineTakeover(reader, idoc, true);
+            }
+            else if (pane === "bookmarks" && !sc.classList.contains(RP_BM_TAB_ON)) {
+                this._wvReaderSetBmActive(reader, idoc, true);
+            }
+        } catch (_) {}
+    }
+
+    /** Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y in either pane, the page's wrapped
+     *  undo, Edit > Undo / Redo and the History menu all land here: run the
+     *  tab's most recent step (or, with `pick`, one specific independent
+     *  step of a scope -- selective undo), reveal it, and say what happened
+     *  on the pane's note strip. Resolves to the label, null when nothing
+     *  ran. */
+    async _wvTabUndoRedo(reader: any, idoc: any, dir: "undo" | "redo", pick?: { scope?: string; stepId?: string; reader?: boolean; pointId?: any }): Promise<string | null> {
+        try {
+            const d = idoc || (reader._iframeWindow && reader._iframeWindow.document);
+            const prefix = dir === "undo" ? "Undone: " : "Redone: ";
+            let ch: any;
+            if (pick && pick.reader) {
+                // The reader's own step: its top, or with `pointId` one
+                // INDEPENDENT point below it, moved to the top first (see
+                // _wvReaderPointToTop).
+                const am = reader._internalReader && reader._internalReader._annotationManager;
+                if (pick.pointId != null && !this._wvReaderPointToTop(am, dir, pick.pointId)) return null;
+                const st: any[] = (am && (dir === "undo" ? am._undoStack : am._redoStack)) || [];
+                ch = { kind: "reader", label: st.length ? this._wvReaderPointLabel(st[st.length - 1]) : null };
+            }
+            else if (pick && pick.scope) {
+                const sc = this._wvTabUndoScopes(reader, d).find(s => s.scope === pick.scope);
+                ch = { kind: "weavero", scope: pick.scope, pane: sc ? sc.pane : null };
+            }
+            else ch = this._wvTabUndoChoice(reader, dir, d);
+            if (!ch) return null;
+            if (ch.kind === "reader") {
+                const ir = reader._internalReader;
+                if (!ir) return null;
+                const orig = ir._wvUndoOrig && ir._wvUndoOrig[dir];
+                const fn = orig || ir[dir];
+                if (typeof fn !== "function") return null;
+                const label = ch.label;
+                const ok = !!fn.call(ir);
+                if (!ok) return null;
+                if (dir === "undo") ir._wvReaderUndoneAt = Date.now();
+                if (d) this._wvRevealReaderStep(reader, d, dir);
+                if (d) this._wvReaderPanelNote(d, prefix + (label || "Annotation Change"));
+                this._wvUndoAfterChange();
+                return label || "";
+            }
+            if (d && ch.pane) this._wvTabUndoReveal(reader, d, ch.pane);
+            const label = pick && pick.stepId
+                ? await this._wvUndoRunStep(ch.scope, dir, pick.stepId)
+                : await this._wvUndoRun(ch.scope, dir);
+            if (label && d) this._wvReaderPanelNote(d, prefix + label);
+            this._wvUndoAfterChange();
+            return label;
+        } catch (e) { Zotero.debug("[Weavero] _wvTabUndoRedo err: " + e); return null; }
+    }
+
+    // ---- Annotation steps out of order (MJT 2026-10-02: "the annotations
+    // undo history does not need to undo all the preceding ones all the
+    // time"). The reader's history (reader annotation-manager.js) is a
+    // stack of points, each holding `annotations`: a Map from annotation id
+    // to that annotation's state BEFORE the change (absent = it did not
+    // exist). `undo()` pops the top point and writes those states back;
+    // `redo()` mirrors it on the redo stack. So a point depends on a later
+    // point only when both touched the same annotation id -- the later
+    // one's snapshot assumes the earlier change. A point whose ids no later
+    // point touches is undone alone by moving it to the top and calling
+    // the reader's own undo (its saving, re-rendering and id remapping all
+    // apply unchanged): the rule Weavero's own steps follow (Azurite).
+
+    /** Make an annotation undo / redo VISIBLE (MJT 2026-10-02: "it should
+     *  refocus the annotations pane and move the view to the right
+     *  place"): open the sidebar on the Annotations pane, select the
+     *  annotations the step put back and scroll the view to the first; when
+     *  the step removed them (undo of an add), scroll to where the first
+     *  one was. Called right after the reader's own undo / redo ran: the
+     *  step it just ran is now on top of the OPPOSITE stack, keyed by the
+     *  current ids (the reader remaps an undeleted annotation's id there).
+     *  The selection goes through the reader state, not
+     *  setSelectedAnnotations(): that ignores a request while Ctrl is held
+     *  (reader.js, "Prevent accidental annotation deselection if modifier is
+     *  pressed"), and Ctrl is down during Ctrl+Z. */
+    _wvRevealReaderStep(reader: any, idoc: any, dir: "undo" | "redo") {
+        try {
+            const ir = reader && reader._internalReader;
+            const am = ir && ir._annotationManager;
+            if (!am) return;
+            const st: any[] = (dir === "undo" ? am._redoStack : am._undoStack) || [];
+            const point = st.length ? st[st.length - 1] : null;
+            if (!point || !point.annotations) return;
+            const ids = this._wvReaderPointIds(point);
+            const live: any[] = am._annotations || [];
+            const present = ids.filter(id => live.some((a: any) => a && a.id === id));
+            // The Annotations pane: Weavero's own takeovers step aside first.
+            try { if (ir._state && !ir._state.sidebarOpen) ir.toggleSidebar(true); } catch (_) {}
+            try {
+                const sc = idoc.getElementById("sidebarContainer");
+                if (sc && sc.classList.contains(RP_BM_TAB_ON)) this._wvReaderSetBmActive(reader, idoc, false);
+                if (sc && sc.classList.contains(RP_OUTLINE_TAB_ON)) this._wvReaderDeactivateOutlineTakeover(reader, idoc);
+            } catch (_) {}
+            try { ir.setSidebarView("annotations"); } catch (_) {}
+            const view = ir._lastView || ir._primaryView;
+            // Every object handed to the reader is built IN the reader's
+            // window: it refuses objects made in the plugin's sandbox
+            // ("Permission denied to pass object to privileged code" --
+            // traced 2026-10-05 on the user's real Ctrl+Z: the scroll and
+            // the selection were both rejected; the spec's stand-in reader
+            // has no such boundary).
+            const iw: any = reader._iframeWindow;
+            const R = (o: any) => { try { return (Components as any).utils.cloneInto(o, iw); } catch (_) { return o; } };
+            // Scroll through the reader's public navigate (it awaits the
+            // view's initialization), one tick later so the reader has
+            // finished its own post-undo state updates. Traced (MJT
+            // 2026-10-02: "the page scrolls to where it was -- I do not see
+            // this"): each step logs what it asked for and where the view's
+            // scroller sat before and 400 ms after.
+            const win: any = idoc.defaultView || Zotero.getMainWindow();
+            const go = (loc: any, what: string) => {
+                win.setTimeout(() => {
+                    let cont: any = null, y0: any = "?";
+                    try { cont = view && view._iframeWindow && view._iframeWindow.PDFViewerApplication && view._iframeWindow.PDFViewerApplication.pdfViewer.container; y0 = cont ? cont.scrollTop : "n/a"; } catch (_) {}
+                    let p: any = null;
+                    try { p = ir.navigate(R(loc)); } catch (e) { Zotero.debug("[Weavero] undo reveal " + what + ": navigate threw " + e); }
+                    Promise.resolve(p).catch((e: any) => Zotero.debug("[Weavero] undo reveal " + what + ": navigate rejected " + e)).then(() => {
+                        win.setTimeout(() => {
+                            let y1: any = "?"; try { y1 = cont ? cont.scrollTop : "n/a"; } catch (_) {}
+                            Zotero.debug("[Weavero] undo reveal " + what + ": scrollTop " + y0 + " -> " + y1 + " (hidden=" + !!(win.document && win.document.hidden) + ")");
+                        }, 400);
+                    });
+                }, 0);
+            };
+            if (present.length) {
+                try { ir._updateState(R({ selectedAnnotationIDs: present })); } catch (e) { Zotero.debug("[Weavero] undo reveal: select threw " + e); }
+                // ir.navigate({annotationID}) would SELECT through
+                // setSelectedAnnotations (Ctrl-held trap); the view's own
+                // navigate only scrolls, so it is used for this case.
+                win.setTimeout(() => { try { if (view && typeof view.navigate === "function") view.navigate(R({ annotationID: present[0] })); } catch (e) { Zotero.debug("[Weavero] undo reveal: view.navigate threw " + e); } }, 0);
+                Zotero.debug("[Weavero] undo reveal: selected " + present.join(","));
+            }
+            else {
+                // Removed by this step: its other side holds the annotation
+                // as it was, with its position.
+                let pos: any = null;
+                try { for (const v of point.annotations.values()) { if (v && v.position) { pos = v.position; break; } } } catch (_) {}
+                if (!pos) {
+                    try {
+                        const other: any[] = (dir === "undo" ? am._undoStack : am._redoStack) || [];
+                        for (const id of ids) { for (const q of other) { const v = q && q.annotations && q.annotations.get(id); if (v && v.position) { pos = v.position; break; } } if (pos) break; }
+                    } catch (_) {}
+                }
+                try { ir._updateState(R({ selectedAnnotationIDs: [] })); } catch (_) {}
+                Zotero.debug("[Weavero] undo reveal: removed " + ids.join(",") + ", position " + (pos ? "page " + pos.pageIndex : "none found"));
+                if (pos) go({ position: pos }, "removed");
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvRevealReaderStep err: " + e); }
+    }
+
+    /** The annotation ids a reader history point touched. */
+    _wvReaderPointIds(p: any): string[] {
+        try { return p && p.annotations && typeof p.annotations.keys === "function" ? [...p.annotations.keys()].map(String) : []; } catch (_) { return []; }
+    }
+
+    /** The points ABOVE index `i` of a reader stack that must go first:
+     *  those touching one of its annotations, transitively. */
+    _wvReaderPointRequired(st: any[], i: number): any[] {
+        const out: any[] = [];
+        if (!st || i < 0 || i >= st.length) return out;
+        const needed = new Set<string>(this._wvReaderPointIds(st[i]));
+        for (let j = i + 1; j < st.length; j++) {
+            const ids = this._wvReaderPointIds(st[j]);
+            if (ids.some(id => needed.has(id))) { out.push(st[j]); for (const id of ids) needed.add(id); }
+        }
+        return out;
+    }
+
+    /** Move one independent point to the top of its stack, so the reader's
+     *  own undo / redo runs it next. False when it is gone or a later point
+     *  depends on it. */
+    _wvReaderPointToTop(am: any, dir: "undo" | "redo", pointId: any): boolean {
+        try {
+            const st: any[] = am && (dir === "undo" ? am._undoStack : am._redoStack);
+            if (!Array.isArray(st)) return false;
+            const i = st.findIndex((p: any) => p && p.id === pointId);
+            if (i < 0 || this._wvReaderPointRequired(st, i).length) return false;
+            if (i !== st.length - 1) st.push(st.splice(i, 1)[0]);
+            return true;
+        } catch (_) { return false; }
+    }
+
+    /** The tab's merged history for the list: the undo stacks of the visible
+     *  scopes and the reader's points, newest first. A row says whether it
+     *  can be undone alone from where it sits: a Weavero step when no later
+     *  step in ITS scope touched the same entries; a reader point when no
+     *  later reader point touched the same annotations (2026-10-02; until
+     *  then only the reader's top point). */
+    _wvTabUndoList(reader: any, idoc: any, max: number, dir: "undo" | "redo" = "undo"): Array<{ key: string; kind: "weavero" | "reader"; scope?: string; stepId?: string; pointId?: any; label: string; at: number; independent: boolean }> {
+        const rows: Array<{ key: string; kind: "weavero" | "reader"; scope?: string; stepId?: string; pointId?: any; label: string; at: number; independent: boolean }> = [];
+        try {
+            for (const { scope } of this._wvTabUndoScopes(reader, idoc)) {
+                for (const r of this._wvUndoList(scope, dir)) rows.push({ key: dir + ":" + scope + "#" + r.id, kind: "weavero", scope, stepId: r.id, label: r.label, at: r.at, independent: r.independent });
+            }
+            // The reader's points: the undo stack's top is the newest change,
+            // the redo stack's top the most recently undone (the next redo).
+            const am = reader && reader._internalReader && reader._internalReader._annotationManager;
+            const st: any[] = (am && (dir === "undo" ? am._undoStack : am._redoStack)) || [];
+            for (let i = st.length - 1; i >= 0; i--) {
+                const p = st[i]; if (!p) continue;
+                let at = Number(dir === "undo" ? p._wvAt : p._wvUndoneAt);
+                if (!Number.isFinite(at)) at = i === st.length - 1 ? (dir === "undo" ? (Number(am._lastChange) || 0) : (Number(reader._internalReader._wvReaderUndoneAt) || 0)) : 0;
+                rows.push({ key: dir + ":reader#" + p.id, kind: "reader", pointId: p.id, label: this._wvReaderPointLabel(p), at, independent: this._wvReaderPointRequired(st, i).length === 0 });
+            }
+            rows.sort((a, b) => b.at - a.at);
+        } catch (_) {}
+        return rows.slice(0, Math.max(0, max));
+    }
+
+    /** The rows that must be undone together with `row` (MJT 2026-10-01):
+     *  the later steps of its stack that touched the same entries (the
+     *  engine's transitive rule), its linked twins and THEIR requirements,
+     *  and for an annotation step the later annotation steps that touched
+     *  the same annotations (transitively). Returns row keys; rows not in the list
+     *  (older than the cut, or on a hidden pane) are still required by the
+     *  run but cannot be shown. */
+    _wvTabUndoRequired(reader: any, idoc: any, rows: any[], row: any, dir: "undo" | "redo" = "undo"): Set<string> {
+        const out = new Set<string>();
+        try {
+            const byKey = new Map<string, any>(rows.map(r => [r.key, r]));
+            const visit = (r: any) => {
+                if (!r || out.has(r.key)) return;
+                out.add(r.key);
+                if (r.kind === "reader") {
+                    const am = reader && reader._internalReader && reader._internalReader._annotationManager;
+                    const st: any[] = (am && (dir === "undo" ? am._undoStack : am._redoStack)) || [];
+                    const i = st.findIndex((p: any) => p && p.id === r.pointId);
+                    for (const p of this._wvReaderPointRequired(st, i)) visit(byKey.get(dir + ":reader#" + p.id));
+                    return;
+                }
+                for (const id of (this._wvUndoRequiredAbove(r.scope, r.stepId, dir) || [])) visit(byKey.get(dir + ":" + r.scope + "#" + id));
+                for (const t of this._wvUndoTwinsOf(r.scope, r.stepId, dir)) visit(byKey.get(dir + ":" + t.scope + "#" + t.stepId));
+            };
+            visit(row);
+            out.delete(row.key);
+        } catch (_) {}
+        return out;
+    }
+
+    /** Undo a set of history rows, newest first -- each as a selective run
+     *  (its dependants come first by construction), an annotation step as
+     *  the reader's top. Stops at the first step that will not run. */
+    async _wvTabUndoRows(reader: any, idoc: any, rows: any[], dir: "undo" | "redo" = "undo"): Promise<number> {
+        let n = 0;
+        const word = dir === "undo" ? "undo" : "redo", done = dir === "undo" ? "Undone" : "Redone";
+        try {
+            const order = rows.slice().sort((a, b) => b.at - a.at);
+            for (const r of order) {
+                const label = r.kind === "reader"
+                    ? await this._wvTabUndoRedo(reader, idoc, dir, { reader: true, pointId: r.pointId })
+                    : await this._wvTabUndoRedo(reader, idoc, dir, { scope: r.scope, stepId: r.stepId });
+                if (label == null) {
+                    // A twin already run by its sibling is not a failure.
+                    const s = r.kind === "weavero" && this._wvUndoStacks().get(r.scope);
+                    const gone = !!s && !(dir === "undo" ? s.undo : s.redo).some((x: any) => x.id === r.stepId);
+                    if (gone) continue;
+                    if (idoc) this._wvReaderPanelNote(idoc, "Stopped: could not " + word + " " + r.label + (n ? " (" + n + " done)" : ""));
+                    return n;
+                }
+                n++;
+            }
+            if (idoc && n > 1) this._wvReaderPanelNote(idoc, done + ": " + n + " steps");
+        } catch (e) { Zotero.debug("[Weavero] _wvTabUndoRows err: " + e); }
+        return n;
+    }
+
+    /** Which stack a history row belongs to, at a glance (MJT 2026-10-01: "I
+     *  want to be able to see quickly which stack the undo action belongs
+     *  to"): the pane's own glyph in the row's icon slot -- the Outline tab's
+     *  dot-and-line motif, the bookmark ribbon, Zotero's annotation icon --
+     *  the stack's name first in the tooltip, and `data-wv-stack` for the
+     *  specs. */
+    _wvUndoStackGlyph(idoc: any, row: any, ic: any, kind: string, scope?: string): string {
+        try {
+            let stack: string, name: string, icon: string | null = null, inline: string | null = null;
+            if (kind === "reader") { stack = "reader"; name = "Annotations"; inline = RP_ANN_SVG; }
+            else if (scope && scope.indexOf("bookmarks:") === 0) {
+                const lib = scope === "bookmarks:lib";
+                stack = lib ? "bookmarks-lib" : "bookmarks-doc";
+                name = lib ? "Bookmarks (library)" : "Bookmarks (this document)";
+                inline = RP_BM_RIBBON_TAB;
+            }
+            else { stack = "outline"; name = "Outline"; icon = this._wvReaderOutlineMenuIconURL(); }
+            row.setAttribute("data-wv-stack", stack);
+            if (ic) {
+                while (ic.firstChild) ic.firstChild.remove();
+                if (inline) ic.innerHTML = inline;
+                else if (icon) {
+                    // data: icons as images (chrome:// ones do not load here).
+                    const img = idoc.createElementNS(NS_HTML_RP, "img");
+                    img.setAttribute("src", icon); img.setAttribute("width", "16"); img.setAttribute("height", "16");
+                    img.setAttribute("style", "-moz-context-properties:fill;fill:currentColor;");
+                    ic.appendChild(img);
+                }
+                ic.title = name;
+            }
+            return name;
+        } catch (_) { return ""; }
+    }
+
+    // ---- Toolbar Undo / Redo buttons (MJT 2026-10-01: "in the same way as
+    // in Acrobat, but with the full history features as in the outline
+    // header strip"). Two toolbar buttons after the annotation tools, a
+    // divider before them -- Acrobat's global bar puts its arrows right
+    // after the tools. Left-click runs the tab's choice, right-click opens
+    // the History menu; greyed with the plain word when there is nothing
+    // to do. Re-laid by every ensure pass (the toolbar is React's), state
+    // refreshed on every history change through `_wvUndoAfterChange`.
+
+    /** `weavero.readerUndoButtons` (Settings → Extras → Undo, default on;
+     *  MJT 2026-10-02): whether the toolbar arrows are shown. */
+    _wvReaderUndoButtonsOn(): boolean {
+        try { const v = Zotero.Prefs.get("weavero.readerUndoButtons"); return v !== false; } catch (_) { return true; }
+    }
+
+    /** Add or remove the arrows in every open reader at once when the pref
+     *  changes (same lifetime pattern as the outline text-size watch). */
+    _wvWireUndoButtonsPrefWatch() {
+        try {
+            const g: any = Zotero;
+            const tag = this._wvWireTag();
+            if (g._wvUndoButtonsPrefObs) {
+                if (g._wvUndoButtonsPrefObsVer === tag) return;
+                try { Zotero.Prefs.unregisterObserver(g._wvUndoButtonsPrefObs); } catch (_) {}
+                delete g._wvUndoButtonsPrefObs;
+            }
+            g._wvUndoButtonsPrefObsVer = tag;
+            g._wvUndoButtonsPrefObs = Zotero.Prefs.registerObserver("weavero.readerUndoButtons", () => {
+                try {
+                    const lp: any = Zotero.Weavero && Zotero.Weavero.plugin;
+                    if (!lp || lp._wvDestroyed) return;
+                    for (const r of (Zotero.Reader._readers || [])) {
+                        try { const d = r._iframeWindow && r._iframeWindow.document; if (d) lp._wvReaderEnsureUndoButtons(r, d); } catch (_) {}
+                    }
+                } catch (_) {}
+            });
+        } catch (e) { Zotero.debug("[Weavero] undo buttons pref watch err: " + e); }
+    }
+
+    _wvReaderEnsureUndoButtons(reader: any, idoc: any) {
+        try {
+            if (!this._wvReaderUndoButtonsOn()) {
+                // A menu opened from an arrow goes with it.
+                try { if (idoc.querySelector(".toolbar[data-wv-nodrag]")) this._wvCloseReaderBmContextMenu(idoc); } catch (_) {}
+                this._wvReaderRemoveUndoButtons(idoc);
+                return;
+            }
+            // The CENTRE group (annotation tools), after its last button: the
+            // start section is width-locked to the sidebar and its page-count
+            // text overflows its box, so anything placed after the page
+            // number is painted over (MJT 2026-10-01, "Fix position"). Tools,
+            // divider, arrows -- Acrobat's order.
+            const start = idoc.querySelector(".toolbar .center") || idoc.querySelector(".toolbar .start");
+            if (!start) return;
+            // Ours are known by the ATTRIBUTE, never by class alone: the
+            // teardown's class scrub strips `wv-` tokens from toolbar nodes,
+            // and a pair that lost its class was re-created beside the
+            // orphans on the next instance (2026-10-01, two pairs live).
+            let undoBtn = start.querySelector("[data-wv-undo='undo']");
+            const stale = undoBtn && undoBtn.getAttribute("data-wv-ver") !== String(RP_BM_CTX_WIRE_V);
+            if (stale) { this._wvReaderRemoveUndoButtons(idoc); undoBtn = null; }
+            if (!undoBtn) {
+                const mk = (dir: "undo" | "redo") => {
+                    const b = idoc.createElementNS(NS_HTML_RP, "button");
+                    b.className = "toolbar-button wv-undo-btn";
+                    b.setAttribute("tabindex", "-1");
+                    b.setAttribute("data-wv-undo", dir);
+                    b.setAttribute("data-wv-ver", String(RP_BM_CTX_WIRE_V));
+                    b.innerHTML = dir === "undo" ? RP_UNDO_ARROW_SVG : RP_REDO_ARROW_SVG;
+                    const live = () => { const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; return P && !P._wvDestroyed ? P : null; };
+                    b.addEventListener("click", (e: any) => {
+                        try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
+                        const P = live(); if (!P || b.classList.contains("wv-undo-off")) return;
+                        P._wvTabUndoRedo(reader, idoc, dir);
+                    });
+                    // The history on right-click; the reader swallows contextmenu
+                    // on some targets, so auxclick (button 2) is wired too.
+                    let lastCtx = 0;
+                    const hist = (e: any) => {
+                        try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
+                        const now = Date.now(); if (now - lastCtx < 300) return; lastCtx = now;
+                        const P = live(); if (!P) return;
+                        P._wvTabShowHistoryMenu(reader, idoc, b, e);
+                    };
+                    b.addEventListener("contextmenu", hist);
+                    b.addEventListener("auxclick", (e: any) => { if (e.button === 2) hist(e); });
+                    return b;
+                };
+                const div = idoc.createElementNS(NS_HTML_RP, "div");
+                div.className = "divider wv-undo-divider";
+                div.setAttribute("data-wv-undo", "divider");
+                const u = mk("undo"), r = mk("redo");
+                start.appendChild(div); start.appendChild(u); start.appendChild(r);
+            }
+            this._wvUndoButtonsRefresh(reader, idoc);
+        } catch (e) { Zotero.debug("[Weavero] _wvReaderEnsureUndoButtons err: " + e); }
+    }
+
+    /** Enabled state and tooltip from the tab's choice. */
+    _wvUndoButtonsRefresh(reader: any, idoc: any) {
+        try {
+            for (const dir of ["undo", "redo"] as Array<"undo" | "redo">) {
+                const b = idoc.querySelector(".toolbar [data-wv-undo='" + dir + "']");
+                if (!b) continue;
+                const ch = this._wvTabUndoChoice(reader, dir, idoc);
+                const word = this._wvUndoPlainWord(dir);
+                const label = ch && ch.label ? word + " " + ch.label : word;
+                b.setAttribute("title", label + " (" + this._wvNativeEditAccel(dir) + ")\nRight-click: history");
+                // Greyed by class, never by the `disabled` attribute: a disabled
+                // button swallows every mouse event, and the right-click must
+                // still open the history (MJT 2026-10-01).
+                b.classList.toggle("wv-undo-off", !ch);
+                if (ch) b.removeAttribute("aria-disabled"); else b.setAttribute("aria-disabled", "true");
+            }
+        } catch (_) {}
+    }
+
+    _wvReaderRemoveUndoButtons(idoc: any) {
+        try { for (const el of idoc.querySelectorAll(".toolbar [data-wv-undo]")) el.remove(); } catch (_) {}
+    }
+
+    /** The engine and the reader-point stamping call this after any change
+     *  to a history: every open reader's toolbar buttons follow. */
+    _wvUndoAfterChange() {
+        try {
+            for (const r of (((Zotero as any).Reader && (Zotero as any).Reader._readers) || [])) {
+                const idoc = r._iframeWindow && r._iframeWindow.document;
+                if (idoc) this._wvUndoButtonsRefresh(r, idoc);
+            }
+        } catch (_) {}
+    }
+
+    /** "just now", "3 min ago", "2 h ago". */
+    _wvTabUndoAgo(at: number): string {
+        if (!at) return "";
+        const s = Math.max(0, Math.round((Date.now() - at) / 1000));
+        if (s < 60) return "just now";
+        const m = Math.round(s / 60);
+        if (m < 60) return m + " min ago";
+        const h = Math.round(m / 60);
+        if (h < 24) return h + " h ago";
+        return Math.round(h / 24) + " d ago";
+    }
+
+    // ---- Edit menu: Undo / Redo for the current tab (MJT 2026-09-30) ----
+    // Zotero 10 routes Edit > Undo through Zotero.UndoHistory, whose window
+    // controller DECLINES the command while focus sits in a child window
+    // ("the reader iframe handles its own undo internally",
+    // undoHistory.js _hasNativeCommand) -- the reader's own annotation undo
+    // is not in the menu either, so the item sat greyed after an outline
+    // delete. When the Edit popup opens with a reader tab selected and
+    // Zotero has left Undo / Redo disabled, Weavero owns the two items for
+    // the length of the popup: label "Undo Delete Outline Entry", enabled,
+    // `command` attribute lifted so the activation reaches the tab's
+    // history instead of cmd_undo. popuphidden puts everything back. An
+    // item Zotero enabled by a focused text control is never touched. The
+    // hamburger's Edit reuses the live popup, so one hook serves both.
+
+    /** The reader a window's Edit menu refers to: the selected tab's reader
+     *  in a main window; a reader window's own (Weavero's tab strip: the
+     *  active tab's reader when known). */
+    _wvUndoCurrentReader(win: any): any {
+        try {
+            const Z: any = Zotero as any;
+            if (win.Zotero_Tabs && win.Zotero_Tabs.selectedID) return Z.Reader.getByTabID(win.Zotero_Tabs.selectedID) || null;
+            // Reader window with Weavero's tab strip: the active tab's reader.
+            const st = win._wvWT;
+            if (st && st.activeId) {
+                const t = (st.tabs || []).find((x: any) => x && x.id === st.activeId);
+                if (t && t.reader) return t.reader;
+            }
+            return (Z.Reader._readers || []).find((r: any) => r._window === win && r._iframeWindow) || null;
+        } catch (_) { return null; }
+    }
+
+    /** Where Edit > Undo goes: the tab's merged history (slice 2 -- the same
+     *  choice Ctrl+Z makes anywhere in the tab, so the focus no longer
+     *  matters; a focused text control keeps Zotero's own Undo because
+     *  Zotero enables the item itself). No reader behind the window's
+     *  current tab -> null, and Zotero keeps the items. */
+    _wvEditUndoRoute(win: any, reader?: any): { reader: any; idoc: any } | null {
+        try {
+            const rd = reader || this._wvUndoCurrentReader(win);
+            if (!rd) return null;
+            const idoc = rd._iframeWindow && rd._iframeWindow.document;
+            if (!idoc) return null;
+            return { reader: rd, idoc };
+        } catch (_) { return null; }
+    }
+
+    /** Edit > Undo / Redo on the reader's own annotation history (the
+     *  reader's Ctrl+Z; `Reader.undo()` returns whether anything changed).
+     *  Goes through the tab's choice, so "most recent action wins" applies
+     *  here exactly as it does to the key. */
+    _wvReaderUndoRedo(reader: any, dir: "undo" | "redo") {
+        try {
+            const idoc = reader && reader._iframeWindow && reader._iframeWindow.document;
+            return this._wvTabUndoRedo(reader, idoc, dir).then((l: any) => l != null);
+        } catch (e) { Zotero.debug("[Weavero] _wvReaderUndoRedo err: " + e); return Promise.resolve(false); }
+    }
+
+    // ---- "Most recent action wins" in the page (MJT 2026-10-01) ------------
+    // Creating an outline entry from the page leaves the focus in the page,
+    // where Ctrl+Z is the reader's own annotation undo -- the entry could not
+    // be undone without first clicking into the outline. The reader's
+    // `undo()` / `redo()` (what its keyboard manager and the Edit menu call)
+    // are wrapped on the instance: when the tab's choice is a Weavero step,
+    // the wrapper runs it and reports true; otherwise the reader's own runs.
+    // `reader._internalReader` is a plain same-compartment object
+    // (resource://zotero, no Xray -- checked 2026-10-01), so a plain own
+    // property is seen by the reader's code; stamped with the wire tag, so a
+    // foreign stamp (another instance) is peeled and re-wrapped. Steps aside
+    // once Zotero passes its own undo history to the reader (PR #6021:
+    // `_externalUndoHistory`), which then owns the keys.
+
+    _wvReaderWrapUndo(reader: any) {
+        try {
+            const ir = reader && reader._internalReader;
+            if (!ir || typeof ir.undo !== "function" || typeof ir.redo !== "function") return;
+            if (ir._externalUndoHistory) { this._wvReaderUnwrapUndo(reader); return; }
+            const tag = this._wvWireTag();
+            if (ir._wvUndoWrapTag === tag) return;
+            this._wvReaderUnwrapUndo(reader);
+            const orig = { undo: ir.undo, redo: ir.redo };
+            const mk = (dir: "undo" | "redo", fn: Function) => function (this: any, ...args: any[]) {
+                try {
+                    const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    const ch = P && !P._wvDestroyed ? P._wvTabUndoChoice(reader, dir) : null;
+                    Zotero.debug("[Weavero] reader " + dir + " wrapper: " + (ch ? ch.kind + (ch.label ? " '" + ch.label + "'" : "") : "nothing"));
+                    if (ch && ch.kind === "weavero") {
+                        const idoc = reader._iframeWindow && reader._iframeWindow.document;
+                        P._wvTabUndoRedo(reader, idoc, dir);
+                        return true;
+                    }
+                } catch (e) { Zotero.debug("[Weavero] reader " + dir + " wrapper err: " + e); }
+                const r = fn.apply(this, args);
+                try {
+                    if (r && dir === "undo") this._wvReaderUndoneAt = Date.now();
+                    if (r) {
+                        // The reader's own step ran from its key: say so on the
+                        // strip like any other (visible, MJT 2026-10-01).
+                        const P2: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        const idoc2 = reader._iframeWindow && reader._iframeWindow.document;
+                        const am = this._annotationManager;
+                        const st: any[] = (am && (dir === "undo" ? am._redoStack : am._undoStack)) || [];
+                        const p = st.length ? st[st.length - 1] : null;
+                        if (P2 && !P2._wvDestroyed && idoc2) P2._wvRevealReaderStep(reader, idoc2, dir);
+                        if (P2 && !P2._wvDestroyed && idoc2 && p) P2._wvReaderPanelNote(idoc2, (dir === "undo" ? "Undone: " : "Redone: ") + P2._wvReaderPointLabel(p));
+                    }
+                } catch (_) {}
+                return r;
+            };
+            ir._wvUndoOrig = orig;
+            ir.undo = mk("undo", orig.undo);
+            ir.redo = mk("redo", orig.redo);
+            ir._wvUndoWrapTag = tag;
+        } catch (e) { Zotero.debug("[Weavero] _wvReaderWrapUndo err: " + e); }
+    }
+
+    _wvReaderUnwrapUndo(reader: any) {
+        try {
+            const ir = reader && reader._internalReader;
+            if (!ir || !ir._wvUndoWrapTag) return;
+            const orig = ir._wvUndoOrig;
+            try { delete ir.undo; } catch (_) {}
+            try { delete ir.redo; } catch (_) {}
+            // A class instance gets its prototype methods back by the delete;
+            // an object that owned them (the spec's fake) gets them restored.
+            if (orig) {
+                if (typeof ir.undo !== "function") ir.undo = orig.undo;
+                if (typeof ir.redo !== "function") ir.redo = orig.redo;
+            }
+            delete ir._wvUndoOrig;
+            delete ir._wvUndoWrapTag;
+        } catch (_) {}
+    }
+
+    /** The plain word ("Undo" / "Annuler"...) for an item with nothing to
+     *  do: Zotero's own action template with an empty action. The
+     *  toolkit's text-action-undo message lives in the window's async
+     *  bundle, out of reach here. */
+    _wvUndoPlainWord(dir: "undo" | "redo"): string {
+        try { return String((Zotero as any).ftl.formatValueSync("menu-edit-" + dir + "-action", { action: "" }) || "").trim() || (dir === "undo" ? "Undo" : "Redo"); }
+        catch (_) { return dir === "undo" ? "Undo" : "Redo"; }
+    }
+
+    /** popupshowing (after Zotero's own handler, which set the disabled
+     *  states): take over Undo / Redo when the outline has history. */
+    _wvEditUndoMenuApply(win: any, popup: any) {
+        try {
+            if (popup._wvUndoRestoreTimer) { try { win.clearTimeout(popup._wvUndoRestoreTimer); } catch (_) {} popup._wvUndoRestoreTimer = null; }
+            wvEditUndoMenuRestore(popup);   // a previous open that never hid cleanly
+            const ctx = this._wvEditUndoRoute(win);
+            const dbg = (m: string) => { try { Zotero.debug("[Weavero] edit-menu apply: " + m); } catch (_) {} };
+            if (!ctx) { dbg("no reader behind this window's current tab"); return; }
+            // Labels: the tab's merged choice -- a Weavero step's name, the
+            // reader's point in words ("" = enabled, plain word, when a point
+            // has no words; null = nothing to do).
+            const forDir = (dir: "undo" | "redo") => {
+                const ch = this._wvTabUndoChoice(ctx.reader, dir);
+                return ch ? (ch.label || "") : null;
+            };
+            const peek = { undo: forDir("undo"), redo: forDir("redo") };
+            dbg("tab undo=" + JSON.stringify(peek.undo) + " redo=" + JSON.stringify(peek.redo));
+            const doc = popup.ownerDocument;
+            const UH: any = (Zotero as any).UndoHistory;
+            const plain = (dir: "undo" | "redo") => this._wvUndoPlainWord(dir);
+            // In the outline context BOTH items show the outline's history and
+            // nothing else (MJT 2026-09-30: "specific to the current window" --
+            // the library's "Redo Trash 2 Items" has no place in a reader tab):
+            // a label enables the item, no label greys the plain word.
+            const own = (id: string, dir: "undo" | "redo", label: string | null) => {
+                const mi: any = doc.getElementById(id);
+                if (!mi) return;
+                // Zotero enabled the item by a focused text control (its typing
+                // undo): leave it. Enabled by its own UndoHistory: ours wins here.
+                const zoteroEnabled = mi.getAttribute("disabled") !== "true";
+                const uhCan = !!(UH && (dir === "undo" ? UH.canUndo && UH.canUndo() : UH.canRedo && UH.canRedo()));
+                // A focused text control owns the item even when UndoHistory
+                // can also undo: its typing undo comes first (review 2026-10-05).
+                const textFocused = (() => {
+                    try {
+                        const el: any = (Services as any).focus.focusedElement;
+                        if (!el) return false;
+                        if (el.isContentEditable) return true;
+                        const ln = String(el.localName || "").toLowerCase();
+                        if (ln === "textarea") return !el.readOnly;
+                        if (ln === "input") return !el.readOnly && /^(text|search|url|email|tel|password|number|)$/.test(String(el.type || "").toLowerCase());
+                        return false;
+                    } catch (_) { return false; }
+                })();
+                if (zoteroEnabled && (textFocused || !uhCan)) { dbg(id + " enabled by a text control, left alone"); return; }
+                dbg(id + " taken over (label=" + label + ", disabled=" + mi.getAttribute("disabled") + ", UndoHistory=" + uhCan + ")");
+                mi._wvUndoSaved = { command: mi.getAttribute("command"), l10n: mi.getAttribute("data-l10n-id"), label: mi.getAttribute("label"), disabled: mi.getAttribute("disabled") };
+                mi.removeAttribute("data-l10n-id");
+                mi.removeAttribute("command");
+                mi.setAttribute("data-wv-undo", dir);
+                if (label === null || label === undefined) {
+                    mi.setAttribute("label", plain(dir));
+                    mi.setAttribute("disabled", "true");
+                    return;
+                }
+                mi.setAttribute("label", label ? plain(dir) + " " + label : plain(dir));
+                mi.removeAttribute("disabled");
+                const h = (e: any) => {
+                    try {
+                        e.stopPropagation();
+                        // Trace at first report (MJT 2026-09-30, "a click on
+                        // Undo does nothing"): says whether the click reached us.
+                        Zotero.debug("[Weavero] edit-menu " + dir + ": activation reached");
+                        const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (!P) return;
+                        P._wvTabUndoRedo(ctx.reader, ctx.idoc, dir);
+                    } catch (er) { Zotero.debug("[Weavero] edit-menu " + dir + " err: " + er); }
+                };
+                mi._wvUndoCmdH = h;
+                mi.addEventListener("command", h);
+            };
+            own("menu_undo", "undo", peek.undo);
+            own("menu_redo", "redo", peek.redo);
+        } catch (e) { Zotero.debug("[Weavero] _wvEditUndoMenuApply err: " + e); }
+    }
+
+    _wvWireEditUndoMenu(win: any) {
+        try {
+            const VER = 1;
+            const doc = win && win.document;
+            const popup: any = doc && doc.getElementById("menu_EditPopup");
+            if (!popup) return;
+            if (popup._wvUndoMenuVer === VER) return;
+            this._wvUnwireEditUndoMenu(win);
+            const onShowing = (ev: any) => {
+                try {
+                    if (ev.target !== popup) return;   // submenu events bubble
+                    const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    Zotero.debug("[Weavero] edit-menu popupshowing (trusted=" + !!ev.isTrusted + ", plugin=" + !!P + ")");
+                    if (P) P._wvEditUndoMenuApply(win, popup);
+                } catch (e) { Zotero.debug("[Weavero] edit-menu popupshowing err: " + e); }
+            };
+            // XUL hides the popup chain BEFORE it delivers the clicked item's
+            // command (nsXULMenuCommandEvent runs after the hide), so a
+            // restore on popuphidden itself handed the click to cmd_undo --
+            // Zotero's own history ran ("Undo Trash 2 Items", 2026-09-30).
+            // Defer past that dispatch; a reopen restores first anyway.
+            const onHidden = (ev: any) => {
+                try {
+                    if (ev.target !== popup) return;
+                    // Kept on the popup: a fast reopen clears it, or it would
+                    // restore the items under the freshly applied menu.
+                    popup._wvUndoRestoreTimer = win.setTimeout(() => { popup._wvUndoRestoreTimer = null; try { wvEditUndoMenuRestore(popup); } catch (_) {} }, 60);
+                } catch (_) {}
+            };
+            popup.addEventListener("popupshowing", onShowing);
+            popup.addEventListener("popuphidden", onHidden);
+            popup._wvUndoMenuH = { onShowing, onHidden };
+            popup._wvUndoMenuVer = VER;
+        } catch (e) { Zotero.debug("[Weavero] _wvWireEditUndoMenu err: " + e); }
+    }
+
+    _wvUnwireEditUndoMenu(win: any) {
+        try {
+            const doc = win && win.document;
+            const popup: any = doc && doc.getElementById("menu_EditPopup");
+            if (!popup) return;
+            const h = popup._wvUndoMenuH;
+            if (h) {
+                try { popup.removeEventListener("popupshowing", h.onShowing); } catch (_) {}
+                try { popup.removeEventListener("popuphidden", h.onHidden); } catch (_) {}
+            }
+            delete popup._wvUndoMenuH;
+            delete popup._wvUndoMenuVer;
+            wvEditUndoMenuRestore(popup);
         } catch (_) {}
     }
 
@@ -7644,6 +8875,7 @@ class _ReaderPanelsMixin {
                 source: { title, position: pos, url: null, origin: "user" },
             };
             const stored = await this._wvOutlineInsertEntry(att.libraryID, att.itemKey, entry, gap);
+            if (stored && stored.id != null) this._wvOutlineRecordAdd(att, [String(stored.id)]);
             reader._wvOutlineViewSource = null;
             // REALLY select the new entry (blue selected row), not just a
             // focus ring — the same contract the bookmark reveal follows
@@ -8148,6 +9380,7 @@ class _ReaderPanelsMixin {
                 source: { title, position: pos, url: null, origin: "user" },
             };
             const stored = await this._wvOutlineInsertEntry(att.libraryID, att.itemKey, entry, gap);
+            if (stored && stored.id != null) this._wvOutlineRecordAdd(att, [String(stored.id)]);
             // REALLY select the new entry (blue selected row, exclusive) --
             // this path inserts directly rather than via _wvOutlineCreateEntry
             // (which got the same contract earlier today), so it marked the
@@ -10087,7 +11320,7 @@ class _ReaderPanelsMixin {
             const { docs, wins } = this._wvReaderReachableDocs(reader, idoc);
             for (const d of docs) { try { d.addEventListener("pointerdown", onDown, true); } catch (_) {} }
             for (const w of wins) { try { w.addEventListener("keydown", onKey, true); } catch (_) {} }
-            this._wvReaderBmCtxDismiss = { docs, wins, onDown, onKey };
+            this._wvSetBmCtxDismiss(idoc, { docs, wins, onDown, onKey });
         } catch (_) {}
     }
 
@@ -10291,6 +11524,305 @@ class _ReaderPanelsMixin {
         } catch (_) {}
     }
 
+    /** Right-click on the outline's HEADER STRIP (the title line; the source
+     *  chip keeps its own right-click): the document's history -- "Undo
+     *  Delete 2 Entries -- Ctrl+Z" / "Redo ... -- Ctrl+Shift+Z", greyed as
+     *  the plain words when there is nothing. Moved here from the Outline
+     *  tab button (MJT 2026-09-30): the tab menu is the outline's options,
+     *  the strip is the pane's always-present background -- the Explorer
+     *  model, minus the background that a long outline has none of. */
+    /** The History menu (right-click on the outline's header strip, the
+     *  bookmarks pane's header or a toolbar arrow): Undo / Redo for the
+     *  tab's merged history with Zotero's own shortcut strings, then the
+     *  recent steps newest first -- click a row to undo back to it (the
+     *  Office / Blender reach-back), or tick rows and run the selection:
+     *  a ticked step runs alone when nothing later touched the same entries
+     *  (Azurite's rule; it moves to the top and runs, so redo stays
+     *  coherent), else its dependants are ticked with it. A reader
+     *  annotation point is alone only as the reader's own most recent
+     *  step. (MJT 2026-10-01) */
+    _wvTabShowHistoryMenu(reader: any, idoc: any, anchor: any, ev?: any) {
+        try {
+            this._wvCloseReaderBmContextMenu(idoc);
+            const att = this._wvReaderAtt(reader);
+            if (!att) return;
+            const menu = idoc.createElementNS(NS_HTML_RP, "div");
+            menu.id = RP_BM_CTX_ID;
+            const close = () => this._wvCloseReaderBmContextMenu(idoc);
+            const heading = (text: string) => {
+                const hd = idoc.createElementNS(NS_HTML_RP, "div");
+                hd.className = "wv-ctx-heading";
+                hd.textContent = text;
+                menu.appendChild(hd);
+            };
+            heading("History");
+            const row = (name: string, ch: any, hint: string, dir: "undo" | "redo") => {
+                const label: string | null = ch ? (ch.label || "") : null;
+                const it = idoc.createElementNS(NS_HTML_RP, "div");
+                it.className = "wv-ctx-item" + (label === null ? " wv-ctx-off" : "");
+                const ic = idoc.createElementNS(NS_HTML_RP, "span");
+                ic.className = "wv-ctx-ic";
+                const lb = idoc.createElementNS(NS_HTML_RP, "span");
+                lb.textContent = label ? name + " " + label : name;
+                const hn = idoc.createElementNS(NS_HTML_RP, "span");
+                hn.className = "wv-ctx-hint";
+                hn.textContent = hint;
+                it.appendChild(ic); it.appendChild(lb); it.appendChild(hn);
+                if (ch) {
+                    const stackName = this._wvUndoStackGlyph(idoc, it, ic, ch.kind, ch.scope);
+                    if (stackName) it.title = stackName;
+                    it.addEventListener("click", () => { close(); this._wvTabUndoRedo(reader, idoc, dir); });
+                }
+                menu.appendChild(it);
+            };
+            row("Undo", this._wvTabUndoChoice(reader, "undo", idoc), this._wvNativeEditAccel("undo"), "undo");
+            row("Redo", this._wvTabUndoChoice(reader, "redo", idoc), this._wvNativeEditAccel("redo"), "redo");
+            // The two lists (MJT 2026-10-01: "There can be multiple redo in a
+            // row. So there should be also a Redo History list below?"):
+            // "Undo history" over the undo stacks, newest first; "Redo
+            // history" over the redo stacks, the next redo first. Same rows:
+            // a check box (multi-select, dependants ticked automatically),
+            // the stack glyph, the label, the age; a footer per list runs the
+            // selection. A plain click on a row runs that step and its group
+            // (what the hover bracket shows); the menu stays open while
+            // ticking.
+            // Capped lists that grow on demand (MJT 2026-10-02: "the maximum
+            // number of undo history events visible in the menu should be
+            // capped, but there should be a way to reach even older events
+            // by expanding the list multiple times"): the first N steps, then
+            // a "Show older" row adding STEP more per click, as often as
+            // needed; ticks survive the expansion (rows keep their keys).
+            let fitMenu: () => void = () => {};
+            const section = (dir: "undo" | "redo", first: number) => {
+                const STEP = 12;
+                const full = this._wvTabUndoList(reader, idoc, 100000, dir);
+                if (full.length < 2) return;
+                const Word = dir === "undo" ? "Undo" : "Redo";
+                const sep = idoc.createElementNS(NS_HTML_RP, "div");
+                sep.className = "wv-ctx-sep";
+                menu.appendChild(sep);
+                heading(dir === "undo" ? "Undo history" : "Redo history");
+                const boxEl = idoc.createElementNS(NS_HTML_RP, "div");
+                boxEl.className = "wv-ctx-histbox";
+                boxEl.setAttribute("data-wv-dir", dir);
+                menu.appendChild(boxEl);
+                const manual = new Set<string>();
+                let shown = first;
+                const build = () => {
+                while (boxEl.firstChild) boxEl.firstChild.remove();
+                const list = full.slice(0, shown);
+                const rowEls = new Map<string, any>();
+                let footer: any = null;
+                // What must go with each row. Dependants are always NEWER, so
+                // they are always among the rows shown.
+                const depsOf = new Map<string, Set<string>>(list.map(r => [r.key, this._wvTabUndoRequired(reader, idoc, full, r, dir)]));
+                const closure = (): Set<string> => {
+                    const all = new Set<string>(manual);
+                    let grew = true;
+                    while (grew) {
+                        grew = false;
+                        for (const k of [...all]) for (const d of (depsOf.get(k) || [])) if (!all.has(d)) { all.add(d); grew = true; }
+                    }
+                    return all;
+                };
+                // Hovering a row shows its group (MJT 2026-10-01: "a better
+                // visual way to show that some cancellations have to be done
+                // together"): the row and every row that goes with it get the
+                // same left bracket and tint, before anything is ticked.
+                const showGroup = (r: any, on: boolean) => {
+                    const members = new Set<string>([r.key, ...(depsOf.get(r.key) || [])]);
+                    for (const [k, el] of rowEls) {
+                        el.classList.toggle("wv-ctx-group", on && members.has(k));
+                        el.classList.toggle("wv-ctx-group-head", on && k === r.key);
+                    }
+                };
+                const paint = () => {
+                    const all = closure();
+                    for (const r of list) {
+                        const el = rowEls.get(r.key); if (!el) continue;
+                        const cb = el.querySelector(".wv-ctx-check");
+                        const on = all.has(r.key), auto = on && !manual.has(r.key);
+                        cb.classList.toggle("on", on); cb.classList.toggle("auto", auto);
+                        const box = cb.querySelector(".wv-ctx-box"); if (box) box.textContent = on ? "✓" : "";
+                        cb.title = auto ? "Needed by your pick: " + (dir === "undo" ? "undone" : "redone") + " together" : (on ? "Ticked" : "Tick to " + dir + " with others");
+                        el.classList.toggle("wv-ctx-picked", on);
+                    }
+                    if (footer) {
+                        footer.style.display = all.size ? "" : "none";
+                        footer.children[1].textContent = Word + " " + all.size + " selected";
+                    }
+                };
+                const toggle = (r: any) => {
+                    if (manual.has(r.key)) manual.delete(r.key);
+                    else if (closure().has(r.key)) {
+                        // An auto-ticked row: the picks that need it go too.
+                        for (const k of [...manual]) if ((depsOf.get(k) || new Set()).has(r.key)) manual.delete(k);
+                        manual.delete(r.key);
+                    }
+                    else manual.add(r.key);
+                    paint();
+                };
+                list.forEach((r, k) => {
+                    const it = idoc.createElementNS(NS_HTML_RP, "div");
+                    it.className = "wv-ctx-item wv-ctx-hist";
+                    it.setAttribute("data-wv-hist", String(k));
+                    it.setAttribute("data-wv-key", r.key);
+                    it.setAttribute("data-wv-dir", dir);
+                    // The hit zone is the full row height from the row's left
+                    // edge to the glyph; the 12-px box sits inside it (MJT
+                    // 2026-10-01: "the space around the tick seems to trigger
+                    // the row" -- a misclick there ran the reach-back).
+                    const cb = idoc.createElementNS(NS_HTML_RP, "span");
+                    cb.className = "wv-ctx-check";
+                    const box = idoc.createElementNS(NS_HTML_RP, "span");
+                    box.className = "wv-ctx-box";
+                    cb.appendChild(box);
+                    cb.addEventListener("click", (e: any) => { e.stopPropagation(); toggle(r); });
+                    const ic = idoc.createElementNS(NS_HTML_RP, "span");
+                    ic.className = "wv-ctx-ic";
+                    const lb = idoc.createElementNS(NS_HTML_RP, "span");
+                    lb.textContent = r.label;
+                    const hn = idoc.createElementNS(NS_HTML_RP, "span");
+                    hn.className = "wv-ctx-hint";
+                    hn.textContent = this._wvTabUndoAgo(r.at);
+                    it.appendChild(cb); it.appendChild(ic); it.appendChild(lb); it.appendChild(hn);
+                    const stackName = this._wvUndoStackGlyph(idoc, it, ic, r.kind, r.scope);
+                    // A plain click runs the row's GROUP -- exactly what the
+                    // hover bracket shows: the step and the steps that must go
+                    // with it, never unrelated newer ones (MJT 2026-10-01: the
+                    // tooltip said "and the 3 after it" while the bracket showed
+                    // 2; the linear reach-back undid an unrelated bookmark step).
+                    const group = depsOf.get(r.key) || new Set<string>();
+                    const reach = group.size === 0 ? Word + " this step"
+                        : Word + " this step and the " + group.size + " that go" + (group.size === 1 ? "es" : "") + " with it";
+                    it.title = (stackName ? stackName + " — " : "") + reach + "\nCtrl+click or the box: tick it";
+                    rowEls.set(r.key, it);
+                    it.addEventListener("mouseenter", () => showGroup(r, true));
+                    it.addEventListener("mouseleave", () => showGroup(r, false));
+                    it.addEventListener("click", (e: any) => {
+                        if (e.ctrlKey || e.metaKey) { e.stopPropagation(); toggle(r); return; }
+                        const picked = list.filter(x => x.key === r.key || group.has(x.key));
+                        close();
+                        this._wvTabUndoRows(reader, idoc, picked, dir);
+                    });
+                    // No "only this" control (MJT 2026-10-01): ticking a row and
+                    // running the selection is that, and the hover bracket
+                    // shows what goes with it. A row that cannot go alone says
+                    // why in its tooltip.
+                    if (group.size) {
+                        it.title += "\n" + (r.kind === "reader"
+                            ? "The " + (group.size === 1 ? "step" : "steps") + " above changed the same annotation" + (group.size === 1 ? "" : "s")
+                            : "The " + (group.size === 1 ? "step" : "steps") + " above touched the same entries");
+                    }
+                    boxEl.appendChild(it);
+                });
+                if (full.length > shown) {
+                    const more = idoc.createElementNS(NS_HTML_RP, "div");
+                    more.className = "wv-ctx-item wv-ctx-more";
+                    more.setAttribute("data-wv-dir", dir);
+                    const mic = idoc.createElementNS(NS_HTML_RP, "span"); mic.className = "wv-ctx-ic"; mic.textContent = "…";
+                    const mlb = idoc.createElementNS(NS_HTML_RP, "span");
+                    const n = Math.min(STEP, full.length - shown);
+                    mlb.textContent = "Show " + n + " older step" + (n === 1 ? "" : "s");
+                    const mhn = idoc.createElementNS(NS_HTML_RP, "span"); mhn.className = "wv-ctx-hint";
+                    mhn.textContent = (full.length - shown) + " more";
+                    more.appendChild(mic); more.appendChild(mlb); more.appendChild(mhn);
+                    more.addEventListener("click", (e: any) => { e.stopPropagation(); shown += STEP; build(); fitMenu(); });
+                    boxEl.appendChild(more);
+                }
+                // The footer: run the selection.
+                footer = idoc.createElementNS(NS_HTML_RP, "div");
+                footer.className = "wv-ctx-item wv-ctx-run";
+                footer.setAttribute("data-wv-dir", dir);
+                const fic = idoc.createElementNS(NS_HTML_RP, "span"); fic.className = "wv-ctx-ic"; fic.textContent = dir === "undo" ? "↶" : "↷";
+                const flb = idoc.createElementNS(NS_HTML_RP, "span"); flb.textContent = Word + " 0 selected";
+                footer.appendChild(fic); footer.appendChild(flb);
+                footer.style.display = "none";
+                footer.title = Word + " every ticked step, in order";
+                footer.addEventListener("click", (e: any) => {
+                    e.stopPropagation();
+                    const all = closure();
+                    const picked = list.filter(r => all.has(r.key));
+                    close();
+                    this._wvTabUndoRows(reader, idoc, picked, dir);
+                });
+                boxEl.appendChild(footer);
+                paint();
+                };
+                build();
+            };
+            section("undo", 12);
+            section("redo", 8);
+            (idoc.body || idoc.documentElement).appendChild(menu);
+            if (ev && Number.isFinite(ev.clientX) && Number.isFinite(ev.clientY)) {
+                // At the pointer, like a context menu (MJT 2026-09-30), kept
+                // inside the viewport -- the entry menu's placement.
+                const vw = (idoc.documentElement && idoc.documentElement.clientWidth) || 9999;
+                const vh = (idoc.documentElement && idoc.documentElement.clientHeight) || 9999;
+                const mw = menu.offsetWidth || 160, mh = menu.offsetHeight || 60;
+                let x = ev.clientX, y = ev.clientY;
+                if (x + mw > vw - 6) x = Math.max(6, vw - mw - 6);
+                if (y + mh > vh - 6) y = Math.max(6, vh - mh - 6);
+                menu.style.left = x + "px"; menu.style.top = y + "px";
+            }
+            else {
+                const r = anchor.getBoundingClientRect();
+                menu.style.left = Math.max(6, r.left) + "px";
+                menu.style.top = (r.bottom + 2) + "px";
+            }
+            // A long expanded history scrolls inside the menu and never runs
+            // off the window: lift the menu as far as it can go, then cap it.
+            fitMenu = () => {
+                try {
+                    const vh = (idoc.documentElement && idoc.documentElement.clientHeight) || 9999;
+                    menu.style.maxHeight = (vh - 12) + "px";
+                    menu.style.overflowY = "auto";
+                    const top = parseFloat(menu.style.top) || 6;
+                    const h = menu.offsetHeight || 0;
+                    if (top + h > vh - 6) menu.style.top = Math.max(6, vh - h - 6) + "px";
+                } catch (_) {}
+            };
+            fitMenu();
+            // No anchor exemption: the dismiss helper ignores clicks on the
+            // anchor (for chips that toggle their own menu), but here a
+            // left-click on the strip must close the menu (MJT 2026-09-30).
+            this._wvOutlineWireMenuDismiss(reader, idoc, menu, null, close);
+            // The reader toolbar's empty space is a WINDOW DRAG area
+            // (`-moz-window-dragging: drag`): the OS takes a click there and
+            // the page gets no event, so the menu could not be dismissed by
+            // clicking the toolbar (MJT 2026-10-01, traced: no pointerdown
+            // anywhere). While the menu is open the toolbar is no-drag; the
+            // close puts it back.
+            try {
+                const tb: any = idoc.querySelector(".toolbar");
+                if (tb) { tb.style.setProperty("-moz-window-dragging", "no-drag"); tb.setAttribute("data-wv-nodrag", "1"); }
+            } catch (_) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvTabShowHistoryMenu err: " + e); }
+    }
+
+    /** The shortcut Zotero's own Edit menu shows for Undo / Redo, read from the
+     *  main window's `<key id="key_undo|key_redo">` (platformKeys.js: Redo is
+     *  Ctrl+Y on Windows, accel+Shift+Z elsewhere) and formatted the way its
+     *  acceltext renders. Weavero's menus show the same string (MJT
+     *  2026-09-30: "keep consistent with the shortcut provided by Zotero
+     *  native"); the outline's key handler accepts both forms regardless. */
+    _wvNativeEditAccel(dir: "undo" | "redo"): string {
+        const mac = !!(Zotero as any).isMac;
+        try {
+            const d = (Zotero as any).getMainWindow().document;
+            const k = d.getElementById(dir === "undo" ? "key_undo" : "key_redo");
+            const key = k && (k.getAttribute("key") || "");
+            if (key) {
+                const mods = String(k.getAttribute("modifiers") || "").toLowerCase();
+                const shift = /shift/.test(mods), accel = /accel|control|meta/.test(mods);
+                if (mac) return (shift ? "⇧" : "") + (accel ? "⌘" : "") + key.toUpperCase();
+                return (accel ? "Ctrl+" : "") + (shift ? "Shift+" : "") + key.toUpperCase();
+            }
+        } catch (_) {}
+        if (dir === "undo") return mac ? "⌘Z" : "Ctrl+Z";
+        return mac ? "⇧⌘Z" : ((Zotero as any).isWin ? "Ctrl+Y" : "Ctrl+Shift+Z");
+    }
+
     /** Outline sources available for this document, in a STABLE order (the menu
      *  marks the current one with a check -- switching must not reorder the
      *  list). When a curated outline exists: the ORIGINAL source (embedded /
@@ -10475,6 +12007,25 @@ class _ReaderPanelsMixin {
                 hd.textContent = text;
                 menu.appendChild(hd);
             };
+            // (Undo / Redo moved to the header strip's right-click menu, MJT
+            // 2026-09-30 -- _wvOutlineShowHistoryMenu.)
+            // Expand / collapse every entry (MJT 2026-09-29): the Outline tab's
+            // double-click toggles them (the native gesture, `tabDblH`) and
+            // `+` / `-` do it explicitly -- neither is discoverable, so the
+            // menu lists both with their shortcuts. The double-click's
+            // direction follows the state (any collapsed -> expand all), so
+            // it is shown on the row it would perform.
+            {
+                let anyCollapsed = false;
+                try {
+                    const { expandedSet, parentKeys } = this._wvOutlineParentKeys(reader);
+                    anyCollapsed = parentKeys.some((k: any) => !expandedSet.has(k));
+                } catch (_) {}
+                const dbl = "Double-click, ";
+                heading("Entries Tree");   // MJT 2026-09-30: says what expands
+                row("Expand All", false, () => { this._wvOutlineSetAllExpanded(reader, idoc, true); }, false, (anyCollapsed ? dbl : "") + "+");
+                row("Collapse All", false, () => { this._wvOutlineSetAllExpanded(reader, idoc, false); }, false, (anyCollapsed ? "" : dbl) + "−");
+            }
             // Page numbers: not in a web snapshot, which has no pages (MJT
             // 2026-09-24). PDFs and EPUBs keep it.
             if ((reader && reader._type) !== "snapshot") {
@@ -10890,7 +12441,7 @@ class _ReaderPanelsMixin {
         const { docs, wins } = this._wvReaderReachableDocs(reader, idoc);
         for (const d of docs) { try { d.addEventListener("pointerdown", onDown, true); } catch (_) {} }
         for (const w of wins) { try { w.addEventListener("keydown", onKey, true); } catch (_) {} }
-        this._wvReaderBmCtxDismiss = { docs, wins, onDown, onKey };
+        this._wvSetBmCtxDismiss(idoc, { docs, wins, onDown, onKey });
     }
 
     /** Switch the displayed outline source: "weavero" shows the curated
@@ -11197,7 +12748,13 @@ class _ReaderPanelsMixin {
             if (!idoc) return;
             const NS = NS_HTML_RP;
             idoc.querySelectorAll(".wv-readingmode-note").forEach((n: any) => n.remove());
-            const host = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS)
+            // The VISIBLE pane hosts the note: the outline view exists while
+            // the Bookmarks tab is showing (hidden), and a note there is a
+            // note nobody sees (undo must be visible, MJT 2026-10-01).
+            const sc0 = idoc.getElementById("sidebarContainer");
+            const bmOn = !!(sc0 && sc0.classList.contains(RP_BM_TAB_ON));
+            const host = (bmOn ? idoc.querySelector("." + RP_BM_VIEW_CLASS) : null)
+                || idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS)
                 || idoc.querySelector("." + RP_BM_VIEW_CLASS)
                 || idoc.getElementById("sidebarContent");
             if (!host) return;
@@ -16765,7 +18322,10 @@ class _ReaderPanelsMixin {
                         n._sortIndexTried = true;
                     }
                 }
-                await this._bmPersist();   // records both new keys and the attempt marks
+                // Records both new keys and the attempt marks. AUTOMATIC: never
+                // an undo step (MJT 2026-10-05: "Add selected text to
+                // bookmarks adds 2 entries: Add and Edit").
+                await this._bmPersistSilent();
                 if (changed) {
                     try {
                         const idoc = reader._iframeWindow && reader._iframeWindow.document;
@@ -17980,6 +19540,24 @@ class _ReaderPanelsMixin {
      *  matching key map). */
     _wvReaderBmHandleKey(reader: any, idoc: any, e: any) {
         try {
+            // Undo / redo (slice 2, 2026-10-01): the same reach as in the
+            // outline -- the Bookmarks tab active, not typing -- in every
+            // scope of the pane (the document's, the library's, both); the
+            // TAB's merged choice runs.
+            {
+                const c0 = idoc.getElementById("sidebarContainer");
+                const t0 = e.target;
+                const typing = !!(t0 && (t0.isContentEditable || t0.localName === "input" || t0.localName === "textarea"));
+                if (c0 && c0.classList.contains(RP_BM_TAB_ON) && !typing && (e.ctrlKey || e.metaKey) && !e.altKey) {
+                    const lk = String(e.key).toLowerCase();
+                    if (lk === "z" || (lk === "y" && !e.shiftKey && !e.metaKey)) {
+                        e.preventDefault(); e.stopPropagation();
+                        if (e.repeat) return;   // a held key would start overlapping async undos
+                        this._wvTabUndoRedo(reader, idoc, lk === "z" && !e.shiftKey ? "undo" : "redo");
+                        return;
+                    }
+                }
+            }
             if (!this._wvBmKbScope(reader, idoc)) return;
             const t = e.target;
             if (t && (t.isContentEditable || t.localName === "input" || t.localName === "textarea")) return;
@@ -18331,7 +19909,10 @@ class _ReaderPanelsMixin {
             const idxs = rows.map((r: any) => all.indexOf(r)).filter((i: number) => i >= 0);
             if (idxs.length) fromIndex = Math.min(...idxs);
         } catch (_) {}
-        for (const id of ids) { try { await this._bmReaderRemove(att.libraryID, att.itemKey, id); } catch (_) {} }
+        // One gesture, one undo step ("Delete 3 Bookmarks"), however many rows.
+        await this._wvUndoBatch(async () => {
+            for (const id of ids) { try { await this._bmReaderRemove(att.libraryID, att.itemKey, id); } catch (_) {} }
+        });
         try { if (reader._wvBmSel) reader._wvBmSel.clear(); } catch (_) {}
         this._wvReaderRenderBmList(reader, idoc);
         this._wvBmLandAfterDelete(reader, idoc, fromIndex);
@@ -18426,6 +20007,7 @@ class _ReaderPanelsMixin {
                 if (stored && stored.id) newIds.push(String(stored.id));
             }
             if (!newIds.length) { this._wvReaderPanelNote(idoc, "Nothing to copy — no selection region on the bookmark."); return; }
+            this._wvOutlineRecordAdd(att, newIds);
             // SHOW the result (user request 2026-07-22): switch to the Outline
             // tab with the new entries selected and the first one focused --
             // same landing the add-from-selection path gives.
@@ -18680,6 +20262,8 @@ class _ReaderPanelsMixin {
 
         // Firefox-style list semantics: cross-scope drops always add, even
         // if the same target is already bookmarked in the library.
+        // A move writes two stores: ONE linked undo step (MJT 2026-10-01).
+        await this._wvUndoBatch(async () => {
         {
             const fresh = this._wvBmCloneNodeFresh(rec);
             // In-doc location types need a source ref so the library
@@ -18707,6 +20291,7 @@ class _ReaderPanelsMixin {
             try { await this._bmReaderRemove(src.libraryID, src.itemKey, src.id); }
             catch (_) {}
         }
+        });
 
         if (idoc) {
             try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {}
@@ -18745,17 +20330,21 @@ class _ReaderPanelsMixin {
             delete fresh.srcItemKey;
         }
 
-        try {
-            await this._bmReaderAdd(att.libraryID, att.itemKey, fresh,
-                { allowDuplicate: false });
-        } catch (e) {
-            Zotero.debug("[Weavero] lib→doc add err: " + e);
-            return;
-        }
-
-        if (isMove) {
-            try { await this._bmRemove(libRecId); } catch (_) {}
-        }
+        // A move writes two stores: ONE linked undo step (MJT 2026-10-01).
+        const added = await this._wvUndoBatch(async () => {
+            try {
+                await this._bmReaderAdd(att.libraryID, att.itemKey, fresh,
+                    { allowDuplicate: false });
+            } catch (e) {
+                Zotero.debug("[Weavero] lib→doc add err: " + e);
+                return false;
+            }
+            if (isMove) {
+                try { await this._bmRemove(libRecId); } catch (_) {}
+            }
+            return true;
+        });
+        if (!added) return;
 
         if (idoc) {
             try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {}
@@ -20261,7 +21850,7 @@ class _ReaderPanelsMixin {
             } catch (_) {}
             for (const d of docs) { try { d.addEventListener("pointerdown", onDown, true); } catch (_) {} }
             for (const w of wins) { try { w.addEventListener("keydown", onKey, true); } catch (_) {} }
-            this._wvReaderBmCtxDismiss = { docs, wins, onDown, onKey };
+            this._wvSetBmCtxDismiss(idoc, { docs, wins, onDown, onKey });
         } catch (e) {
             Zotero.debug("[Weavero] _wvShowReaderBmAddMenu err: " + e);
         }
@@ -20359,7 +21948,7 @@ class _ReaderPanelsMixin {
             } catch (_) {}
             for (const d of docs) { try { d.addEventListener("pointerdown", onDown, true); } catch (_) {} }
             for (const w of wins) { try { w.addEventListener("keydown", onKey, true); } catch (_) {} }
-            this._wvReaderBmCtxDismiss = { docs, wins, onDown, onKey };
+            this._wvSetBmCtxDismiss(idoc, { docs, wins, onDown, onKey });
         } catch (e) {
             Zotero.debug("[Weavero] _wvShowReaderBmSortMenu err: " + e);
         }
@@ -20858,15 +22447,18 @@ class _ReaderPanelsMixin {
                                     + (res.bottom ? " (bottom)" : "");
                                 const touched = name !== prevLabel;
                                 const wantsAuto = touched && (!name || name === auto);
-                                if (wantsAuto) await this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id);
-                                await this._bmReaderSetPageDetails(att.libraryID, att.itemKey, entry.id, {
-                                    pageIndex: res.page - 1,
-                                    anchor: res.bottom ? "bottom" : null,
-                                    comment: res.comment,
+                                // One dialog, one undo step.
+                                await this._wvUndoBatch(async () => {
+                                    if (wantsAuto) await this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id);
+                                    await this._bmReaderSetPageDetails(att.libraryID, att.itemKey, entry.id, {
+                                        pageIndex: res.page - 1,
+                                        anchor: res.bottom ? "bottom" : null,
+                                        comment: res.comment,
+                                    });
+                                    if (touched && !wantsAuto) {
+                                        await this._bmReaderRename(att.libraryID, att.itemKey, entry.id, name);
+                                    }
                                 });
-                                if (touched && !wantsAuto) {
-                                    await this._bmReaderRename(att.libraryID, att.itemKey, entry.id, name);
-                                }
                                 this._wvMarkBmFocus(reader, entry.id);
                                 reRender();
                             } catch (e2) { Zotero.debug("[Weavero] bm Edit Bookmark (page) err: " + e2); }
@@ -21064,7 +22656,7 @@ class _ReaderPanelsMixin {
             const { docs, wins } = this._wvReaderReachableDocs(reader, idoc);
             for (const d of docs) { try { d.addEventListener("pointerdown", onDown, true); } catch (_) {} }
             for (const w of wins) { try { w.addEventListener("keydown", onKey, true); } catch (_) {} }
-            this._wvReaderBmCtxDismiss = { docs, wins, onDown, onKey };
+            this._wvSetBmCtxDismiss(idoc, { docs, wins, onDown, onKey });
         } catch (err) { Zotero.debug("[Weavero] _wvReaderShowBmContextMenu err: " + err); }
     }
 
@@ -21185,10 +22777,23 @@ class _ReaderPanelsMixin {
         } catch (_) {}
     }
 
+    /** One dismiss slot per plugin: a menu opening in ANOTHER reader first
+     *  closes the one still open here, or that menu (and the toolbar's
+     *  no-drag) would outlive its unhooked listeners (review 2026-10-05). */
+    _wvSetBmCtxDismiss(idoc: any, slot: any) {
+        try {
+            const cur = this._wvReaderBmCtxDismiss;
+            if (cur && cur.idoc && cur.idoc !== idoc) this._wvCloseReaderBmContextMenu(cur.idoc);
+        } catch (_) {}
+        this._wvReaderBmCtxDismiss = Object.assign(slot, { idoc });
+    }
+
     _wvCloseReaderBmContextMenu(idoc: any) {
         try { const m = idoc.getElementById(RP_BM_CTX_ID); if (m) m.remove(); } catch (_) {}
         try { for (const r of Array.from(idoc.querySelectorAll(".wv-outline-ctx")) as any[]) r.classList.remove("wv-outline-ctx"); } catch (_) {}
-        if (this._wvReaderBmCtxDismiss) {
+        // The toolbar is a window drag area again (see _wvTabShowHistoryMenu).
+        try { const tb: any = idoc.querySelector(".toolbar[data-wv-nodrag]"); if (tb) { tb.style.removeProperty("-moz-window-dragging"); tb.removeAttribute("data-wv-nodrag"); } } catch (_) {}
+        if (this._wvReaderBmCtxDismiss && (!this._wvReaderBmCtxDismiss.idoc || this._wvReaderBmCtxDismiss.idoc === idoc)) {
             try {
                 const { docs, wins, onDown, onKey } = this._wvReaderBmCtxDismiss;
                 for (const d of (docs || [])) { try { d.removeEventListener("pointerdown", onDown, true); } catch (_) {} }

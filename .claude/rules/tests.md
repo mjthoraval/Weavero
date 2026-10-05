@@ -58,6 +58,16 @@ paths:
   a green live check, a red runner, a whole trace to find it). Pin
   `doc.hasFocus = () => true/false` in the spec (delete it in `finally`)
   and test BOTH paths when the feature has both.
+- Linux desktop runs are HEADLESS by default (zotero-plugin.config.ts sets
+  MOZ_HEADLESS for local `test` runs on Linux; `WV_TEST_HEADED=1` shows the
+  window). On GNOME/Wayland the runner's window could never be activated, so
+  focus()/blur() fired no events at all and the focus-driven specs failed
+  every run -- also on main -- and results shifted when the user typed
+  during a run (2026-10-01). Separately, the scaffold's runner PAGE takes the
+  activation ~800 ms into a run: a spec that needs focus events re-activates
+  the main window first (`win.focus()` until `Services.focus.activeWindow
+  === win`; collections-pane-toggle.spec.js `beforeEach`). Do not use the
+  scaffold's `test.headless` locally: it `sudo apt install`s Xvfb.
 - A spec's MutationObserver that checks what the plugin's own observer
   leaves in the DOM (the collections-tree paint guard) must be REGISTERED
   AFTER the plugin's -- observers are notified in registration order, so

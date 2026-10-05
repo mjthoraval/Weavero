@@ -36,6 +36,30 @@ name to a Zotero object, window, or document.
   go stale across reloads. Async-setup continuations: liveness-check after
   every await; callbacks self-neutralize; long-lived per-window wiring uses a
   numeric `_wv*Wired` version stamp + stored handler refs.
+- OBJECTS HANDED TO THE READER ARE BUILT IN THE READER'S WINDOW. The
+  reader (`reader._internalReader`, its views) refuses an object made in
+  the plugin's sandbox: "Permission denied to pass object to privileged
+  code", thrown or as a rejected promise, often inside a try that hides
+  it. Wrap every argument object or array:
+  `Cu.cloneInto(obj, reader._iframeWindow)` (pdf.js view: its own
+  `_iframeWindow`). Strings and numbers pass as they are. Specs with a
+  stand-in reader cannot see this boundary -- verify reader calls live.
+  (2026-10-05: the annotation-undo scroll and selection were rejected on
+  every real Ctrl+Z while the spec passed.)
+- WINDOW DRAG AREAS EAT REAL CLICKS. Zotero's tab bar / title bar AND the
+  reader toolbar's empty space (`.toolbar`, measured 2026-10-01) carry
+  `-moz-window-dragging: drag`: the OS takes a real press there and NO DOM
+  event fires (no pointerdown, mousedown or click), while synthetic events
+  dispatched in a spec or probe work perfectly. Two consequences: (1) any
+  element Weavero puts there sets `-moz-window-dragging: no-drag`; (2) any
+  Weavero popup/menu whose "click outside closes it" must cover such an
+  area sets the area to `no-drag` while open and restores it on close
+  (`_wvTabShowHistoryMenu` / `_wvCloseReaderBmContextMenu`). Before
+  wiring a dismiss or a click handler near a strip or toolbar, check
+  `getComputedStyle(el).getPropertyValue("-moz-window-dragging")`; a "real
+  click does nothing" report there is THIS until proven otherwise. Hit
+  three times (tab-group chips 2026-06; outline header-strip History menu
+  2026-09-30; toolbar History menu 2026-10-01).
 - XUL `popupshowing`/`popuphidden` BUBBLE: every handler on a menu that can
   contain a submenu (native Move To / Copy To, Weavero's own Copy As / Add
   Bookmark) early-returns unless `ev.target === menu`, and a cleanup
@@ -161,6 +185,21 @@ name to a Zotero object, window, or document.
   `itemtree/refresh` notification); restore by deleting the key when the
   column had none (Zotero's columns have none). Guard:
   `test/items-header-contain.spec.js`.
+- A window that sets `customtitlebar` BY HAND (basicViewer loads no
+  titlebar.js) gets Gecko's CSD -- the WM title bar goes away -- plus only
+  what the PLATFORM skin happens to style: `scss/win/_titleBar.scss` makes
+  `.menubar-container` a row and absolute-positions `.titlebar-buttonbox`;
+  `scss/linux/_titleBar.scss` has no `.menubar-container` rule, keys its
+  row on `#titlebar` and keeps the box in flow, so the Plugins Manager's
+  drawn bar stacked into a 128px column on Ubuntu (issue #50, 2026-09-30;
+  measured 2026-10-01). Drawn chrome ships its own row/box rules for every
+  platform it runs on (the PM block's `@media (-moz-platform: linux)`,
+  copied from the main window's compact-title-bar declarations) -- a rule
+  that "the skin provides" is one platform's skin. And the attribute goes
+  on BEFORE the window is first shown (DOMContentLoaded of the chrome
+  document, as upstream's titlebar.js does at script time): set ~270ms
+  after the show, GTK re-maps the window and it visibly opens, closes and
+  reopens (2026-10-01). Guard: `test/plugins-chrome-platform.spec.js`.
 
 ## fix: commits name their guard
 

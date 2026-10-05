@@ -5115,7 +5115,7 @@ class _PaneMixin {
             // running while dev.14's never attached, 2026-07-16): bump
             // WV_XWINDROP_VER on behaviour changes; old refs are removed
             // before the new ones attach.
-            const WV_XWINDROP_VER = 5;
+            const WV_XWINDROP_VER = 6;
             if (!win || (win as any)._wvXWinDropVer === WV_XWINDROP_VER) return;
             const doc = win.document;
             try {
@@ -5187,7 +5187,18 @@ class _PaneMixin {
                     if (first) { p._wvXDropOverSeen = true; trace("dragover: accepted over items tree"); }
                     e.preventDefault();
                     e.stopPropagation();
-                    e.dataTransfer.dropEffect = "copy";
+                    // Zotero 10.0.4+ (c59734e97): the trees' onDrop acts on
+                    // `Zotero.DragDrop.currentDropEffect`, which their own
+                    // onDragOver records through setDropEffect(), not on the
+                    // drop event's dropEffect. This handler pre-empts the
+                    // native items-tree dragover, so record the effect the
+                    // same way -- else the delegate (`cv.onDrop` below) reads
+                    // whatever the last native hover left behind (a 'move'
+                    // from the collections pane, say). Older builds: the same
+                    // call just sets dropEffect (scan 2026-09-30).
+                    const cvFx = win.ZoteroPane && win.ZoteroPane.collectionsView;
+                    if (cvFx && typeof cvFx.setDropEffect === "function") cvFx.setDropEffect(e, "copy");
+                    else e.dataTransfer.dropEffect = "copy";
                 } catch (er) {}
             };
             win.addEventListener("dragover", onDragOver, true);
@@ -5440,7 +5451,21 @@ class _PaneMixin {
                 "    background-image: url('" + root + "icons/icon-dark-16.png');",
                 "  }",
                 "}",
-            ].join("\n");
+            ].concat(((Zotero as any).isMac || (this as any)._wvForceMacPickerFix) ? [
+                // macOS: the picker is drawn by Gecko since #48 (see
+                // _wvWireColumnPickerNativeFix), whose Mac rows carry
+                // `--menuitem-padding: 3px 9px` (toolkit/themes/shared/
+                // menu.css, esr140; Zotero's mac _menupopup.scss leaves it).
+                // The reporter's screenshots (macOS 26 Tahoe, same text
+                // height) measured the native rows at 24 px and the drawn
+                // ones at 22 px, so one more pixel above and below matches
+                // the native menu they replace. Only this popup; first
+                // attempt, to be confirmed on a real Mac (issue #48).
+                "#zotero-column-picker > menuitem,",
+                "#zotero-column-picker > menu {",
+                "  padding-block: 4px;",
+                "}",
+            ] : []).join("\n");
             (doc.head || doc.documentElement).appendChild(style);
         } catch (e) {}
     }
@@ -7742,6 +7767,7 @@ class _PaneMixin {
                     if (isCollapsed()) {
                         if (buttonbox.parentNode !== zoteroTitleBar) zoteroTitleBar.appendChild(buttonbox);
                         zoteroTitleBar.style.paddingInlineEnd = "";   // buttonbox reserves its own width
+                        zoteroTitleBar.style.paddingInlineStart = "";
                     } else {
                         // Measure the buttonbox (still in the tab strip) and reserve
                         // that width on the tab strip so moving the controls up to
@@ -7753,7 +7779,14 @@ class _PaneMixin {
                             if (nxt && nxt.parentNode === p) p.insertBefore(buttonbox, nxt);
                             else p.appendChild(buttonbox);
                         }
-                        if (w > 0) zoteroTitleBar.style.paddingInlineEnd = w + "px";
+                        if (w > 0) {
+                            // Buttons on the left (GTK reversed placement): they
+                            // vacate the strip's START, so reserve there.
+                            let rev = false;
+                            try { rev = win.matchMedia("(-moz-gtk-csd-reversed-placement)").matches; } catch (e) {}
+                            if (rev) zoteroTitleBar.style.paddingInlineStart = w + "px";
+                            else zoteroTitleBar.style.paddingInlineEnd = w + "px";
+                        }
                     }
                 } catch (er) {}
             };
@@ -7762,6 +7795,7 @@ class _PaneMixin {
                 mo.observe(menubar, { attributes: true, attributeFilter: ["wv-compact-hidden"] });
                 stash.buttonboxObserver = mo;
             } catch (er) {}
+            stash.captionReserveObserver = (this as any)._wvTrackCaptionReserve(win, zoteroTitleBar, buttonbox);
 
             // Insert the hamburger button just left of the window controls.
             // Inserts before postSpacer (which sits before the buttonbox), so
@@ -7804,7 +7838,11 @@ class _PaneMixin {
             //    menubar attribute, so it doesn't fire mid-revert; and clear the
             //    tab-strip width reservation it may have set.
             try { if (stash.buttonboxObserver) stash.buttonboxObserver.disconnect(); } catch (e) {}
-            try { const ztb = doc.getElementById("zotero-title-bar"); if (ztb) ztb.style.paddingInlineEnd = ""; } catch (e) {}
+            try { if (stash.captionReserveObserver) stash.captionReserveObserver.disconnect(); } catch (e) {}
+            try {
+                const ztb = doc.getElementById("zotero-title-bar");
+                if (ztb) { ztb.style.paddingInlineEnd = ""; ztb.style.paddingInlineStart = ""; ztb.style.removeProperty("--wv-ctl-reserve"); }
+            } catch (e) {}
             // Remove the hamburger button + popup.
             try { (this as any)._wvRemoveHamburger?.(win); } catch (e) {}
 
@@ -7878,6 +7916,124 @@ class _PaneMixin {
         }
     }
 
+    /** Keep `--wv-ctl-reserve` on `row` equal to the caption-button box's
+     *  footprint from the right edge (its width + right margin), so the drag
+     *  spacer before it ends exactly where the buttons begin. Measured, not
+     *  assumed: 138px on Windows (3 x 46, no margin), 100px with GTK's three
+     *  buttons + Zotero's 10px margin, less when the desktop hides some.
+     *  While the box sits elsewhere (Alt menu row shown) the row keeps the
+     *  last value; positionButtonbox's inline padding governs then. Returns
+     *  the observer for teardown. Guard: test/caption-reserve.spec.js. */
+    _wvTrackCaptionReserve(win: any, row: any, box: any): any {
+        try {
+            if (!win || !row || !box) return null;
+            const apply = () => {
+                try {
+                    if (box.parentNode !== row) return;
+                    const w = box.getBoundingClientRect().width;
+                    if (!(w > 0)) return;
+                    // Width + the margin to the window edge. Only one side has
+                    // a margin (right normally, left with the buttons on the
+                    // left), so the sum is that one.
+                    const cs = win.getComputedStyle(box);
+                    const m = (parseFloat(cs.marginLeft) || 0) + (parseFloat(cs.marginRight) || 0);
+                    const v = Math.round(w + m) + "px";
+                    if (row.style.getPropertyValue("--wv-ctl-reserve") !== v) row.style.setProperty("--wv-ctl-reserve", v);
+                } catch (e) {}
+            };
+            apply();
+            const RO = win.ResizeObserver;
+            if (!RO) return null;
+            const ro = new RO(() => apply());
+            ro.observe(box);
+            return ro;
+        } catch (e) { return null; }
+    }
+
+    /** Desktop button side changed while windows are open (GNOME
+     *  button-layout): Gecko notifies `look-and-feel-changed`, but some open
+     *  windows never re-evaluate their media rules -- measured 2026-10-01
+     *  (Zotero 10.0.5-beta.2, Wayland): the Plugins Manager kept the old side
+     *  for Weavero's rules AND for Zotero's own skin rule and the GTK button
+     *  order, its MediaQueryList fired no `change`, and neither focus, a
+     *  forced restyle nor a 1px resize helped; which window was missed varied
+     *  (once the reader window too). A full-zoom round trip in the same task
+     *  makes the window re-evaluate everything, zoom back at exactly 1.
+     *  Only windows whose probe (`--wv-csd-rev` on the root, set by Weavero's
+     *  title-bar stylesheets) disagrees with matchMedia are nudged, so
+     *  windows that did update -- and every look change that does not move
+     *  the buttons (light/dark theme) -- are left alone. Checked twice: the
+     *  main window applied the change ~1s after the notification.
+     *  Long-lived observer on a global service: stamped with _wvWireTag and
+     *  re-registered on mismatch (see the notifier rule in src-ts.md).
+     *  Guard: test/csd-refresh.spec.js. */
+    _wvWireCsdRefresh(this: any) {
+        try {
+            const g: any = Zotero as any;
+            const tag = this._wvWireTag();
+            if (g._wvCsdRefreshObs && g._wvCsdRefreshObs._wvTag === tag) return;
+            this._wvUnwireCsdRefresh();
+            const obs: any = {
+                _wvTag: tag,
+                observe() {
+                    try {
+                        const lp: any = g.Weavero && g.Weavero.plugin;
+                        if (!lp || lp._wvWireTag() !== obs._wvTag) return;
+                        const mw: any = Zotero.getMainWindow();
+                        const later = (fn: () => void, ms: number) => {
+                            try { (mw && mw.setTimeout ? mw.setTimeout.bind(mw) : setTimeout)(fn, ms); } catch (e) {}
+                        };
+                        later(() => { try { lp._wvRefreshStaleCsdWindows(); } catch (e) {} }, 400);
+                        later(() => { try { lp._wvRefreshStaleCsdWindows(); } catch (e) {} }, 1500);
+                    } catch (e) {}
+                },
+            };
+            Services.obs.addObserver(obs, "look-and-feel-changed");
+            g._wvCsdRefreshObs = obs;
+        } catch (e) { Zotero.debug("[Weavero] _wvWireCsdRefresh err: " + e); }
+    }
+
+    _wvUnwireCsdRefresh(this: any) {
+        try {
+            const g: any = Zotero as any;
+            if (g._wvCsdRefreshObs) {
+                try { Services.obs.removeObserver(g._wvCsdRefreshObs, "look-and-feel-changed"); } catch (e) {}
+                delete g._wvCsdRefreshObs;
+            }
+        } catch (e) {}
+    }
+
+    /** Nudge every open window whose title-bar rules are evaluated for the
+     *  other button side. Returns the number nudged. */
+    _wvRefreshStaleCsdWindows(this: any): number {
+        let n = 0;
+        try {
+            const en = Services.wm.getEnumerator(null);
+            while (en.hasMoreElements()) {
+                const w: any = en.getNext();
+                try {
+                    if (!w || w.closed || !w.document || !w.document.documentElement) continue;
+                    const root = w.document.documentElement;
+                    const probe = String(w.getComputedStyle(root).getPropertyValue("--wv-csd-rev")).trim();
+                    if (probe !== "0" && probe !== "1") continue;   // no Weavero title bar here
+                    const want = w.matchMedia("(-moz-gtk-csd-reversed-placement)").matches ? "1" : "0";
+                    if (probe === want) continue;
+                    const bc = w.browsingContext;
+                    if (!bc) continue;
+                    const z = bc.fullZoom;
+                    bc.fullZoom = z * 1.001;
+                    root.getBoundingClientRect();   // flush with the changed zoom
+                    bc.fullZoom = z;
+                    n++;
+                    Zotero.debug("[Weavero] re-evaluated window chrome after a button-side change: " + (root.getAttribute("windowtype") || w.location.href));
+                }
+                catch (e) {}
+            }
+        }
+        catch (e) {}
+        return n;
+    }
+
     /** One-time CSS for the compact-title-bar mode. Collapses
      *  `#toolbar-menubar[autohide][inactive]` and the parent `#titlebar`
      *  to zero height; positions the moved buttonbox flush right in the
@@ -7937,9 +8093,40 @@ class _PaneMixin {
                 "}",
                 /* Reserve right-edge space inside the tab strip so tabs and
                    the zotero-tabs-toolbar don't slide under the buttonbox.
-                   138px = buttonbox width (46 × 3). */
+                   The width is MEASURED (_wvTrackCaptionReserve): 138px was
+                   the Windows box (46 x 3), and on Linux the GTK box is 90px +
+                   Zotero's 10px margins, which left a 38px empty band between
+                   the 40px drag spacer and the buttons (2026-10-01). 138px
+                   stays as the fallback until the first measurement. */
                 "#zotero-title-bar:has(> .titlebar-buttonbox) {",
-                "  padding-right: 138px;",
+                "  padding-right: var(--wv-ctl-reserve, 138px);",
+                "}",
+                /* Linux: the spacer meets the buttons, as on Windows and in
+                   Firefox on Linux (browser-shared.css: the 40px .titlebar-spacer
+                   is followed directly by the in-flow button box). Zotero's
+                   Linux skin gives .titlebar-buttonbox `margin: 0 10px`; keep
+                   the right-hand 10px, drop the left. */
+                "@media (-moz-platform: linux) {",
+                "  #zotero-title-bar > .titlebar-buttonbox { margin-inline-start: 0; }",
+                "}",
+                /* Desktops with the window buttons on the LEFT (GNOME
+                   button-layout "close,minimize,maximize:"; Gecko exposes it as
+                   -moz-gtk-csd-reversed-placement, which Zotero's own Linux skin
+                   honours with `.titlebar-buttonbox { order: -1 }`). Mirror the
+                   group: buttons at the left edge, the 40px drag spacer (and the
+                   anchor drawn in it) right after them, the reservation on the
+                   left. The hamburger is the application menu, not a window
+                   control: it stays at the right end, as Firefox's menu button
+                   does (2026-10-01). */
+                // Staleness probe for _wvWireCsdRefresh: the root says which
+                // side these rules were last evaluated for.
+                ":root { --wv-csd-rev: 0; }",
+                "@media (-moz-gtk-csd-reversed-placement) { :root { --wv-csd-rev: 1; } }",
+                "@media (-moz-gtk-csd-reversed-placement) {",
+                "  #zotero-title-bar > .titlebar-buttonbox { right: auto; left: 0; margin-inline: 10px 0; }",
+                "  #zotero-title-bar:has(> .titlebar-buttonbox) {",
+                "    padding-right: 10px; padding-left: var(--wv-ctl-reserve, 138px); }",
+                "  #zotero-title-bar > .wv-titlebar-spacer { order: -1; }",
                 "}",
                 /* The revealed menu-bar row is window-draggable like a real title
                    bar (click-and-hold the empty area to move the window); the
@@ -8093,11 +8280,20 @@ class _PaneMixin {
      *  it cascades the LIVE File/Edit/View popups, so every command and
      *  shortcut keeps working. The menus collapse via height-0 (NOT
      *  display:none — the popups must stay renderable, same lesson as the
-     *  compact title bar's Alt-reveal). Skipped on macOS. */
+     *  compact title bar's Alt-reveal). Skipped on macOS. Linux gets the same
+     *  bar through its own rules in the style block below (issue #50). */
     _wvPMSetupChrome(this: any, win: any, _doc: any) {
         try {
             if ((Zotero as any).isMac) return;
-            if (win._wvPMChrome) return;
+            if (win._wvPMChrome) {
+                // Built early (before the page named the window): make sure
+                // the name caught up, whatever the title observer saw.
+                try {
+                    const c = win._wvPMChrome, t = win.document.title;
+                    if (c.titleEl && t && t !== "about:blank" && c.titleEl.textContent !== t) c.titleEl.textContent = t;
+                } catch (e) {}
+                return;
+            }
             const cdoc = win.document;
             const toolbar = cdoc.getElementById("toolbar-menubar");
             const items = cdoc.getElementById("menubar-items");
@@ -8118,8 +8314,49 @@ class _PaneMixin {
                     // except the interactive pieces; in-flow content stops
                     // 138px short of the right edge, where the shared skin
                     // absolute-positions the caption buttons.
-                    ".menubar-container { padding-right: 138px;",
+                    ".menubar-container { padding-right: var(--wv-ctl-reserve, 138px);",
                     "  -moz-window-dragging: drag; }",
+                    // Linux (issue #50, 2026-09-30): the row and the absolute
+                    // caption-button box above come from scss/win/_titleBar.scss
+                    // (`#titlebar, .menubar-container { flex-direction: row; ... }`,
+                    // `.titlebar-buttonbox { position: absolute; inset-inline-end: 0 }`).
+                    // scss/linux/_titleBar.scss has NO .menubar-container rule,
+                    // keys its row on #titlebar (absent in basicViewer) and keeps
+                    // the buttonbox in flow, so `customtitlebar` stripped the GTK
+                    // title bar while the pieces stacked in a 128px column
+                    // (measured 2026-10-01, Zotero 10.0.5). These are the main
+                    // window's own compact-title-bar declarations
+                    // (_ensureCompactTitleBarStyles: `#zotero-title-bar` row +
+                    // `> .titlebar-buttonbox`), so both windows lay out alike.
+                    // Scoped to Linux: Windows keeps riding its skin untouched.
+                    // Guard: test/plugins-chrome-platform.spec.js.
+                    "@media (-moz-platform: linux) {",
+                    "  .menubar-container { flex-direction: row; position: relative;",
+                    // content-box: the 1px divider sits BELOW the 36px row, as on
+                    // #zotero-title-bar (37px in all) -- the toolbox is border-box.
+                    "    box-sizing: content-box; height: var(--tab-min-height);",
+                    "    background: var(--material-tabbar);",
+                    "    border-bottom: var(--material-panedivider); }",
+                    "  .menubar-container > .titlebar-buttonbox { position: absolute;",
+                    "    top: 0; right: 0; height: 100%; z-index: 5; margin-inline-start: 0; }",
+                    "  #toolbar-menubar { margin: 0 !important; min-width: 0 !important; }",
+                    // No Z icon on Linux (the skin hides .titlebar-icon-container),
+                    // so the name gets the indent the icon gives it on Windows.
+                    "  .menubar-container > .wv-pm-title { margin-inline-start: 12px; }",
+                    "}",
+                    // Window buttons on the LEFT (GTK reversed placement): the
+                    // main window's mirror -- buttons at the left edge, the 40px
+                    // drag spacer right after them, the name after that, the
+                    // hamburger at the right end (2026-10-01).
+                    // Staleness probe for _wvWireCsdRefresh.
+                    ":root { --wv-csd-rev: 0; }",
+                    "@media (-moz-gtk-csd-reversed-placement) { :root { --wv-csd-rev: 1; } }",
+                    "@media (-moz-gtk-csd-reversed-placement) {",
+                    "  .menubar-container > .titlebar-buttonbox { right: auto; left: 0; margin-inline: 10px 0; }",
+                    "  .menubar-container { padding-right: 10px; padding-left: var(--wv-ctl-reserve, 138px); }",
+                    "  .menubar-container > .wv-pm-drag-spacer { order: -1; }",
+                    "  .menubar-container > .wv-pm-title { margin-inline-start: 4px; }",
+                    "}",
                     ".wv-pm-title { align-self: center; margin-inline-start: 4px;",
                     "  font-size: 12px; white-space: nowrap; overflow: hidden;",
                     "  text-overflow: ellipsis; -moz-window-dragging: drag; }",
@@ -8174,8 +8411,28 @@ class _PaneMixin {
             toolbox.insertBefore(iconBox, toolbar);
             const titleEl: any = cdoc.createElementNS(NS_HTML, "div");
             titleEl.className = "wv-pm-title";
-            titleEl.textContent = cdoc.title || "Plugins Manager";
+            // No page document yet (`_doc` null) = the early call: the window
+            // is still titled with the app name, so the name starts EMPTY and
+            // the observer below fills it -- "Zotero" would flash in the bar
+            // for the first frames otherwise.
+            titleEl.textContent = _doc ? (cdoc.title || "Plugins Manager") : "";
             toolbox.insertBefore(titleEl, toolbar);
+            // The name FOLLOWS the window title: with the early setup (see
+            // _wvPMOpenViewerNonDialog) the bar exists before the page has
+            // named the window -- the title reads "Zotero", then
+            // "about:blank", and only becomes "Plugins Manager" on
+            // basicViewer.js's `pagetitlechanged` (measured 2026-10-01).
+            // document.title is the root's `title` attribute in a XUL window.
+            let titleObs: any = null;
+            try {
+                titleObs = new win.MutationObserver(() => {
+                    try {
+                        const t = cdoc.title;
+                        if (t && t !== "about:blank" && titleEl.textContent !== t) titleEl.textContent = t;
+                    } catch (e) {}
+                });
+                titleObs.observe(cdoc.documentElement, { attributes: true, attributeFilter: ["title"] });
+            } catch (e) {}
             // Right side: [flex drag area][☰][40px drag spacer][caption buttons]
             const dragFlex: any = cdoc.createElementNS(NS_HTML, "div");
             dragFlex.className = "wv-pm-drag-flex";
@@ -8201,8 +8458,120 @@ class _PaneMixin {
             mkBtn("titlebar-restore", () => { try { win.restore(); } catch (e) {} });
             mkBtn("titlebar-close", () => { try { win.close(); } catch (e) {} });
             toolbox.appendChild(bb);
-            win._wvPMChrome = { toolbar, items, btn, iconBox, titleEl, dragFlex, dragSpacer, bb };
+            // The reservation follows the real box (138px was the Windows one).
+            const reserveObs = this._wvTrackCaptionReserve(win, toolbox, bb);
+            // Linux only: the GTK restore problem it fixes does not exist on
+            // Windows, where it would override Windows' own restore
+            // rectangle (e.g. after a cross-DPI move) -- pre-release review
+            // 2026-10-05, Windows kept exactly as before.
+            const restoreSize = (Zotero as any).isLinux ? this._wvPMKeepRestoreSize(win) : null;
+            win._wvPMChrome = { toolbar, items, btn, iconBox, titleEl, dragFlex, dragSpacer, bb, titleObs, reserveObs, restoreSize };
         } catch (e) { Zotero.debug("[Weavero] _wvPMSetupChrome err: " + e); }
+    }
+
+    /** Maximize -> restore must give back the size the window had. Zotero
+     *  opens the manager as a dialog with no maximize at all; the maximize
+     *  button is Weavero's (dialog=no reroute + drawn bar), so is this:
+     *  on Linux (GTK, Zotero 10.0.5-beta.2, measured 2026-10-01) the window
+     *  came back 52x52px larger, 1000x700 -> 1052x752 inner, every time --
+     *  on leaving maximized each dimension became max(previous, declared
+     *  minimum 1000x700 + the 52px CSD margin); with the minimum lowered it
+     *  came back at exactly the previous size (measured).
+     *  1. PREVENT: while the window is maximized its declared minimum
+     *     (root min-width / min-height) is lowered, so the restore lands on
+     *     the previous size in one step; the minimum is put back once the
+     *     window is normal again. The first version only CORRECTED after the
+     *     restore (resizeBy ~200ms later): the window visibly went
+     *     1920 -> 1052 -> 1000, the flicker MJT reported (2026-10-01).
+     *  2. CORRECT, as a fallback only: remember the last SETTLED normal INNER
+     *     size and resize back by the difference if the restore still missed.
+     *     Inner, not outer: the outer size includes the CSD decoration, which
+     *     was still settling after the window opened (an outer-based restore
+     *     came back 1px short once). "Settled" = unchanged for 300ms:
+     *     maximizing first fires a resize to full screen while windowState
+     *     still reads NORMAL (3ms before sizemodechange), and restoring fires
+     *     the transitional size as NORMAL right after the mode change --
+     *     recording either would undo the fix. Returns a teardown.
+     *  Guard: test/plugins-chrome-platform.spec.js. */
+    _wvPMKeepRestoreSize(this: any, win: any): (() => void) | null {
+        try {
+            if (!win || typeof win.addEventListener !== "function") return null;
+            let saved: [number, number] | null = null;
+            let commitT: any = null, fixT: any = null, minT: any = null, holdUntil = 0;
+            const isNormal = () => { try { return win.windowState === win.STATE_NORMAL; } catch (e) { return false; } };
+            const root: any = win.document && win.document.documentElement;
+            let origMin: [string, string] | null = null;   // the declared minimum while it is lowered
+            const lowerMin = () => {
+                try {
+                    if (!root || origMin) return;
+                    origMin = [root.style.minWidth, root.style.minHeight];
+                    root.style.minWidth = "300px";
+                    root.style.minHeight = "200px";
+                } catch (e) {}
+            };
+            const restoreMin = () => {
+                try {
+                    if (!root || !origMin) return;
+                    root.style.minWidth = origMin[0];
+                    root.style.minHeight = origMin[1];
+                    origMin = null;
+                } catch (e) {}
+            };
+            const commitSoon = () => {
+                try {
+                    if (commitT) win.clearTimeout(commitT);
+                    if (!isNormal() || Date.now() < holdUntil) { commitT = null; return; }
+                    const w = win.innerWidth, h = win.innerHeight;
+                    commitT = win.setTimeout(() => {
+                        commitT = null;
+                        try {
+                            if (isNormal() && Date.now() >= holdUntil && win.innerWidth === w && win.innerHeight === h) saved = [w, h];
+                        } catch (e) {}
+                    }, 300);
+                } catch (e) {}
+            };
+            const onMode = () => {
+                try {
+                    if (commitT) { win.clearTimeout(commitT); commitT = null; }
+                    if (fixT) { win.clearTimeout(fixT); fixT = null; }
+                    if (minT) { win.clearTimeout(minT); minT = null; }
+                    if (!isNormal()) {
+                        // Entering maximized (or minimized): keep `saved`, and lower
+                        // the minimum so the coming restore lands on it directly.
+                        lowerMin();
+                        return;
+                    }
+                    // Back to normal: the grown size arrives as NORMAL just after
+                    // this event -- correct it once it has, and record nothing
+                    // until the correction is through.
+                    holdUntil = Date.now() + 700;
+                    const target = saved;
+                    fixT = win.setTimeout(() => {
+                        fixT = null;
+                        try {
+                            if (target && isNormal()) {
+                                const dw = target[0] - win.innerWidth, dh = target[1] - win.innerHeight;
+                                if (dw || dh) win.resizeBy(dw, dh);
+                            }
+                        } catch (e) {}
+                        win.setTimeout(() => { holdUntil = 0; commitSoon(); }, 450);
+                    }, 200);
+                    // The declared minimum comes back once the size is settled
+                    // (raising it while the window is already at least that
+                    // large does not move the window -- measured).
+                    minT = win.setTimeout(() => { minT = null; if (isNormal()) restoreMin(); }, 700);
+                } catch (e) {}
+            };
+            win.addEventListener("resize", commitSoon);
+            win.addEventListener("sizemodechange", onMode);
+            commitSoon();
+            return () => {
+                try { win.removeEventListener("resize", commitSoon); } catch (e) {}
+                try { win.removeEventListener("sizemodechange", onMode); } catch (e) {}
+                try { if (commitT) win.clearTimeout(commitT); if (fixT) win.clearTimeout(fixT); if (minT) win.clearTimeout(minT); } catch (e) {}
+                restoreMin();
+            };
+        } catch (e) { return null; }
     }
 
     _wvPMTeardownChrome(this: any, win: any) {
@@ -8211,6 +8580,10 @@ class _PaneMixin {
             if (!c) return;
             try { win.document.documentElement.removeAttribute("customtitlebar"); } catch (e) {}
             try { c.items.removeAttribute("wv-pm-hidden"); } catch (e) {}
+            try { if (c.titleObs) c.titleObs.disconnect(); } catch (e) {}
+            try { if (c.reserveObs) c.reserveObs.disconnect(); } catch (e) {}
+            try { if (c.restoreSize) c.restoreSize(); } catch (e) {}
+            try { c.toolbar.parentElement.style.removeProperty("--wv-ctl-reserve"); } catch (e) {}
             try { this._wvRemoveHamburger(win); } catch (e) {}
             for (const k of ["iconBox", "titleEl", "dragFlex", "dragSpacer", "bb"]) {
                 try { if (c[k]) c[k].remove(); } catch (e) {}
@@ -8288,6 +8661,30 @@ class _PaneMixin {
         arg.wrappedJSObject = arg;
         const win: any = ww.openWindow(null, "chrome://zotero/content/standalone/basicViewer.xhtml",
             null, "chrome,dialog=no,resizable,centerscreen,menubar,scrollbars", arg);
+        // Draw the bar BEFORE the window is first shown. `customtitlebar`
+        // decides the window's decorations, and upstream sets it at script
+        // time for that reason (titlebar.js: "Set attributes that affect
+        // window chrome sizing immediately"). The injection path only runs
+        // once about:addons has loaded, ~270ms after the window is on screen;
+        // on Linux switching decorations that late makes GTK take the window
+        // down and put it back up -- the manager visibly opened, closed and
+        // reopened (measured 2026-10-01, Zotero 10.0.5-beta.2, Wayland: shown
+        // at 76ms with the native bar, deactivate/activate at 316ms when the
+        // attribute landed; at DOMContentLoaded there is a single activate).
+        // The late call in _wvPMInject stays as the path for a manager that
+        // was already open (plugin reload) -- it no-ops on `_wvPMChrome`.
+        // Guard: test/plugins-chrome-platform.spec.js.
+        try {
+            const early = function (ev: any) {
+                try {
+                    if (!ev || ev.target !== win.document) return;
+                    win.removeEventListener("DOMContentLoaded", early, true);
+                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (lp && lp._getEnablePluginsSearch && lp._getEnablePluginsSearch()) lp._wvPMSetupChrome(win, null);
+                } catch (e) {}
+            };
+            win.addEventListener("DOMContentLoaded", early, true);
+        } catch (e) {}
         if (options && options.onLoad) {
             const func = function () {
                 win.removeEventListener("load", func);
@@ -8381,20 +8778,66 @@ class _PaneMixin {
             if (!win || !win.document || !win.location) return;
             if (!String(win.location.href).includes("basicViewer")) return;
             const self = this;
+            const pageDoc = () => {
+                const br = win.document.querySelector("browser");
+                const cd = br && br.contentDocument;
+                return cd && String(cd.location && cd.location.href).includes("aboutaddons") ? cd : null;
+            };
+            // `_wvPMMo` marks a document _wvPMInject already wired. The search
+            // box cannot: it leaves the DOM on the detail view.
             const check = () => {
                 try {
-                    const br = win.document.querySelector("browser");
-                    const cd = br && br.contentDocument;
-                    if (!cd || !String(cd.location && cd.location.href).includes("aboutaddons")) return false;
+                    const cd = pageDoc();
+                    if (!cd) return false;
+                    if (cd._wvPMMo) return true;
                     if (cd.readyState !== "complete") return false;
                     self._wvPMInject(win, cd);
                     return true;
                 } catch (e) { return false; }
             };
             if (check()) return;
+            // Inject the moment the page creates its <addon-list>, inside the
+            // same mutation batch -- i.e. before that list is ever painted.
+            // The poll below only looks every 250ms and waits for
+            // readyState "complete": the box landed up to a quarter second
+            // after the cards and pushed them down (measured 2026-10-01:
+            // first card 296ms, box 318ms on a lucky tick). The poll stays as
+            // the fallback for a page that opens on a view without a list.
+            let earlyMo: any = null;
+            const armEarly = () => {
+                try {
+                    if (earlyMo) return;
+                    const cd = pageDoc();
+                    if (!cd || !cd.documentElement) return;
+                    const tryNow = () => {
+                        if (cd._wvPMMo) return true;
+                        if (!cd.body || !cd.querySelector("addon-list")) return false;
+                        const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (!lp || !lp._getEnablePluginsSearch || !lp._getEnablePluginsSearch()) return true;
+                        lp._wvPMInject(win, cd);
+                        return true;
+                    };
+                    if (tryNow()) return;
+                    earlyMo = new win.MutationObserver(() => {
+                        try { if (tryNow()) earlyMo.disconnect(); } catch (e) {}
+                    });
+                    earlyMo.observe(cd.documentElement, { childList: true, subtree: true });
+                } catch (e) {}
+            };
+            armEarly();
+            try {
+                const br = win.document.querySelector("browser");
+                if (br) br.addEventListener("DOMContentLoaded", () => armEarly(), true);
+            } catch (e) {}
             let tries = 0;
             const t = win.setInterval(() => {
-                try { if (check() || ++tries > 40) win.clearInterval(t); } catch (e) {}
+                try {
+                    armEarly();
+                    if (check() || ++tries > 40) {
+                        win.clearInterval(t);
+                        try { if (earlyMo) earlyMo.disconnect(); } catch (e) {}
+                    }
+                } catch (e) {}
             }, 250);
         } catch (e) {}
     }

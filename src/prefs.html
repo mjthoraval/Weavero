@@ -131,6 +131,14 @@
     opacity: 0.4;
     pointer-events: none;
   }
+  /* Windows-only settings on Linux / macOS (prefs.js sets the class from
+     [data-wv-platform="win"]): greyed like a gated block, but the note
+     stays readable so the reason is visible. */
+  .wv-platform-off > checkbox,
+  .wv-platform-off > .wv-desc:not(.wv-platform-note) {
+    opacity: 0.4;
+    pointer-events: none;
+  }
   /* "Icons over annotations" row: the checkbox followed by a live preview of
      the actual link + relations badges (prefs.js injects the real SVGs). */
   .wv-icon-row { display: flex; align-items: center; gap: 7px; }
@@ -650,15 +658,17 @@
         preference="extensions.zotero.weavero.enableTabSessions"/>
       <html:p class="wv-desc">Save and switch between named sets of tabs from the &#8220;List all tabs&#8221; popup. Your current tabs are always the current session; &#8220;+ New session&#8221; opens a fresh workspace, and switching is one click. Turn this off to hide the Sessions UI and freeze your saved sessions &#8212; they stay dormant (never overwritten) and reappear when you re-enable it.</html:p>
   </vbox>
-  <vbox class="wv-block" data-gated-by="enableTabsAndWindows" data-wv-in="tabs">
+  <vbox class="wv-block" data-gated-by="enableTabsAndWindows" data-wv-in="tabs" data-wv-platform="win">
       <checkbox label="Per-window taskbar icons (Windows)" native="true"
         preference="extensions.zotero.weavero.windowIcons"/>
       <html:p class="wv-desc">Give each extra window its own icon &#8212; Zotero&#8217;s icon with a coloured square badge for main windows and a coloured round badge for reader windows (the primary window keeps the plain icon) &#8212; so taskbar previews, Task View and Alt+Tab tell the windows apart at a glance, the same way Chrome badges its profile windows. Windows only.</html:p>
+      <html:p class="wv-desc wv-platform-note" hidden="true">Windows only &#8212; has no effect on this system.</html:p>
   </vbox>
-  <vbox class="wv-block" data-gated-by="enableTabsAndWindows" data-wv-in="tabs">
+  <vbox class="wv-block" data-gated-by="enableTabsAndWindows" data-wv-in="tabs" data-wv-platform="win">
       <checkbox label="Separate taskbar button per window (Windows)" native="true"
         preference="extensions.zotero.weavero.separateTaskbarButtons"/>
       <html:p class="wv-desc">Give every extra window (main and reader) its own taskbar button with its badge icon, shown on the monitor where the window is &#8212; instead of grouping all windows behind one Zotero button. Note: split windows leave the shared preview flyout. Off by default.</html:p>
+      <html:p class="wv-desc wv-platform-note" hidden="true">Windows only &#8212; has no effect on this system.</html:p>
   </vbox>
   <vbox class="wv-block" data-gated-by="enableTabsAndWindows" data-wv-in="tabs">
       <checkbox label="Window-type glyph in window titles" native="true"
@@ -877,6 +887,14 @@
     <checkbox label="“Open in External Viewer” in the item / tab menus" native="true"
       preference="extensions.zotero.weavero.enableOpenExternalViewer"/>
     <html:p class="wv-desc">Launch an item&#8217;s best attachment with the OS default app (PDF, EPUB, snapshot, image, …). Default on.</html:p>
+  </groupbox>
+
+  <!-- ============================ Undo -->
+  <groupbox class="wv-subsec" data-gated-by="enableVisualExtras" data-wv-in="extras">
+    <label><html:h2>Undo</html:h2></label>
+    <checkbox label="Undo / Redo arrows in the reader toolbar" native="true"
+      preference="extensions.zotero.weavero.readerUndoButtons"/>
+    <html:p class="wv-desc">Two arrows after the annotation tools: click to undo or redo the latest step of the reader tab (outline, bookmarks, annotations), right-click for the history. Ctrl+Z, Ctrl+Y and Edit &#8594; Undo work either way. Default on.</html:p>
   </groupbox>
 
   <!-- ============================ Reader outline -->

@@ -53,6 +53,22 @@ describe("Weavero — column picker on macOS opens as a non-context popup (#48)"
         assert.deepEqual(calls[calls.length - 1], ["zotero-column-picker", 1, 2, true]);
     });
 
+    it("on macOS the drawn picker's rows get 4 px of block padding (native row height); not elsewhere", function () {
+        const doc = Zotero.getMainWindow().document;
+        const rule = () => { const s = doc.getElementById("wv-colpick-styles"); return !!(s && /#zotero-column-picker > menu \{\s*padding-block: 4px;/.test(s.textContent)); };
+        try {
+            wv._wvForceMacPickerFix = true;
+            wv._wvEnsureColPickStyles(doc);
+            assert.isTrue(rule(), "Mac: the padding rule is there");
+            if (!Zotero.isMac) {
+                wv._wvForceMacPickerFix = false;
+                wv._wvEnsureColPickStyles(doc);
+                assert.isFalse(rule(), "Windows / Linux: no padding change");
+            }
+        }
+        finally { wv._wvForceMacPickerFix = prevForce; wv._wvEnsureColPickStyles(doc); }
+    });
+
     it("is not installed off macOS", function () {
         if (Zotero.isMac) this.skip();
         const calls = [];

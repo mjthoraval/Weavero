@@ -38,7 +38,12 @@ issues in flight at once:
   its own checkout and build directory; the registers still live in the
   main clone.
 - Hand the build over with `gh workflow run test-build.yml -f issue=<N>
-  --ref issue-<N> [-f note="..."]` once the branch is pushed: the XPI
+  --ref issue-<N> [-f note="..."]` once the branch is pushed. GitHub runs
+  the workflow file AS IT EXISTS ON THAT REF, so the branch must carry
+  `.github/workflows/test-build.yml`; a branch cut from a release older
+  than the workflow (before v0.21.2) gets it copied from main in its own
+  `ci:` commit first (2026-09-29: `--ref issue-48` failed with "Workflow
+  does not have 'workflow_dispatch' trigger" for exactly this). The XPI
   lands on the `test-builds` pre-release (anchored on the first commit,
   so it sits at the bottom of the Releases page) and the workflow
   comments on the issue with the link, commit and branch.

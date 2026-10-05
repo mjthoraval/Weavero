@@ -2710,19 +2710,28 @@ class _PaneMixin {
                 try { const p = live(); if (p && p._wvHidIsHidden(object, win)) return false; } catch (_) {}
                 return proto.call(this, object, resetCache);
             };
+            // Stamped like every wrap on a long-lived object (src-ts.md). No
+            // "already wired" check reads it: the wrap is replaced on every
+            // apply, so a hot update can never leave the old build's in place.
+            cv._includedInTree._wvTag = P._wvWireTag();
             // A set restored before the filter attached (the anchor's, from
             // the window store at startup): the tree was built without it.
             if (firstWrap && cv.tree && P._wvHidHasAny(win._wvHid)) P._wvHidRefreshWin(win);
-            // 2. Stylesheet for the dots.
-            if (!doc.getElementById("wv-hid-sheet")) {
-                const s = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
-                s.id = "wv-hid-sheet";
+            // 2. Stylesheet for the dots -- REPLACED on every apply, never
+            //    "skip if present": after a hot update the old build's rules
+            //    would stay (src-ts.md, "injected DOM outlives the build").
+            {
+                let s: any = doc.getElementById("wv-hid-sheet");
+                if (!s) {
+                    s = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+                    s.id = "wv-hid-sheet";
+                    (doc.documentElement || doc).appendChild(s);
+                }
                 s.textContent = [
                     ".wv-hid-dot { flex: none; width: 7px; height: 7px; border-radius: 50%;",
                     "  margin-inline: auto 8px; background: var(--accent-blue, #4072e5); }",
                     "#collection-tree .row .cell.primary:has(> .wv-hid-dot) > .cell-text { flex: 0 1 auto; }",
                 ].join("\n");
-                (doc.documentElement || doc).appendChild(s);
             }
             // 3. Context-menu entries (the menu's OWN popupshowing/hidden only).
             const menu = doc.getElementById("zotero-collectionmenu");

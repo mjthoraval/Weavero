@@ -134,6 +134,27 @@ describe("Weavero — hidden collections (per window)", () => {
         await wv._wvHidRestore(win, savedSet);   // later tests expect the earlier set
     });
 
+    // Zotero bug (upstream register #25), MJT's screenshot 2026-10-05: after a
+    // right-click on Recently Read / Unfiled, Zotero's Delete item kept the
+    // label "Hide" on the next collection -- it writes "Hide" as a plain label
+    // there but labels Delete through Fluent, which skips an unchanged id.
+    it("Zotero's Delete item never keeps a stale \"Hide\" label in delete mode", async function () {
+        this.timeout(15000);
+        const menu = win.document.getElementById("zotero-collectionmenu");
+        await cv.selectByID("C" + B.id);
+        await win.ZoteroPane.buildCollectionContextMenu();
+        const dc = menu.querySelector("#deleteCollection");
+        await win.document.l10n.translateElements([dc]);
+        const good = dc.getAttribute("label");
+        assert.notEqual(good, Zotero.getString("general.hide"));
+        dc.setAttribute("label", Zotero.getString("general.hide"));   // what Recently Read leaves behind
+        await win.ZoteroPane.buildCollectionContextMenu();            // same id + args: Fluent skips it
+        wv._wvHidBuildMenu(win, menu);                                 // Weavero's popupshowing
+        await new Promise(r => win.setTimeout(r, 300));
+        assert.equal(dc.getAttribute("label"), good, "retranslated back to Zotero's Delete label");
+        for (const e of [...menu.querySelectorAll(".wv-hid-entry")]) e.remove();
+    });
+
     it("hiding the selected collection moves the selection to its library row", async function () {
         this.timeout(15000);
         await cv.selectByID("C" + B.id);

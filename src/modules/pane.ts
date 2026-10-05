@@ -2837,8 +2837,24 @@ class _PaneMixin {
     _wvHidBuildMenu(win: any, menu: any) {
         try {
             for (const el of Array.from(menu.querySelectorAll(".wv-hid-entry")) as any[]) el.remove();
-            if (!this._wvHidOn()) return;
             const doc = win.document;
+            // ZOTERO BUG (upstream register #25): on Recently Read / Unfiled /
+            // Duplicates / Retracted / My Publications Zotero writes "Hide"
+            // straight into its Delete item's label, but on a collection it
+            // labels it through Fluent -- and Fluent only retranslates when
+            // data-l10n-id/args CHANGE. Collection -> Recently Read -> a
+            // collection again left "Hide" on Delete, next to Weavero's own
+            // Hide (MJT's screenshot 2026-10-05). The menu is fully built
+            // before popupshowing: in delete mode (its delete-collection icon
+            // class), retranslate. Hide mode is left alone.
+            try {
+                const dc = menu.querySelector("#deleteCollection");
+                if (dc && !dc.hidden && dc.getAttribute("data-l10n-id")
+                    && dc.classList.contains("zotero-menuitem-delete-collection") && doc.l10n) {
+                    doc.l10n.translateElements([dc]);
+                }
+            } catch (_) {}
+            if (!this._wvHidOn()) return;
             const zp = win.ZoteroPane;
             const rows: any[] = (zp.getCollectionTreeRows && zp.getCollectionTreeRows()) || [];
             if (!rows.length) return;

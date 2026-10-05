@@ -3135,8 +3135,8 @@ class _BookmarksMixin {
                 if (idx === false || idx == null || idx < 0) return false;
                 const jw = cv.tree && cv.tree._jsWindow;
                 if (!jw || typeof jw.scrollTo !== "function") return false;
-                const rowTop = typeof jw._getItemPosition === "function"
-                    ? jw._getItemPosition(idx) : idx * ((cv.tree && cv.tree._rowHeight) || 0);
+                const rowTop = (typeof jw.getRowPosition === "function" || typeof jw._getItemPosition === "function")
+                    ? (this as any)._wvRowPos(jw, idx) : idx * ((cv.tree && cv.tree._rowHeight) || 0);
                 // Pinned parents (collections-tree aid) cover the top edge:
                 // the row goes just under them, never beneath.
                 const pinned = typeof (this as any)._wvCollPinnedPx === "function"

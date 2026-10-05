@@ -76,4 +76,16 @@ describe("Weavero — collections-tree placement after a bookmark jump", () => {
         wv._bmPlaceCollectionRow(zp, "C999");
         assert.lengthOf(calls, 0);
     });
+
+    // zotero/zotero PR #6049 renames the windowed list's _getItemPosition to
+    // getRowPosition and makes the old name warn on every call; the sticky
+    // parents call it per scroll frame (upstream register #24).
+    it("row positions prefer getRowPosition and fall back to _getItemPosition", () => {
+        const used = [];
+        const both = { getRowPosition: (i) => { used.push("new"); return i * 10; }, _getItemPosition: (i) => { used.push("old"); return -1; } };
+        assert.equal(wv._wvRowPos(both, 3), 30);
+        assert.deepEqual(used, ["new"], "the deprecated name is not called when the new one exists");
+        assert.equal(wv._wvRowPos({ _getItemPosition: (i) => i * 7 }, 3), 21, "older Zotero: the old name");
+        assert.equal(wv._wvRowPos(null, 3), 0);
+    });
 });

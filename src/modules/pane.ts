@@ -2368,6 +2368,17 @@ class _PaneMixin {
      *  was toggled (button, View -> Layout, the splitter).
      *  Settings: Extras -> "Collapse / expand button for the collections
      *  pane", on by default; applied per window, re-applied on pref change. */
+    /** Top of row `i` in a Zotero windowed list. zotero/zotero PR #6049
+     *  (fix for #6023) renames `_getItemPosition` to `getRowPosition` and
+     *  makes the old name `Zotero.warn` on EVERY call -- the sticky parents
+     *  call it on each scroll frame, so the console would flood. Prefer the
+     *  new name, fall back to the old one (upstream register #24). */
+    _wvRowPos(this: any, jw: any, i: number): number {
+        if (jw && typeof jw.getRowPosition === "function") return jw.getRowPosition(i);
+        if (jw && typeof jw._getItemPosition === "function") return jw._getItemPosition(i);
+        return 0;
+    }
+
     /** Side-pane splitters stop at the pane's minimum width instead of
      *  collapsing it on a drag (setting "Resizing a side pane stops at its
      *  minimum width", MJT 2026-09-23 -- the reader window's behaviour).
@@ -2518,9 +2529,10 @@ class _PaneMixin {
         const tree: any = doc.getElementById("collection-tree");
         const cv = win.ZoteroPane && win.ZoteroPane.collectionsView;
         const jw = cv && cv.tree && cv.tree._jsWindow;
+        const pos = (i: number) => (this as any)._wvRowPos(jw, i);
         const clear = () => { if (st.overlay) { st.overlay.remove(); st.overlay = null; } st.lastKey = ""; };
         if (tree && cv) (this as any)._wvCollGuidePass(tree, cv, !!st.guides);
-        if (!st.sticky || !tree || !jw || typeof jw._getItemPosition !== "function") { clear(); return; }
+        if (!st.sticky || !tree || !jw || (typeof jw.getRowPosition !== "function" && typeof jw._getItemPosition !== "function")) { clear(); return; }
         const rowH = jw.itemHeight || 22;
         const P: any = this;
         P._wvCollHookReveal(jw);
@@ -2529,8 +2541,8 @@ class _PaneMixin {
         const n = cv.rowCount || 0;
         const rowAt = (y: number) => {   // index of the row covering content offset y
             let i = Math.max(0, Math.min(n - 1, Math.floor(y / rowH)));
-            while (i > 0 && jw._getItemPosition(i) > y) i--;
-            while (i + 1 < n && jw._getItemPosition(i + 1) <= y) i++;
+            while (i > 0 && pos(i) > y) i--;
+            while (i + 1 < n && pos(i + 1) <= y) i++;
             return i;
         };
         let pinned: number[] = [];
@@ -2542,7 +2554,7 @@ class _PaneMixin {
             const next: number[] = [];
             for (let k = 0; k < chain.length && k < max; k++) {
                 // Pinned only once its own row has scrolled past its slot.
-                if (jw._getItemPosition(chain[k]) - off < k * rowH) next.push(chain[k]); else break;
+                if (pos(chain[k]) - off < k * rowH) next.push(chain[k]); else break;
             }
             if (next.length === pinned.length && next.every((x, i) => x === pinned[i])) break;
             pinned = next;
@@ -2609,7 +2621,7 @@ class _PaneMixin {
                     if (now === false || now < 0) return;
                     if (e.target === tw && hasArrow) { cv.toggleOpenState(now); return; }
                     // Its own row just under the remaining pinned rows, then select it.
-                    jw.scrollTo(Math.max(0, jw._getItemPosition(now) - slot * rowH));
+                    jw.scrollTo(Math.max(0, pos(now) - slot * rowH));
                     cv.selection.select(now);
                 } catch (_) {}
             });

@@ -1646,7 +1646,15 @@ class _TabsMixin {
     // Default name is "Window N" by the window's STABLE index in
     // Zotero.getMainWindows() (creation order, oldest-first) — so a window keeps the
     // same number no matter which window you view the tabs list from. A custom title
-    // overrides it; titles persist across restarts keyed by that stable index.
+    // overrides it. The custom title is part of the WINDOW'S OWN saved state
+    // (MJT 2026-10-05, after the hidden-collections sets moved there): field
+    // `title` of wvMainState / the session window record, `anchorTitle` in
+    // the window store for the first window -- so it follows the window
+    // through restarts, Save & Close / Reopen and tab sessions. It used to be
+    // persisted by POSITION (pref weavero.windowTitles, written 2026-06-27,
+    // the day before the stable window id existed): closing Window 2 handed
+    // its title to Window 3. That pref is now read only by the one-time
+    // migration (_wvMigrateIndexTitles).
 
     _wvWindowTitlesGet() {
         try { return JSON.parse(String(Zotero.Prefs.get("weavero.windowTitles", true) || "{}")) || {}; }
@@ -1658,15 +1666,36 @@ class _TabsMixin {
     _wvWindowIndex(win: any) {
         try { return Zotero.getMainWindows().indexOf(win); } catch (e) { return -1; }
     }
-    /** A window's custom title (session cache → persisted-by-index), or null. */
+    /** A window's custom title, or null. Until the one-time migration has
+     *  run, a window without one still falls back to the legacy by-position
+     *  pref (so titles show from the first frame after the upgrade). */
     _wvWindowCustomTitle(win: any) {
         if (!win) return null;
         if (win._wvWindowTitle != null) return win._wvWindowTitle || null;   // "" = cleared
+        if (Zotero.Prefs.get("weavero.windowTitlesMigrated", true)) return null;
         const idx = this._wvWindowIndex(win);
         if (idx < 0) return null;
         const t = this._wvWindowTitlesGet()[String(idx)];
-        if (t) { win._wvWindowTitle = t; return t; }
-        return null;
+        return t || null;
+    }
+
+    /** One-time: copy the legacy by-position titles onto the open main
+     *  windows (by their position NOW -- the one the pref was written for,
+     *  once the startup restore has rebuilt the windows), save them into the
+     *  windows' state, clear the pref. */
+    _wvMigrateIndexTitles() {
+        try {
+            if (Zotero.Prefs.get("weavero.windowTitlesMigrated", true)) return;
+            const map = this._wvWindowTitlesGet();
+            const mains = Zotero.getMainWindows() || [];
+            for (let i = 0; i < mains.length; i++) {
+                const w: any = mains[i];
+                if (w._wvWindowTitle == null && map[String(i)]) w._wvWindowTitle = map[String(i)];
+            }
+            Zotero.Prefs.set("weavero.windowTitlesMigrated", true, true);
+            try { Zotero.Prefs.clear("weavero.windowTitles", true); } catch (e) {}
+            try { this._wvWindowStoreSaveDebounced(); } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvMigrateIndexTitles err: " + e); }
     }
     _wvWindowSetCustomTitle(win: any, title: any) {
         if (!win) return;
@@ -1687,11 +1716,9 @@ class _TabsMixin {
                 this._wvUpdateWindowBadgeDot(win, !!(this as any)._getTabsAndWindowsMaster(), true);
             }
         } catch (e) {}
-        const idx = this._wvWindowIndex(win);
-        if (idx < 0) return;
-        const map = this._wvWindowTitlesGet();
-        if (title) map[String(idx)] = title; else delete map[String(idx)];
-        this._wvWindowTitlesSet(map);
+        // Saved with the window's own state (the window store / sessions
+        // capture `title`), not by position.
+        try { this._wvWindowStoreSaveDebounced(); } catch (e) {}
         // Keep the title-bar mark's hover tooltip in sync with the new name.
         try { this._wvUpdateMainWindowIndicator(win); } catch (e) {}
     }
@@ -7871,7 +7898,7 @@ class _TabsMixin {
                 try {
                     const ms = (this as any)._wvTabSessionCaptureMainState
                         ? (this as any)._wvTabSessionCaptureMainState(w) : null;
-                    if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl)) wvMainState = ms;
+                    if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl || ms.title)) wvMainState = ms;
                 } catch (e) {}
                 groups.push({ kind: "main-dev", tabs, wvWinId: (w._wvWindowId != null ? w._wvWindowId : null),
                     geom: (this as any)._wvWindowGeom(w), wvMainState });
@@ -7945,7 +7972,7 @@ class _TabsMixin {
             try {
                 const ms = (this as any)._wvTabSessionCaptureMainState
                     ? (this as any)._wvTabSessionCaptureMainState(w) : null;
-                if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl)) wvMainState = ms;
+                if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl || ms.title)) wvMainState = ms;
             } catch (e) {}
             return { kind: "main-anchor", tabs, geom: (this as any)._wvWindowGeom(w), wvMainState };
         } catch (e) { return null; }
@@ -7963,13 +7990,15 @@ class _TabsMixin {
         // skipped when the anchor holds only the library tab (the common
         // case), and its presence steers the anchor tab restore -- so the
         // set rides a field of its own (pane.ts, "Hidden collections").
-        let anchorHidden: any;
+        let anchorHidden: any, anchorTitle: any;
         try { const a0: any = (Zotero.getMainWindows() || [])[0]; anchorHidden = a0 && (this as any)._wvHidCapture ? (this as any)._wvHidCapture(a0) : undefined; } catch (e) {}
+        // Its custom title too (same reason: its entry may be skipped).
+        try { const a0: any = (Zotero.getMainWindows() || [])[0]; anchorTitle = (a0 && a0._wvWindowTitle) || undefined; } catch (e) {}
         this._wvWindowStoreWrite({ version: 4, windows: [
             ...(anchor ? [anchor] : []),
             ...this._wvWindowStoreCaptureDevWindows(),
             ...this._wvWindowStoreCaptureReaderWindows(),
-        ], focused: this._wvWindowStoreFocusDescriptor(), anchorHidden });
+        ], focused: this._wvWindowStoreFocusDescriptor(), anchorHidden, anchorTitle });
     }
 
     /** Debounced save — coalesces churn (e.g. closing a dev window). */
@@ -8079,7 +8108,7 @@ class _TabsMixin {
                 try {
                     const ms = (this as any)._wvTabSessionCaptureMainState
                         ? (this as any)._wvTabSessionCaptureMainState(win) : null;
-                    if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl)) wvMainState = ms;
+                    if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl || ms.title)) wvMainState = ms;
                 } catch (e) {}
             }
             const entry = {
@@ -9207,6 +9236,7 @@ class _TabsMixin {
             try {
                 const hw: any = (Zotero.getMainWindows() || []).find((w: any) => !w._wvManagedWindow);
                 if (hw && doc && doc.anchorHidden) (this as any)._wvHidRestore(hw, doc.anchorHidden);
+                if (hw && doc && doc.anchorTitle && hw._wvWindowTitle == null) this._wvWindowSetCustomTitle(hw, doc.anchorTitle);
             } catch (e) {}
             if (!entry) return;   // pre-takeover store → Zotero restored natively
             const win: any = (Zotero.getMainWindows() || []).find((w: any) => !w._wvManagedWindow);

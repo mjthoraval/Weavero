@@ -4709,6 +4709,15 @@ class WeaveroPlugin {
             // Hidden collections: per window (the store loads once, then
             // refreshes every window that has something hidden).
             try { (this as any)._wvHidApply(_window); (this as any)._wvHidLoad(); } catch (e) {}
+            // Legacy by-position window titles -> each window's own state, once,
+            // after the startup restore has rebuilt the windows.
+            try {
+                const P0: any = this;
+                if (!P0._wvTitleMigrationArmed && !Zotero.Prefs.get("weavero.windowTitlesMigrated", true)) {
+                    P0._wvTitleMigrationArmed = true;
+                    _window.setTimeout(() => { try { const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; if (lp && !lp._wvDestroyed) lp._wvMigrateIndexTitles(); } catch (e) {} }, 20000);
+                }
+            } catch (e) {}
             try { (this as any)._wvWireCollectionsSearchToggle(_window); } catch (e) {}
             try { (this as any)._wvWireCollectionTreeGestures(_window); } catch (e) {}
             try { (this as any)._wvWireMenuGhostWorkaround(_window); } catch (e) {}

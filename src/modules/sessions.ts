@@ -393,6 +393,10 @@ class _TabSessionsMixin {
             // with its library view (pane.ts, "Hidden collections").
             const hc = (this as any)._wvHidCapture ? (this as any)._wvHidCapture(w) : undefined;
             if (hc) state.hiddenColl = hc;
+            // And its custom title (tabs.ts, "custom title is part of the
+            // window's own saved state").
+            const ct = (this as any)._wvWindowCustomTitle ? (this as any)._wvWindowCustomTitle(w) : null;
+            if (ct) state.title = ct;
         } catch (e) { Zotero.debug("[Weavero] _wvTabSessionCaptureMainState err: " + e); }
         return state;
     }
@@ -722,6 +726,11 @@ class _TabSessionsMixin {
             // gives the reused anchor THIS session's set), so the saved
             // collection is selected in the filtered tree.
             try { if ((this as any)._wvHidRestore) await (this as any)._wvHidRestore(w, entry.hiddenColl || null); } catch (_) {}
+            // Custom title, same rule (absent = the default "Window N").
+            try {
+                const want = entry.title || "";
+                if (((w as any)._wvWindowTitle || "") !== want && (this as any)._wvWindowSetCustomTitle) (this as any)._wvWindowSetCustomTitle(w, want);
+            } catch (_) {}
             // Collection first — selecting it reloads the items view.
             if (entry.collection && zp.collectionsView
                     && typeof zp.collectionsView.selectByID === "function") {
@@ -788,7 +797,7 @@ class _TabSessionsMixin {
                     tabs: this._wvTabSessionToGetStateTabs(m.tabs),
                     // Carried into the spawned window so it restores its OWN
                     // collection + items-tree columns/sort, not the anchor's.
-                    wvMainState: { collection: m.collection, columnPrefs: m.columnPrefs, hiddenColl: m.hiddenColl },
+                    wvMainState: { collection: m.collection, columnPrefs: m.columnPrefs, hiddenColl: m.hiddenColl, title: m.title },
                     // Placement (2026-07-15) — the spawn path applies it;
                     // entries without one (legacy sessions) get maximized
                     // there instead of the tiny default window.
@@ -1591,8 +1600,8 @@ class _TabSessionsMixin {
                                                             kind: isReader ? "reader" : "main",
                                                             tabs, count: tabs.length,
                                                             geom: rec.geom || null, glyph: null,
-                                                            wvMainState: (rec.collection || rec.columnPrefs || rec.hiddenColl)
-                                                                ? { collection: rec.collection, columnPrefs: rec.columnPrefs, hiddenColl: rec.hiddenColl } : null,
+                                                            wvMainState: (rec.collection || rec.columnPrefs || rec.hiddenColl || rec.title)
+                                                                ? { collection: rec.collection, columnPrefs: rec.columnPrefs, hiddenColl: rec.hiddenColl, title: rec.title } : null,
                                                             sessionId: activeId, savedAt: Date.now(),
                                                         });
                                                         p2._wvSavedWindowsPersist();

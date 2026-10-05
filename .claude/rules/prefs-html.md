@@ -21,6 +21,11 @@ child of `.main-section` that has no match, so a new setting goes in its own
 section header stays visible when it matches (MJT 2026-09-28: a "firefox"
 search showed three whole sections).
 
+A block that is the master switch's own scope (an "Apply to" row of
+per-surface boxes) also carries `data-wv-with="<head key>"`: it is shown
+whenever that header itself matches the search — a "hide title" search
+showed the switch without the windows it applies to (MJT 2026-10-05).
+
 ## After every edit
 
 ```bash

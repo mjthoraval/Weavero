@@ -440,7 +440,15 @@ import { wvSetBoolAttr } from "../lib/dom";
         if (!keys.length) return;
         const rules = keys.map((k) =>
             `.main-section > [data-wv-head="${k}"].hidden-by-search:has(~ [data-wv-in~="${k}"]:not(.hidden-by-search))`
-            + " { display: revert !important; }").join("\n");
+            + " { display: revert !important; }").join("\n")
+            // The reverse, for blocks that are the master switch's own scope
+            // (`data-wv-with`, e.g. Hide Title Bar's "Apply to" row): shown
+            // whenever their header itself matches -- a search for "hide
+            // title" showed the switch without the windows it applies to
+            // (MJT 2026-10-05).
+            + "\n" + keys.map((k) =>
+                `.main-section > [data-wv-head="${k}"]:not(.hidden-by-search) ~ [data-wv-with~="${k}"].hidden-by-search`
+                + " { display: revert !important; }").join("\n");
         // Into the pane's existing <style>: a new element in .main-section
         // would be one more search root of its own.
         const st: any = ms.querySelector("style");

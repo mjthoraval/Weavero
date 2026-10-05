@@ -8585,9 +8585,14 @@ class _PaneMixin {
     }
 
     /** Hide title bar (or its Plugins Manager child) changed: every open
-     *  manager takes or drops the drawn bar now (issue #50). Switching late
-     *  can make GTK re-map the window once -- acceptable on a settings
-     *  change; a fresh manager gets it before first show. */
+     *  manager takes or drops the drawn bar now (issue #50). On Linux (GNOME,
+     *  CSD) an open manager JUMPS: Gecko cannot switch the decorations of a
+     *  shown window in place -- SetCustomTitlebar hides it, rebuilds the
+     *  native window and shows it again, restoring the size but not the
+     *  position (widget/gtk/nsWindow.cpp, ESR 140), and Wayland lets the
+     *  compositor place the re-shown window. Kept live anyway: MJT preferred
+     *  that to "applies on the next open" (2026-10-05). Windows switches in
+     *  place. A fresh manager gets the bar before first show, so no jump. */
     _wvPMReapplyChrome(this: any) {
         try {
             const on = (Zotero as any).isMac ? false : !!(this._getCompactTitleBarPluginsManager && this._getCompactTitleBarPluginsManager());

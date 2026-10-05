@@ -108,6 +108,16 @@ active), then:
       heading **PAGE NUMBERS** with rows **✓ Show (default)** and **Hide**. No
       History section there. (Left-click and double-click keep their
       native meanings: switch tab, expand/collapse all.)
+- [ ] **Outline shortcuts (#51)**: *Settings → Weavero → Extras → Reader
+      outline → Keyboard shortcuts*: all four boxes read **None**. Click
+      *Add selected text*, press **H** → refused, "already used by the
+      reader's Hand tool"; press **Ctrl+Z** → refused (Undo); press **T** →
+      "Saved.", the box shows **T**. In a PDF, select text and press T → an
+      entry is added from the selection; with nothing selected, T asks you
+      to select text. Click into an annotation comment and type "t" → only
+      the letter appears. The "+" menu and the page's right-click menu show
+      **T** next to *Select text…* / *Add Selected Text to Outline*. Press
+      **Remove** → back to **None**, T does nothing in the reader.
 - [ ] **Outline undo keys**: add an entry (any "+" flow) → Ctrl+Z with
       the outline focused → the entry disappears, the note strip says
       "Undone: Add Outline Entry"; Ctrl+Y (Windows; ⇧⌘Z on macOS,

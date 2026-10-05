@@ -516,6 +516,54 @@ import { wvSetBoolAttr } from "../lib/dom";
         ml.addEventListener("command", () => { rg.value = "fixed"; write(); });
     }
 
+    /** Outline keyboard shortcuts (issue #51): click a box, press the keys.
+     *  Lone modifiers wait for the key; Esc or leaving the box cancels;
+     *  Remove clears. A combination someone already uses is refused, with
+     *  its owner named (the plugin's _wvOutlineKeyConflict). */
+    function bindOutlineKeys(doc) {
+        const box: any = doc.getElementById("wv-outline-keys");
+        if (!box || box._wvBound) return;
+        box._wvBound = true;
+        const P = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+        for (const row of Array.from(box.querySelectorAll(".wv-okey-row")) as any[]) {
+            const id = row.getAttribute("data-wv-okey");
+            const input: any = row.querySelector(".wv-okey-input");
+            const clear: any = row.querySelector(".wv-okey-clear");
+            const msg: any = row.querySelector(".wv-okey-msg");
+            const show = () => {
+                const p = P();
+                const s = p ? p._wvOutlineKeyGet(id) : null;
+                input.value = s ? p._wvOutlineKeyLabel(s) : "";
+                input.placeholder = "None";
+                clear.disabled = !s;
+            };
+            const say = (t: string, bad: boolean) => { msg.textContent = t; msg.classList.toggle("wv-okey-bad", !!bad); };
+            show();
+            input.addEventListener("focus", () => { input.value = ""; input.placeholder = "Press the keys…"; say("Esc to cancel", false); });
+            input.addEventListener("blur", () => { show(); if (!msg.classList.contains("wv-okey-bad")) say("", false); });
+            input.addEventListener("keydown", (e: any) => {
+                try {
+                    if (e.key === "Tab" && !e.ctrlKey && !e.altKey && !e.metaKey) return;   // keep Tab for moving on
+                    e.preventDefault(); e.stopPropagation();
+                    if (e.key === "Escape" && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) { say("", false); input.blur(); return; }
+                    const p = P(); if (!p) return;
+                    const s = p._wvOutlineKeySpecFromEvent(e);
+                    if (!s) return;   // a modifier alone: wait for the key
+                    const owner = p._wvOutlineKeyConflict(s, id);
+                    if (owner) { say(p._wvOutlineKeyLabel(s) + " is already used by " + owner + ".", true); return; }
+                    Zotero.Prefs.set("weavero.outlineKey." + id, JSON.stringify(s));
+                    say("Saved.", false);
+                    input.blur();
+                } catch (er) { dbg("outline key record err: " + er); }
+            });
+            clear.addEventListener("click", () => {
+                try { Zotero.Prefs.set("weavero.outlineKey." + id, ""); } catch (er) {}
+                say("Removed.", false);
+                show();
+            });
+        }
+    }
+
     function bindAll(doc) {
         try { bindMode(doc.getElementById("wv-mode")); } catch (e) { dbg("bindMode err: " + e); }
         try { bindSplit(doc.getElementById("wv-ctrlsplit")); } catch (e) { dbg("bindSplit err: " + e); }
@@ -525,6 +573,7 @@ import { wvSetBoolAttr } from "../lib/dom";
         // follow View -> Font Size -- labels show their current size) or
         // Fixed + a px size. One pref: "zotero" | "itemPane" | "<px>".
         try { bindOutlineTextSize(doc); } catch (e) { dbg("bindOutlineTextSize err: " + e); }
+        try { bindOutlineKeys(doc); } catch (e) { dbg("bindOutlineKeys err: " + e); }
         try { bindIntInput(doc.getElementById("wv-coll-sticky-max"), "weavero.collectionsStickyMax", 1, 10, 7); } catch (e) { dbg("bindCollStickyMax err: " + e); }
         try { bindMirrors(doc); } catch (e) { dbg("bindMirrors err: " + e); }
         try { bindMasterDisable(doc); } catch (e) { dbg("bindMasterDisable err: " + e); }

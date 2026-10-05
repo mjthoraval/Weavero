@@ -8285,6 +8285,16 @@ class _PaneMixin {
     _wvPMSetupChrome(this: any, win: any, _doc: any) {
         try {
             if ((Zotero as any).isMac) return;
+            // The drawn bar follows Hide title bar -> Plugins Manager (issue
+            // #50, MJT 2026-10-05). Off: the native title bar and menu bar
+            // stay. The window is still a normal one (dialog=no reroute), so
+            // its maximize is still Weavero's doing and Linux still needs the
+            // restore-size keeper.
+            if (!this._getCompactTitleBarPluginsManager || !this._getCompactTitleBarPluginsManager()) {
+                if ((Zotero as any).isLinux && !win._wvPMRestoreOnly) win._wvPMRestoreOnly = this._wvPMKeepRestoreSize(win) || null;
+                return;
+            }
+            if (win._wvPMRestoreOnly) { try { win._wvPMRestoreOnly(); } catch (e) {} win._wvPMRestoreOnly = null; }
             if (win._wvPMChrome) {
                 // Built early (before the page named the window): make sure
                 // the name caught up, whatever the title observer saw.
@@ -8574,8 +8584,27 @@ class _PaneMixin {
         } catch (e) { return null; }
     }
 
+    /** Hide title bar (or its Plugins Manager child) changed: every open
+     *  manager takes or drops the drawn bar now (issue #50). Switching late
+     *  can make GTK re-map the window once -- acceptable on a settings
+     *  change; a fresh manager gets it before first show. */
+    _wvPMReapplyChrome(this: any) {
+        try {
+            const on = (Zotero as any).isMac ? false : !!(this._getCompactTitleBarPluginsManager && this._getCompactTitleBarPluginsManager());
+            // @ts-ignore - enumerator is iterable in Zotero's Gecko
+            for (const w of Services.wm.getEnumerator("zotero:basicViewer") as any) {
+                try {
+                    if (!String(w.viewerOriginalURI || "").includes("extensions/aboutaddons")) continue;
+                    if (on && !w._wvPMChrome) this._wvPMSetupChrome(w, null);
+                    else if (!on && w._wvPMChrome) { this._wvPMTeardownChrome(w); this._wvPMSetupChrome(w, null); }
+                } catch (e) {}
+            }
+        } catch (e) {}
+    }
+
     _wvPMTeardownChrome(this: any, win: any) {
         try {
+            if (win && win._wvPMRestoreOnly) { try { win._wvPMRestoreOnly(); } catch (e) {} win._wvPMRestoreOnly = null; }
             const c = win && win._wvPMChrome;
             if (!c) return;
             try { win.document.documentElement.removeAttribute("customtitlebar"); } catch (e) {}

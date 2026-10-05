@@ -174,6 +174,12 @@
   .wv-outline-size-group { margin: 2px 0 4px; }
   .wv-outline-size-fixed menulist { min-width: 7em; margin-inline-start: 6px; }
   .wv-outline-size-fixed menupopup menuitem { white-space: nowrap; }
+  .wv-outline-keys { display: grid; grid-template-columns: max-content 12em max-content 1fr; gap: 4px 8px; align-items: center; margin-top: 4px; }
+  .wv-okey-row { display: contents; }
+  .wv-okey-input { font: inherit; padding: 2px 6px; cursor: pointer; }
+  .wv-okey-input:focus { outline: 2px solid var(--color-accent-primary, AccentColor); }
+  .wv-okey-msg { font-size: 0.9em; color: var(--fill-secondary, GrayText); }
+  .wv-okey-msg.wv-okey-bad { color: var(--accent-red, #d70022); }
   .wv-bm-colscroll-block > .wv-desc,
   .wv-bm-colscroll-block > radiogroup { margin-inline-start: 18px; }
   /* Each box carries its type's glyph -- the chrome SVG the filter chips
@@ -554,7 +560,16 @@
   <vbox class="wv-block" data-gated-by="enableFilters" data-wv-in="filters">
       <checkbox label="Annotation sorting in the reader" native="true"
         preference="extensions.zotero.weavero.enableAnnSort"/>
-      <html:p class="wv-desc">Sort the reader&#8217;s Annotations sidebar by position, date added or date modified &#8212; right-click the Annotations tab header for the menu; a one-click sort bar and per-card date stamps appear while a date sort is active.</html:p>
+      <html:p class="wv-desc">Sort the reader&#8217;s Annotations sidebar by position, date added or date modified &#8212; right-click the Annotations tab header for the menu; a one-click sort bar appears while a date sort is active, and the cards then show both dates, the sorted one first.</html:p>
+  </vbox>
+  <vbox class="wv-block" data-gated-by="enableFilters enableAnnSort" data-wv-in="filters">
+      <vbox class="wv-dep" data-gated-by="enableAnnSort">
+        <checkbox label="Show Date Added on annotation cards" native="true"
+          preference="extensions.zotero.weavero.annCardDateAdded"/>
+        <checkbox label="Show Date Modified on annotation cards" native="true"
+          preference="extensions.zotero.weavero.annCardDateModified"/>
+        <html:p class="wv-desc">Dates at the bottom of each card in the reader&#8217;s Annotations sidebar, whatever the sort; hover one for both dates in full. Right-click the Annotations tab header in a reader to choose for that document only. Annotations imported from a PDF made in another program carry the date Zotero imported them.</html:p>
+      </vbox>
   </vbox>
   <vbox class="wv-block" data-gated-by="enableFilters" data-wv-in="filters">
       <checkbox label="Items-tree filter pane" native="true"
@@ -705,6 +720,8 @@
           preference="extensions.zotero.weavero.compactTitleBarReader"/>
         <checkbox label="Note window" native="true"
           preference="extensions.zotero.weavero.compactTitleBarNote"/>
+        <checkbox label="Plugins Manager" native="true"
+          preference="extensions.zotero.weavero.compactTitleBarPluginsManager"/>
       </html:div>
   </vbox>
   <vbox class="wv-block wv-subblock wv-block-end" data-gated-by="enableTabsAndWindows compactTitleBar" data-wv-in="tabs titlebar">
@@ -837,7 +854,7 @@
   <vbox class="wv-block wv-block-end" data-gated-by="enableVisualExtras" data-wv-in="extras x-plugins">
       <checkbox label="Plugins Manager extras (search box, card details, normal window)" native="true"
         preference="extensions.zotero.weavero.enablePluginsSearch"/>
-      <html:p class="wv-desc">Tools → Plugins gets a search box (Ctrl+F focuses it, × clears it), cards showing author [GitHub owner] · version · last updated, a normal window with minimize/maximize and the main window&#8217;s title-bar layout, and Recent Updates always visible, with a menu on its heading for how far back it goes (last day to all; Zotero&#8217;s own stops at 2 days), remembered. The manager reopens on the Plugins list.</html:p>
+      <html:p class="wv-desc">Tools → Plugins gets a search box (Ctrl+F focuses it, × clears it), cards showing author [GitHub owner] · version · last updated, a normal window with minimize/maximize (with <html:em>Hide Title Bar &#8594; Plugins Manager</html:em> on, the main window&#8217;s title-bar layout; off, the system&#8217;s own title bar and menu bar), and Recent Updates always visible, with a menu on its heading for how far back it goes (last day to all; Zotero&#8217;s own stops at 2 days), remembered. The manager reopens on the Plugins list.</html:p>
   </vbox>
 
   <!-- ============================ Default attachment
@@ -911,7 +928,7 @@
       preference="extensions.zotero.weavero.outlinePageNumbers"/>
     <html:p class="wv-desc">The “p. N” label at the right of each entry. Right-click the Outline tab in a reader to show or hide them for that document only.</html:p>
   </vbox>
-  <vbox class="wv-block wv-block-end" data-gated-by="enableVisualExtras" data-wv-in="extras outline">
+  <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-in="extras outline">
     <label><html:h3>Outline text size</html:h3></label>
     <html:p class="wv-desc"><html:strong>Zotero Outline</html:strong> and <html:strong>Zotero Item Pane</html:strong> follow <html:em>View &#8594; Font Size</html:em> (the sizes shown are the current ones); <html:strong>Fixed</html:strong> stays at the chosen size whatever the Font Size. Right-click the Outline tab in a reader to choose a size for that document only.</html:p>
     <radiogroup id="wv-outline-textsize-mode" orient="vertical" class="wv-outline-size-group">
@@ -937,6 +954,16 @@
         </menulist>
       </hbox>
     </radiogroup>
+  </vbox>
+  <vbox class="wv-block wv-block-end" data-gated-by="enableVisualExtras" data-wv-in="extras outline">
+    <label><html:h3>Keyboard shortcuts for adding entries</html:h3></label>
+    <html:p class="wv-desc">None is set out of the box. Click a box and press the keys you want &#8212; a single letter works too; combinations Zotero or the reader already use are refused. They work in reader tabs, never while you type in a text field, and show next to the matching menu items.</html:p>
+    <html:div id="wv-outline-keys" class="wv-outline-keys">
+      <html:div class="wv-okey-row" data-wv-okey="selection"><html:span class="wv-okey-label">Add selected text</html:span><html:input type="text" class="wv-okey-input" readonly="readonly"/><html:button class="wv-okey-clear" type="button">Remove</html:button><html:span class="wv-okey-msg"/></html:div>
+      <html:div class="wv-okey-row" data-wv-okey="pin"><html:span class="wv-okey-label">Pin a spot</html:span><html:input type="text" class="wv-okey-input" readonly="readonly"/><html:button class="wv-okey-clear" type="button">Remove</html:button><html:span class="wv-okey-msg"/></html:div>
+      <html:div class="wv-okey-row" data-wv-okey="anchorTop"><html:span class="wv-okey-label">Top of page (PDF)</html:span><html:input type="text" class="wv-okey-input" readonly="readonly"/><html:button class="wv-okey-clear" type="button">Remove</html:button><html:span class="wv-okey-msg"/></html:div>
+      <html:div class="wv-okey-row" data-wv-okey="anchorBottom"><html:span class="wv-okey-label">Bottom of page (PDF)</html:span><html:input type="text" class="wv-okey-input" readonly="readonly"/><html:button class="wv-okey-clear" type="button">Remove</html:button><html:span class="wv-okey-msg"/></html:div>
+    </html:div>
   </vbox>
 
   <!-- ============================ Reader annotations pane -->

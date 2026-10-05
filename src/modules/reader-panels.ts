@@ -2157,14 +2157,20 @@ class _ReaderPanelsMixin {
             if (!iw) return;
             const idoc: any = reader._iframeWindow && reader._iframeWindow.document;
             const cur = this._wvAnnSort(reader);
+            // Card dates (issue #49): both dates of every annotation,
+            // whenever a date sort or this document's ticks show any. From
+            // the Zotero items -- the reader's objects carry no dateAdded.
+            try {
+                const shown = this._wvAnnDatesShown(reader);
+                const need = cur.field === "dateAdded" || cur.field === "dateModified" || shown.added || shown.modified;
+                if (idoc) idoc._wvAnnDates = need ? this._wvAnnDateMap(reader) : null;
+            } catch (_) { if (idoc) idoc._wvAnnDates = null; }
             if (cur.field === "position" && cur.dir !== "desc") {
                 iw.__wvAnnRank = null;
-                if (idoc) idoc._wvAnnDates = null;
             } else {
                 const att = this._wvReaderAtt(reader);
                 const attItem: any = att && att.att;
                 const rank: any = {};
-                const dates: any = {};
                 const anns: any[] = (attItem && typeof attItem.getAnnotations === "function")
                     ? attItem.getAnnotations() : [];
                 if (cur.field === "manual") {
@@ -2186,7 +2192,6 @@ class _ReaderPanelsMixin {
                     });
                     for (let i = 0; i < sorted.length; i++) rank[sorted[i].key] = -i;
                 } else {
-                    const today = new Date();
                     for (const a of anns) {
                         try {
                             const d = cur.field === "dateAdded" ? a.dateAdded : a.dateModified;
@@ -2194,24 +2199,10 @@ class _ReaderPanelsMixin {
                             if (!dt) continue;   // sqlToDate returns false on a bad string
                             const t = dt.getTime();
                             rank[a.key] = cur.dir === "asc" ? t : -t;
-                            // Same-day annotations show time only (user call
-                            // 2026-08-03: sorting within today needs a short
-                            // form); older ones use toLocaleString() -- the
-                            // SAME format Zotero's own Date Added/Modified
-                            // columns render (itemTree.jsx/itemBox.js), comma
-                            // included. Tooltip carries the full form always.
-                            const sameDay = dt.getFullYear() === today.getFullYear()
-                                && dt.getMonth() === today.getMonth()
-                                && dt.getDate() === today.getDate();
-                            dates[a.key] = {
-                                s: sameDay ? dt.toLocaleTimeString() : dt.toLocaleString(),
-                                f: dt.toLocaleString(),
-                            };
                         } catch (e) {}
                     }
                 }
                 iw.__wvAnnRank = (Components as any).utils.cloneInto(rank, reader._iframeWindow);
-                if (idoc) idoc._wvAnnDates = cur.field === "position" ? null : dates;
             }
             // RENDER ONLY ON CHANGE. This runs on every ensure pass, and the
             // ensure pass runs from the sidebar mutation observer -- an
@@ -2240,17 +2231,92 @@ class _ReaderPanelsMixin {
         } catch (e) {}
     }
 
-    /** Stamp the active sort field's date onto each sidebar annotation card
-     *  (user call 2026-08-03: "when sorting by date, I should be able to see
-     *  that date easily"). Mutation-quiet: only writes when the value really
+    /** {annotationKey -> {a, m}}: each date as {s: short, f: full}, or
+     *  null. Same-day dates show time only (user call 2026-08-03: sorting
+     *  within today needs a short form); older ones use toLocaleString() --
+     *  the SAME format Zotero's own Date Added/Modified columns render
+     *  (itemTree.jsx/itemBox.js), comma included. */
+    _wvAnnDateMap(reader: any): any {
+        const out: any = {};
+        try {
+            const att = this._wvReaderAtt(reader);
+            const attItem: any = att && att.att;
+            const anns: any[] = (attItem && typeof attItem.getAnnotations === "function") ? attItem.getAnnotations() : [];
+            const today = new Date();
+            const one = (sql: any) => {
+                try {
+                    const dt: any = Zotero.Date.sqlToDate(sql, true);
+                    if (!dt) return null;   // sqlToDate returns false on a bad string
+                    const sameDay = dt.getFullYear() === today.getFullYear()
+                        && dt.getMonth() === today.getMonth()
+                        && dt.getDate() === today.getDate();
+                    return { s: sameDay ? dt.toLocaleTimeString() : dt.toLocaleString(), f: dt.toLocaleString() };
+                } catch (_) { return null; }
+            };
+            for (const a of anns) out[a.key] = { a: one(a.dateAdded), m: one(a.dateModified) };
+        } catch (_) {}
+        return out;
+    }
+
+    /** The settings default for the card dates (issue #49; both opt-in). */
+    _wvAnnDatesDefault(): { added: boolean; modified: boolean } {
+        const g = (n: string) => { try { return Zotero.Prefs.get("weavero." + n) === true; } catch (_) { return false; } };
+        return { added: g("annCardDateAdded"), modified: g("annCardDateModified") };
+    }
+
+    /** The card dates this document shows: its own choice (ann-order.json
+     *  `dates`, departures from the settings only), else the settings. */
+    _wvAnnDatesShown(reader: any): { added: boolean; modified: boolean } {
+        const out = this._wvAnnDatesDefault();
+        try {
+            const att = reader ? this._wvReaderAtt(reader) : null;
+            const e = att && this._wvAnnOrderEntry(att.libraryID, att.itemKey);
+            if (e && e.dates) {
+                if (typeof e.dates.added === "boolean") out.added = e.dates.added;
+                if (typeof e.dates.modified === "boolean") out.modified = e.dates.modified;
+            }
+        } catch (_) {}
+        return out;
+    }
+
+    /** Show or hide one date for this document. Departure-only, like the
+     *  bookmarks' page numbers: choosing the settings value drops it. */
+    async _wvAnnSetDateShown(reader: any, which: "added" | "modified", on: boolean) {
+        try {
+            const att = reader ? this._wvReaderAtt(reader) : null;
+            if (!att) return;
+            // The load is async and REPLACES the store when it lands: a write
+            // made before it would be lost (spec, 2026-10-05).
+            this._wvAnnOrderEnsureLoaded(reader);
+            for (let i = 0; i < 60 && !this._wvAnnOrderDoc; i++) await Zotero.Promise.delay(50);
+            const def: any = this._wvAnnDatesDefault();
+            const e = this._wvAnnOrderEntry(att.libraryID, att.itemKey);
+            const dates: any = Object.assign({}, (e && e.dates) || {});
+            if (on === def[which]) delete dates[which]; else dates[which] = on;
+            await this._wvAnnOrderWrite(att.libraryID, att.itemKey, {
+                mode: e ? e.mode : "position", dir: e ? e.dir : "asc", keys: e ? e.keys : [],
+                dates: Object.keys(dates).length ? dates : null,
+            });
+        } catch (e) { Zotero.debug("[Weavero] ann dates set err: " + e); }
+    }
+
+    /** Date lines at the bottom of each sidebar annotation card: a date
+     *  sort shows both dates, the sorted one first (MJT 2026-10-05, #49);
+     *  otherwise the dates this document shows. Each line's tooltip has
+     *  both full dates. Mutation-quiet: only writes when the content really
      *  changes, so the observer that re-invokes it after React re-renders
      *  settles instead of looping. */
     _wvAnnStampDates(reader: any, idoc: any) {
         try {
             if (!idoc) return;
             const cur = this._wvAnnSort(reader);
-            const on = cur.field !== "position";
+            const shown = this._wvAnnDatesShown(reader);
+            const order: Array<"a" | "m"> = cur.field === "dateAdded" ? ["a", "m"]
+                : cur.field === "dateModified" ? ["m", "a"]
+                : ([] as Array<"a" | "m">).concat(shown.added ? ["a"] : [], shown.modified ? ["m"] : []);
+            const on = order.length > 0;
             const map: any = idoc._wvAnnDates || {};
+            const LBL: any = { a: "Added", m: "Modified" };
             for (const card of idoc.querySelectorAll("#annotationsView .annotation")) {
                 try {
                     let el: any = card.querySelector(".wv-ann-date");
@@ -2267,9 +2333,19 @@ class _ReaderPanelsMixin {
                         el.className = "wv-ann-date";
                         card.appendChild(el);
                     }
-                    const txt = d ? d.s : "";
-                    if (el.textContent !== txt) el.textContent = txt;
-                    const full = d ? d.f : "";
+                    const lines = d ? order.filter(k => d[k]).map(k => LBL[k] + " " + d[k].s) : [];
+                    const sig = lines.join("\n");
+                    if (el.getAttribute("data-wv-sig") !== sig || el.childElementCount !== lines.length) {
+                        el.setAttribute("data-wv-sig", sig);
+                        while (el.firstChild) el.removeChild(el.firstChild);
+                        for (const t of lines) {
+                            const ln = idoc.createElementNS(NS_HTML_RP, "div");
+                            ln.className = "wv-ann-date-line";
+                            ln.textContent = t;
+                            el.appendChild(ln);
+                        }
+                    }
+                    const full = d ? [d.a ? "Date Added: " + d.a.f : "", d.m ? "Date Modified: " + d.m.f : ""].filter(Boolean).join("\n") : "";
                     if (el.getAttribute("title") !== full) el.setAttribute("title", full);
                 } catch (e) {}
             }
@@ -2456,6 +2532,8 @@ class _ReaderPanelsMixin {
                     if (norm) out.list = norm;
                 }
                 else if (Array.isArray(e.listHide) && e.listHide.length) out.list = { typesExcl: e.listHide.slice() };
+                // Card dates (issue #49): departures from the settings only.
+                if (e.dates && typeof e.dates === "object") out.dates = Object.assign({}, e.dates);
                 return out;
             }
         } catch (_) {}
@@ -2493,6 +2571,10 @@ class _ReaderPanelsMixin {
                 }
                 else if (Array.isArray(prev.listHide) && prev.listHide.length) next.list = { typesExcl: prev.listHide.slice() };
             }
+            // `dates` (issue #49): same rule -- an object sets, null clears,
+            // undefined (a sort or list write) keeps it.
+            if (entry.dates && typeof entry.dates === "object") next.dates = Object.assign({}, entry.dates);
+            else if (entry.dates !== null && prev && typeof prev === "object" && prev.dates && typeof prev.dates === "object") next.dates = Object.assign({}, prev.dates);
             this._wvAnnOrderDoc.orders[libraryID + ":" + itemKey] = next;
             const path = this._wvAnnOrderPath();
             try { await IOUtils.makeDirectory(PathUtils.parent(path), { ignoreExisting: true }); } catch (_) {}
@@ -2813,6 +2895,20 @@ class _ReaderPanelsMixin {
                 const attM = this._wvReaderAtt(reader);
                 if (attM && this._wvAnnOrderGet(attM.libraryID, attM.itemKey).length) {
                     row("Manual (drag to reorder)", cur.field === "manual", () => this._wvAnnSetSort("manual", undefined, reader));
+                }
+            } catch (e) {}
+            // Card dates for this document (issue #49): a tick per date,
+            // "(default)" while the tick matches Settings.
+            try {
+                if (this._wvReaderAtt(reader)) {
+                    const shown = this._wvAnnDatesShown(reader);
+                    const def = this._wvAnnDatesDefault();
+                    const sep = idoc.createElementNS(NS_HTML_RP, "div");
+                    sep.className = "wv-ctx-sep";
+                    menu.appendChild(sep);
+                    heading("Show on cards");
+                    row("Date Added", shown.added, () => { this._wvAnnSetDateShown(reader, "added", !shown.added); }, shown.added === def.added);
+                    row("Date Modified", shown.modified, () => { this._wvAnnSetDateShown(reader, "modified", !shown.modified); }, shown.modified === def.modified);
                 }
             } catch (e) {}
             (idoc.body || idoc.documentElement).appendChild(menu);
@@ -3575,6 +3671,7 @@ class _ReaderPanelsMixin {
             // the context-menu guard below meant an already-wired window skipped
             // it entirely and the capture never installed.
             try { this._wvOutlineWireSelectionCapture(reader); } catch (_) {}
+            try { this._wvOutlineWireShortcutKeys(reader, idoc); } catch (_) {}
             const olCtxWin: any = idoc.defaultView;
             if (olCtxWin && olCtxWin._wvOutlineCtxWired !== RP_BM_CTX_WIRE_V) {
                 try { if (olCtxWin._wvOutlineCtxHandler) olCtxWin.removeEventListener("auxclick", olCtxWin._wvOutlineCtxHandler, true); } catch (_) {}
@@ -7345,6 +7442,221 @@ class _ReaderPanelsMixin {
         } catch (_) {}
     }
 
+    // ---- Outline keyboard shortcuts (issue #51, MJT 2026-10-05) ----
+    // User-defined, NO defaults (nothing is bound until the user records a
+    // combination in Settings, so nothing collides with shortcuts other
+    // plugins already provide); any combination, a bare letter included;
+    // removable; combinations the reader, pdf.js or Zotero already use are
+    // refused with their owner named. Stored per action as JSON
+    // {code, label, ctrl, alt, shift, meta} in weavero.outlineKey.<id>.
+    // Matched on `code` (the physical key) so a key keeps working on any
+    // keyboard layout; `label` is what the key showed when it was recorded.
+
+    _wvOutlineKeyActions(): Array<{ id: string; label: string }> {
+        return [
+            { id: "selection", label: "Add Selected Text to Outline" },
+            { id: "pin", label: "Pin a Spot to Outline" },
+            { id: "anchorTop", label: "Add Top of Page to Outline" },
+            { id: "anchorBottom", label: "Add Bottom of Page to Outline" },
+        ];
+    }
+
+    _wvOutlineKeyGet(id: string): any {
+        try {
+            const raw = Zotero.Prefs.get("weavero.outlineKey." + id);
+            if (typeof raw !== "string" || !raw) return null;
+            const s = JSON.parse(raw);
+            return s && typeof s.code === "string" && s.code ? s : null;
+        } catch (_) { return null; }
+    }
+
+    /** The combination a keydown makes, or null for a lone modifier. */
+    _wvOutlineKeySpecFromEvent(e: any): any {
+        try {
+            const code = String(e.code || "");
+            const key = String(e.key || "");
+            if (!code || ["Shift", "Control", "Alt", "Meta", "OS", "AltGraph", "CapsLock", "Fn"].includes(key)) return null;
+            let label = key;
+            if (/^Key[A-Z]$/.test(code)) label = (key.length === 1 && /\p{L}/u.test(key)) ? key.toUpperCase() : code.slice(3);
+            else if (/^Digit\d$/.test(code)) label = code.slice(5);
+            else if (key === " ") label = "Space";
+            else if (key.length === 1) label = key.toUpperCase();
+            return { code, label, ctrl: !!e.ctrlKey, alt: !!e.altKey, shift: !!e.shiftKey, meta: !!e.metaKey };
+        } catch (_) { return null; }
+    }
+
+    _wvOutlineKeyLabel(s: any): string {
+        if (!s) return "";
+        const mac = !!(Zotero as any).isMac;
+        const parts: string[] = [];
+        if (s.ctrl) parts.push(mac ? "Control" : "Ctrl");
+        if (s.alt) parts.push(mac ? "Option" : "Alt");
+        if (s.shift) parts.push("Shift");
+        if (s.meta) parts.push(mac ? "Cmd" : "Win");
+        parts.push(String(s.label || s.code));
+        return parts.join("+");
+    }
+
+    _wvOutlineKeyMatches(s: any, e: any): boolean {
+        return !!s && e.code === s.code && !!e.ctrlKey === !!s.ctrl && !!e.altKey === !!s.alt
+            && !!e.shiftKey === !!s.shift && !!e.metaKey === !!s.meta;
+    }
+
+    /** Who already uses this combination in a reader tab, or null. Sources:
+     *  the reader's keyboard manager (reader src/common/keyboard-manager.js),
+     *  pdf.js's viewer keys (pdf.js web/app.js onKeyDown), Zotero's
+     *  configurable Ctrl/Cmd+Shift keys (Zotero.Keys) and every <key> of the
+     *  main window, plus the other outline shortcuts. */
+    _wvOutlineKeyConflict(s: any, exceptId?: string): string | null {
+        if (!s) return null;
+        const mac = !!(Zotero as any).isMac;
+        const accel = mac ? (s.meta && !s.ctrl) : (s.ctrl && !s.meta);
+        const none = !s.ctrl && !s.alt && !s.shift && !s.meta;
+        const shiftOnly = s.shift && !s.ctrl && !s.alt && !s.meta;
+        const altOnly = s.alt && !s.ctrl && !s.shift && !s.meta;
+        const c = s.code;
+        const NAV = ["Space", "Enter", "NumpadEnter", "Escape", "Delete", "Backspace", "Tab", "ArrowUp", "ArrowDown",
+            "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"];
+        if (none) {
+            const bare: any = {
+                KeyH: "the reader’s Hand tool (and Read Aloud highlight)", KeyS: "the reader’s Select tool",
+                KeyU: "Read Aloud (underline)", KeyN: "next page", KeyJ: "next page", KeyP: "previous page",
+                KeyK: "previous page", KeyR: "rotate pages", F4: "the PDF sidebar",
+            };
+            if (bare[c]) return bare[c];
+            if (/^Digit[1-9]$/.test(c) || /^Numpad[1-9]$/.test(c)) return "the annotation colours";
+            if (NAV.includes(c)) return "reading and navigation in the reader";
+        }
+        if (shiftOnly && (c === "KeyR" || NAV.includes(c))) return c === "KeyR" ? "rotate pages" : "text selection in the reader";
+        if (altOnly && (/^Digit[1-8]$/.test(c) || c === "ArrowLeft" || c === "ArrowRight")) return /^Digit/.test(c) ? "the reader’s annotation tools" : "Back / Forward in the reader";
+        if (accel && !s.alt) {
+            const a: any = s.shift
+                ? { KeyZ: "Redo", KeyG: "Find Previous", KeyR: "rotate pages", KeyL: "rotate pages", KeyT: "Reopen Closed Tab" }
+                : { KeyA: "Select All", KeyZ: "Undo", KeyY: "Redo", KeyF: "Find", KeyG: "Find Next", KeyP: "Print",
+                    KeyC: "Copy", KeyX: "Cut", KeyV: "Paste", KeyW: "Close Tab", KeyN: "New Main Window",
+                    Equal: "Zoom In", Minus: "Zoom Out", Digit0: "Reset Zoom", NumpadAdd: "Zoom In",
+                    NumpadSubtract: "Zoom Out", BracketLeft: "Back", BracketRight: "Forward", Tab: "the next tab" };
+            if (a[c]) return a[c];
+            if (!s.shift && /^Digit[1-9]$/.test(c)) return "switching tabs";
+            if (s.shift) {
+                try {
+                    const ch = /^Key[A-Z]$/.test(c) ? c.slice(3) : (s.label || "");
+                    const cmd = ch && (Zotero as any).Keys && (Zotero as any).Keys.getCommand(ch);
+                    if (cmd) {
+                        const nice = String(cmd).replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase().replace(/^./, (x: string) => x.toUpperCase());
+                        return "Zotero’s “" + nice + "” shortcut (Settings → Advanced → Shortcuts)";
+                    }
+                } catch (_) {}
+            }
+        }
+        if (accel && s.alt && !s.shift && c === "KeyG") return "Find";
+        // Menu shortcuts of the main window (<key> elements).
+        try {
+            const doc = Zotero.getMainWindow() && Zotero.getMainWindow().document;
+            for (const k of (doc ? Array.from(doc.querySelectorAll("key")) : []) as any[]) {
+                if (k.hasAttribute("disabled") && k.getAttribute("disabled") !== "false") continue;   // presence = disabled (compat.spec.js)
+                const mods = String(k.getAttribute("modifiers") || "").split(/[\s,]+/).filter(Boolean);
+                const kc = String(k.getAttribute("keycode") || "");
+                const kk = String(k.getAttribute("key") || "");
+                const want = {
+                    ctrl: mods.includes("control") || (!mac && mods.includes("accel")),
+                    meta: mods.includes("meta") || (mac && mods.includes("accel")),
+                    alt: mods.includes("alt"), shift: mods.includes("shift"),
+                };
+                if (want.ctrl !== !!s.ctrl || want.meta !== !!s.meta || want.alt !== !!s.alt || want.shift !== !!s.shift) continue;
+                const hit = kk ? (kk.toUpperCase() === String(s.label || "").toUpperCase() || ("Key" + kk.toUpperCase()) === c)
+                    : (kc && kc.replace(/^VK_/, "") === String(s.label || "").toUpperCase());
+                if (!hit) continue;
+                const mi: any = k.id ? doc.querySelector('menuitem[key="' + k.id + '"]') : null;
+                return (mi && mi.getAttribute("label")) ? "the menu item “" + mi.getAttribute("label") + "”" : "a Zotero menu shortcut";
+            }
+        } catch (_) {}
+        for (const a of this._wvOutlineKeyActions()) {
+            if (a.id === exceptId) continue;
+            const o = this._wvOutlineKeyGet(a.id);
+            if (o && o.code === s.code && !!o.ctrl === !!s.ctrl && !!o.alt === !!s.alt && !!o.shift === !!s.shift && !!o.meta === !!s.meta) {
+                return "“" + a.label + "”";
+            }
+        }
+        return null;
+    }
+
+    /** The shortcut's text for a menu ("" when none is set). */
+    _wvOutlineKeyText(id: string): string {
+        return this._wvOutlineKeyLabel(this._wvOutlineKeyGet(id));
+    }
+
+    /** keydown in a reader tab (its own document and its views). Typing
+     *  always wins: nothing happens while a text field has the focus. */
+    _wvOutlineShortcutKey(reader: any, e: any): boolean {
+        try {
+            if (e.repeat || e.isComposing || e.defaultPrevented) return false;
+            let id: string | null = null;
+            for (const a of this._wvOutlineKeyActions()) {
+                if (this._wvOutlineKeyMatches(this._wvOutlineKeyGet(a.id), e)) { id = a.id; break; }
+            }
+            if (!id) return false;
+            const t: any = e.target;
+            const fe: any = (t && t.ownerDocument && t.ownerDocument.activeElement) || t;
+            for (const el of [t, fe]) {
+                if (!el) continue;
+                const ln = String(el.localName || "").toLowerCase();
+                if (el.isContentEditable || ln === "input" || ln === "textarea" || ln === "select") return false;
+                if (el.closest && el.closest(".textAnnotation, .label-popup, [contenteditable='true']")) return false;
+            }
+            e.preventDefault(); e.stopPropagation();
+            const idoc = reader._iframeWindow && reader._iframeWindow.document;
+            if (!idoc) return true;
+            const rmOn = this._wvReadingModeActive(reader);
+            const isPdf = (reader._type || "pdf") === "pdf";
+            if (!RP_OUTLINE_VIEW_TYPES.has(reader._type || "pdf")) return true;
+            if (id === "selection") {
+                // LIVE selection only: the remembered one (the context menu's
+                // fallback) could add text the user has since deselected.
+                const sel = rmOn ? null : this._wvOutlineReadSelection(reader);
+                if (sel && sel.position && sel.text) this._wvOutlineAddFromSelection(reader, sel);
+                else if (rmOn) this._wvOutlineAddWithSelectionRm(reader, idoc);
+                else this._wvOutlineAddWithSelection(reader, idoc);
+            }
+            else if (id === "pin") {
+                if (rmOn) this._wvReaderPanelNote(idoc, "Pins can’t be placed in Reading Mode.");
+                else this._wvOutlineAddWithPin(reader, idoc);
+            }
+            else {
+                if (!isPdf) this._wvReaderPanelNote(idoc, "Page anchors are for PDFs only.");
+                else this._wvOutlineAddWithAnchor(reader, idoc, id === "anchorTop" ? "top" : "bottom");
+            }
+            return true;
+        } catch (err) { Zotero.debug("[Weavero] outline shortcut err: " + err); return false; }
+    }
+
+    /** Listen in the reader's own document and in each of its views (keys in
+     *  a view never reach the reader document -- verified 2026-10-05). Thin
+     *  versioned shims; the logic stays on the live plugin. */
+    _wvOutlineWireShortcutKeys(reader: any, idoc: any) {
+        try {
+            const { wins } = this._wvReaderReachableDocs(reader, idoc);
+            for (const w of wins) {
+                // Never a chrome window (the main or reader window): shortcuts
+                // are reader-only. Not `w === idoc.defaultView.top` -- the
+                // reader's frame is its own top (found live 2026-10-05).
+                let url = "";
+                try { url = String(w.document.URL || ""); } catch (_) {}
+                if (!w || !url || url.startsWith("chrome://")) continue;
+                if (w._wvOlKeysWired === RP_BM_CTX_WIRE_V && w._wvOlKeysReader === reader) continue;
+                try { if (w._wvOlKeysH) w.removeEventListener("keydown", w._wvOlKeysH, true); } catch (_) {}
+                const h = (e: any) => {
+                    try {
+                        const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (P && !P._wvDestroyed) P._wvOutlineShortcutKey(reader, e);
+                    } catch (_) {}
+                };
+                w._wvOlKeysH = h; w._wvOlKeysWired = RP_BM_CTX_WIRE_V; w._wvOlKeysReader = reader;
+                w.addEventListener("keydown", h, true);
+            }
+        } catch (_) {}
+    }
+
     /** Re-anchor an outline entry to the current text selection.
      *
      *  This is the ESTABLISHED position (`resolvedPosition`), the same slot the
@@ -8285,7 +8597,7 @@ class _ReaderPanelsMixin {
             const menu = idoc.createElementNS(NS_HTML_RP, "div");
             menu.id = RP_BM_CTX_ID;
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
-            const item = (label: string, icon: string, fn: () => void) => {
+            const item = (label: string, icon: string, fn: () => void, keyId?: string) => {
                 const it = idoc.createElementNS(NS_HTML_RP, "div");
                 it.className = "wv-ctx-item";
                 const ic = idoc.createElementNS(NS_HTML_RP, "span");
@@ -8293,6 +8605,14 @@ class _ReaderPanelsMixin {
                 const lb = idoc.createElementNS(NS_HTML_RP, "span");
                 lb.textContent = label;
                 it.appendChild(ic); it.appendChild(lb);
+                // The user's shortcut for it, if any (issue #51).
+                const kt = keyId ? this._wvOutlineKeyText(keyId) : "";
+                if (kt) {
+                    const hn = idoc.createElementNS(NS_HTML_RP, "span");
+                    hn.className = "wv-ctx-hint";
+                    hn.textContent = kt;
+                    it.appendChild(hn);
+                }
                 it.addEventListener("click", () => { close(); fn(); });
                 menu.appendChild(it);
             };
@@ -8306,15 +8626,15 @@ class _ReaderPanelsMixin {
             // it waits.
             item("Select text…", RP_TEXT_SVG, () => (rmOn
                 ? this._wvOutlineAddWithSelectionRm(reader, idoc)
-                : this._wvOutlineAddWithSelection(reader, idoc)));
-            if (!rmOn) item("Pin a spot…", WV_PIN_ICON_SVG, () => this._wvOutlineAddWithPin(reader, idoc));
+                : this._wvOutlineAddWithSelection(reader, idoc)), "selection");
+            if (!rmOn) item("Pin a spot…", WV_PIN_ICON_SVG, () => this._wvOutlineAddWithPin(reader, idoc), "pin");
             // Page anchors are PDF-only BY NATURE (parity register): a
             // reflowable or scrolled DOM view has no stable page, so offering
             // Top/Bottom-of-page there creates entries that go nowhere.
             if ((reader._type || "pdf") === "pdf") {
-                for (const c of this._wvPageAnchorChoices(page, null, (a) => this._wvOutlineAddWithAnchor(reader, idoc, a))) {
-                    item(c.label, c.icon, c.fn);
-                }
+                const anchorKeys = ["anchorTop", "anchorBottom"];
+                this._wvPageAnchorChoices(page, null, (a) => this._wvOutlineAddWithAnchor(reader, idoc, a))
+                    .forEach((c: any, i: number) => item(c.label, c.icon, c.fn, anchorKeys[i]));
             }
             (idoc.body || idoc.documentElement).appendChild(menu);
             const r = anchor.getBoundingClientRect();
@@ -12171,6 +12491,32 @@ class _ReaderPanelsMixin {
             menu.style.top = (r.bottom + 2) + "px";
             this._wvOutlineWireMenuDismiss(reader, idoc, menu, anchor, close);
         } catch (e) { Zotero.debug("[Weavero] bookmarks tab menu err: " + e); }
+    }
+
+    /** Propagate the card-date settings (issue #49) to every OPEN reader at
+     *  once; a document with its own choice is unaffected. */
+    _wvWireAnnDatesPrefWatch() {
+        try {
+            const g: any = Zotero;
+            const tag = this._wvWireTag();
+            if (g._wvAnnDatesPrefObs) {
+                if (g._wvAnnDatesPrefObsVer === tag) return;
+                for (const o of g._wvAnnDatesPrefObs) { try { Zotero.Prefs.unregisterObserver(o); } catch (_) {} }
+                delete g._wvAnnDatesPrefObs;
+            }
+            g._wvAnnDatesPrefObsVer = tag;
+            const refresh = () => {
+                try {
+                    const lp: any = Zotero.Weavero && Zotero.Weavero.plugin;
+                    if (!lp || lp._wvDestroyed) return;
+                    for (const r of (Zotero.Reader._readers || [])) {
+                        try { const idoc = r._iframeWindow && r._iframeWindow.document; if (idoc) lp._wvAnnSortEnsure(r, idoc); } catch (_) {}
+                    }
+                } catch (_) {}
+            };
+            g._wvAnnDatesPrefObs = ["weavero.annCardDateAdded", "weavero.annCardDateModified"]
+                .map(n => Zotero.Prefs.registerObserver(n, refresh));
+        } catch (_) {}
     }
 
     /** Propagate `weavero.bookmarkPageNumbers` flips to every OPEN reader's
@@ -22947,7 +23293,8 @@ class _ReaderPanelsMixin {
                     const OLABEL = "Add Selected Text to Outline";
                     append({ label: OLABEL, onCommand: () => this._wvOutlineAddFromSelection(reader) });
                     this._wvReaderStampMenuIcon(reader, OLABEL,
-                        this._wvReaderSelTextMenuIconURL(), this._wvReaderOutlineMenuIconURL());
+                        this._wvReaderSelTextMenuIconURL(), this._wvReaderOutlineMenuIconURL(),
+                        this._wvOutlineKeyText("selection"));
                 }
                 const LABEL = "Add Selected Text to Bookmarks";
                 append({ label: LABEL, onCommand: () => this._wvReaderAddSelectedText(reader) });
@@ -23281,7 +23628,7 @@ class _ReaderPanelsMixin {
      *  menuitems have no second icon slot, so it rides as a right-anchored
      *  background image on the item itself (hover highlight is a background
      *  COLOR, so the image survives it). */
-    _wvReaderStampMenuIcon(reader: any, label: string, iconURL: string, rightIconURL?: string) {
+    _wvReaderStampMenuIcon(reader: any, label: string, iconURL: string, rightIconURL?: string, accel?: string) {
         try {
             const win = reader._window;
             const ps = reader._popupset;
@@ -23305,6 +23652,9 @@ class _ReaderPanelsMixin {
                             mi.style.backgroundSize = "16px 16px";
                             mi.style.paddingRight = "30px";
                         }
+                        // A user shortcut (issue #51), set AFTER the item is in
+                        // place (acceltext is lost when a menuitem moves).
+                        if (accel) mi.setAttribute("acceltext", accel);
                         done = true;
                     }
                 } catch (_) { done = true; }

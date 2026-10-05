@@ -1166,6 +1166,11 @@ class WeaveroPlugin {
      *  the reader-window child. */
     _getCompactTitleBarNote() { return this._getCompactTitleBarChild("compactTitleBarNote"); }
 
+    /** Draw the Plugins Manager's title bar the same way (issue #50, MJT
+     *  2026-10-05: "behave together with the option to Hide Title Bar").
+     *  Off: the manager keeps its native title bar and menu bar. */
+    _getCompactTitleBarPluginsManager() { return this._getCompactTitleBarChild("compactTitleBarPluginsManager"); }
+
     /** Register a window-watcher that detects new standalone note windows
      *  (windowtype "zotero:note") and applies the Firefox-style strip if
      *  `compactTitleBarNote` is on. Also scans any already-open note
@@ -2235,6 +2240,7 @@ class WeaveroPlugin {
                 // installs (whose stored user values would otherwise mask them).
                 "enableTabGroups", "enableTabSessions",
                 "compactTitleBar", "compactTitleBarMain", "compactTitleBarReader", "compactTitleBarNote",
+                "compactTitleBarPluginsManager",
                 "noteOpenInDeckWindow",
                 "newMainWindow", "sessionAutoReopen",
                 "readerItemPane",
@@ -2325,6 +2331,10 @@ class WeaveroPlugin {
                 // truthful; registered so every Settings-pane pref has a
                 // default-branch value (locked by prefs-defaults.spec.js).
                 "separateTaskbarButtons", "windowTitleGlyphs",
+                // Date lines on the reader's annotation cards whatever the
+                // sort (issue #49) -- opt-in; a per-document choice lives in
+                // ann-order.json `dates`.
+                "annCardDateAdded", "annCardDateModified",
             ];
             // Per-pref guards, NOT one try around each loop: setBoolPref can
             // throw NS_ERROR_UNEXPECTED (e.g. a name cleared earlier in the
@@ -2359,6 +2369,11 @@ class WeaveroPlugin {
             // Reader outline text size (issue #47, MJT 2026-09-29): "zotero"
             // (Zotero's own size, follows View -> Font Size) or a fixed px size.
             try { branch.setCharPref(P + "outlineTextSize", "zotero"); } catch (e) {}
+            // Outline keyboard shortcuts (issue #51): EMPTY by default -- no
+            // key is bound until the user records one (MJT 2026-10-05).
+            for (const k of ["selection", "pin", "anchorTop", "anchorBottom"]) {
+                try { branch.setCharPref(P + "outlineKey." + k, ""); } catch (e) {}
+            }
             // Saved-session list order (MJT 2026-09-29): "created" (the stored
             // order), "name" or "lastUsed".
             try { branch.setCharPref(P + "sessionSort", "created"); } catch (e) {}
@@ -4005,7 +4020,10 @@ class WeaveroPlugin {
                             || data === "extensions.zotero.weavero.compactTitleBarMain"
                             || data === "extensions.zotero.weavero.compactTitleBarReader"
                             || data === "extensions.zotero.weavero.compactTitleBarNote"
+                            || data === "extensions.zotero.weavero.compactTitleBarPluginsManager"
                             || data === "extensions.zotero.weavero.enableTabsAndWindows") {
+                        // An open Plugins Manager follows at once (issue #50).
+                        try { (this as any)._wvPMReapplyChrome(); } catch (e) {}
                         try {
                             // Reader-strip ON↔OFF transition: extra reader-window
                             // tabs only exist under the strip, so losing it would
@@ -5894,6 +5912,7 @@ Zotero.Weavero = {
                 try { _Weavero._wvWireOutlineTextSizePrefWatch(); } catch (e) {}
                 try { _Weavero._wvWireUndoButtonsPrefWatch(); } catch (e) {}
                 try { _Weavero._wvWireBmPagesPrefWatch(); } catch (e) {}
+                try { _Weavero._wvWireAnnDatesPrefWatch(); } catch (e) {}
                 // One-shot import of picks from PikaPei/zotero-default-attachment
                 // (guarded by weavero.defaultChildMigrated). Fire-and-forget:
                 // startup must not block on it.

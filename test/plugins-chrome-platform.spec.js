@@ -189,4 +189,36 @@ describe("Weavero -- Plugins Manager title bar is one row on every platform", ()
 			try { win.close(); } catch (e) {}
 		}
 	});
+
+	// The drawn bar follows Hide title bar -> Plugins Manager (issue #50, MJT
+	// 2026-10-05): off, the manager keeps the native title bar and menu bar;
+	// toggling it while the manager is open applies at once.
+	it("follows Hide title bar: off keeps the native bar, toggling applies to an open manager", async function () {
+		if (Zotero.isMac) this.skip();
+		this.timeout(30000);
+		const P = "weavero.compactTitleBarPluginsManager";
+		const prev = Zotero.Prefs.get(P);
+		const mw = Zotero.getMainWindow();
+		const sleep = (ms) => new Promise(r => mw.setTimeout(r, ms));
+		Zotero.Prefs.set(P, false);
+		const win = /** @type {any} */ (Zotero.openInViewer("chrome://mozapps/content/extensions/aboutaddons.html"));
+		try {
+			for (let i = 0; i < 60 && !win.document.getElementById("wv-pm-searchbox") && !(win.document.querySelector("browser") && win.document.querySelector("browser").contentDocument && win.document.querySelector("browser").contentDocument.getElementById("wv-pm-searchbox")); i++) await sleep(100);
+			await sleep(300);
+			assert.isNotOk(win._wvPMChrome, "no drawn bar while the option is off");
+			assert.isNull(win.document.documentElement.getAttribute("customtitlebar"), "native decorations");
+			assert.isNull(win.document.getElementById("wv-pm-chrome-styles"), "the stock menu bar is left alone");
+			Zotero.Prefs.set(P, true);
+			for (let i = 0; i < 30 && !win._wvPMChrome; i++) await sleep(100);
+			assert.isOk(win._wvPMChrome, "turned on: the bar is drawn in the open manager");
+			Zotero.Prefs.set(P, false);
+			for (let i = 0; i < 30 && win._wvPMChrome; i++) await sleep(100);
+			assert.isNotOk(win._wvPMChrome, "turned off again: the bar is gone");
+			assert.isNull(win.document.documentElement.getAttribute("customtitlebar"));
+		}
+		finally {
+			Zotero.Prefs.set(P, prev !== false);
+			try { win.close(); } catch (e) {}
+		}
+	});
 });

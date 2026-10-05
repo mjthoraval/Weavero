@@ -2157,14 +2157,12 @@ class _ReaderPanelsMixin {
             if (!iw) return;
             const idoc: any = reader._iframeWindow && reader._iframeWindow.document;
             const cur = this._wvAnnSort(reader);
-            // Card dates (issue #49): both dates of every annotation,
-            // whenever a date sort or this document's ticks show any. From
-            // the Zotero items -- the reader's objects carry no dateAdded.
-            try {
-                const shown = this._wvAnnDatesShown(reader);
-                const need = cur.field === "dateAdded" || cur.field === "dateModified" || shown.added || shown.modified;
-                if (idoc) idoc._wvAnnDates = need ? this._wvAnnDateMap(reader) : null;
-            } catch (_) { if (idoc) idoc._wvAnnDates = null; }
+            // Card dates (issue #49): both dates of every annotation -- for
+            // the date lines AND each card header's tooltip, which carries
+            // both whatever the options (MJT 2026-10-05). From the Zotero
+            // items: the reader's objects carry no dateAdded.
+            try { if (idoc) idoc._wvAnnDates = this._wvAnnDateMap(reader); }
+            catch (_) { if (idoc) idoc._wvAnnDates = null; }
             if (cur.field === "position" && cur.dir !== "desc") {
                 iw.__wvAnnRank = null;
             } else {
@@ -2250,7 +2248,9 @@ class _ReaderPanelsMixin {
                     const sameDay = dt.getFullYear() === today.getFullYear()
                         && dt.getMonth() === today.getMonth()
                         && dt.getDate() === today.getDate();
-                    return { s: sameDay ? dt.toLocaleTimeString() : dt.toLocaleString(), f: dt.toLocaleString() };
+                    // `f` as Zotero's own header tooltip writes it (reader
+                    // preview.js: toLocaleDateString() + " " + toLocaleTimeString()).
+                    return { s: sameDay ? dt.toLocaleTimeString() : dt.toLocaleString(), f: dt.toLocaleDateString() + " " + dt.toLocaleTimeString() };
                 } catch (_) { return null; }
             };
             for (const a of anns) out[a.key] = { a: one(a.dateAdded), m: one(a.dateModified) };
@@ -2319,10 +2319,25 @@ class _ReaderPanelsMixin {
             const LBL: any = { a: "Added", m: "Modified" };
             for (const card of idoc.querySelectorAll("#annotationsView .annotation")) {
                 try {
-                    let el: any = card.querySelector(".wv-ann-date");
-                    if (!on) { if (el) el.remove(); continue; }
                     const key = card.getAttribute("data-sidebar-annotation-id");
                     const d = key ? map[key] : null;
+                    // The header's own tooltip (Zotero: Date Modified, plus who
+                    // modified it in a group) carries BOTH dates. Zotero's text
+                    // is kept on the element so teardown can put it back; the
+                    // "(user)" it ends with stays on the Modified line.
+                    try {
+                        const hd: any = card.querySelector(".preview > header, header");
+                        if (hd && d && (d.a || d.m)) {
+                            const curT = hd.getAttribute("title") || "";
+                            if (curT !== hd.getAttribute("data-wv-title")) hd.setAttribute("data-wv-native-title", curT);
+                            const nat = hd.getAttribute("data-wv-native-title") || "";
+                            const um = nat.match(/\s(\([^()]*\))$/);
+                            const t = [d.a ? "Date Added: " + d.a.f : "", d.m ? "Date Modified: " + d.m.f + (um ? " " + um[1] : "") : ""].filter(Boolean).join("\n");
+                            if (curT !== t) { hd.setAttribute("data-wv-title", t); hd.setAttribute("title", t); }
+                        }
+                    } catch (_) {}
+                    let el: any = card.querySelector(".wv-ann-date");
+                    if (!on) { if (el) el.remove(); continue; }
                     // Own row at the BOTTOM of the card, not in the header --
                     // the header hosts other Zotero/plugin controls and a
                     // stamp there collides (user call 2026-08-03). Relocate
@@ -2333,7 +2348,7 @@ class _ReaderPanelsMixin {
                         el.className = "wv-ann-date";
                         card.appendChild(el);
                     }
-                    const lines = d ? order.filter(k => d[k]).map(k => LBL[k] + " " + d[k].s) : [];
+                    const lines = d ? order.filter(k => d[k]).map(k => LBL[k] + ": " + d[k].s) : [];
                     const sig = lines.join("\n");
                     if (el.getAttribute("data-wv-sig") !== sig || el.childElementCount !== lines.length) {
                         el.setAttribute("data-wv-sig", sig);
@@ -2730,7 +2745,7 @@ class _ReaderPanelsMixin {
             // (scroll, edits, filtering all rebuild cards without our code in
             // the loop). Stamping is mutation-quiet, so this settles.
             try {
-                if ((idoc as any).__wvAnnDateObsV !== 2) {
+                if ((idoc as any).__wvAnnDateObsV !== 3) {
                     try { (idoc as any).__wvAnnDateObs && (idoc as any).__wvAnnDateObs.disconnect(); } catch (e) {}
                     const cw: any = idoc.defaultView;
                     const sc = idoc.getElementById("sidebarContainer");
@@ -2754,9 +2769,9 @@ class _ReaderPanelsMixin {
                         // class attribute watched so the bar follows sidebar
                         // VIEW switches (.active moves between tab buttons).
                         obs.observe(sc, (Components as any).utils.cloneInto(
-                            { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] }, cw));
+                            { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "title"] }, cw));
                         (idoc as any).__wvAnnDateObs = obs;
-                        (idoc as any).__wvAnnDateObsV = 2;
+                        (idoc as any).__wvAnnDateObsV = 3;
                     }
                 }
                 this._wvAnnStampDates(reader, idoc);
@@ -2957,6 +2972,12 @@ class _ReaderPanelsMixin {
                 delete (idoc as any).__wvAnnDateObs;
                 delete (idoc as any).__wvAnnDateObsV;
                 for (const el of idoc.querySelectorAll(".wv-ann-date, .wv-ann-sortbar")) { try { el.remove(); } catch (e) {} }
+                for (const hd of idoc.querySelectorAll("header[data-wv-title]")) {
+                    try {
+                        if (hd.getAttribute("title") === hd.getAttribute("data-wv-title")) hd.setAttribute("title", hd.getAttribute("data-wv-native-title") || "");
+                        hd.removeAttribute("data-wv-title"); hd.removeAttribute("data-wv-native-title");
+                    } catch (e) {}
+                }
                 try {
                     const dh = (idoc as any).__wvAnnDragH;
                     if (dh) {

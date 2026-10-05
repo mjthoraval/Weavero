@@ -96,8 +96,12 @@ describe("Weavero — hidden collections (per window)", () => {
         await cv.selectByID("C" + B.id);
         await win.ZoteroPane.buildCollectionContextMenu();
         wv._wvHidBuildMenu(win, menu);
-        const hide = [...menu.querySelectorAll(".wv-hid-entry")].map(m => m.getAttribute("label"));
-        assert.include(hide, "Hide Collection");
+        // Zotero's own Hide design (MJT 2026-10-05): its localized label and
+        // its crossed-eye icon class, as on Unfiled / Duplicates.
+        const hi = menu.querySelector(".wv-hid-entry.zotero-menuitem-hide-collection");
+        assert.isOk(hi, "the Hide item carries Zotero's hide-collection icon class");
+        assert.equal(hi.getAttribute("label"), Zotero.getString("general.hide"));
+        assert.isTrue(hi.classList.contains("menuitem-iconic"));
         for (const e of [...menu.querySelectorAll(".wv-hid-entry")]) e.remove();
     });
 
@@ -125,7 +129,7 @@ describe("Weavero — hidden collections (per window)", () => {
         const lastZotero = Math.max(...zIds.map(id => kids.findIndex(k => k.id === id)));
         assert.isAbove(lastZotero, -1, "found Zotero's items");
         assert.isAbove(firstOurs, lastZotero, "appended after Zotero's items");
-        assert.include(kids.filter(k => k.classList.contains("wv-hid-entry")).map(k => k.getAttribute("label")), "Hide Saved Search");
+        assert.include(kids.filter(k => k.classList.contains("wv-hid-entry")).map(k => k.getAttribute("label")), Zotero.getString("general.hide"));
         for (const e of [...menu.querySelectorAll(".wv-hid-entry")]) e.remove();
         await wv._wvHidRestore(win, savedSet);   // later tests expect the earlier set
     });

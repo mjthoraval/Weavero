@@ -2731,6 +2731,10 @@ class _PaneMixin {
                     ".wv-hid-dot { flex: none; width: 7px; height: 7px; border-radius: 50%;",
                     "  margin-inline: auto 8px; background: var(--accent-blue, #4072e5); }",
                     "#collection-tree .row .cell.primary:has(> .wv-hid-dot) > .cell-text { flex: 0 1 auto; }",
+                    // The Show submenus: Zotero's eye icon, drawn like its
+                    // own menu icons (svgicon-menu: context fill, secondary).
+                    ".wv-hid-show { list-style-image: url(\"chrome://zotero/skin/16/universal/view.svg\");",
+                    "  -moz-context-properties: fill, fill-opacity; fill: var(--fill-secondary); }",
                 ].join("\n");
             }
             // 3. Context-menu entries (the menu's OWN popupshowing/hidden only).
@@ -2859,17 +2863,26 @@ class _PaneMixin {
             menu.appendChild(sepTop);
             // Hide: collections / saved searches (several at once) / group libraries.
             const objs = rows.map((r: any) => r.ref);
+            // Zotero's own Hide design (the item it shows on Unfiled /
+            // Duplicates / Recently Read, MJT 2026-10-05): its localized
+            // "Hide" label and its crossed-eye icon class (scss _menu.scss,
+            // hide-collection: "hide"). Several rows keep a count.
+            let hideLabel = "", hideStr = "Hide";
+            try { hideStr = Zotero.getString("general.hide") || "Hide"; } catch (_) {}
             if (rows.every((r: any) => r.isCollection() || r.isSearch())) {
                 const nc = rows.filter((r: any) => r.isCollection()).length, ns = rows.length - nc;
-                const label = rows.length === 1 ? (nc ? "Hide Collection" : "Hide Saved Search")
+                hideLabel = rows.length === 1 ? hideStr
                     : !ns ? "Hide " + nc + " Collections"
                     : !nc ? "Hide " + ns + " Saved Searches"
                     : "Hide " + rows.length + " Collections and Saved Searches";
-                menu.insertBefore(mk(label, () => P._wvHidHide(objs, win)), anchor);
             }
             else if (rows.every((r: any) => r.isGroup())) {
-                menu.insertBefore(mk(rows.length === 1 ? "Hide Group Library" : "Hide " + rows.length + " Group Libraries",
-                    () => P._wvHidHide(objs, win)), anchor);
+                hideLabel = rows.length === 1 ? hideStr : "Hide " + rows.length + " Group Libraries";
+            }
+            if (hideLabel) {
+                const hi = mk(hideLabel, () => P._wvHidHide(objs, win));
+                hi.classList.add("menuitem-iconic", "zotero-menuitem-hide-collection");
+                menu.insertBefore(hi, anchor);
             }
             // Show: on a library row, in the group of Zotero's own "Show ..." items.
             if (rows.length === 1 && rows[0].isLibrary(true)) {
@@ -2878,7 +2891,7 @@ class _PaneMixin {
                 const groups = libID === Zotero.Libraries.userLibraryID ? this._wvHidListGroups(win) : [];
                 if (hidden.length || groups.length) {
                     const sm = doc.createXULElement("menu");
-                    sm.classList.add("wv-hid-entry");
+                    sm.classList.add("wv-hid-entry", "menu-iconic", "wv-hid-show");
                     sm.setAttribute("label", "Show Hidden Collections");
                     const pp = doc.createXULElement("menupopup");
                     const total = hidden.length + groups.length;
@@ -2920,6 +2933,7 @@ class _PaneMixin {
                 return mi;
             };
             const sm = doc.createXULElement("menu");
+            sm.classList.add("menu-iconic", "wv-hid-show");
             sm.setAttribute("label", "Show Hidden Group Libraries");
             const pp = doc.createXULElement("menupopup");
             pp.appendChild(mk("Show All (" + groups.length + ")", () => P._wvHidShow(win, null, null, groups.map((g: any) => g.libraryID))));

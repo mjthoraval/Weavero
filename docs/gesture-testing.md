@@ -445,7 +445,8 @@ Synthetic drags do not move Gecko splitters, so these are hands-only. Setting:
 
 Real right-click menus; the spec builds them without opening.
 
-- [ ] Right-click a collection → **Hide Collection** (next to Delete); it
+- [ ] Right-click a collection → **Hide**, with Zotero's crossed-eye icon
+      as on Unfiled Items (at the end of the menu); it
       and its sub-collections vanish, a **blue dot** appears at the end of
       the My Library line (hover: "In this window: 1 hidden …").
 - [ ] Ctrl+click two collections and a saved search, right-click inside the
@@ -453,7 +454,7 @@ Real right-click menus; the spec builds them without opening.
 - [ ] Right-click **My Library** → **Show Hidden Collections ▸** (after
       Zotero's own Show items) → **Show All (n)**, then each by path; pick
       one → it is back, the dot goes when none are left.
-- [ ] Right-click a group library → **Hide Group Library**; dots on the
+- [ ] Right-click a group library → **Hide**; dots on the
       **Group Libraries** line and My Library. Right-click the Group
       Libraries line → **Show Hidden Group Libraries ▸**. Hide every group →
       the line goes; My Library's Show menu lists them under "Group

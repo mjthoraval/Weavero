@@ -7871,7 +7871,7 @@ class _TabsMixin {
                 try {
                     const ms = (this as any)._wvTabSessionCaptureMainState
                         ? (this as any)._wvTabSessionCaptureMainState(w) : null;
-                    if (ms && (ms.collection || ms.columnPrefs)) wvMainState = ms;
+                    if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl)) wvMainState = ms;
                 } catch (e) {}
                 groups.push({ kind: "main-dev", tabs, wvWinId: (w._wvWindowId != null ? w._wvWindowId : null),
                     geom: (this as any)._wvWindowGeom(w), wvMainState });
@@ -7945,7 +7945,7 @@ class _TabsMixin {
             try {
                 const ms = (this as any)._wvTabSessionCaptureMainState
                     ? (this as any)._wvTabSessionCaptureMainState(w) : null;
-                if (ms && (ms.collection || ms.columnPrefs)) wvMainState = ms;
+                if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl)) wvMainState = ms;
             } catch (e) {}
             return { kind: "main-anchor", tabs, geom: (this as any)._wvWindowGeom(w), wvMainState };
         } catch (e) { return null; }
@@ -7959,11 +7959,17 @@ class _TabsMixin {
         // Unified doc: anchor + dev main windows + reader windows in one file,
         // captured together on every save so nothing clobbers anything.
         const anchor = this._wvWindowStoreCaptureAnchor();
+        // The anchor's hidden collections, OUTSIDE its entry: that entry is
+        // skipped when the anchor holds only the library tab (the common
+        // case), and its presence steers the anchor tab restore -- so the
+        // set rides a field of its own (pane.ts, "Hidden collections").
+        let anchorHidden: any;
+        try { const a0: any = (Zotero.getMainWindows() || [])[0]; anchorHidden = a0 && (this as any)._wvHidCapture ? (this as any)._wvHidCapture(a0) : undefined; } catch (e) {}
         this._wvWindowStoreWrite({ version: 4, windows: [
             ...(anchor ? [anchor] : []),
             ...this._wvWindowStoreCaptureDevWindows(),
             ...this._wvWindowStoreCaptureReaderWindows(),
-        ], focused: this._wvWindowStoreFocusDescriptor() });
+        ], focused: this._wvWindowStoreFocusDescriptor(), anchorHidden });
     }
 
     /** Debounced save — coalesces churn (e.g. closing a dev window). */
@@ -8073,7 +8079,7 @@ class _TabsMixin {
                 try {
                     const ms = (this as any)._wvTabSessionCaptureMainState
                         ? (this as any)._wvTabSessionCaptureMainState(win) : null;
-                    if (ms && (ms.collection || ms.columnPrefs)) wvMainState = ms;
+                    if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl)) wvMainState = ms;
                 } catch (e) {}
             }
             const entry = {
@@ -9196,6 +9202,12 @@ class _TabsMixin {
             this._wvAnchorTabsRestored = true;
             const doc = (this as any)._wvBootWindowStoreDoc;
             const entry = ((doc && doc.windows) || []).find((g: any) => g && g.kind === "main-anchor" && Array.isArray(g.tabs));
+            // The anchor's hidden collections (their own store field, saved
+            // even when the anchor had only the library tab).
+            try {
+                const hw: any = (Zotero.getMainWindows() || []).find((w: any) => !w._wvManagedWindow);
+                if (hw && doc && doc.anchorHidden) (this as any)._wvHidRestore(hw, doc.anchorHidden);
+            } catch (e) {}
             if (!entry) return;   // pre-takeover store → Zotero restored natively
             const win: any = (Zotero.getMainWindows() || []).find((w: any) => !w._wvManagedWindow);
             if (!win || !win.Zotero_Tabs) return;

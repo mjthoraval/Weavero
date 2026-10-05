@@ -459,7 +459,11 @@ Real right-click menus; the spec builds them without opening.
       the line goes; My Library's Show menu lists them under "Group
       Libraries".
 - [ ] A second main window (Ctrl+N) shows everything: the set is per
-      window. Restart → each window gets its own set back.
+      window. Restart → each window gets its own set back, the first window
+      included even with only its library tab open.
+- [ ] Save & Close a window with something hidden → reopen it from the
+      tabs menu → the same set. Switch tab sessions and back → each
+      session's windows have their own sets.
 
 ## Popups (after touching popup code)
 

@@ -1,4 +1,4 @@
-/* global describe, it, before, after, assert, Zotero */
+/* global describe, it, before, after, assert, Zotero, IOUtils */
 
 // Hidden collections / saved searches / group libraries (MJT 2026-10-05):
 // per main window, display-only. "Hide ..." on the row's right-click menu,
@@ -127,15 +127,30 @@ describe("Weavero — hidden collections (per window)", () => {
         assert.isNull(row && row.querySelector(".wv-hid-dot"));
     });
 
-    it("the set survives a store reload, saved under the window's identity (not its position)", async function () {
+    it("the set travels in the window's saved state (restart store, Save & Close, sessions) and comes back from it", async function () {
         this.timeout(15000);
         await wv._wvHidHide([B], win);
-        assert.property(wv._wvHidDocGet().windows, "anchor", "the first main window is saved as \"anchor\"");
-        delete win._wvHid;
-        wv._wvHidDoc = null; wv._wvHidLoaded = false; wv._wvHidLoading = false;
-        await wv._wvHidLoad();
-        assert.isTrue(wv._wvHidIsHidden(B, win), "B still hidden after reloading the file");
+        const ms = wv._wvTabSessionCaptureMainState(win);
+        assert.deepEqual(ms.hiddenColl && ms.hiddenColl.hidden[String(LIB())], ["C" + B.key], "captured with the library view");
+        // A session switch to a state WITHOUT a set clears it...
+        await wv._wvTabSessionApplyMainState(win, { collection: "L" + LIB() });
+        assert.isFalse(wv._wvHidIsHidden(B, win));
+        assert.isTrue(inTree(B));
+        // ...and applying the captured state brings it back.
+        await wv._wvTabSessionApplyMainState(win, ms);
+        assert.isTrue(wv._wvHidIsHidden(B, win));
         assert.isFalse(inTree(B));
+        await wv._wvHidShow(win, LIB(), null, []);
+        assert.isUndefined(wv._wvTabSessionCaptureMainState(win).hiddenColl, "nothing hidden: nothing captured");
+    });
+
+    it("the window store carries the first window's set in its own field (saved even with only the library tab)", async function () {
+        this.timeout(15000);
+        await wv._wvHidHide([B], win);
+        wv._wvWindowStoreSaveSync();
+        await sleep(300);
+        const doc = JSON.parse(await IOUtils.readUTF8(wv._wvWindowStorePath()));
+        assert.deepEqual(doc.anchorHidden && doc.anchorHidden.hidden[String(LIB())], ["C" + B.key]);
         await wv._wvHidShow(win, LIB(), null, []);
     });
 
@@ -158,23 +173,21 @@ describe("Weavero — hidden collections (per window)", () => {
             const ready = () => { const p = parts(); return p.cv && p.tree && p.wrapped && p.id != null; };
             for (let i = 0; i < 160 && !ready(); i++) await sleep(150);
             assert.isTrue(!!ready(), "the new window's tree is filtered: " + JSON.stringify(parts()));
-            assert.match(wv._wvHidWinKey(w2), /^win-\d+$/);
             const cv2 = w2.ZoteroPane.collectionsView;
             await wv._wvHidHide([B], w2);
             assert.isFalse(cv2.getRowIndexByID("C" + B.id) !== false, "hidden in the new window");
             assert.isTrue(inTree(B), "still shown in the first window");
             await wv._wvHidShow(w2, LIB(), null, []);
         }
-        finally { try { w2.close(); } catch (_) {} await sleep(300); }
+        finally {
+            // Wait until the window is really gone and the first one has focus
+            // again: the next spec's getMainWindow() must not pick up a
+            // closing window (items-header-contain measured 0-px columns).
+            try { w2.close(); } catch (_) {}
+            for (let i = 0; i < 60 && Zotero.getMainWindows().includes(w2); i++) await sleep(100);
+            try { win.focus(); } catch (_) {}
+            await sleep(300);
+        }
     });
 
-    it("window identity: managed windows by their stable id, never by position", () => {
-        assert.equal(wv._wvHidWinKey(win), "anchor");
-        assert.equal(wv._wvHidWinKey({ _wvManagedWindow: true, _wvWindowId: 7 }), "win-7");
-        assert.isNull(wv._wvHidWinKey({ _wvManagedWindow: true }), "id not assigned yet: unknown, nothing cached");
-        const fake = { _wvManagedWindow: true };
-        assert.deepEqual(wv._wvHidState(fake), { groups: [], hidden: {} });
-        assert.notProperty(fake, "_wvHid", "no state cached before the identity settles");
-        assert.equal(wv._wvHidWinKey({}), "", "a window Weavero did not open: session-only");
-    });
 });

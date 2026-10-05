@@ -75,9 +75,17 @@ describe("Weavero -- caption-button reservation", () => {
 			ro = wv._wvTrackCaptionReserve(win, row, box);
 			assert.equal(row.style.getPropertyValue("--wv-ctl-reserve"), "100px", "90px box + 10px right margin (the GTK case)");
 			box.style.width = "138px"; box.style.marginRight = "0px";
-			// 3s: the ResizeObserver took ~530ms alone and ran past a 1s
-			// budget under full-suite load (dev.61 run, 2026-10-05).
-			for (let i = 0; i < 60 && row.style.getPropertyValue("--wv-ctl-reserve") !== "138px"; i++) await sleep(50);
+			// Drive ONE refresh tick instead of waiting for the window's own:
+			// ResizeObserver callbacks run on the refresh driver, which pauses
+			// while the test window sits hidden behind others -- the wait
+			// failed in two full-suite gates (0.21.2, 0.21.6) even at 3s, and
+			// always passed alone. advanceTimeAndRefresh delivers it
+			// synchronously (measured 2026-10-05); restoreNormalRefresh hands
+			// the window back.
+			const wu = win.windowUtils;
+			try { wu.advanceTimeAndRefresh(0); }
+			finally { wu.restoreNormalRefresh(); }
+			for (let i = 0; i < 20 && row.style.getPropertyValue("--wv-ctl-reserve") !== "138px"; i++) await sleep(50);
 			if (ro) assert.equal(row.style.getPropertyValue("--wv-ctl-reserve"), "138px", "follows a resized box (the Windows case)");
 		}
 		finally {

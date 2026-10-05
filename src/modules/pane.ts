@@ -2837,7 +2837,17 @@ class _PaneMixin {
                 mi.addEventListener("command", () => { try { fn(); } catch (e) { Zotero.debug("[Weavero] hide cmd err: " + e); } });
                 return mi;
             };
-            const anchor = menu.querySelector("#deleteCollection") || null;
+            // APPENDED at the end, never inserted among Zotero's items:
+            // buildCollectionContextMenu configures the menu BY POSITION
+            // (`menu.childNodes[i]` <- option i) and runs a second time while
+            // the menu is open, so a node inserted before Delete shifted every
+            // later definition by one -- Zotero's Delete item came out as
+            // "Hide" (MJT's screenshot, 2026-10-05). Weavero's Copy Link
+            // entries are appended for the same reason.
+            const anchor = null;
+            const sepTop = doc.createXULElement("menuseparator");
+            sepTop.classList.add("wv-hid-entry");
+            menu.appendChild(sepTop);
             // Hide: collections / saved searches (several at once) / group libraries.
             const objs = rows.map((r: any) => r.ref);
             if (rows.every((r: any) => r.isCollection() || r.isSearch())) {
@@ -2875,18 +2885,11 @@ class _PaneMixin {
                         for (const g of groups) pp.appendChild(mk(g.label, () => P._wvHidShow(win, null, null, [g.libraryID]), false));
                     }
                     sm.appendChild(pp);
-                    const sep3 = menu.querySelector("#sep3");
-                    const exp = menu.querySelector("#exportFile");
-                    const before = (sep3 && !sep3.hidden) ? sep3 : exp;
-                    const sep2 = menu.querySelector("#sep2");
-                    if (!sep2 || sep2.hidden) {
-                        const s = doc.createXULElement("menuseparator");
-                        s.classList.add("wv-hid-entry");
-                        menu.insertBefore(s, before);
-                    }
-                    menu.insertBefore(sm, before);
+                    menu.appendChild(sm);
                 }
             }
+            // Nothing added after the separator: drop it.
+            if (menu.lastChild === sepTop) sepTop.remove();
         } catch (e) { Zotero.debug("[Weavero] _wvHidBuildMenu err: " + e); }
     }
 

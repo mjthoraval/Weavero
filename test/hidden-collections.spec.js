@@ -101,6 +101,35 @@ describe("Weavero — hidden collections (per window)", () => {
         for (const e of [...menu.querySelectorAll(".wv-hid-entry")]) e.remove();
     });
 
+    // MJT's screenshot 2026-10-05: Zotero's own "Delete Saved Search…" came out
+    // as "Hide". buildCollectionContextMenu configures the menu BY POSITION and
+    // runs a second time while it is open -- an entry inserted among Zotero's
+    // shifted every later definition. Ours must sit after all of Zotero's.
+    it("our entries sit after all of Zotero's, so Zotero's second build pass keeps its own labels", async function () {
+        this.timeout(15000);
+        const menu = win.document.getElementById("zotero-collectionmenu");
+        const savedSet = JSON.parse(JSON.stringify(win._wvHid || {}));
+        await wv._wvHidShow(win, LIB(), null, []);   // S was hidden by an earlier test
+        await cv.selectByID("S" + S.id);
+        await win.ZoteroPane.buildCollectionContextMenu();
+        const delLabel = menu.querySelector("#deleteCollection").getAttribute("label");
+        wv._wvHidBuildMenu(win, menu);
+        await win.ZoteroPane.buildCollectionContextMenu();   // the delayed second pass
+        assert.equal(menu.querySelector("#deleteCollection").getAttribute("label"), delLabel, "Delete keeps its label");
+        const kids = [...menu.children];
+        const firstOurs = kids.findIndex(k => k.classList.contains("wv-hid-entry"));
+        // Zotero's own options (zoteroPane.js _collectionContextMenuOptions);
+        // other plugins may append after us, which is harmless.
+        const zIds = ["sync", "newCollection", "newSubcollection", "editSelectedCollection", "duplicate", "deleteCollection",
+            "deleteCollectionAndItems", "exportCollection", "exportFile", "createBibCollection", "loadReport", "removeLibrary"];
+        const lastZotero = Math.max(...zIds.map(id => kids.findIndex(k => k.id === id)));
+        assert.isAbove(lastZotero, -1, "found Zotero's items");
+        assert.isAbove(firstOurs, lastZotero, "appended after Zotero's items");
+        assert.include(kids.filter(k => k.classList.contains("wv-hid-entry")).map(k => k.getAttribute("label")), "Hide Saved Search");
+        for (const e of [...menu.querySelectorAll(".wv-hid-entry")]) e.remove();
+        await wv._wvHidRestore(win, savedSet);   // later tests expect the earlier set
+    });
+
     it("hiding the selected collection moves the selection to its library row", async function () {
         this.timeout(15000);
         await cv.selectByID("C" + B.id);

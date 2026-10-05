@@ -2482,8 +2482,28 @@ export const PLUGIN_CSS = [
     // redundant -- shrink it to 1 px, as Zotero itself does for the context
     // pane, which also has a button (_splitter.scss). The border line stays
     // as the pane edge. The attribute is set only while the button exists.
+    // Nor does it take the mouse: the 1 px strip at the window edge still
+    // showed the resize cursor, and a drag opened the pane a few px wide
+    // (with "stops at minimum width" the splitter has no collapse to snap
+    // to) -- MJT 2026-10-05. The button is the way back.
     "#zotero-collections-splitter[state=\"collapsed\"][wv-thin] {",
     "  --draggable-size: 1px !important;",
+    "}",
+    // Pointer-less only while "stops at minimum width" has taken the
+    // collapse away (data-wv-collapse): with that setting off, Zotero's
+    // snap is back and the strip drags the pane open again.
+    "#zotero-collections-splitter[state=\"collapsed\"][wv-thin][data-wv-collapse] {",
+    "  pointer-events: none !important;",
+    "}",
+    // The right-hand twins: the item pane's and the reader context pane's
+    // collapsed splitters keep Zotero's 1 px strip (_splitter.scss), which
+    // showed the resize cursor and did nothing on a drag once "stops at
+    // minimum width" had taken their collapse away (data-wv-collapse marks
+    // that). Zotero's sidenav toggle reopens both -- MJT 2026-10-05.
+    "#zotero-items-splitter[state=\"collapsed\"][data-wv-collapse],",
+    "#zotero-context-splitter[state=\"collapsed\"][data-wv-collapse],",
+    "#zotero-context-splitter-stacked[state=\"collapsed\"][data-wv-collapse] {",
+    "  pointer-events: none !important;",
     "}",
     // Linux: the menu bar of an EXTRA main window (survey 2026-10-01). A window
     // from Zotero.openMainWindow comes up with chrome flags TITLEBAR / CLOSE /

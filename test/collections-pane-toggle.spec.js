@@ -137,6 +137,37 @@ describe("Weavero — collections-pane toggle button", () => {
         finally { Zotero.Prefs.set("weavero.paneDragNoCollapse", saved === undefined ? true : !!saved); }
     });
 
+    it("collapsed splitters with no way to drag back open take no pointer (no dead resize cursor; MJT 2026-10-05)", async () => {
+        const pe = (el) => win.getComputedStyle(el).pointerEvents;
+        const is = doc.getElementById("zotero-items-splitter");
+        const saved = Zotero.Prefs.get("weavero.paneDragNoCollapse");
+        const isState = is.getAttribute("state");
+        try {
+            Zotero.Prefs.set("weavero.paneDragNoCollapse", true);
+            await waitFor(() => is.hasAttribute("data-wv-collapse"), 3000, "snap removed");
+            // Left: collapsed by the button -> the 1 px edge line takes no pointer.
+            if (pane.hasAttribute("collapsed")) wv._wvCollectionsPaneToggle(win);
+            assert.notEqual(pe(splitter), "none", "open: the splitter drags as usual");
+            wv._wvCollectionsPaneToggle(win);
+            assert.equal(pe(splitter), "none", "collapsed with the button: no resize cursor, no drag");
+            wv._wvCollectionsPaneToggle(win);
+            // Right: the item pane's collapsed splitter (Zotero's sidenav reopens it).
+            is.setAttribute("state", "collapsed");
+            assert.equal(pe(is), "none", "collapsed item-pane splitter takes no pointer");
+            Zotero.Prefs.set("weavero.paneDragNoCollapse", false);
+            await waitFor(() => !is.hasAttribute("data-wv-collapse"), 3000, "snap back");
+            assert.notEqual(pe(is), "none", "Zotero's snap back: the strip drags the pane open again");
+            // Left too: with Zotero's snap back, the collapsed strip drags open again.
+            wv._wvCollectionsPaneToggle(win);
+            assert.notEqual(pe(splitter), "none", "setting off: the collapsed collections strip drags open again");
+            wv._wvCollectionsPaneToggle(win);
+        }
+        finally {
+            if (isState) is.setAttribute("state", isState); else is.removeAttribute("state");
+            Zotero.Prefs.set("weavero.paneDragNoCollapse", saved === undefined ? true : !!saved);
+        }
+    });
+
     it("follows its setting without a reload: off removes the button, on brings it back; the Extras master too", async () => {
         // With the button, the collapsed splitter's drag band shrinks to 1 px
         // (Zotero's own treatment of the context pane's splitter); without it,

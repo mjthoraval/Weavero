@@ -9,7 +9,10 @@
 describe("Weavero — hidden collections (per window)", () => {
     let wv, win, cv, A, A1, B, S;
     const LIB = () => Zotero.Libraries.userLibraryID;
-    const sleep = (ms) => new Promise(r => Zotero.getMainWindow().setTimeout(r, ms));
+    // Timers on the FIRST window: once a second window opens, getMainWindow()
+    // returns it, and its timers do not fire before it has loaded.
+    let timerWin = null;
+    const sleep = (ms) => new Promise(r => (timerWin || (timerWin = Zotero.getMainWindow())).setTimeout(r, ms));
     const inTree = (obj) => cv.getRowIndexByID((obj.objectType === "search" ? "S" : "C") + obj.id) !== false;
 
     before(async function () {
@@ -124,14 +127,54 @@ describe("Weavero — hidden collections (per window)", () => {
         assert.isNull(row && row.querySelector(".wv-hid-dot"));
     });
 
-    it("the set survives a store reload (saved under the window's index)", async function () {
+    it("the set survives a store reload, saved under the window's identity (not its position)", async function () {
         this.timeout(15000);
         await wv._wvHidHide([B], win);
+        assert.property(wv._wvHidDocGet().windows, "anchor", "the first main window is saved as \"anchor\"");
         delete win._wvHid;
         wv._wvHidDoc = null; wv._wvHidLoaded = false; wv._wvHidLoading = false;
         await wv._wvHidLoad();
         assert.isTrue(wv._wvHidIsHidden(B, win), "B still hidden after reloading the file");
         assert.isFalse(inTree(B));
         await wv._wvHidShow(win, LIB(), null, []);
+    });
+
+    // Found live 2026-10-05: onMainWindowLoad ran before the new window had a
+    // collections tree, so its set was saved but never filtered.
+    it("a NEW main window gets its own set, applied to its own tree only", async function () {
+        this.timeout(60000);
+        if (typeof wv._wvOpenEmptyMainWindow !== "function" || !wv._wvMultiMainOn()) this.skip();
+        const before = new Set(Zotero.getMainWindows());
+        wv._wvOpenEmptyMainWindow();
+        let w2 = null;
+        for (let i = 0; i < 100 && !w2; i++) { await sleep(150); w2 = Zotero.getMainWindows().find(w => !before.has(w)); }
+        assert.isOk(w2, "second window opened");
+        try {
+            const parts = () => {
+                const cv2 = w2.ZoteroPane && w2.ZoteroPane.collectionsView;
+                return { cv: !!cv2, tree: !!(cv2 && cv2.tree), wrapped: !!(cv2 && Object.prototype.hasOwnProperty.call(cv2, "_includedInTree")),
+                    managed: !!w2._wvManagedWindow, id: w2._wvWindowId, tries: w2._wvHidApplyTries || 0 };
+            };
+            const ready = () => { const p = parts(); return p.cv && p.tree && p.wrapped && p.id != null; };
+            for (let i = 0; i < 160 && !ready(); i++) await sleep(150);
+            assert.isTrue(!!ready(), "the new window's tree is filtered: " + JSON.stringify(parts()));
+            assert.match(wv._wvHidWinKey(w2), /^win-\d+$/);
+            const cv2 = w2.ZoteroPane.collectionsView;
+            await wv._wvHidHide([B], w2);
+            assert.isFalse(cv2.getRowIndexByID("C" + B.id) !== false, "hidden in the new window");
+            assert.isTrue(inTree(B), "still shown in the first window");
+            await wv._wvHidShow(w2, LIB(), null, []);
+        }
+        finally { try { w2.close(); } catch (_) {} await sleep(300); }
+    });
+
+    it("window identity: managed windows by their stable id, never by position", () => {
+        assert.equal(wv._wvHidWinKey(win), "anchor");
+        assert.equal(wv._wvHidWinKey({ _wvManagedWindow: true, _wvWindowId: 7 }), "win-7");
+        assert.isNull(wv._wvHidWinKey({ _wvManagedWindow: true }), "id not assigned yet: unknown, nothing cached");
+        const fake = { _wvManagedWindow: true };
+        assert.deepEqual(wv._wvHidState(fake), { groups: [], hidden: {} });
+        assert.notProperty(fake, "_wvHid", "no state cached before the identity settles");
+        assert.equal(wv._wvHidWinKey({}), "", "a window Weavero did not open: session-only");
     });
 });

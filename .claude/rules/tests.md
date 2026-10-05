@@ -87,3 +87,10 @@ paths:
   file once; never poll status through the bridge or stream large JSON
   into the conversation. The user can also launch these themselves via
   Run JavaScript and just hand over the report path.
+- A spec that OPENS a main window: take timers from a window captured
+  BEFORE it opens. `Zotero.getMainWindow()` returns the newest window, and
+  its `setTimeout` does not fire until that window has loaded -- a
+  `sleep()` built on `getMainWindow()` hung the whole spec past its timeout
+  (hidden-collections.spec.js, 2026-10-05). And Weavero's onMainWindowLoad
+  runs before a new window has its collections tree: wiring that needs
+  `ZoteroPane.collectionsView` must retry until it exists.

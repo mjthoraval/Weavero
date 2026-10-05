@@ -2431,9 +2431,12 @@ class _PaneMixin {
     // (MJT 2026-10-05.) PER WINDOW: each main window has its own set, so two
     // windows can show different parts of the library. Display-only, this
     // computer only: <data dir>/weavero/hidden-collections.json, one entry
-    // per window keyed by its index among the open main windows -- the
-    // convention of the custom window titles (_wvWindowIndex), so a restored
-    // session gets each window's set back; cached on the window while open.
+    // per window keyed by its IDENTITY, not its position (MJT: "make it
+    // window specific" -- closing Window 2 must not hand its set to Window 3):
+    // "anchor" for the first main window, "win-<_wvWindowId>" for Weavero's
+    // managed windows (the stable id the window store saves as `wvWinId` and
+    // gives back on restore -- the per-window column-layout key). Cached on
+    // the window while open.
     // Objects are keyed by library + key (renames and moves keep them
     // hidden). Zotero's data is untouched: without Weavero everything shows.
     // Zotero's own pattern for its virtual views (zoteroPane.js
@@ -2452,21 +2455,36 @@ class _PaneMixin {
         return PathUtils.join(Zotero.DataDirectory.dir, "weavero", "hidden-collections.json");
     }
 
-    /** The file: {version: 2, windows: {"<index>": {groups, hidden}}}. */
+    /** The file: {version: 3, windows: {"anchor" | "win-<id>": {groups, hidden}}}. */
     _wvHidDocGet(): any {
         const P: any = this;
-        if (!P._wvHidDoc) P._wvHidDoc = { version: 2, windows: {} };
+        if (!P._wvHidDoc) P._wvHidDoc = { version: 3, windows: {} };
         return P._wvHidDoc;
     }
 
     _wvHidBlank(): any { return { groups: [], hidden: {} }; }
 
+    /** A main window's persistent identity, or null while unknown: a managed
+     *  window gets its `_wvWindowId` in onMainWindowLoad AFTER the collections
+     *  setup runs (and a window being opened as managed is not flagged yet),
+     *  so nothing may be cached for it before then. "" = no persistent
+     *  identity (a second window Weavero did not open): session-only. */
+    _wvHidWinKey(win: any): string | null {
+        try {
+            if (win._wvManagedWindow) return win._wvWindowId != null ? "win-" + win._wvWindowId : null;
+            if ((this as any)._wvPendingDevWindow) return null;
+            const mains = Zotero.getMainWindows() || [];
+            return mains[0] === win ? "anchor" : "";
+        } catch (_) { return ""; }
+    }
+
     /** One window's set: {groups: libraryID[], hidden: {libraryID: ["C<key>" | "S<key>"]}}. */
     _wvHidState(win: any): any {
         if (!win) return this._wvHidBlank();
         if (!win._wvHid) {
-            const idx = (this as any)._wvWindowIndex ? (this as any)._wvWindowIndex(win) : -1;
-            const saved = idx >= 0 ? this._wvHidDocGet().windows[String(idx)] : null;
+            const key = this._wvHidWinKey(win);
+            if (key === null) return this._wvHidBlank();   // identity not settled: nothing cached
+            const saved = key ? this._wvHidDocGet().windows[key] : null;
             win._wvHid = saved ? {
                 groups: Array.isArray(saved.groups) ? saved.groups.map(Number).filter((n: number) => n > 0) : [],
                 hidden: (saved.hidden && typeof saved.hidden === "object") ? JSON.parse(JSON.stringify(saved.hidden)) : {},
@@ -2489,7 +2507,13 @@ class _PaneMixin {
             if (parsed && typeof parsed === "object" && parsed.windows && typeof parsed.windows === "object") doc = parsed;
         } catch (_) { /* missing file = nothing hidden */ }
         if (P._wvDestroyed) return;
-        P._wvHidDoc = { version: 2, windows: doc ? doc.windows : {} };
+        // dev.2 keyed windows by index: "0" was the first window -> "anchor".
+        const windows: any = {};
+        for (const [k, v] of Object.entries((doc && doc.windows) || {})) {
+            if (k === "anchor" || /^win-\d+$/.test(k)) windows[k] = v;
+            else if (k === "0" && !windows.anchor) windows.anchor = v;
+        }
+        P._wvHidDoc = { version: 3, windows };
         P._wvHidLoaded = true;
         P._wvHidLoading = false;
         const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
@@ -2498,15 +2522,16 @@ class _PaneMixin {
         }
     }
 
-    /** Write one window's set into the file under its current index. */
+    /** Write one window's set into the file under its identity (a window
+     *  without one keeps its set for this session only). */
     async _wvHidSave(win: any) {
         try {
-            const idx = (this as any)._wvWindowIndex ? (this as any)._wvWindowIndex(win) : -1;
-            if (idx < 0) return;
+            const key = this._wvHidWinKey(win);
+            if (!key) return;
             const doc = this._wvHidDocGet();
             const st = this._wvHidState(win);
-            if (this._wvHidHasAny(st)) doc.windows[String(idx)] = st;
-            else delete doc.windows[String(idx)];
+            if (this._wvHidHasAny(st)) doc.windows[key] = st;
+            else delete doc.windows[key];
             const path = this._wvHidPath();
             try { await IOUtils.makeDirectory(PathUtils.parent(path), { ignoreExisting: true }); } catch (_) {}
             await IOUtils.writeUTF8(path, JSON.stringify(doc), { tmpPath: path + ".tmp" });
@@ -2673,7 +2698,21 @@ class _PaneMixin {
         try {
             const doc = win && win.document;
             const cv = win && win.ZoteroPane && win.ZoteroPane.collectionsView;
-            if (!doc || !cv || typeof cv._includedInTree !== "function") return;
+            if (!doc || !cv || typeof cv._includedInTree !== "function") {
+                // A NEW main window: onMainWindowLoad runs before ZoteroPane
+                // has created its collections tree (found live 2026-10-05: a
+                // second window's set was saved but never filtered). Retry
+                // until it exists (bounded, ~15 s).
+                const n = (win && win._wvHidApplyTries) || 0;
+                if (win && !win.closed && n < 60) {
+                    win._wvHidApplyTries = n + 1;
+                    win.setTimeout(() => {
+                        const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (p && !p._wvDestroyed) p._wvHidApply(win);
+                    }, 250);
+                }
+                return;
+            }
             const P: any = this;
             const live = (): any => {
                 const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
@@ -2745,7 +2784,30 @@ class _PaneMixin {
                 win._wvHidMO = mo;
             }
             P._wvHidDecorate(win);
+            P._wvHidSettle(win, 0);
         } catch (e) { Zotero.debug("[Weavero] _wvHidApply err: " + e); }
+    }
+
+    /** A restored managed window builds its tree before onMainWindowLoad
+     *  gives it its `_wvWindowId`, i.e. before its set can be read. Once the
+     *  identity, the store and the tree are all there, apply the set (a
+     *  bounded retry, ~10 s; most windows settle on the first pass). */
+    _wvHidSettle(win: any, tries: number) {
+        try {
+            const P: any = this;
+            if (P._wvDestroyed || !win || win.closed) return;
+            const cv = win.ZoteroPane && win.ZoteroPane.collectionsView;
+            const key = this._wvHidWinKey(win);
+            if (key === null || !P._wvHidLoaded || !cv || !cv.tree) {
+                if (tries < 40) win.setTimeout(() => P._wvHidSettle(win, tries + 1), 250);
+                return;
+            }
+            if (win._wvHidSettled) return;
+            win._wvHidSettled = true;
+            delete win._wvHid;   // re-read under the settled identity
+            if (this._wvHidHasAny(this._wvHidState(win))) this._wvHidRefreshWin(win);
+            else this._wvHidDecorate(win);
+        } catch (_) {}
     }
 
     /** Blue dot at the end of a library row with hidden collections or

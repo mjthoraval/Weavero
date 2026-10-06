@@ -1,4 +1,4 @@
-/* global describe, it, before, after, assert, Zotero */
+/* global describe, it, before, after, assert, Zotero, Components, Services */
 
 // One undo choice per TAB (MJT 2026-10-01, slice 2): the stacks stay per
 // pane, the choice merges the stacks of the panes VISIBLE in the tab -- the
@@ -119,8 +119,69 @@ describe("Weavero — tab-level undo choice", () => {
         const B = { ...hl, id: "B" };
         assert.strictEqual(wv._wvReaderPointField(am([{ ...hl, color: "#5fb236" }, { ...B, color: "#5fb236" }]), pt([hl, B])), "Color");
         assert.strictEqual(wv._wvReaderPointLabel({ action: "update-annotations", count: 1, _wvField: "Comment" }), "Edit Annotation Comment");
-        assert.strictEqual(wv._wvReaderPointLabel({ action: "update-annotations", count: 2, _wvField: "Color" }), "Edit Color of 2 Annotations");
+        assert.strictEqual(wv._wvReaderPointLabel({ action: "update-annotations", count: 2, _wvField: "Color" }), "Change Color of 2 Annotations");
         assert.strictEqual(wv._wvReaderPointLabel({ action: "update-annotations", count: 1 }), "Edit Annotation", "unknown: as before");
+        // Geometry (MJT 2026-10-06, "Undo Resize Annotation"): a resized
+        // highlight changes its position AND its text -- still one gesture.
+        const rz = { ...hl, text: "a b", position: { pageIndex: 0, rects: [[1, 2, 3, 4]] } };
+        assert.strictEqual(wv._wvReaderPointField(am([{ ...rz, text: "a b c", position: { pageIndex: 0, rects: [[1, 2, 6, 4]] }, sortIndex: "x" }]), pt([rz])), "@Resize");
+        assert.strictEqual(wv._wvReaderPointField(am([{ ...rz, position: { pageIndex: 0, rects: [[5, 6, 7, 8]] } }]), pt([rz])), "@Move", "same size elsewhere");
+        // The annotations' type names the step (MJT 2026-10-06).
+        assert.strictEqual(wv._wvReaderPointType(am([hl]), { annotations: new Map([["A", null]]) }), "highlight", "an add: the type from the current state");
+        assert.isNull(wv._wvReaderPointType(am([]), { annotations: new Map([["A", hl], ["N", note]]) }), "mixed types: none");
+        assert.strictEqual(wv._wvReaderPointLabel({ action: "update-annotations", count: 1, _wvField: "@Resize", _wvType: "highlight" }), "Resize Highlight Annotation");
+        assert.strictEqual(wv._wvReaderPointLabel({ action: "update-annotations", count: 1, _wvField: "@Move", _wvType: "note" }), "Move Note Annotation");
+        assert.strictEqual(wv._wvReaderPointLabel({ action: "update-annotations", count: 1, _wvField: "Comment", _wvType: "highlight" }), "Edit Highlight Annotation Comment");
+        assert.strictEqual(wv._wvReaderPointLabel({ action: "update-annotations", count: 1, _wvField: "Comment", _wvType: "text" }), "Edit Text Annotation");
+        assert.strictEqual(wv._wvReaderPointLabel({ action: "update-annotations", count: 1, _wvField: "Color", _wvType: "underline" }), "Change Underline Annotation Color");
+        assert.strictEqual(wv._wvReaderPointLabel({ action: "add-annotations", count: 3, _wvType: "highlight" }), "Add 3 Highlight Annotations");
+        assert.strictEqual(wv._wvReaderPointLabel({ action: "delete-annotations", count: 1, _wvType: "image" }), "Delete Image Annotation");
+    });
+
+    // Issue #53 (traced live 2026-10-06): the reader calls its undo() from
+    // ITS compartment; the wrapper handed the reader's own undo a rest array
+    // made in the plugin's, and `apply` reading `args.length` across the
+    // boundary threw "Permission denied" -- Ctrl/Cmd+Z did nothing in the
+    // page. The stand-in reader above lives in the plugin's compartment and
+    // could never see it: this one is built in a less privileged sandbox and
+    // calls the wrapped undo() from inside it, as the keyboard manager does.
+    it("the wrapped reader undo runs when called from the reader's own (less privileged) compartment", () => {
+        const Cu = Components.utils;
+        const sb = Cu.Sandbox(Services.scriptSecurityManager.createContentPrincipalFromOrigin("https://reader.invalid"), { wantXrays: false });
+        Cu.evalInSandbox(`
+            var am = { _undoStack: [{ id: 1, action: "add-annotations", count: 1, annotations: new Map() }], _redoStack: [], _annotations: [],
+                undo() { var p = this._undoStack.pop(); if (!p) return false; this._redoStack.push(p); return true; } };
+            var ir = { _state: {}, _annotationManager: am,
+                undo() { return this._annotationManager.undo(); }, redo() { return false; } };
+            var pressCtrlZ = function () { return ir.undo(); };
+        `, sb);
+        const ir = Cu.waiveXrays(Cu.evalInSandbox("ir", sb));
+        const reader = { _internalReader: ir, _iframeWindow: { document: idoc } };
+        wv._wvReaderWrapUndo(reader);
+        let r, err = null;
+        try { r = Cu.evalInSandbox("pressCtrlZ()", sb); } catch (e) { err = String(e); }
+        try { wv._wvReaderUnwrapUndo(reader); } catch (_) {}
+        assert.isNull(err, "the call from the reader's side must not throw");
+        assert.isTrue(r, "the reader's own undo ran");
+        assert.strictEqual(Cu.evalInSandbox("am._redoStack.length", sb), 1);
+    });
+
+    // MJT 2026-10-06: a comment edit read "Undo Edit Annotation". The reader
+    // announces a point (_historySave) BEFORE writing the new values
+    // (_applyChanges), so the field must be read a microtask later.
+    it("an edit's field is read after the reader has applied the change", async () => {
+        const reader = mkReader(); const am = reader._internalReader._annotationManager;
+        const hl = { id: "A", type: "highlight", comment: "old", color: "#ffd400", position: { pageIndex: 0, rects: [[1, 2, 3, 4]] } };
+        am._annotations = [hl];
+        wv._wvReaderStampHistory(reader);
+        // What _applyChanges does: push + announce, THEN write the values.
+        am._undoStack.push({ id: 7, revision: 0, action: "update-annotations", count: 1, annotations: new Map([["A", { ...hl }]]) });
+        am._onChangeHistory({});
+        am._annotations = [{ ...hl, comment: "new" }];
+        await Promise.resolve(); await Promise.resolve();
+        const top = am._undoStack[am._undoStack.length - 1];
+        assert.strictEqual(top._wvField, "Comment");
+        assert.strictEqual(wv._wvReaderPointLabel(top), "Edit Highlight Annotation Comment");
     });
 
     it("the reader's points are stamped as they appear, through the manager's unused onChangeHistory callback", () => {

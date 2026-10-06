@@ -6483,11 +6483,46 @@ class _ReaderPanelsMixin {
         const n = (p && Number(p.count)) || 1;
         const verbs: { [k: string]: string } = { "add-annotations": "Add", "update-annotations": "Edit", "delete-annotations": "Delete", "convert-annotations": "Convert", "merge-annotations": "Merge" };
         const verb = verbs[p && p.action] || "Edit";
+        // The annotations' kind when they share one (MJT 2026-10-06:
+        // "improve the description of the different actions"): "Add
+        // Highlight", "Delete 2 Notes"; mixed or unknown -> "Annotation".
+        const kinds: { [k: string]: [string, string] } = {
+            // Always "... Annotation" (MJT 2026-10-06: "Add Underline" ->
+            // "Add Underline Annotation").
+            highlight: ["Highlight Annotation", "Highlight Annotations"], underline: ["Underline Annotation", "Underline Annotations"],
+            note: ["Note Annotation", "Note Annotations"], text: ["Text Annotation", "Text Annotations"],
+            image: ["Image Annotation", "Image Annotations"], ink: ["Ink Annotation", "Ink Annotations"],
+        };
+        const k = (p && kinds[p._wvType]) || ["Annotation", "Annotations"];
+        const one = k[0], many = n + " " + k[1];
         // An edit names what changed when it was one field (MJT 2026-10-05:
         // "Edit Annotation" -> "Edit Annotation Comment").
         const f = p && p.action === "update-annotations" ? p._wvField : null;
-        if (f) return n === 1 ? "Edit Annotation " + f : "Edit " + f + " of " + n + " Annotations";
-        return verb + " " + (n === 1 ? "Annotation" : n + " Annotations");
+        // A geometry-only edit says what the hand did (MJT 2026-10-06:
+        // "Undo Resize Annotation"): see _wvReaderPointField.
+        if (f === "@Resize" || f === "@Move") return f.slice(1) + " " + (n === 1 ? one : many);
+        // A text annotation's comment IS its text.
+        if (f === "Comment" && p._wvType === "text") return "Edit " + (n === 1 ? one : many);
+        // A colour is CHANGED, the rest is EDITED.
+        if (f === "Color") return n === 1 ? "Change " + one + " Color" : "Change Color of " + many;
+        if (f) return n === 1 ? "Edit " + one + " " + f : "Edit " + f + " of " + many;
+        return verb + " " + (n === 1 ? one : many);
+    }
+
+    /** The annotation type a reader history point touched, when all share
+     *  one ("highlight", "note", ...), else null. A point keeps the states
+     *  BEFORE it (null for an add): those come from the current annotations. */
+    _wvReaderPointType(am: any, p: any): string | null {
+        try {
+            const cur = new Map(((am._annotations || []) as any[]).map((a: any) => [a.id, a]));
+            const types = new Set<string>();
+            for (const [id, before] of p.annotations) {
+                const a: any = before || cur.get(id);
+                if (!a || !a.type) return null;
+                types.add(String(a.type));
+            }
+            return types.size === 1 ? [...types][0] : null;
+        } catch (_) { return null; }
     }
 
     /** The one field an edit point changed ("Comment", "Color", ...), or
@@ -6496,10 +6531,24 @@ class _ReaderPanelsMixin {
      *  stack's top (true whenever the reader reports a change). */
     _wvReaderPointField(am: any, p: any): string | null {
         try {
-            const names: { [k: string]: string } = { comment: "Comment", color: "Color", tags: "Tags", text: "Text", pageLabel: "Page Number", position: "Position", sortIndex: "Position" };
+            const names: { [k: string]: string } = { comment: "Comment", color: "Color", tags: "Tags", text: "Text", pageLabel: "Page Number", position: "Position", sortIndex: "Position", fontSize: "Font Size" };
             const ignore = new Set(["dateModified", "image", "id", "lastModifiedByUser", "readOnly", "isExternal"]);
             const cur = new Map(((am._annotations || []) as any[]).map((a: any) => [a.id, a]));
             const fields = new Set<string>();
+            // Geometry: a resize / move changes the position and, with it,
+            // what follows from it (a highlight's text, the sort order, the
+            // page label). Size of the bounding box decides which: rects
+            // [x1,y1,x2,y2] or ink paths [x,y,x,y...], PDF points.
+            const geomFollow = new Set(["sortIndex", "text", "pageLabel"]);
+            const box = (pos: any): number[] | null => {
+                try {
+                    let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+                    for (const r of (pos && pos.rects) || []) { x1 = Math.min(x1, r[0], r[2]); x2 = Math.max(x2, r[0], r[2]); y1 = Math.min(y1, r[1], r[3]); y2 = Math.max(y2, r[1], r[3]); }
+                    for (const pth of (pos && pos.paths) || []) for (let i = 0; i + 1 < pth.length; i += 2) { x1 = Math.min(x1, pth[i]); x2 = Math.max(x2, pth[i]); y1 = Math.min(y1, pth[i + 1]); y2 = Math.max(y2, pth[i + 1]); }
+                    return isFinite(x1) ? [x2 - x1, y2 - y1] : null;
+                } catch (_) { return null; }
+            };
+            let geomOp: string | null = null, geomAll = true;
             for (const [id, before] of p.annotations) {
                 const after: any = cur.get(id);
                 if (!before || !after) return null;
@@ -6509,12 +6558,22 @@ class _ReaderPanelsMixin {
                     if (ignore.has(k)) continue;
                     if (JSON.stringify(before[k]) !== JSON.stringify(after[k])) changed.push(k);
                 }
+                if (changed.includes("position") && changed.every(k => k === "position" || geomFollow.has(k))) {
+                    const b0 = box(before.position), b1 = box(after.position);
+                    const op = b0 && b1 && Math.abs(b0[0] - b1[0]) < 0.5 && Math.abs(b0[1] - b1[1]) < 0.5 ? "@Move" : "@Resize";
+                    if (geomOp && geomOp !== op) geomOp = "@Resize";   // mixed: the size changed somewhere
+                    else geomOp = op;
+                    continue;
+                }
+                geomAll = false;
                 // A text annotation's box follows its comment (the reader
                 // refits it on every comment edit).
                 const own = changed.includes("comment") && after.type === "text"
                     ? changed.filter(k => k !== "position" && k !== "sortIndex") : changed;
                 for (const k of own) { if (!names[k]) return null; fields.add(names[k]); }
             }
+            if (geomOp && geomAll) return geomOp;
+            if (geomOp) fields.add("Position");   // geometry next to other edits
             return fields.size === 1 ? [...fields][0] : null;
         } catch (_) { return null; }
     }
@@ -6556,18 +6615,40 @@ class _ReaderPanelsMixin {
                 const p = undo[i]; if (!p) continue;
                 if (p._wvAt == null) p._wvAt = initial ? (i === undo.length - 1 ? (Number(am._lastChange) || 0) : 0) : now;
                 else if (p._wvRev !== p.revision || p._wvUndoneAt != null) p._wvAt = now;   // joined change, or redone
-                // Field of an edit: read while the point is the top (current
-                // state = its after state), again when a change joins it.
-                // Undo / redo copy the point ({...p}), so it travels along.
-                if (i === undo.length - 1 && p.action === "update-annotations" && p._wvFieldRev !== p.revision) {
-                    p._wvField = this._wvReaderPointField(am, p);
+                // Field of an edit + the annotations' type: read while the
+                // point is the top (current state = its after state), again
+                // when a change joins it. ONE MICROTASK LATER: the reader
+                // announces the point (_historySave) BEFORE it writes the new
+                // values (annotation-manager.js _applyChanges), so a read
+                // here compared the old state with itself and cached
+                // "nothing changed" -- "Undo Edit Annotation" for a comment
+                // edit (MJT 2026-10-06). Undo / redo copy the point ({...p}),
+                // so both travel along.
+                // Older points are settled: their type can be read now.
+                if (i !== undo.length - 1 && p._wvType === undefined) p._wvType = this._wvReaderPointType(am, p);
+                if (i === undo.length - 1 && p._wvFieldRev !== p.revision) {
                     p._wvFieldRev = p.revision;
+                    const rev = p.revision;
+                    const read = () => {
+                        try {
+                            if (p.revision !== rev) return;
+                            const st: any[] = am._undoStack || [];
+                            if (st[st.length - 1] !== p) return;
+                            const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            if (!P || P._wvDestroyed) return;
+                            if (p.action === "update-annotations") p._wvField = P._wvReaderPointField(am, p);
+                            p._wvType = P._wvReaderPointType(am, p);
+                            if (!initial) P._wvUndoAfterChange();
+                        } catch (_) {}
+                    };
+                    if (initial) read(); else Promise.resolve().then(read);
                 }
                 p._wvRev = p.revision;
                 delete p._wvUndoneAt;
             }
             for (const p of redo) {
                 if (!p) continue;
+                if (p._wvType === undefined) p._wvType = this._wvReaderPointType(am, p);
                 if (p._wvAt == null) p._wvAt = 0;
                 if (p._wvUndoneAt == null) p._wvUndoneAt = initial ? 0 : now;
                 p._wvRev = p.revision;
@@ -6760,12 +6841,29 @@ class _ReaderPanelsMixin {
                     });
                 }, 0);
             };
+            // PLACEMENT: a quarter down, like every Weavero jump (outline,
+            // bookmarks -- MJT 2026-10-06), from the LIVE annotation's
+            // position: the database row may not be saved yet, and an
+            // undeleted annotation has a fresh id. PDF only (the shared
+            // _wvOutlineScrollToRect); other views keep the native navigate.
+            const quarter = (pos: any): boolean => {
+                try {
+                    if (!pos || !Number.isInteger(pos.pageIndex) || !Array.isArray(pos.rects) || !pos.rects.length) return false;
+                    return !!this._wvOutlineScrollToRect(view, pos.pageIndex, pos.rects[0]);
+                } catch (_) { return false; }
+            };
             if (present.length) {
                 try { ir._updateState(R({ selectedAnnotationIDs: present })); } catch (e) { Zotero.debug("[Weavero] undo reveal: select threw " + e); }
                 // ir.navigate({annotationID}) would SELECT through
                 // setSelectedAnnotations (Ctrl-held trap); the view's own
-                // navigate only scrolls, so it is used for this case.
-                win.setTimeout(() => { try { if (view && typeof view.navigate === "function") view.navigate(R({ annotationID: present[0] })); } catch (e) { Zotero.debug("[Weavero] undo reveal: view.navigate threw " + e); } }, 0);
+                // navigate only scrolls, so it is the fallback here.
+                const first = live.find((a: any) => a && a.id === present[0]);
+                win.setTimeout(() => {
+                    try {
+                        if (quarter(first && first.position)) return;
+                        if (view && typeof view.navigate === "function") view.navigate(R({ annotationID: present[0] }));
+                    } catch (e) { Zotero.debug("[Weavero] undo reveal: view.navigate threw " + e); }
+                }, 0);
                 Zotero.debug("[Weavero] undo reveal: selected " + present.join(","));
             }
             else {
@@ -6781,7 +6879,14 @@ class _ReaderPanelsMixin {
                 }
                 try { ir._updateState(R({ selectedAnnotationIDs: [] })); } catch (_) {}
                 Zotero.debug("[Weavero] undo reveal: removed " + ids.join(",") + ", position " + (pos ? "page " + pos.pageIndex : "none found"));
-                if (pos) go({ position: pos }, "removed");
+                // Show WHAT was undone (MJT 2026-10-06): the place it covered
+                // gets the reader's own transient highlight (2 s, the search /
+                // citation one; Weavero's resettable version when patched).
+                if (pos) win.setTimeout(() => {
+                    if (!quarter(pos)) go({ position: pos }, "removed");
+                    try { if (view && typeof view._highlightPosition === "function") view._highlightPosition(R(pos)); }
+                    catch (e) { Zotero.debug("[Weavero] undo reveal: highlight threw " + e); }
+                }, 0);
             }
         } catch (e) { Zotero.debug("[Weavero] _wvRevealReaderStep err: " + e); }
     }
@@ -7160,7 +7265,15 @@ class _ReaderPanelsMixin {
             if (ir._wvUndoWrapTag === tag) return;
             this._wvReaderUnwrapUndo(reader);
             const orig = { undo: ir.undo, redo: ir.redo };
-            const mk = (dir: "undo" | "redo", fn: Function) => function (this: any, ...args: any[]) {
+            // The reader's keyboard manager calls these from the READER's
+            // compartment. Hand its own undo/redo nothing created here: the
+            // dev line's `fn.apply(this, args)` passed a plugin-made rest
+            // array, the reader's `apply` read `args.length` across the
+            // compartment boundary -> "Permission denied to access property
+            // 'length'", thrown after the key was already taken: Ctrl/Cmd+Z
+            // in the page and the Annotations sidebar did nothing (issue #53,
+            // traced live 2026-10-06). undo()/redo() take no arguments.
+            const mk = (dir: "undo" | "redo", fn: Function) => function (this: any) {
                 try {
                     const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                     const ch = P && !P._wvDestroyed ? P._wvTabUndoChoice(reader, dir) : null;
@@ -7171,7 +7284,7 @@ class _ReaderPanelsMixin {
                         return true;
                     }
                 } catch (e) { Zotero.debug("[Weavero] reader " + dir + " wrapper err: " + e); }
-                const r = fn.apply(this, args);
+                const r = fn.call(this);
                 try {
                     if (r && dir === "undo") this._wvReaderUndoneAt = Date.now();
                     if (r) {
@@ -7299,7 +7412,55 @@ class _ReaderPanelsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvEditUndoMenuApply err: " + e); }
     }
 
+    /** Ctrl+Y = Redo in the reader's page and Annotations sidebar, on
+     *  WINDOWS (MJT 2026-10-06, issue #53 testing) -- where the main
+     *  window's own key_redo is Ctrl+Y (platformKeys.js: accel+Shift+Z
+     *  elsewhere, so Linux and macOS get nothing new). The reader handles
+     *  only Mod-Z / Mod-Shift-Z there (keyboard-manager.js), so Ctrl+Y did
+     *  nothing in a PDF even without Weavero. Same reach as the reader's own keys: the page
+     *  (any view document) or the Annotations sidebar, never while typing;
+     *  Weavero's Outline / Bookmarks tabs already route Ctrl+Y themselves.
+     *  Page key events reach the CHROME window's capture phase (traced
+     *  2026-10-06; the reader frame's own window never sees them), so the
+     *  listener sits there. Stamped (src-ts.md): re-wired on a new build. */
+    _wvWireReaderRedoKey(win: any) {
+        try {
+            if (!win || !Zotero.isWin) return;
+            const tag = this._wvWireTag();
+            if (win._wvRedoKeyH && win._wvRedoKeyH._wvTag === tag) return;
+            this._wvUnwireReaderRedoKey(win);
+            const h: any = (e: any) => {
+                try {
+                    if (!e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) return;
+                    if (String(e.key || "").toLowerCase() !== "y") return;
+                    const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (!P || P._wvDestroyed) return;
+                    const t: any = e.target;
+                    const tdoc: any = t && t.ownerDocument;
+                    if (!tdoc || tdoc === win.document) return;          // the window's own chrome
+                    if (t.isContentEditable || t.localName === "input" || t.localName === "textarea") return;
+                    const ctx = P._wvEditUndoRoute(win);
+                    if (!ctx) return;
+                    if (tdoc === ctx.idoc && !(t.closest && t.closest("#annotationsView"))) return;   // other sidebar parts
+                    e.preventDefault(); e.stopPropagation();
+                    if (e.repeat) return;   // a held key would start overlapping async redos
+                    P._wvTabUndoRedo(ctx.reader, ctx.idoc, "redo");
+                } catch (er) { Zotero.debug("[Weavero] reader Ctrl+Y err: " + er); }
+            };
+            h._wvTag = tag;
+            win.addEventListener("keydown", h, true);
+            win._wvRedoKeyH = h;
+        } catch (e) { Zotero.debug("[Weavero] _wvWireReaderRedoKey err: " + e); }
+    }
+
+    _wvUnwireReaderRedoKey(win: any) {
+        try {
+            if (win && win._wvRedoKeyH) { win.removeEventListener("keydown", win._wvRedoKeyH, true); delete win._wvRedoKeyH; }
+        } catch (_) {}
+    }
+
     _wvWireEditUndoMenu(win: any) {
+        try { this._wvWireReaderRedoKey(win); } catch (_) {}
         try {
             const VER = 1;
             const doc = win && win.document;
@@ -7336,6 +7497,7 @@ class _ReaderPanelsMixin {
     }
 
     _wvUnwireEditUndoMenu(win: any) {
+        this._wvUnwireReaderRedoKey(win);
         try {
             const doc = win && win.document;
             const popup: any = doc && doc.getElementById("menu_EditPopup");

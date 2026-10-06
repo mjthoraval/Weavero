@@ -7459,8 +7459,18 @@ class _ReaderPanelsMixin {
         } catch (_) {}
     }
 
+    /** The Edit menu's Undo / Redo hook, then the reader's Ctrl+Y. The key
+     *  is wired LAST, whatever path the menu wiring took: its first wiring
+     *  on a fresh start or reload runs _wvUnwireEditUndoMenu (stale
+     *  handlers), which removes the key too -- wired first, Ctrl+Y was
+     *  gone after every normal start (shipped so in 0.21.7; manual re-wires
+     *  during testing hit the early return and hid it, 2026-10-06). */
     _wvWireEditUndoMenu(win: any) {
-        try { this._wvWireReaderRedoKey(win); } catch (_) {}
+        try { this._wvWireEditUndoPopup(win); }
+        finally { try { this._wvWireReaderRedoKey(win); } catch (_) {} }
+    }
+
+    _wvWireEditUndoPopup(win: any) {
         try {
             const VER = 1;
             const doc = win && win.document;

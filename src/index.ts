@@ -3483,6 +3483,17 @@ class WeaveroPlugin {
         try {
             (Zotero as any).uiReadyPromise
                 .then(() => { try { this._wvGuardAllContextPanes(); } catch (e) {} })
+                // Edit › Undo hook + the reader's Ctrl+Y on EVERY main window
+                // once the UI is ready: the boot window loads before the plugin
+                // (no onMainWindowLoad) and the init loop can miss it -- Ctrl+Y
+                // was absent after a real start (0.21.7). Idempotent.
+                .then(() => {
+                    try {
+                        for (const w of (Zotero.getMainWindows ? Zotero.getMainWindows() : [])) {
+                            try { (this as any)._wvWireEditUndoMenu(w); } catch (e) {}
+                        }
+                    } catch (e) {}
+                })
                 // Restore takeover, boot side: Zotero only restored the library
                 // tab — rebuild the anchor's real tab set first (it's the window
                 // the user is looking at). Needs the boot store doc, which the
@@ -4725,6 +4736,10 @@ class WeaveroPlugin {
             try { (this as any)._wvWireColumnPickerMark(_window); } catch (e) {}
             try { (this as any)._wvWireColumnPickerNativeFix(_window); } catch (e) {}
             try { (this as any)._wvWireItemsCrossWindowDrop(_window); } catch (e) {}
+            // Edit › Undo hook + the reader's Ctrl+Y for a NEW main window
+            // (until 0.21.7 only the init loop wired them: a window opened
+            // later had neither).
+            try { (this as any)._wvWireEditUndoMenu(_window); } catch (e) {}
             // Per-window taskbar identity (pref-gated, default off).
             try { (this as any)._wvApplyWindowTaskbarIdentity(_window); } catch (e) {}
             // Taskbar badge via the poison ledger (NEVER the raw apply:

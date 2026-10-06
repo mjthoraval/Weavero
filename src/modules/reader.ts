@@ -2003,6 +2003,17 @@ class _ReaderMixin {
             // buttons, and the menu bar is hidden. Self-gates on the reader
             // child of "Hide title bar (Firefox-style)".
             try { this._ensureReaderWindowTabStrip(reader); } catch (e) {}
+            // Edit › Undo hook + Ctrl+Y in a standalone reader WINDOW whatever
+            // its title bar: the strip path wires them only with "Hide title
+            // bar" on, and its teardown (option off) unwires them on every
+            // render -- so this runs after it. Tabs live in main windows,
+            // wired there. Idempotent.
+            try {
+                const rw: any = !reader.tabID && reader._window;
+                if (rw && rw.document && rw.document.documentElement.getAttribute("windowtype") === "zotero:reader") {
+                    (this as any)._wvWireEditUndoMenu(rw);
+                }
+            } catch (e) {}
             // Optional item/context pane beside the reader (own pref, default off).
             try { this._ensureReaderWindowItemPane(reader); } catch (e) {}
 

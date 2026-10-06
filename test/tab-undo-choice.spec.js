@@ -184,6 +184,32 @@ describe("Weavero — tab-level undo choice", () => {
         assert.isTrue(listed, "registered on the window, not just remembered");
     });
 
+    // 2026-10-06: only the init loop wired the Edit hook + Ctrl+Y -- a main
+    // window opened later had neither (onMainWindowLoad now wires them; the
+    // UI-ready step covers the boot window, which loads before the plugin).
+    it("a NEW main window gets the Edit hook and the reader's Ctrl+Y (Windows)", async function () {
+        this.timeout(60000);
+        if (!Zotero.isWin || typeof wv._wvOpenEmptyMainWindow !== "function" || !wv._wvMultiMainOn()) this.skip();
+        const first = Zotero.getMainWindow();
+        const sleep = (ms) => new Promise(r => first.setTimeout(r, ms));
+        const before = new Set(Zotero.getMainWindows());
+        wv._wvOpenEmptyMainWindow();
+        let w2 = null;
+        for (let i = 0; i < 100 && !w2; i++) { await sleep(150); w2 = Zotero.getMainWindows().find(w => !before.has(w)); }
+        assert.isOk(w2, "second window opened");
+        try {
+            const wired = () => !!(w2._wvRedoKeyH && w2.document.getElementById("menu_EditPopup") && /** @type {any} */ (w2.document.getElementById("menu_EditPopup"))._wvUndoMenuH);
+            for (let i = 0; i < 100 && !wired(); i++) await sleep(150);
+            assert.isTrue(wired(), "Edit hook + Ctrl+Y wired in the new window");
+        }
+        finally {
+            try { w2.close(); } catch (_) {}
+            for (let i = 0; i < 60 && Zotero.getMainWindows().includes(w2); i++) await sleep(100);
+            try { first.focus(); } catch (_) {}
+            await sleep(300);
+        }
+    });
+
     // MJT 2026-10-06: a comment edit read "Undo Edit Annotation". The reader
     // announces a point (_historySave) BEFORE writing the new values
     // (_applyChanges), so the field must be read a microtask later.

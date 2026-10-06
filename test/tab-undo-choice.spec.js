@@ -166,6 +166,24 @@ describe("Weavero — tab-level undo choice", () => {
         assert.strictEqual(Cu.evalInSandbox("am._redoStack.length", sb), 1);
     });
 
+    // 2026-10-06, shipped in 0.21.7: the Edit-menu wiring's FIRST pass (a
+    // fresh start or reload) unwires stale handlers -- and that removed the
+    // reader's Ctrl+Y listener wired just before it, so Ctrl+Y did nothing
+    // after every normal start. The state of a fresh start: menu never wired.
+    it("the reader's Ctrl+Y listener survives the Edit menu's first wiring (Windows)", function () {
+        if (!Zotero.isWin) this.skip();
+        const w = Zotero.getMainWindow();
+        const popup = /** @type {any} */ (w.document.getElementById("menu_EditPopup"));
+        if (!popup) this.skip();
+        wv._wvUnwireEditUndoMenu(w);              // as after a teardown: nothing wired
+        assert.notOk(w._wvRedoKeyH, "precondition: no Ctrl+Y listener");
+        wv._wvWireEditUndoMenu(w);                // the startup call
+        assert.isOk(popup._wvUndoMenuH, "the Edit menu is wired");
+        assert.isOk(w._wvRedoKeyH, "and the Ctrl+Y listener with it");
+        const listed = (Services.els.getListenerInfoFor(w) || []).some(i => i.type === "keydown" && i.capturing && i.listenerObject === w._wvRedoKeyH);
+        assert.isTrue(listed, "registered on the window, not just remembered");
+    });
+
     // MJT 2026-10-06: a comment edit read "Undo Edit Annotation". The reader
     // announces a point (_historySave) BEFORE writing the new values
     // (_applyChanges), so the field must be read a microtask later.

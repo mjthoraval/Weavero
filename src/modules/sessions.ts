@@ -584,30 +584,50 @@ class _TabSessionsMixin {
     /** Re-capture the workspace into the active session (debounced). No-op when
      *  nothing is active or a switch is mid-flight. Hooked to the tab Notifier,
      *  reader-window changes, and main-window open/close. */
-    _wvTabSessionTrackingUpdate() {
+    /** May the live workspace be captured into the active session RIGHT NOW?
+     *  Checked when a capture is scheduled AND again when the timer fires
+     *  (survey 2026-10-06: the guards ran only at schedule time, so a flush
+     *  queued in the 700 ms before a session switch fired mid-teardown and
+     *  wrote the half-torn-down topology into the session being LEFT; the
+     *  same at quit). */
+    _wvTabSessionTrackingAllowed(): boolean {
         try {
             // Sessions disabled → go DORMANT: stop tracking so saved sessions are
             // frozen (never overwritten) and can be recovered when re-enabled.
-            if (!this._wvGetEnableTabSessions()) return;
-            if (this._wvTabSessionSwitching) return;
-            if (!this._wvTabSessionGetActiveId()) return;
+            if (!this._wvGetEnableTabSessions()) return false;
+            if (this._wvTabSessionSwitching) return false;
+            if (!this._wvTabSessionGetActiveId()) return false;
             // Half-restored startup or quit-teardown must NOT be captured into
             // the active session — a lossy restore would overwrite the saved
             // session with the degraded workspace (restart-protocol run 2: a
             // lost reader window silently shrank "Main session" 17 → 13 tabs).
             // The workspace settles before the group restore-guard lifts; any
             // churn after that re-triggers tracking normally.
-            if ((this as any)._wvTabGroupRestoreGuard) return;
-            if ((this as any)._wvQuitting) return;
+            if ((this as any)._wvTabGroupRestoreGuard) return false;
+            if ((this as any)._wvQuitting) return false;
             // The group guard lifts after ~3 s, but reader windows can still be
             // reopening (their entries unconsumed) well past that; a tracking
             // capture in between shrank the active session by the window that
             // had not arrived yet (2026-09-16, two-quick-restarts leg). The
             // reader restore re-arms tracking when it completes.
-            if ((this as any)._wvWTRestoreActive) return;
-            if (this._wvTabSessionTrackTimer) {
-                try { clearTimeout(this._wvTabSessionTrackTimer); } catch (e) {}
-            }
+            if ((this as any)._wvWTRestoreActive) return false;
+            return true;
+        } catch (e) { return false; }
+    }
+
+    /** Drop a pending (debounced) capture -- called by the destructive paths
+     *  (switch, new empty) before they tear the workspace down. */
+    _wvTabSessionTrackingCancel() {
+        if (this._wvTabSessionTrackTimer) {
+            try { clearTimeout(this._wvTabSessionTrackTimer); } catch (e) {}
+            this._wvTabSessionTrackTimer = null;
+        }
+    }
+
+    _wvTabSessionTrackingUpdate() {
+        try {
+            if (!this._wvTabSessionTrackingAllowed()) return;
+            this._wvTabSessionTrackingCancel();
             this._wvTabSessionTrackTimer = setTimeout(() => {
                 this._wvTabSessionTrackTimer = null;
                 this._wvTabSessionTrackingFlush();
@@ -615,9 +635,13 @@ class _TabSessionsMixin {
         } catch (e) {}
     }
 
-    /** Immediately capture the workspace into the active session + persist. */
-    async _wvTabSessionTrackingFlush() {
+    /** Immediately capture the workspace into the active session + persist.
+     *  A SCHEDULED flush re-checks the guards; the destructive paths flush
+     *  the outgoing workspace deliberately while `_wvTabSessionSwitching` is
+     *  already set, so they pass `{ force: true }`. */
+    async _wvTabSessionTrackingFlush(opts?: { force?: boolean }) {
         try {
+            if (!(opts && opts.force) && !this._wvTabSessionTrackingAllowed()) return;
             await this._wvTabSessionInit();
             const id = this._wvTabSessionGetActiveId();
             if (!id) return;
@@ -860,11 +884,12 @@ class _TabSessionsMixin {
             ? JSON.parse(JSON.stringify(sess.tabGroups)) : undefined;
         const activeId = this._wvTabSessionGetActiveId();
         this._wvTabSessionSwitching = true;   // suppress tracking during teardown/rebuild
+        this._wvTabSessionTrackingCancel();   // a pending capture must not fire mid-switch
         try {
             // Preserve the OUTGOING workspace: a tracked session is kept current
             // by flushing it; an untracked one snapshots to the auto slot.
             if (activeId && activeId !== id) {
-                try { await this._wvTabSessionTrackingFlush(); } catch (_) {}
+                try { await this._wvTabSessionTrackingFlush({ force: true }); } catch (_) {}
             } else if (!activeId && id !== WV_TABSESSION_AUTOSAVE_ID) {
                 try { await this._wvTabSessionAutosaveCurrent(); } catch (_) {}
             }
@@ -916,10 +941,11 @@ class _TabSessionsMixin {
         await this._wvTabSessionInit();
         const activeId = this._wvTabSessionGetActiveId();
         this._wvTabSessionSwitching = true;   // suppress tracking during teardown/rebuild
+        this._wvTabSessionTrackingCancel();
         try {
             // Keep the outgoing workspace: flush the live tabs into the active
             // session (or snapshot to the auto slot if somehow none is active).
-            if (activeId) { try { await this._wvTabSessionTrackingFlush(); } catch (_) {} }
+            if (activeId) { try { await this._wvTabSessionTrackingFlush({ force: true }); } catch (_) {} }
             else { try { await this._wvTabSessionAutosaveCurrent(); } catch (_) {} }
             // Create the fresh, empty session and make it the current one.
             const now = Date.now();

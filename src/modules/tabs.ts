@@ -7978,6 +7978,21 @@ class _TabsMixin {
         } catch (e) { return null; }
     }
 
+    /** The store document for a list of window entries: THE ONE builder for
+     *  every write (the debounced save and the quit flush). The anchor's
+     *  hidden collections and custom title ride fields of their own,
+     *  OUTSIDE its entry: that entry is skipped when the anchor holds only
+     *  the library tab (the common case), and its presence steers the
+     *  anchor tab restore (pane.ts, "Hidden collections"). The quit flush
+     *  used to build its document by hand without these two fields, so a
+     *  clean quit lost both while a crash kept them (survey 2026-10-06). */
+    _wvWindowStoreBuildDoc(windows: any[]) {
+        let anchorHidden: any, anchorTitle: any;
+        try { const a0: any = (Zotero.getMainWindows() || [])[0]; anchorHidden = a0 && (this as any)._wvHidCapture ? (this as any)._wvHidCapture(a0) : undefined; } catch (e) {}
+        try { const a0: any = (Zotero.getMainWindows() || [])[0]; anchorTitle = (a0 && a0._wvWindowTitle) || undefined; } catch (e) {}
+        return { version: 4, windows, focused: this._wvWindowStoreFocusDescriptor(), anchorHidden, anchorTitle };
+    }
+
     _wvWindowStoreSaveSync() {
         // Once quitting, ONLY the quit flush writes (teardown-triggered saves
         // would capture a half-closed world and clobber the final state —
@@ -7986,19 +8001,11 @@ class _TabsMixin {
         // Unified doc: anchor + dev main windows + reader windows in one file,
         // captured together on every save so nothing clobbers anything.
         const anchor = this._wvWindowStoreCaptureAnchor();
-        // The anchor's hidden collections, OUTSIDE its entry: that entry is
-        // skipped when the anchor holds only the library tab (the common
-        // case), and its presence steers the anchor tab restore -- so the
-        // set rides a field of its own (pane.ts, "Hidden collections").
-        let anchorHidden: any, anchorTitle: any;
-        try { const a0: any = (Zotero.getMainWindows() || [])[0]; anchorHidden = a0 && (this as any)._wvHidCapture ? (this as any)._wvHidCapture(a0) : undefined; } catch (e) {}
-        // Its custom title too (same reason: its entry may be skipped).
-        try { const a0: any = (Zotero.getMainWindows() || [])[0]; anchorTitle = (a0 && a0._wvWindowTitle) || undefined; } catch (e) {}
-        this._wvWindowStoreWrite({ version: 4, windows: [
+        this._wvWindowStoreWrite(this._wvWindowStoreBuildDoc([
             ...(anchor ? [anchor] : []),
             ...this._wvWindowStoreCaptureDevWindows(),
             ...this._wvWindowStoreCaptureReaderWindows(),
-        ], focused: this._wvWindowStoreFocusDescriptor(), anchorHidden, anchorTitle });
+        ]));
     }
 
     /** Debounced save — coalesces churn (e.g. closing a dev window). */
@@ -8163,8 +8170,14 @@ class _TabsMixin {
             const p: any = this as any;
             const entry = this._wvSavedWindowsList().find((x: any) => x && x.id === id);
             if (!entry) return;
-            p._wvSavedWinDoc.windows = this._wvSavedWindowsList().filter((x: any) => x.id !== id);
-            this._wvSavedWindowsPersist();
+            // The parked entry goes ONLY once a window exists for it: deleted
+            // up front, a notes-only entry or a failed open destroyed the
+            // saved window while the alert implied it was still there (survey
+            // 2026-10-06).
+            const forget = () => {
+                p._wvSavedWinDoc.windows = this._wvSavedWindowsList().filter((x: any) => x.id !== id);
+                this._wvSavedWindowsPersist();
+            };
             const sleep = (ms: number) => (Zotero as any).Promise.delay(ms);
             if (entry.kind === "main") {
                 const before = new Set(Zotero.getMainWindows() || []);
@@ -8173,7 +8186,8 @@ class _TabsMixin {
                     geom: entry.geom, wvMainState: entry.wvMainState, wvWinId: null });
                 p._wvPendingDevWindow = true;
                 try { (Zotero as any).openMainWindow(); }
-                catch (e) { p._wvPendingDevWindow = false; return; }
+                catch (e) { p._wvPendingDevWindow = false; try { p._wvDevSpawnQueue.pop(); } catch (e2) {} return; }
+                forget();
                 if (entry.glyph == null && !entry.named) return;
                 const t0 = Date.now();
                 let newMain: any = null;
@@ -8210,6 +8224,7 @@ class _TabsMixin {
                 && !(rd._window && rd._iframe && rd._iframe.contentWindow)) { await sleep(120); }
             const newWin: any = rd && rd._window;
             if (!newWin) return;
+            forget();
             if (entry.glyph != null) { try { this._wvStampGlyphIdx(newWin, entry.glyph); } catch (e) {} }   // skip on colour collision
             const t2 = Date.now();
             while (!(newWin as any)._wvWT && Date.now() - t2 < 4000) { await sleep(80); }
@@ -10604,7 +10619,7 @@ class _TabsMixin {
                     this._wvTrace && this._wvTrace("quit-flush: un-parked " + unparkIds.join(","));
                 } catch (e) {}
             }
-            this._wvWindowStoreWrite({ version: 4, windows: live, focused: this._wvWindowStoreFocusDescriptor() });
+            this._wvWindowStoreWrite(this._wvWindowStoreBuildDoc(live));
             this._wvWindowStoreFrozen = true;
             // Namespace copy (stale-closure-proof): with the capture frozen,
             // the getState / getWindowStates wraps now hand Zotero's own
@@ -10881,6 +10896,51 @@ class _TabsMixin {
         try { win.setTimeout(tick, 300); } catch (e) {}
     }
 
+    /** The per-window column store (`weavero/colstore.json`): one cached
+     *  document, read once per instance AFTER any write still queued by a
+     *  previous instance (the chain lives on the Zotero global so a hot
+     *  reload cannot split it), and one atomic serialized writer. */
+    _wvColStorePath() {
+        return PathUtils.join((Zotero as any).DataDirectory.dir, "weavero", "colstore.json");
+    }
+
+    _wvColStoreLoad(): Promise<any> {
+        const self: any = this;
+        if (self._wvColStoreDocPromise) return self._wvColStoreDocPromise;
+        self._wvColStoreDocPromise = (async () => {
+            try { await ((Zotero as any)._wvColStoreChain || Promise.resolve()); } catch (e) {}
+            let doc: any = {};
+            try {
+                const text = await IOUtils.readUTF8(this._wvColStorePath());
+                const parsed = JSON.parse(text);
+                if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) doc = parsed;
+            } catch (e) {}
+            self._wvColStoreDoc = doc;
+            return doc;
+        })();
+        return self._wvColStoreDocPromise;
+    }
+
+    async _wvColStoreGet(key: string) {
+        const doc = await this._wvColStoreLoad();
+        return doc ? doc[key] : undefined;
+    }
+
+    async _wvColStoreSet(key: string, prefs: any) {
+        const doc = await this._wvColStoreLoad();
+        doc[key] = prefs;
+        const path = this._wvColStorePath();
+        const snapshot = JSON.stringify(doc, null, 2);
+        const Z: any = Zotero as any;
+        Z._wvColStoreChain = (Z._wvColStoreChain || Promise.resolve())
+            .then(async () => {
+                await IOUtils.makeDirectory(PathUtils.parent(path) as string, { ignoreExisting: true });
+                await IOUtils.writeUTF8(path, snapshot, { tmpPath: path + ".tmp" });
+            })
+            .catch((e: any) => Zotero.debug("[Weavero] colstore persist failed: " + e));
+        return Z._wvColStoreChain;
+    }
+
     async _wvApplyPerWindowColumns(win) {
         try {
             if (!win || !win._wvManagedWindow) return;
@@ -10908,14 +10968,18 @@ class _TabsMixin {
             // A separate file is immune. (All views of a window share one entry —
             // per-view columns within a managed window are not preserved; the
             // default library view is what matters here.)
-            const colDir = PathUtils.join((Zotero as any).DataDirectory.dir, "weavero");
-            const colPath = PathUtils.join(colDir, "colstore.json");
             const colKey = "win-" + win._wvWindowId;
             iv._wvColKey = colKey;
+            // ONE in-memory document and ONE serialized atomic writer for the
+            // whole store (_wvColStore*): each window used to read-modify-write
+            // the file on its own 60 s timer (and force-write at close), so two
+            // managed windows closing at quit read the same old file and the
+            // last writer dropped the other window's layout; no tmpPath either
+            // (survey 2026-10-06).
             iv._loadColumnPrefsFromFile = async function () {
                 try {
-                    const store = JSON.parse((await Zotero.File.getContentsAsync(colPath)) as string);
-                    const prefs = store[colKey];
+                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    const prefs = lp ? await lp._wvColStoreGet(colKey) : null;
                     if (prefs && Object.keys(prefs).length) { this._columnPrefs = prefs; return; }
                 } catch (e) {}
                 // No saved layout yet → keep what native just loaded (the shared
@@ -10923,12 +10987,9 @@ class _TabsMixin {
             };
             iv._writeColumnPrefsToFile = async function (force) {
                 const self = this;
-                const writeToFile = async () => {
-                    let store: any;
-                    try { store = JSON.parse((await Zotero.File.getContentsAsync(colPath)) as string); } catch (e) { store = {}; }
-                    store[colKey] = self._columnPrefs;            // only our window's entry
-                    try { await IOUtils.makeDirectory(colDir, { ignoreExisting: true }); } catch (e) {}
-                    return Zotero.File.putContentsAsync(colPath, JSON.stringify(store, null, 2));
+                const writeToFile = () => {
+                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    return lp ? lp._wvColStoreSet(colKey, self._columnPrefs) : Promise.resolve();
                 };
                 if (this._wvColWriteTimer) { try { clearTimeout(this._wvColWriteTimer); } catch (e) {} }
                 if (force) return writeToFile();
@@ -10940,8 +11001,8 @@ class _TabsMixin {
             // (persist the current shared layout under our key) the first time only.
             let hadSaved = false;
             try {
-                const store = JSON.parse((await Zotero.File.getContentsAsync(colPath)) as string);
-                hadSaved = !!(store[colKey] && Object.keys(store[colKey]).length);
+                const saved: any = await this._wvColStoreGet(colKey);
+                hadSaved = !!(saved && Object.keys(saved).length);
             } catch (e) {}
             if (hadSaved) {
                 try { await iv._loadColumnPrefsFromFile(); } catch (e) {}   // _columnPrefs ← our store

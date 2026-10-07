@@ -1997,6 +1997,10 @@ class _TabGroupsMixin {
                     if (srcWin !== tgtWin) {
                         newId = null;
                         try { newId = await this._wvWTMountTab(tgtWin, itemID, { allowDuplicate: true, select: !noFocus, await: true }); } catch (e) {}
+                        // Never destroy the original before the replacement is
+                        // alive (the rule at _wvTabGroupSendTabToWin; survey
+                        // 2026-10-06: a failed mount still closed the source).
+                        if (newId == null || (Zotero as any).Weavero?.plugin !== this) return;
                         try {
                             if (srcIsReader) this._wvWTCloseTab(srcWin, tabId);
                             else { (this as any)._wvBlindAutomationTabClose(tabId); srcWin.Zotero_Tabs.close(tabId); }
@@ -2030,6 +2034,8 @@ class _TabGroupsMixin {
                 }
                 let newRId: any = null;
                 try { newRId = await this._wvWTMountTab(tgtWin, itemID, { allowDuplicate: true, select: !noFocus, await: true }); } catch (e) {}
+                // Replacement first, source second (see the new-group branch).
+                if (newRId == null || (Zotero as any).Weavero?.plugin !== this) return;
                 // Precise slot from the popup: move the just-mounted tab there.
                 if (target.index != null) {
                     try {

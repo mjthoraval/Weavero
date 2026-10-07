@@ -4044,7 +4044,8 @@ class _PaneMixin {
             tabState[tabState.length - 1].selected = true;
             const before = new Set(Zotero.getMainWindows());
             (this as any)._wvDevSpawnQueue = (this as any)._wvDevSpawnQueue || [];
-            (this as any)._wvDevSpawnQueue.push({ kind: "main-dev", tabs: tabState });
+            const queued = { kind: "main-dev", tabs: tabState };
+            (this as any)._wvDevSpawnQueue.push(queued);
             (this as any)._wvPendingDevWindow = true;
             try { (this as any)._wvClearSessionPaneState(); } catch (e) {}
             try { (Zotero as any).openMainWindow(); }
@@ -4067,6 +4068,20 @@ class _PaneMixin {
                 };
                 find();
             });
+            // The new window never settled (slow start, failed init): a "move"
+            // must not become a "close" -- keep the source tabs, drop the
+            // queued spawn so a later window doesn't adopt it (survey
+            // 2026-10-06).
+            if (!newWin) {
+                Zotero.debug("[Weavero] _wvMoveTabsToNewMainWindow: new window never settled; source tabs kept");
+                try {
+                    const q: any[] = (this as any)._wvDevSpawnQueue || [];
+                    const i = q.indexOf(queued);
+                    if (i !== -1) q.splice(i, 1);
+                } catch (e) {}
+                (this as any)._wvPendingDevWindow = false;
+                return;
+            }
             for (const e of entries) {
                 try {
                     if (srcIsReader) this._wvWTCloseTab(srcWin, e.tabId);

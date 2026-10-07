@@ -5052,6 +5052,63 @@ class WeaveroPlugin {
      *  open main window (the detailed unwrap pass in destroy() only covers
      *  the first window; this generic sweep covers the rest and anything
      *  the detailed pass missed). Idempotent. */
+    /** Put decorated TEXT back to its source: unwrap `.wv-md` / `.wv-url-span`
+     *  (re-emitting the markdown markers / link brackets that tree mode
+     *  stripped) and `.wv-text-wrap`. Runs for EVERY window from
+     *  `_wvStripWindowChrome`, BEFORE its generic class sweep: that sweep
+     *  removed any all-`wv-` element whose children were plain text --
+     *  these spans -- together with the user's comment / label text, and
+     *  the focused-window restore pass in destroy() then found nothing to
+     *  restore (survey 2026-10-06). Idempotent. */
+    _wvRestoreDecoratedText(doc: any) {
+        try {
+            for (const span of doc.querySelectorAll(".wv-md") as any) {
+                const cls = span.className || "";
+                let marker = "";
+                if (cls.includes("wv-md-bold"))         marker = "**";
+                else if (cls.includes("wv-md-italic"))  marker = "*";
+                else if (cls.includes("wv-md-strike"))  marker = "~~";
+                else if (cls.includes("wv-md-code"))    marker = "`";
+                const prev = span.previousSibling;
+                const haveMarker = !!(prev && prev.nodeType === 3
+                    && (prev.nodeValue || "").endsWith(marker));
+                const inner = span.textContent || "";
+                const text = haveMarker ? inner : (marker + inner + marker);
+                span.replaceWith(doc.createTextNode(text));
+            }
+            for (const span of doc.querySelectorAll(".wv-url-span") as any) {
+                const inner = span.textContent || "";
+                const href = span.getAttribute("data-href") || "";
+                let text;
+                if (!href || inner === href) {
+                    // Bare URL — same in both modes.
+                    text = inner;
+                } else {
+                    // Markdown link [label](url). Tree mode strips the brackets
+                    // so the label is the only text; restore as `[label](url)`.
+                    // Non-tree mode keeps `[` before and `](url)` after as
+                    // adjacent text nodes; just unwrap the label.
+                    const prev = span.previousSibling;
+                    const prevHasBracket = !!(prev && prev.nodeType === 3
+                        && (prev.nodeValue || "").endsWith("["));
+                    text = prevHasBracket ? inner
+                        : ("[" + inner + "](" + href + ")");
+                }
+                span.replaceWith(doc.createTextNode(text));
+            }
+            // `.wv-text-wrap` holds the host element's text content, so it is
+            // unwrapped, never removed.
+            for (const wrap of doc.querySelectorAll(".wv-text-wrap") as any) {
+                const parent = wrap.parentNode;
+                if (!parent) continue;
+                while (wrap.firstChild) {
+                    parent.insertBefore(wrap.firstChild, wrap);
+                }
+                parent.removeChild(wrap);
+            }
+        } catch (e) {}
+    }
+
     _wvStripWindowChrome(w) {
         const doc = w && w.document;
         if (!doc) return;
@@ -5062,15 +5119,20 @@ class WeaveroPlugin {
             }
         } catch (e) {}
         try { doc.getElementById(STYLE_ID)?.remove(); } catch (e) {}
+        // Decorated TEXT first (markdown / link spans, text wraps): their
+        // source is put back before the generic sweep below can touch them.
+        try { this._wvRestoreDecoratedText(doc); } catch (e) {}
         // Class-only Weavero elements (no wv- id — e.g. the quick-search
         // scope button): if EVERY class is wv-* and there's no id, the
-        // element is ours. If it WRAPS native content (any descendant with
-        // an id or a non-wv class), UNWRAP it — removing the shell outright
-        // once deleted the native tabs-menu list inside a `.wv-winscope`
-        // wrapper, leaving the List All Tabs popup permanently EMPTY (rows
-        // rebuilt into the detached node). Leaf elements are removed whole.
-        // Native elements we merely decorated keep the element and lose
-        // just the wv- classes.
+        // element is ours. If it WRAPS anything -- native content (any
+        // descendant with an id or a non-wv class) OR plain text -- UNWRAP
+        // it: removing the shell outright once deleted the native tabs-menu
+        // list inside a `.wv-winscope` wrapper, leaving the List All Tabs
+        // popup permanently EMPTY (rows rebuilt into the detached node), and
+        // deleted the user's text inside link / markdown spans (survey
+        // 2026-10-06). Only EMPTY elements are removed whole. Native
+        // elements we merely decorated keep the element and lose just the
+        // wv- classes.
         try {
             for (const el of [...doc.querySelectorAll("[class*='wv-']")]) {
                 try {
@@ -5079,13 +5141,7 @@ class WeaveroPlugin {
                     const wv = classes.filter((c) => c.startsWith("wv-"));
                     if (!wv.length) continue;
                     if (wv.length === classes.length && !el.id) {
-                        let hasNative = false;
-                        try {
-                            for (const d of el.querySelectorAll("[id], [class]")) {
-                                if (d.id || [...d.classList].some((c) => c && !c.startsWith("wv-"))) { hasNative = true; break; }
-                            }
-                        } catch (e) {}
-                        if (hasNative) {
+                        if (el.childNodes.length) {
                             const p = el.parentNode;
                             if (p) { while (el.firstChild) p.insertBefore(el.firstChild, el); }
                         }
@@ -5579,53 +5635,9 @@ class WeaveroPlugin {
             // it ends with the expected marker / bracket, we're in non-tree
             // mode (markers already preserved). Otherwise we're in tree mode
             // and need to re-emit them.
-            for (const span of doc.querySelectorAll(".wv-md") as any) {
-                const cls = span.className || "";
-                let marker = "";
-                if (cls.includes("wv-md-bold"))         marker = "**";
-                else if (cls.includes("wv-md-italic"))  marker = "*";
-                else if (cls.includes("wv-md-strike"))  marker = "~~";
-                else if (cls.includes("wv-md-code"))    marker = "`";
-                const prev = span.previousSibling;
-                const haveMarker = !!(prev && prev.nodeType === 3
-                    && (prev.nodeValue || "").endsWith(marker));
-                const inner = span.textContent || "";
-                const text = haveMarker ? inner : (marker + inner + marker);
-                span.replaceWith(doc.createTextNode(text));
-            }
-            for (const span of doc.querySelectorAll(".wv-url-span") as any) {
-                const inner = span.textContent || "";
-                const href = span.getAttribute("data-href") || "";
-                let text;
-                if (!href || inner === href) {
-                    // Bare URL — same in both modes.
-                    text = inner;
-                } else {
-                    // Markdown link [label](url). Tree mode strips the brackets
-                    // so the label is the only text; restore as `[label](url)`.
-                    // Non-tree mode keeps `[` before and `](url)` after as
-                    // adjacent text nodes; just unwrap the label.
-                    const prev = span.previousSibling;
-                    const prevHasBracket = !!(prev && prev.nodeType === 3
-                        && (prev.nodeValue || "").endsWith("["));
-                    text = prevHasBracket ? inner
-                        : ("[" + inner + "](" + href + ")");
-                }
-                span.replaceWith(doc.createTextNode(text));
-            }
-
-            // Remove any of our buttons / icons that escaped the cell-restore
-            // pass (e.g. injected outside .annotation-row.tight). Unwrap
-            // `.wv-text-wrap` separately — it contains the host element's
-            // text content, so removing it would erase the label / row.
-            for (const wrap of doc.querySelectorAll(".wv-text-wrap") as any) {
-                const parent = wrap.parentNode;
-                if (!parent) continue;
-                while (wrap.firstChild) {
-                    parent.insertBefore(wrap.firstChild, wrap);
-                }
-                parent.removeChild(wrap);
-            }
+            // (Done per window by _wvStripWindowChrome already; this call is
+            // the focused window's belt-and-braces.)
+            this._wvRestoreDecoratedText(doc);
             for (const el of doc.querySelectorAll(".wv-btn, .wv-tree-icon") as any) {
                 el.remove();
             }

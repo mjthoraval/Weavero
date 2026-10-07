@@ -3452,6 +3452,14 @@ class _ReaderMixin {
      *  pointer-events:none; the overlay just neatens the chrome layer. */
     _wvShowReaderDragOverlays() {
         try {
+            // A show while the previous drag's locks are still in place (its
+            // dragend was missed and the watchdog has not ticked yet) must
+            // restore them FIRST: re-locking records "hidden" as the original
+            // overflow, and the hide then "restores" the readers to
+            // unscrollable (survey 2026-10-06).
+            if ((this as any)._wvReaderLocksByInstance || (this as any)._wvReaderIframePEByInstance) {
+                try { this._wvHideReaderDragOverlays(); } catch (e) {}
+            }
             // Stash locks per-reader-instance so dragend can restore.
             (this as any)._wvReaderLocksByInstance = new Map();
             (this as any)._wvReaderIframePEByInstance = new Map();
@@ -3531,14 +3539,20 @@ class _ReaderMixin {
         try {
             if ((this as any)._wvDragOverlayWatchdogOn) return;
             (this as any)._wvDragOverlayWatchdogOn = true;
-            const w0: any = Zotero.getMainWindow();
-            const setT = (w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout;
+            // The tick chain runs on the GLOBAL timer, never a window's: the
+            // drag that armed it can close its main window (last tab torn
+            // off), and a window-hosted chain died with it, leaving the
+            // "on" flag stuck so no later drag ever got a watchdog (survey
+            // 2026-10-06; TIMER HOSTS rule). The drag-session probe resolves a
+            // live window per tick.
+            const setT = setTimeout;
             const sessionActive = () => {
                 try {
                     const ds: any = Cc["@mozilla.org/widget/dragservice;1"].getService(Ci.nsIDragService);
                     let s: any = null;
                     // Newer Gecko is per-widget (takes a window); FF140 accepts
                     // both shapes (verified live 2026-08-05).
+                    const w0: any = Zotero.getMainWindow();
                     try { s = ds.getCurrentSession(w0); } catch (e) { s = ds.getCurrentSession(); }
                     return !!s;
                 } catch (e) { return false; }
@@ -5518,16 +5532,29 @@ class _ReaderMixin {
             const ps: any = doc.createXULElement("popupset");
             vbox.appendChild(ps);
             for (const t of st.tabs) { try { if (t.browser) t.browser.collapsed = true; } catch (e) {} }
+            // Every non-success exit from here on puts the window back as it
+            // was: the collapse above is a VISIBLE mutation, and the bail /
+            // catch paths used to leave every tab hidden and the donor shell
+            // in the vbox (survey 2026-10-06). The donor is removed only while
+            // it still holds its own throwaway docshell (before the swap).
+            let committed = false;
+            const abort = (why: string) => {
+                this._wvWTDbg("swap-in ABORT (" + why + ")");
+                if (!committed) { try { nb.remove(); } catch (e) {} try { ps.remove(); } catch (e) {} }
+                try { if (priorActive && st.tabs.some((t: any) => t.id === priorActive)) this._wvWTSwitch(win, priorActive); } catch (e) {}
+            };
             try { nb.setAttribute("src", "about:blank"); } catch (e) {}
             let ready = false;
             for (let i = 0; i < 90; i++) { if (nb.contentWindow) { ready = true; break; } await sleep(60); }
-            if (!ready) { this._wvWTDbg("donor shell NOT ready → null (classic fallback)"); try { nb.remove(); } catch (e) {} try { ps.remove(); } catch (e) {} return null; }
+            if (win.closed || !S._iframe || S._isUninitialized) { abort("source or window gone during the donor wait"); return null; }
+            if (!ready) { abort("donor shell NOT ready → classic fallback"); return null; }
             this._wvWTDbg("donor shell ready id=" + id + " → swapDocShells");
 
             // --- Commit: swap S's live docshell into the donor, re-home S.
             const oldSIframe = S._iframe;
             const oldWin = S._window;
-            S._iframe.swapDocShells(nb);
+            try { S._iframe.swapDocShells(nb); committed = true; }
+            catch (e) { abort("swapDocShells threw: " + e); return null; }
             await sleep(60);
             this._wvWTDbg("swapDocShells done; re-homing S → this window");
             try { oldWin && oldWin.removeEventListener("pointerdown", S._handlePointerDown); } catch (e) {}
@@ -7869,16 +7896,15 @@ class _ReaderMixin {
                         if (id != null) {
                             // Detach the source main tab WITHOUT uniniting S — S's
                             // tabID moved to the reader window, so the close finds no
-                            // reader for the old id. Safeguard the source selection
-                            // so the close doesn't strand an unloaded neighbour.
+                            // reader for the old id. AWAIT the close notify before
+                            // the rename below: `Zotero_Tabs.close` fires it async and
+                            // `Reader.notify` uninits `getByTabID(id)` -- renamed
+                            // first, S matched and was uninited (the multi-select
+                            // path already awaited; this one didn't, survey
+                            // 2026-10-06). See _wvCloseMainTabAndAwait.
                             try {
                                 const owner = findOwner();
-                                if (owner) {
-                                    const p: any = (Zotero as any).Weavero.plugin;
-                                    try { p && p._wvSafeguardSourceSelectionBeforeClose(owner, dragTabId); } catch (e) {}
-                                    try { p && p._wvBlindAutomationTabClose(dragTabId); } catch (e) {}
-                                    try { owner.Zotero_Tabs.close(dragTabId); } catch (e) {}
-                                }
+                                if (owner) await this._wvCloseMainTabAndAwait(owner, dragTabId);
                             } catch (e) {}
                             // Preserve the original tab id: the source main tab is
                             // now closed (id free), so rename the new _wvWT tab back
@@ -15827,6 +15853,13 @@ class _ReaderMixin {
             // flushes every reader's state — then batch-create all tabs as
             // unloaded entries (synchronous, instant) and select the active
             // one, which is the only document that actually loads.
+            // The target must be alive and able to take tabs BEFORE the source
+            // goes: closed during the settle waits above, the source's tabs
+            // would be dropped silently (survey 2026-10-06).
+            if (newMain.closed || !newMain.Zotero_Tabs || (Zotero as any).Weavero?.plugin !== this) {
+                Zotero.debug("[Weavero] convert reader→main: target window gone before the move; source kept");
+                return;
+            }
             for (const m of moved) {
                 try { (this as any)._wvForgetTabGroupForItem(m.itemID); } catch (e) {}
             }
@@ -15933,6 +15966,14 @@ class _ReaderMixin {
             // their editor is cheap).
             const rest = all.filter((t: any) => t.id !== seed.id)
                 .map((t: any) => ({ itemID: t.data.itemID, isNote: String(t.type || "").indexOf("note") === 0, title: t.title }));
+            // No strip model (or no window) to take the rest: keep the source
+            // open with its remaining tabs rather than closing it and losing
+            // them (survey 2026-10-06). The seed already moved; nothing is lost.
+            if (newWin.closed || !(newWin as any)._wvWT || (Zotero as any).Weavero?.plugin !== this) {
+                this._wvConvTraceLog("m2r: strip never ready / window gone -- source kept open");
+                Zotero.debug("[Weavero] convert main→reader: target strip not ready; source window kept");
+                return;
+            }
             for (const m of rest) {
                 try { (this as any)._wvForgetTabGroupForItem(m.itemID); } catch (e) {}
             }

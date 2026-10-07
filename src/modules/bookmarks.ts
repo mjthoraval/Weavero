@@ -1636,19 +1636,39 @@ class _BookmarksMixin {
         if (this._bmInitPromise) return this._bmInitPromise;
         this._bmInitPromise = (async () => {
             const path = this._bmFilePath();
-            try {
-                const text: any = await Zotero.File.getContentsAsync(path);
-                this._bmDoc = this._bmNormalize(JSON.parse(text));
-            } catch (e) {
-                let exists = false;
-                try { exists = await IOUtils.exists(path); } catch (_) {}
-                if (exists) {
+            // Two different failures, two different answers (survey
+            // 2026-10-06): a file that READS but does not PARSE is corrupt --
+            // back it up and start clean; a file that cannot be READ (a
+            // transient lock, antivirus, sync) is intact -- one catch used to
+            // move it aside and the next persist overwrote it with an empty
+            // store. Retry the read once; still failing, run READ-ONLY: an
+            // empty in-memory store that no persist is allowed to write.
+            let text: any = null, readErr: any = null, exists = false;
+            try { exists = await IOUtils.exists(path); } catch (_) {}
+            if (exists) {
+                for (let attempt = 0; attempt < 2 && text == null; attempt++) {
+                    try { text = await Zotero.File.getContentsAsync(path); readErr = null; }
+                    catch (e) { readErr = e; if (attempt === 0) await new Promise(r => setTimeout(r, 300)); }
+                }
+            }
+            if (!exists) {
+                this._bmDoc = { version: 2, bookmarks: [] };
+            }
+            else if (readErr) {
+                Zotero.debug("[Weavero] bookmarks.json could not be read (kept; store is READ-ONLY this session): " + readErr);
+                this._bmReadOnly = true;
+                this._bmDoc = { version: 2, bookmarks: [] };
+            }
+            else {
+                try {
+                    this._bmDoc = this._bmNormalize(JSON.parse(text));
+                } catch (e) {
                     const bak = path + ".corrupt-" + Date.now();
                     try { await IOUtils.move(path, bak); } catch (_) {}
                     Zotero.debug("[Weavero] bookmarks.json unreadable, backed up to "
                         + bak + ": " + e);
+                    this._bmDoc = { version: 2, bookmarks: [] };
                 }
-                this._bmDoc = { version: 2, bookmarks: [] };
             }
             try { this._bmMigratePageTypes(); } catch (e) {
                 Zotero.debug("[Weavero] _bmMigratePageTypes err: " + e);
@@ -2289,6 +2309,9 @@ class _BookmarksMixin {
     /** Atomic, serialized write of the current document to disk. */
     _bmPersist() {
         if (!this._bmDoc) return Promise.resolve();
+        // The file could not be read at load: never overwrite it with the
+        // empty stand-in (see _bmInit).
+        if (this._bmReadOnly) { Zotero.debug("[Weavero] bookmarks persist skipped: store is read-only (unreadable at load)"); return Promise.resolve(); }
         this._bmAttBmSet = null;   // bookmark set changed → drop the "has bookmarks" cache
         // Undo: every user write lands here -- record the step before the
         // file is written (silent writes update the baseline only).

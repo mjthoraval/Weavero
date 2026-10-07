@@ -49,6 +49,23 @@ describe("Weavero — custom window titles live in the window's state", () => {
         wv._wvWindowSetCustomTitle(win, "");
     });
 
+    // Survey 2026-10-06: the quit flush built its document by hand, without
+    // anchorHidden / anchorTitle -- a clean quit lost both, a crash kept them.
+    // Both writers must go through the one builder. (The flush itself freezes
+    // the store, so the contract is checked on the builder plus the source.)
+    it("the quit flush writes the same document shape as the debounced save (one builder)", () => {
+        wv._wvWindowSetCustomTitle(win, "Quit Title");
+        const doc = wv._wvWindowStoreBuildDoc([]);
+        assert.equal(doc.version, 4);
+        assert.equal(doc.anchorTitle, "Quit Title", "builder carries the anchor title");
+        assert.property(doc, "anchorHidden", "builder carries the anchor's hidden set field");
+        assert.property(doc, "focused");
+        const src = String(wv._wvWindowStoreQuitFlush);
+        assert.include(src, "_wvWindowStoreBuildDoc(", "the quit flush uses the builder");
+        assert.notInclude(src, "version: 4", "and builds no document of its own");
+        wv._wvWindowSetCustomTitle(win, "");
+    });
+
     it("the one-time migration moves a legacy by-position title onto the window and clears the pref", () => {
         Zotero.Prefs.set("weavero.windowTitlesMigrated", false, true);
         const idx = Zotero.getMainWindows().indexOf(win);

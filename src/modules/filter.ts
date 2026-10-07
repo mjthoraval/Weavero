@@ -13403,7 +13403,10 @@ class _FilterMixin {
                         (this as any)._wvFAHold = false;                // done
                         return;
                     }
-                    if (st.applies >= 3) return;                        // backstop
+                    // Backstop: give up on this episode -- and RELEASE the hold,
+                    // or the stale-keep repair stays blocked until the next live
+                    // search arms a new episode (survey 2026-10-06).
+                    if (st.applies >= 3) { (this as any)._wvFAHold = false; return; }
                     st.applies++; st.stable = 0;
                     (this as any)._wvFALastSig = sig;
                     dbg("[Weavero][filter] final apply at quiescence (" + sig + ")");

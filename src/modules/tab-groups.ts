@@ -728,6 +728,8 @@ class _TabGroupsMixin {
                 // saved), tab count, owning window/session (user request
                 // 2026-07-16).
                 ".wv-tg-info { text-align: center; font-size: 11px; opacity: 0.65; padding: 0 0 6px; }",
+                // The group editor's status line as a FOOTER under the actions.
+                ".wv-tg-info.wv-tg-footer { padding: 4px 0 1px; }",
                 ".wv-tg-label { font-size: 11px; opacity: 0.7; margin: 2px 2px -2px; }",
                 ".wv-tg-menuitem {",
                 "  padding: 4px 8px; border-radius: 5px; font-size: inherit;",
@@ -5656,43 +5658,24 @@ class _TabGroupsMixin {
             const body = panel.querySelector(".wv-tg-panel-body");
             while (body.firstChild) body.removeChild(body.firstChild);
 
-            // Firefox's "Manage tab group" panel layout: title, labeled name
-            // field, color swatches, then menu-style action rows with the
-            // destructive action set apart at the bottom.
-            const title = doc.createElementNS(HTML_NS, "div");
-            title.className = "wv-tg-title";
-            title.textContent = "Manage Tab Group";
-            body.appendChild(title);
+            // Firefox's "Manage tab group" panel layout (MJT 2026-10-07, the
+            // Firefox 143 card side by side): the colour swatches first, the
+            // name field right under them (placeholder, no label, no
+            // heading), then the menu-style action rows with the destructive
+            // one set apart -- what the user came for is at the top. The
+            // context line (status, tab count, owning window; user request
+            // 2026-07-16) is a muted FOOTER. Guard: test/tab-group-editor.spec.js.
+            body.appendChild(this._wvTabGroupSwatchRow(win, g.color, (c: string) => {
+                this._tabGroupUpdate(groupID, { color: c });
+                this._wvTabGroupApplyEverywhere();
+            }));
 
-            // Context line: status, tab count, owning window (user
-            // request 2026-07-16).
-            try {
-                const openCount = this._wvTabGroupOpenCount(groupID);
-                const isActive = openCount > 0 && !g.saved;
-                const count = isActive ? openCount : ((g.members || []).length);
-                const homeWin = isActive ? this._wvTabGroupHomeWin(groupID) : null;
-                const winName = homeWin
-                    ? ((this as any)._wvWindowCustomTitle(homeWin)
-                        || (this as any)._wvWindowDefaultName(homeWin))
-                    : null;
-                const info = doc.createElementNS(HTML_NS, "div");
-                info.className = "wv-tg-info";
-                info.textContent = (isActive ? "Active" : "Saved")
-                    + " · " + count + " tab" + (count === 1 ? "" : "s")
-                    + (winName ? " · in " + winName : "");
-                body.appendChild(info);
-            } catch (e) {}
-
-            const nameLabel = doc.createElementNS(HTML_NS, "div");
-            nameLabel.className = "wv-tg-label";
-            nameLabel.textContent = "Name";
-            body.appendChild(nameLabel);
             const nameRow = doc.createElementNS(HTML_NS, "div");
             nameRow.className = "wv-tg-row";
             const input = doc.createElementNS(HTML_NS, "input");
             input.className = "wv-tg-name-input";
             input.value = g.name || "";
-            input.setAttribute("placeholder", "Group name");
+            input.setAttribute("placeholder", "Example: Literature review");
             input.addEventListener("change", () => {
                 this._tabGroupUpdate(groupID, { name: input.value });
                 this._wvTabGroupApplyEverywhere();
@@ -5707,11 +5690,6 @@ class _TabGroupsMixin {
             });
             nameRow.appendChild(input);
             body.appendChild(nameRow);
-
-            body.appendChild(this._wvTabGroupSwatchRow(win, g.color, (c: string) => {
-                this._tabGroupUpdate(groupID, { color: c });
-                this._wvTabGroupApplyEverywhere();
-            }));
 
             const mkSep = () => {
                 const s = doc.createElementNS(HTML_NS, "div");
@@ -5810,6 +5788,26 @@ class _TabGroupsMixin {
             mkSep();
             mkItem("Delete group",
                 () => this._wvTabGroupCloseTabs(win, groupID), true);
+
+            // Footer: status, tab count, owning window -- information, so it
+            // sits below the actions.
+            try {
+                const openCount = this._wvTabGroupOpenCount(groupID);
+                const isActive = openCount > 0 && !g.saved;
+                const count = isActive ? openCount : ((g.members || []).length);
+                const homeWin = isActive ? this._wvTabGroupHomeWin(groupID) : null;
+                const winName = homeWin
+                    ? ((this as any)._wvWindowCustomTitle(homeWin)
+                        || (this as any)._wvWindowDefaultName(homeWin))
+                    : null;
+                mkSep();
+                const info = doc.createElementNS(HTML_NS, "div");
+                info.className = "wv-tg-info wv-tg-footer";
+                info.textContent = (isActive ? "Active" : "Saved")
+                    + " · " + count + " tab" + (count === 1 ? "" : "s")
+                    + (winName ? " · in " + winName : "");
+                body.appendChild(info);
+            } catch (e) {}
 
             // Focus the name box as soon as the panel is up so the user can
             // type the group name immediately (esp. right after New Group).

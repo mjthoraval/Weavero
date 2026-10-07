@@ -1329,6 +1329,11 @@ class _AttachmentsMixin {
                 const imp = await this._wvImportLegacyMappings();
                 res.migrated = imp.migrated;
                 res.superseded = imp.superseded;
+                // `found` feeds the importedNothing check below; it was never
+                // copied, so a fully failed import still spent the run-once
+                // offer (survey 2026-10-06).
+                res.found = imp.found;
+                res.unresolved = imp.unresolved;
             }
             else if (choice === "other") {
                 // Hand the feature back. Existing Weavero marks are left in

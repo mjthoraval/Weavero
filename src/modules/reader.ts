@@ -17958,7 +17958,11 @@ class _ReaderMixin {
     async _wvPreviewInjectZones(this: any, reader: any, pv: any, popup: any, tries: number, seq: number) {
         try {
             let on = true;
-            try { on = Zotero.Prefs.get("weavero.previewLinkZones", true) !== false; } catch (_) {}
+            // No second argument: it is the GLOBAL-branch flag, not a default
+            // (see _wvTooltipPersist) -- with it this read never saw the
+            // registered pref, so the zones could not be turned off (survey
+            // 2026-10-06).
+            try { on = Zotero.Prefs.get("weavero.previewLinkZones") !== false; } catch (_) {}
             if (!on) return;
             if (seq !== pv._wvPrevZonesSeq) return;   // a newer popup superseded this one
             const idoc = reader._iframeWindow && reader._iframeWindow.document;

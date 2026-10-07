@@ -43,7 +43,7 @@ describe("Weavero — Settings prefs have registered defaults", () => {
         "enableSmsScheme", "enableSpotifyScheme", "enableTabGroups", "enableTabSessions", "enableTabsAndWindows",
         "enableTabsFileTypeFilter", "enableTabsLibraryFilter", "enableTagsCountAuto", "enableTelScheme",
         "enableUriUtilities", "enableVisualExtras", "enableVscodeScheme", "enableZoomScheme", "enableZoteroLinks",
-        "itemCountBreakdown", "newMainWindow", "noteOpenInDeckWindow", "outlinePageNumbers",
+        "itemCountBreakdown", "collapseAdvancedToQuickSearch", "newMainWindow", "noteOpenInDeckWindow", "outlinePageNumbers",
         "readerItemPane", "separateTaskbarButtons",
         "sessionAutoReopen", "showLibraryBookmarksInReader", "windowIcons", "windowTitleGlyphs"];
 
@@ -54,7 +54,8 @@ describe("Weavero — Settings prefs have registered defaults", () => {
         "enableAddRelatedMenu", "enableAddedByColors", "enableAnnSort",
         "enableAnnotationAddedBy", "enableAnnotationsCountColumn", "enableBookmarks", "enableChainBadge",
         "enableCommentMarkdown", "enableCopyCollectionLink", "enableCopyItemLink", "enableDefaultChild",
-        "enableFilters", "enableGroupLibraryGlyph", "enableIconAppLinks", "enableIconMarkdown", "enableIconUrls",
+        "enableFilters", "collapseAdvancedToQuickSearch", "itemCountBreakdown",
+        "enableGroupLibraryGlyph", "enableIconAppLinks", "enableIconMarkdown", "enableIconUrls",
         "enableInlineUrls", "enableItemsList", "enableItemsTreeFilter", "enableLibrariesHighlight",
         "enableLibraryBookmarks", "enableLinksAndRelations", "enableNotes", "enableNotesList", "enableNotesPane",
         "enableOpenExternalViewer", "enableOpenRelatedSubmenu", "enableOutlineTextHighlight", "enablePluginsSearch",

@@ -2304,6 +2304,10 @@ class WeaveroPlugin {
                 // default; the pref exists so a user who prefers Zotero's
                 // single number can restore it.
                 "itemCountBreakdown",
+                // Registered since 2026-10-07 (survey): read with `!== false`
+                // and shown in Settings, but it had no default, so its
+                // checkbox showed unchecked while the feature ran.
+                "collapseAdvancedToQuickSearch",
                 // Default ON since 2026-08-18 (MJT: discoverability) —
                 // was in the OFF list; the getter fallback flipped with it.
                 "enableOpenExternalViewer",
@@ -5268,6 +5272,7 @@ class WeaveroPlugin {
                 try { (this as any)._wvUnwireQuickCopyMultiTab(w); } catch (e) {}
                 try { (this as any)._wvUnwireColumnPickerNativeFix(w); } catch (e) {}
                 try { (this as any)._wvUnwireEditUndoMenu(w); } catch (e) {}
+                try { (this as any)._wvUnwireMainNewTabShortcut(w); } catch (e) {}
             }
         } catch (e) {}
         // 0. FINAL store capture, then freeze — teardown below dismantles

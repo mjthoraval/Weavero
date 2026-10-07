@@ -14026,7 +14026,9 @@ class _FilterMixin {
     /** Is the tiered item-pane count enabled? Default ON; the pref only
      *  exists so a user who prefers Zotero's single number can have it. */
     _wvCountBreakdownEnabled(): boolean {
-        try { return Zotero.Prefs.get("weavero.itemCountBreakdown") !== false; }
+        // A child of Sort & Filters (prefs.html gates it there); it ran with
+        // the master off (survey 2026-10-06).
+        try { return this._getEnableFilters() && Zotero.Prefs.get("weavero.itemCountBreakdown") !== false; }
         catch (e) { return true; }
     }
 

@@ -3773,20 +3773,42 @@ class _PaneMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvAdvSearchOpenNewWindow err: " + e); }
     }
 
+    /** Ctrl+T / Cmd+T in a main window: the "open a library item" picker.
+     *  The key is taken ONLY when the live plugin exists and the Tabs &
+     *  Windows master is on -- it was swallowed before any check, so with
+     *  the master off, or after a disable, Ctrl+T did nothing at all and
+     *  other plugins' bindings were blocked (survey 2026-10-06). Stamped
+     *  with the wire tag and unwired by destroy. */
     _wvWireMainNewTabShortcut(win: any) {
         try {
-            if (!win || (win as any)._wvMainNewTabKeyWired) return;
-            (win as any)._wvMainNewTabKeyWired = true;
-            win.addEventListener("keydown", (ke: any) => {
+            if (!win) return;
+            const tag = (this as any)._wvWireTag();
+            if (win._wvMainNewTabKeyH && win._wvMainNewTabKeyH._wvTag === tag) return;
+            this._wvUnwireMainNewTabShortcut(win);
+            const h: any = (ke: any) => {
                 try {
                     const accel = Zotero.isMac ? ke.metaKey : ke.ctrlKey;
                     if (!accel || ke.shiftKey || ke.altKey
                         || String(ke.key).toLowerCase() !== "t") return;
-                    ke.preventDefault(); ke.stopPropagation();
                     const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-                    if (live && !live._wvDestroyed) live._wvMainNewTabPicker(win);
+                    if (!live || live._wvDestroyed) return;
+                    if (!live._getTabsAndWindowsMaster()) return;
+                    ke.preventDefault(); ke.stopPropagation();
+                    live._wvMainNewTabPicker(win);
                 } catch (e2) {}
-            }, true);
+            };
+            h._wvTag = tag;
+            win.addEventListener("keydown", h, true);
+            win._wvMainNewTabKeyH = h;
+        } catch (e) {}
+    }
+
+    _wvUnwireMainNewTabShortcut(win: any) {
+        try {
+            if (win && win._wvMainNewTabKeyH) {
+                win.removeEventListener("keydown", win._wvMainNewTabKeyH, true);
+                delete win._wvMainNewTabKeyH;
+            }
         } catch (e) {}
     }
 
@@ -5100,6 +5122,16 @@ class _PaneMixin {
     _markCellLinks() {
         if (!this._getEnableItemsList()) {
             this._stripItemsList();
+            // The row decorations at the end of this pass are NOT link
+            // features: Selection Target dimming / match styling (Sort &
+            // Filters) and the Added By tints (Visual extras) must keep
+            // repainting rows that scroll into view when the items-list
+            // link surface is off (survey 2026-10-06; each gates itself).
+            try {
+                const doc = Zotero.getMainWindow().document;
+                this._paintAddedByCells(doc);
+                this._applySelectionTargetVisuals();
+            } catch (e) {}
             return;
         }
         try {

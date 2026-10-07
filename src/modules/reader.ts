@@ -5166,9 +5166,12 @@ class _ReaderMixin {
             // _wvSwapCommitDonor.
             try {
                 const R: any = Zotero.Reader;
-                const LOOKUP_VER = 1;
-                if (R && typeof R.getByTabID === "function" && R._wvLookupVer !== LOOKUP_VER) {
-                    if (R._wvOrigGetByTabID) R.getByTabID = R._wvOrigGetByTabID;
+                // Tag-stamped (src-ts.md wire-stamp rule); a foreign stamp or
+                // saved original is peeled to the native first. destroy()
+                // peels it too (_wvReaderLookupPeel).
+                const tag = (this as any)._wvWireTag();
+                if (R && typeof R.getByTabID === "function" && R._wvLookupVer !== tag) {
+                    if (R._wvLookupVer !== undefined || R._wvOrigGetByTabID) (this as any)._wvReaderLookupPeel(R);
                     const origLookup = R.getByTabID;
                     R._wvOrigGetByTabID = origLookup;
                     R.getByTabID = function (tabID: any) {
@@ -5182,7 +5185,7 @@ class _ReaderMixin {
                         } catch (e) {}
                         return hit;
                     };
-                    R._wvLookupVer = LOOKUP_VER;
+                    R._wvLookupVer = tag;
                 }
             } catch (e) { Zotero.debug("[Weavero] getByTabID wrap err: " + e); }
             const rs: any[] = ((Zotero.Reader as any)._readers || []);

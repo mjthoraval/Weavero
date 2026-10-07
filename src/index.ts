@@ -2548,10 +2548,17 @@ class WeaveroPlugin {
         // only the openInWindow:true case when the `noteOpenInDeckWindow` pref is
         // on. Falls back to the original whenever no anchor is available.
         // Restored in destroy().
+        // Tag-stamped like the multi-window layer below it (src-ts.md). A saved
+        // original under a foreign stamp is a dead instance's chain -- normally
+        // peeled already by _wvPatchNotesOpenForMultiWindow, which runs first;
+        // never wrap on top of it.
         try {
             const Notes: any = (Zotero as any).Notes;
-            if (Notes && typeof Notes.open === "function" && !Notes._wvOrigOpen) {
+            const tag = (this as any)._wvWireTag();
+            if (Notes && typeof Notes.open === "function" && Notes._wvOpenWired !== tag) {
+                if (Notes._wvOrigOpen) (this as any)._wvOpenPatchPeel(Notes);
                 Notes._wvOrigOpen = Notes.open;
+                Notes._wvOpenWired = tag;
                 const self = this;
                 Notes.open = function (itemID: any, location: any, opts: any = {}) {
                     try {
@@ -2679,15 +2686,25 @@ class WeaveroPlugin {
                     }
                 } catch (e) { Zotero.debug("[Weavero] dropGhostTabsForItem err: " + e); }
             };
-            if (Reader && typeof Reader.getWindowStates === "function" && !Reader._wvOrigGetWindowStates) {
+            // Tag-stamped; a foreign saved original is a dead chain (normally
+            // peeled by _wvPatchReaderGetWindowStates, which runs first).
+            const tagG = (this as any)._wvWireTag();
+            if (Reader && typeof Reader.getWindowStates === "function" && Reader._wvGWSWired !== tagG) {
+                if (Reader._wvOrigGetWindowStates) (this as any)._wvReaderGWSPeel(Reader);
                 Reader._wvOrigGetWindowStates = Reader.getWindowStates;
+                Reader._wvGWSWired = tagG;
                 Reader.getWindowStates = function (...a: any[]) {
                     purgeDeadReaders();
                     return Reader._wvOrigGetWindowStates.apply(Reader, a);
                 };
             }
-            if (Reader && typeof Reader.open === "function" && !Reader._wvOrigOpen) {
+            // Tag-stamped; a foreign saved original is a dead chain (see the
+            // Notes.open patch above).
+            const tagR = (this as any)._wvWireTag();
+            if (Reader && typeof Reader.open === "function" && Reader._wvOpenWired !== tagR) {
+                if (Reader._wvOrigOpen) (this as any)._wvOpenPatchPeel(Reader);
                 Reader._wvOrigOpen = Reader.open;
+                Reader._wvOpenWired = tagR;
                 const self = this;
                 Reader.open = function (itemID: any, location: any, opts: any = {}) {
                     purgeDeadReaders();
@@ -5380,43 +5397,28 @@ class WeaveroPlugin {
             Zotero.debug("[Weavero] openPreferences un-patch err: " + e);
         }
 
-        // 0b. Restore Zotero.Notes.open: unpeel the OUTER deck-window wrapper
-        //     first (patched last, index.ts), then the INNER multi-window
-        //     wrapper (patched first, tabs.ts), and clear the version stamps.
-        //     The stamps MUST be cleared -- the old boolean survived destroy
-        //     and blocked every re-patch after a plugin reload, so wrapper
-        //     changes silently never activated (2026-07-28).
+        // 0b. Restore the Zotero.Notes / Zotero.Reader singleton members to
+        //     the native: every Weavero layer on `open` (multi-window wrapper,
+        //     startup hold, deck-window / hosted-tab wrapper), on
+        //     `getWindowStates` (quit takeover, dead-reader purge) and on
+        //     `getByTabID` comes off together, and every stamp with it. The
+        //     stamps MUST be cleared -- the old boolean survived destroy and
+        //     blocked every re-patch after a plugin reload, so wrapper changes
+        //     silently never activated (2026-07-28); restoring only the outer
+        //     getWindowStates layer left a dead inner wrapper live (survey
+        //     2026-10-06). Guard: test/wire-stamps.spec.js, test/disable/leftovers.js.
         try {
-            const Notes: any = (Zotero as any).Notes;
-            if (Notes && Notes._wvOrigOpen) {
-                Notes.open = Notes._wvOrigOpen;
-                delete Notes._wvOrigOpen;
-            }
-            if (Notes && Notes._wvMwOrigOpen) {
-                Notes.open = Notes._wvMwOrigOpen;
-                delete Notes._wvMwOrigOpen;
-            }
-            if (Notes) { delete Notes._wvOpenPatched; delete Notes._wvOpenPatchedV; }
+            (this as any)._wvOpenPatchPeel((Zotero as any).Notes);
         } catch (e) {
             Zotero.debug("[Weavero] Notes.open un-patch err: " + e);
         }
         try {
             const Reader: any = (Zotero as any).Reader;
-            if (Reader && Reader._wvOrigOpen) {
-                Reader.open = Reader._wvOrigOpen;
-                delete Reader._wvOrigOpen;
-            }
-            if (Reader && Reader._wvMwOrigOpen) {
-                Reader.open = Reader._wvMwOrigOpen;
-                delete Reader._wvMwOrigOpen;
-            }
-            if (Reader) { delete Reader._wvOpenPatched; delete Reader._wvOpenPatchedV; }
-            if (Reader && Reader._wvOrigGetWindowStates) {
-                Reader.getWindowStates = Reader._wvOrigGetWindowStates;
-                delete Reader._wvOrigGetWindowStates;
-            }
+            (this as any)._wvOpenPatchPeel(Reader);
+            (this as any)._wvReaderGWSPeel(Reader);
+            (this as any)._wvReaderLookupPeel(Reader);
         } catch (e) {
-            Zotero.debug("[Weavero] Reader.open un-patch err: " + e);
+            Zotero.debug("[Weavero] Reader un-patch err: " + e);
         }
 
         // 0c. Unregister Weavero pref pane(s). Without this, a

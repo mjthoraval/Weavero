@@ -97,13 +97,23 @@ for (const wtype of ["zotero:reader", "zotero:note", "zotero:pref", "zotero:basi
 // 3. Global monkey-patches restored.
 try {
 	const N = Zotero.Notes;
-	if (N && N._wvOrigOpen) F("Zotero.Notes.open still patched (orig stored)");
+	if (N && (N._wvOrigOpen || N._wvMwOrigOpen)) F("Zotero.Notes.open still patched (orig stored)");
 	if (N && looksOurs(N.open)) F("Zotero.Notes.open source still looks Weavero-wrapped");
+	for (const k of ["_wvOpenPatchedV", "_wvOpenWired", "_wvOpenPatched"]) if (N && N[k] !== undefined) F("Zotero.Notes." + k + " stamp survived");
 } catch (e) {}
 try {
 	const R = Zotero.Reader;
-	if (R && R._wvOrigOpen) F("Zotero.Reader.open still patched");
-	if (R && R._wvOrigGetWindowStates) F("Zotero.Reader.getWindowStates still patched");
+	if (R && (R._wvOrigOpen || R._wvMwOrigOpen)) F("Zotero.Reader.open still patched");
+	if (R && looksOurs(R.open)) F("Zotero.Reader.open source still looks Weavero-wrapped");
+	// Both getWindowStates layers (the inner one once stayed live: destroy
+	// restored only the outer saved ref, 2026-10-07).
+	if (R && (R._wvOrigGetWindowStates || R._wvGWSOrig)) F("Zotero.Reader.getWindowStates still patched");
+	if (R && looksOurs(R.getWindowStates)) F("Zotero.Reader.getWindowStates source still looks Weavero-wrapped");
+	if (R && R._wvOrigGetByTabID) F("Zotero.Reader.getByTabID still patched");
+	if (R && looksOurs(R.getByTabID)) F("Zotero.Reader.getByTabID source still looks Weavero-wrapped");
+	for (const k of ["_wvOpenPatchedV", "_wvOpenWired", "_wvOpenPatched", "_wvHoldWrapped", "_wvGWSPatchVer", "_wvGWSWired", "_wvLookupVer"]) {
+		if (R && R[k] !== undefined) F("Zotero.Reader." + k + " stamp survived");
+	}
 } catch (e) {}
 try {
 	if (Zotero.Utilities.Internal._wvOrigOpenPreferences) F("openPreferences still patched");

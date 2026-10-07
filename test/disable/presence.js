@@ -82,7 +82,7 @@ if (neTotal && neWired !== neTotal) F("note editors wired: " + neWired + "/" + n
 // 3. Global patches installed exactly once (marker + stored original).
 try {
 	const N = Zotero.Notes;
-	if (N && !N._wvOrigOpen && !N._wvOpenPatched) W("Zotero.Notes.open not patched (multi-window note fix inactive)");
+	if (N && !N._wvOrigOpen && !N._wvOpenPatchedV) W("Zotero.Notes.open not patched (multi-window note fix inactive)");
 } catch (e) {}
 
 // 4. Pref pane registered exactly once (duplicate = reinstall bug).

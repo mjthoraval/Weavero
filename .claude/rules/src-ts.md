@@ -86,6 +86,14 @@ name to a Zotero object, window, or document.
   kept running on the dead instance — clearing a quick search dropped the
   chip; every bridge verification after a reload had run on a half-dead
   filter). Guard: `test/wire-stamps.spec.js`.
+  Members of the `Zotero.Notes` / `Zotero.Reader` singletons (`open`,
+  `getWindowStates`, `getByTabID`) are OWN properties with no prototype
+  fallback and carry several Weavero layers: the peel there is a restore
+  of the INNERMOST saved original with every stamp deleted
+  (`_wvSingletonPeel`, used by destroy() and by each foreign-stamp
+  re-wire). A hand-bumped `WV_OPEN_PATCH_V` guarded them until 2026-10-07,
+  and destroy() restored only the outer `getWindowStates` layer, leaving a
+  dead inner wrapper live after every disable.
 - Inside a wrapper installed ON a host object (`rp._refresh = async
   function (...) {…}`, `iv.setFilter = …`), `this` is the HOST, not the
   plugin: never call `this._wv…` there — resolve the live plugin

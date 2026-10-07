@@ -7836,11 +7836,16 @@ class _TabsMixin {
         try {
             const R: any = (Zotero as any).Reader;
             if (!R || typeof R.getWindowStates !== "function") return;
-            // Version-based re-wrap from the stored ORIGINAL (a plain guard
-            // once left a stale pre-reload wrap installed).
-            if (R._wvGWSPatchVer === 3) return;
-            if (!R._wvGWSOrig) R._wvGWSOrig = R.getWindowStates;
-            const orig = R._wvGWSOrig;
+            // Tag-stamped re-wrap from the native (a plain guard once left a
+            // stale pre-reload wrap installed; the hand-bumped constant that
+            // replaced it kept a dead inner wrapper live after destroy, which
+            // restored only the outer layer -- survey 2026-10-06). A foreign
+            // stamp or saved original is a dead chain: peel both layers.
+            const tag = (this as any)._wvWireTag();
+            if (R._wvGWSPatchVer === tag) return;
+            if (R._wvGWSPatchVer !== undefined || R._wvGWSOrig || R._wvOrigGetWindowStates) this._wvReaderGWSPeel(R);
+            const orig = R.getWindowStates;
+            R._wvGWSOrig = orig;
             R.getWindowStates = function () {
                 try {
                     // Gecko's own shutdown flag — no dependence on observer
@@ -7855,7 +7860,7 @@ class _TabsMixin {
                 } catch (e) {}
                 return orig.apply(this, arguments);
             };
-            R._wvGWSPatchVer = 3;
+            R._wvGWSPatchVer = tag;
         } catch (e) { Zotero.debug("[Weavero] _wvPatchReaderGetWindowStates err: " + e); }
     }
 
@@ -9700,18 +9705,62 @@ class _TabsMixin {
         }
     }
 
+    /** Peel one Weavero-wrapped member of a long-lived Zotero singleton
+     *  (Zotero.Notes / Zotero.Reader) back to the native function and drop
+     *  every stamp on it. Those members are OWN properties of the singletons
+     *  (no prototype fallback), so the peel is a restore from the saved
+     *  original, not a `delete`. Several layers may be stacked (each saves the
+     *  function it wrapped under its own key); the native is the INNERMOST
+     *  saved original, so `origKeys` lists keys innermost first. A layer that
+     *  keeps its original only in a closure (the startup hold on Reader.open)
+     *  comes off with the rest. Used by destroy() and by every foreign-stamp
+     *  re-wire. Guard: test/wire-stamps.spec.js. */
+    _wvSingletonPeel(host: any, member: string, origKeys: string[], stampKeys: string[]) {
+        if (!host) return;
+        let native: any = null;
+        for (const k of origKeys) { if (typeof host[k] === "function") { native = host[k]; break; } }
+        if (native) host[member] = native;
+        for (const k of origKeys.concat(stampKeys)) { try { delete host[k]; } catch (_) {} }
+    }
+
+    /** Notes.open / Reader.open: multi-window wrapper (`_wvMwOrigOpen`, below,
+     *  applied first), the startup hold (closure, Reader only), and the
+     *  deck-window / hosted-tab wrapper (`_wvOrigOpen`, index.ts init, on top). */
+    _wvOpenPatchPeel(host: any) {
+        this._wvSingletonPeel(host, "open", ["_wvMwOrigOpen", "_wvOrigOpen"],
+            ["_wvOpenPatched", "_wvOpenPatchedV", "_wvOpenWired", "_wvHoldWrapped"]);
+    }
+
+    /** Reader.getWindowStates: quit-time takeover (`_wvGWSOrig`, applied
+     *  first) and the dead-reader purge (`_wvOrigGetWindowStates`, index.ts). */
+    _wvReaderGWSPeel(R: any) {
+        this._wvSingletonPeel(R, "getWindowStates", ["_wvGWSOrig", "_wvOrigGetWindowStates"],
+            ["_wvGWSPatchVer", "_wvGWSWired"]);
+    }
+
+    /** Reader.getByTabID: the own-prop tabID fallback (reader.ts). */
+    _wvReaderLookupPeel(R: any) {
+        this._wvSingletonPeel(R, "getByTabID", ["_wvOrigGetByTabID"], ["_wvLookupVer"]);
+    }
+
     _wvPatchNotesOpenForMultiWindow() {
-        // Versioned re-wiring (NOT a boolean guard): the old `_wvOpenPatched`
-        // boolean survived destroy() while the wrapper itself was unpeeled, so
-        // after a plugin reload the patch refused to re-install and every
-        // wrapper change shipped between reloads silently never activated
-        // (the dev.32 stale-instance guard was invisible until this fix,
-        // 2026-07-28). A version stamp re-patches whenever the code changed;
-        // destroy() unpeels via _wvMwOrigOpen and clears the stamps.
-        const WV_OPEN_PATCH_V = 2;
+        // Stamped with _wvWireTag() (build + instance), never a boolean and
+        // never a hand-bumped constant (src-ts.md wire-stamp rule): the old
+        // `_wvOpenPatched` boolean survived destroy() while the wrapper itself
+        // was unpeeled, so after a plugin reload the patch refused to
+        // re-install and every wrapper change shipped between reloads silently
+        // never activated (2026-07-28); the `WV_OPEN_PATCH_V = 2` constant that
+        // replaced it needed remembering on every change (survey 2026-10-06).
+        // A foreign stamp is a dead instance's wrapper chain: peel it to the
+        // native (both layers) and re-wrap. destroy() peels the same way.
+        // Guard: test/wire-stamps.spec.js.
+        const tag = (this as any)._wvWireTag();
+        // The two hosts are independent: a Notes block already stamped must
+        // not skip the Reader block (the guard spec re-runs this per host).
         try {
             const N: any = (Zotero as any).Notes;
-            if (!N || typeof N.open !== "function" || N._wvOpenPatchedV === WV_OPEN_PATCH_V) return;
+            if (!N || typeof N.open !== "function" || N._wvOpenPatchedV === tag) throw null;
+            if (N._wvOpenPatchedV !== undefined || N._wvMwOrigOpen || N._wvOrigOpen) this._wvOpenPatchPeel(N);
             const orig = N.open;
             N._wvMwOrigOpen = orig;
             N.open = async function (_itemID: any, _location: any, opts: any) {
@@ -9763,8 +9812,8 @@ class _TabsMixin {
                 if (!lp || !lp._wvWithMainWindow) return orig.apply(this, args);
                 return lp._wvWithMainWindow(owner, () => orig.apply(this, args));
             };
-            N._wvOpenPatchedV = WV_OPEN_PATCH_V;
-        } catch (e) { Zotero.debug("[Weavero] _wvPatchNotesOpenForMultiWindow err: " + e); }
+            N._wvOpenPatchedV = tag;
+        } catch (e) { if (e) Zotero.debug("[Weavero] _wvPatchNotesOpenForMultiWindow err: " + e); }
         // Zotero.Reader.open has the IDENTICAL hardcoded-getMainWindow flaw
         // (xpcom/reader.js): loading a reader tab that lives in a background
         // main window resolves the tab container in the focused window → the
@@ -9772,7 +9821,8 @@ class _TabsMixin {
         // (validated live via the deferred-load idle warmer). Same fix.
         try {
             const R: any = (Zotero as any).Reader;
-            if (!R || typeof R.open !== "function" || R._wvOpenPatchedV === WV_OPEN_PATCH_V) return;
+            if (!R || typeof R.open !== "function" || R._wvOpenPatchedV === tag) return;
+            if (R._wvOpenPatchedV !== undefined || R._wvMwOrigOpen || R._wvOrigOpen) this._wvOpenPatchPeel(R);
             const origR = R.open;
             R._wvMwOrigOpen = origR;
             R.open = async function (_itemID: any, _location: any, opts: any) {
@@ -9793,7 +9843,7 @@ class _TabsMixin {
                 if (!lp || !lp._wvWithMainWindow) return origR.apply(this, args);
                 return lp._wvWithMainWindow(owner, () => origR.apply(this, args));
             };
-            R._wvOpenPatchedV = WV_OPEN_PATCH_V;
+            R._wvOpenPatchedV = tag;
         } catch (e) { Zotero.debug("[Weavero] Reader.open multi-window patch err: " + e); }
     }
 
@@ -9808,7 +9858,18 @@ class _TabsMixin {
     _wvHoldReaderWindowOpens() {
         try {
             const R: any = (Zotero as any).Reader;
-            if (!R || typeof R.open !== "function" || R._wvHoldWrapped) return;
+            const tag = (this as any)._wvWireTag();
+            if (!R || typeof R.open !== "function" || R._wvHoldWrapped === tag) return;
+            // BOOT-ONLY: the hold gives the focused tab a head start over the
+            // reader windows Zotero reopens at startup. A hot reload / enable /
+            // upgrade restores nothing, and a re-installed hold would queue
+            // the user's own "open in new window" for up to 10 s -- which the
+            // boolean stamp that survived destroy() used to prevent by
+            // accident (survey 2026-10-06; same APP_STARTUP=1 convention as
+            // the session repair; undefined = old bootstrap shim). The open
+            // peel (_wvOpenPatchPeel) drops the wrapper with the other layers.
+            const rsn = (this as any)._wvStartupReason;
+            if (rsn !== undefined && rsn !== 1) return;
             this._wvReaderOpenQueue = [];
             this._wvReaderOpenHold = true;
             const self = this;
@@ -9841,7 +9902,7 @@ class _TabsMixin {
                 } catch (e) {}
                 return orig.apply(this, arguments);
             };
-            R._wvHoldWrapped = true;
+            R._wvHoldWrapped = tag;
             // Hard backstop from install — the hold must never outlive startup
             // (the 1.5 s cap arms on the first queued open; see the wrap).
             const w0: any = Zotero.getMainWindow();

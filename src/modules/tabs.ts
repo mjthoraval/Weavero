@@ -2001,6 +2001,7 @@ class _TabsMixin {
                     const sw: any = doc.createElementNS(HTML, "div");
                     sw.className = "wv-tg-swatch" + (i === curIdx ? " wv-selected" : "");
                     sw.style.background = WV_WIN_BADGE_COLORS[i];
+                    sw.style.setProperty("--wv-sw", WV_WIN_BADGE_COLORS[i]);   // the selected ring's colour
                     sw.style.borderRadius = isReader ? "50%" : "3px";
                     const idx = i;
                     sw.addEventListener("click", (ev: any) => {
@@ -2192,6 +2193,7 @@ class _TabsMixin {
                     const sw: any = doc.createElementNS(HTML, "div");
                     sw.className = "wv-tg-swatch" + (s.selected ? " wv-selected" : "");
                     sw.style.background = s.hex;
+                    sw.style.setProperty("--wv-sw", s.hex);   // the selected ring's colour
                     if (s.radius) sw.style.borderRadius = s.radius;
                     sw.addEventListener("click", () => {
                         try {
@@ -2371,6 +2373,7 @@ class _TabsMixin {
                     const sw: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
                     sw.className = "wv-tg-swatch" + (i === curIdx ? " wv-selected" : "");
                     sw.style.background = WV_WIN_BADGE_COLORS[i];
+                    sw.style.setProperty("--wv-sw", WV_WIN_BADGE_COLORS[i]);   // the selected ring's colour
                     sw.style.borderRadius = isReader ? "50%" : "3px";
                     const idx = i;
                     sw.addEventListener("click", (ev: any) => {

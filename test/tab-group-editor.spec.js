@@ -30,6 +30,19 @@ describe("Weavero — tab-group editor: features first, information last", () =>
         const kids = [...body.children];
         const cls = (el) => String(el.className || "");
         assert.include(cls(kids[0]), "wv-tg-swatches", "colour swatches come first");
+        // Firefox's picker: circles; the current colour ringed in its own
+        // colour with a gap (MJT 2026-10-07).
+        const sws = [...kids[0].querySelectorAll(".wv-tg-swatch")];
+        assert.isAbove(sws.length, 3);
+        const sel = sws.filter(s => s.classList.contains("wv-selected"));
+        assert.strictEqual(sel.length, 1, "exactly one swatch is marked current");
+        const csSel = win.getComputedStyle(sel[0]);
+        assert.match(csSel.borderRadius, /^(50%|8px)/, "a circle");
+        assert.strictEqual(csSel.outlineStyle, "solid", "the current one carries the ring");
+        assert.strictEqual(csSel.outlineOffset, "2px", "with a gap");
+        assert.strictEqual(csSel.outlineColor, csSel.backgroundColor, "ring in the swatch's own colour");
+        const csOther = win.getComputedStyle(sws.find(s => !s.classList.contains("wv-selected")));
+        assert.strictEqual(csOther.outlineStyle, "none", "the others carry none");
         assert.include(cls(kids[1]), "wv-tg-row", "the name field is right under the swatches");
         const input = kids[1].querySelector("input.wv-tg-name-input");
         assert.isOk(input);

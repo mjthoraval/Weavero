@@ -935,17 +935,21 @@ class _TabGroupsMixin {
                 "  border: 1px solid rgba(127,127,127,0.45); border-radius: 4px;",
                 "  background: transparent; color: inherit; font: inherit;",
                 "}",
-                ".wv-tg-swatches { display: flex; gap: 6px; flex-wrap: wrap; }",
-                // Rounded SQUARE, not a circle — tab groups' glyph is the
-                // rounded square chip (12px, radius 3), so the colour
-                // picker uses the same shape at swatch size (user request
-                // 2026-07-15). The WINDOW swatch rows override this
-                // per-kind inline (circle = reader, square = main).
+                // Room for the selected swatch's ring (2px gap + 2px ring).
+                ".wv-tg-swatches { display: flex; gap: 9px; flex-wrap: wrap; padding: 3px 3px 4px; }",
+                // Firefox's picker: CIRCLES, the selected one ringed in its
+                // own colour with a gap (MJT 2026-10-07; the 2026-07-15
+                // rounded-square picker, which mirrored the chip glyph, is
+                // superseded -- Firefox's chip is a rounded label and its
+                // picker still uses circles). `--wv-sw` is the swatch's hex,
+                // set inline by _wvTabGroupSwatchRow. The WINDOW swatch rows
+                // still override the shape per kind inline (circle = reader,
+                // square = main).
                 ".wv-tg-swatch {",
-                "  width: 16px; height: 16px; border-radius: 4px; cursor: pointer;",
-                "  border: 2px solid transparent; box-sizing: border-box;",
+                "  width: 16px; height: 16px; border-radius: 50%; cursor: pointer;",
+                "  box-sizing: border-box;",
                 "}",
-                ".wv-tg-swatch.wv-selected { border-color: currentColor; }",
+                ".wv-tg-swatch.wv-selected { outline: 2px solid var(--wv-sw, currentColor); outline-offset: 2px; }",
                 ".wv-tg-btnrow { display: flex; gap: 6px; justify-content: flex-end; }",
                 ".wv-tg-btn {",
                 "  padding: 3px 10px; border-radius: 5px; cursor: pointer;",
@@ -5630,7 +5634,9 @@ class _TabGroupsMixin {
         for (const c of WV_GROUP_COLORS) {
             const sw = doc.createElementNS(HTML_NS, "div");
             sw.className = "wv-tg-swatch" + (c.id === selected ? " wv-selected" : "");
-            sw.style.background = this._tabGroupColorHex(c.id);   // what the chip will show
+            const hex = this._tabGroupColorHex(c.id);
+            sw.style.background = hex;   // what the chip will show
+            sw.style.setProperty("--wv-sw", hex);   // the selected ring's colour
             sw.setAttribute("title", c.id);
             sw.addEventListener("click", () => {
                 try {

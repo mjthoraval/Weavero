@@ -25,6 +25,7 @@
 
 import { BOOKMARK_PATH, BOOKMARK_PATH_14, BOOKMARK_PATH_20, SCHEME_SVG_TEMPLATE, URL_GLOBE_SVG, URL_EXTERNAL_SVG, WV_FUNNEL_DATA_URI, WV_FUNNEL_PATH, WV_FUNNEL_STEM_COLOR } from "./constants";
 import { wvPopupHost, wvDismissTooltip, wvSetBoolAttr } from "../lib/dom";
+import { wvLivePlugin } from "../lib/live";
 
 declare const Components: any;
 declare const Services: any;
@@ -5364,8 +5365,8 @@ class _ReaderPanelsMixin {
             // list element persists across reloads and re-renders, so a handler
             // bound to the instance at wire-time would call a stale copy after any
             // reload. Drag state is read from `reader` (see the row dragstart).
-            const P = (): any => ((typeof Zotero !== "undefined" && (Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || this);
-            const isOutlineDrag = () => reader._wvOutlineDragSrc != null;
+            const P = (): any => wvLivePlugin();   // null: the native drag only
+            const isOutlineDrag = () => reader._wvOutlineDragSrc != null && !!P();
             list.addEventListener("dragover", (e: any) => {
                 if (!isOutlineDrag()) return;
                 e.preventDefault();
@@ -5389,7 +5390,7 @@ class _ReaderPanelsMixin {
             }, true);
             list.addEventListener("dragleave", (e: any) => {
                 // Only hide when the pointer actually leaves the list bounds.
-                try { const r = list.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) P()._wvOutlineHideDropInd(idoc); } catch (_) {}
+                try { const r = list.getBoundingClientRect(); const p = P(); if (p && (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom)) p._wvOutlineHideDropInd(idoc); } catch (_) {}
             }, true);
         } catch (_) {}
     }
@@ -17211,8 +17212,8 @@ class _ReaderPanelsMixin {
                 tab.innerHTML = RP_BM_RIBBON_TAB;
                 tab.addEventListener("click", (e: any) => {
                     try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
-                    const P: any = ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || this;
-                    P._wvReaderSetBmActive(reader, idoc, true);
+                    const P: any = wvLivePlugin();   // never a captured instance
+                    if (P) P._wvReaderSetBmActive(reader, idoc, true);
                 });
                 // Drop an annotation/selection (from the sidebar OR the center
                 // pane) onto the tab to bookmark it (activates the tab).
@@ -17595,8 +17596,8 @@ class _ReaderPanelsMixin {
                     // Resolve the LIVE plugin at click time, not the captured
                     // `this` -- so a hot plugin update runs the CURRENT toggle/
                     // render code even before the panel is rebuilt.
-                    const P: any = ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || this;
-                    P._wvReaderToggleBmChipPopup(reader, idoc, filterBtn);
+                    const P: any = wvLivePlugin();
+                    if (P) P._wvReaderToggleBmChipPopup(reader, idoc, filterBtn);
                 });
                 // Only show the scope group when there's a real choice
                 // to make. With `showLibraryBookmarksInReader` off, the

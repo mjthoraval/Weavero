@@ -94,6 +94,19 @@ name to a Zotero object, window, or document.
   re-wire). A hand-bumped `WV_OPEN_PATCH_V` guarded them until 2026-10-07,
   and destroy() restored only the outer `getWindowStates` layer, leaving a
   dead inner wrapper live after every disable.
+- SHARED HELPERS in `src/lib/` are the canonical spellings (survey
+  2026-10-06 step 3; guard `test/lib-helpers.spec.js`):
+  `wvLivePlugin()` — the live instance or null; never `|| self` / `|| this`
+  (a captured instance kept acting after disable at eleven sites).
+  `wvWrap(host, member, layer, tag, make)` / `wvUnwrap(host, member, layer?)`
+  — layered, tag-stamped method wraps on long-lived objects: the chain is
+  rebuilt from the native on every change, foreign-instance layers drop,
+  a prototype original is deleted and an own-property one restored
+  (`Zotero_Tabs` getState/close/restoreState/markAsLoaded/select,
+  itemsView.selectItems). `wvInjectStyle(doc, id, css)` / `wvRemoveStyle`
+  — a sheet is always replaced, never skip-if-exists or version-stamped.
+  `wvTimeout` / `wvSleep` / `wvClearTimeout` — the sandbox clock for
+  plugin-level work. Published as `Zotero.Weavero.lib` for the suite.
 - Inside a wrapper installed ON a host object (`rp._refresh = async
   function (...) {…}`, `iv.setFilter = …`), `this` is the HOST, not the
   plugin: never call `this._wv…` there — resolve the live plugin

@@ -67,7 +67,14 @@ for (const w of mains) {
 			if (Z["_wvOrig" + m.charAt(0).toUpperCase() + m.slice(1)]) F(label + ": Zotero_Tabs._wvOrig" + m + " still stored");
 		}
 		if (Z._wvRestoreTraceWired) W(label + ": _wvRestoreTraceWired flag still set");
+		// Layered wraps (lib/wrap.ts) leave a table on the host while any layer is on.
+		if (Z._wvWraps) F(label + ": Zotero_Tabs still carries a wrap table (" + Object.keys(Z._wvWraps).join(",") + ")");
+		if (looksOurs(Z.getState)) F(label + ": Zotero_Tabs.getState still wrapped by Weavero");
 	}
+	try {
+		const iv = w.ZoteroPane && w.ZoteroPane.itemsView;
+		if (iv && iv._wvWraps) F(label + ": itemsView still carries a wrap table (" + Object.keys(iv._wvWraps).join(",") + ")");
+	} catch (e) {}
 	if (w._wvTabBarDecoMo) F(label + ": tab-bar decoration MutationObserver still connected");
 	// Note editors: Weavero stylesheet + claim tokens must be gone.
 	for (const ne of w.document.querySelectorAll("note-editor")) {

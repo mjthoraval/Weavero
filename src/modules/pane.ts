@@ -31,6 +31,7 @@ import {
 } from "./constants";
 import { BBT_BIBTEX_TRANSLATOR_ID, BBT_BIBLATEX_TRANSLATOR_ID } from "./url";
 import { winOf, wvSetBoolAttr } from "../lib/dom";
+import { wvRemoveStyle } from "../lib/style";
 
 class _PaneMixin {
     [k: string]: any;
@@ -8743,7 +8744,7 @@ class _PaneMixin {
      *  tab strip. */
     _ensureCompactTitleBarStyles(doc) {
         try {
-            if (doc.getElementById("wv-compact-titlebar-styles")) return;
+            wvRemoveStyle(doc, "wv-compact-titlebar-styles");   // always replaced (src-ts.md sheet replace)
             const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
             style.id = "wv-compact-titlebar-styles";
             style.textContent = [

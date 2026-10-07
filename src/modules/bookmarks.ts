@@ -36,6 +36,7 @@
 import { BOOKMARK_PATH, BOOKMARK_PATH_20, URL_GLOBE_SVG, URL_EXTERNAL_SVG, WV_FUNNEL_PATH, WV_FUNNEL_STEM_COLOR } from "./constants";
 import { BM_HOVERCARD_CSS, WV_PIN_ICON_URI } from "./reader-panels";
 import { wvPopupHost, wvDismissTooltip, wvSetBoolAttr } from "../lib/dom";
+import { wvLivePlugin } from "../lib/live";
 
 // Gecko globals — not in the project's TS lib set (cf. tabs.ts).
 declare const IOUtils: any;
@@ -3615,8 +3616,10 @@ class _BookmarksMixin {
             btn.style.setProperty("margin-inline-start", "8px");
             btn.addEventListener("command", () => {
                 // Live-resolve (reload-proof wiring trap #2): wire-time
-                // `this` would open the popup from a dead instance's store.
-                const P: any = ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || this;
+                // `this` would open the popup from a dead instance's store --
+                // and so would a `|| this` fallback; no plugin, no popup.
+                const P: any = wvLivePlugin();
+                if (!P) return;
                 try { P._openBookmarksPopup(btn); }
                 catch (e) { Zotero.debug("[Weavero] open bookmarks popup err: " + e); }
             });

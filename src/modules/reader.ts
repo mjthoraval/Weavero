@@ -28,6 +28,8 @@ import {
     WV_FUNNEL_DATA_URI,
 } from "./constants";
 import { winOf, wvIsHiddenOrCollapsed, wvSetBoolAttr } from "../lib/dom";
+import { wvRemoveStyle } from "../lib/style";
+import { wvLivePlugin } from "../lib/live";
 import { wvStageNativeUndo } from "./undo";
 
 class _ReaderMixin {
@@ -1476,8 +1478,8 @@ class _ReaderMixin {
                                 : "Add to Bookmarks",
                             onCommand: () => {
                                 try {
-                                    const P: any = ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || self;
-                                    P._wvReaderBookmarkAnnotations(capturedTabID, capturedKeys.slice(), capturedLib);
+                                    const P: any = wvLivePlugin();   // never a captured instance
+                                    if (P) P._wvReaderBookmarkAnnotations(capturedTabID, capturedKeys.slice(), capturedLib);
                                 } catch (err) {
                                     Zotero.debug("[Weavero] add-to-bookmarks onCommand err: " + err);
                                 }
@@ -3965,7 +3967,7 @@ class _ReaderMixin {
      *  toggling the note pref doesn't disturb the reader one.) */
     _ensureNoteWindowMenubarStyles(doc) {
         try {
-            if (doc.getElementById("wv-note-menubar-styles")) return;
+            wvRemoveStyle(doc, "wv-note-menubar-styles");   // always replaced (src-ts.md sheet replace)
             const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
             style.id = "wv-note-menubar-styles";
             style.textContent = [
@@ -5009,9 +5011,11 @@ class _ReaderMixin {
                 // wired ONCE per window, so after a plugin reload `this` is the OLD
                 // instance — its `_wvQuitting` never flips, and a quit-teardown
                 // unload would run the user-close path (run 4 parked a group this
-                // way). Fall back to the closure instance only when the live one is
-                // already destroyed (real quit after plugin shutdown).
-                const lp: any = ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || this;
+                // way). No live plugin (a real quit after plugin shutdown, or a
+                // disable): nothing to park and nothing to splice -- the old
+                // `|| this` fallback ran the dead instance here.
+                const lp: any = wvLivePlugin();
+                if (!lp) return;
                 // Mid-session close: PARK (save) any group whose only members live in
                 // this closing window, so it persists for next launch instead of
                 // being deleted by the next main-window apply (Firefox saved-group
@@ -10610,8 +10614,9 @@ class _ReaderMixin {
                     const shift = event.shiftKey;
                     if (ctrl === shift) return;
                     // Closures go stale across a hot-reload — resolve the live
-                    // plugin instance at event time.
-                    const plugin = (Zotero.Weavero && Zotero.Weavero.plugin) || this;
+                    // plugin instance at event time (none: native click).
+                    const plugin = wvLivePlugin();
+                    if (!plugin) return;
                     const ir = reader._internalReader;
                     if (!ir) return;
                     // Identify the source pane (the view that owns this iframe).
@@ -10798,8 +10803,10 @@ class _ReaderMixin {
                     const ctrl = Zotero.isMac ? event.metaKey : event.ctrlKey;
                     const shift = event.shiftKey;
                     if (ctrl === shift) return;   // exactly one modifier
-                    // Closures go stale across a hot-reload — resolve live.
-                    const plugin = (Zotero.Weavero && Zotero.Weavero.plugin) || this;
+                    // Closures go stale across a hot-reload — resolve live
+                    // (none: native click).
+                    const plugin = wvLivePlugin();
+                    if (!plugin) return;
                     const ir = reader._internalReader;
                     if (!ir) return;
                     // Identify the source pane (the view owning this iframe).
@@ -10898,8 +10905,8 @@ class _ReaderMixin {
                 ir[name] = function () {
                     const ret = orig.apply(this, arguments);
                     try {
-                        const plugin = (Zotero.Weavero && Zotero.Weavero.plugin) || self;
-                        plugin._wvWireSecondaryWhenReady(reader);
+                        const plugin = wvLivePlugin();   // gone -> native toggle only
+                        if (plugin) plugin._wvWireSecondaryWhenReady(reader);
                     } catch (e) {}
                     return ret;
                 };
@@ -17030,12 +17037,12 @@ class _ReaderMixin {
                     try { ev.stopPropagation(); } catch (e) {}
                     try {
                         while (copyAsPop.firstChild) copyAsPop.removeChild(copyAsPop.firstChild);
-                        const lp: any = (Zotero as any).Weavero?.plugin || this;
+                        const lp: any = wvLivePlugin();
                         // Copies act on the WHOLE strip multi-selection when the
                         // right-clicked tab is part of it (like Move/Close —
                         // 2026-09-03: only the clicked tab's citation copied),
                         // else on the single target tab's item.
-                        if (lp._wvBuildCopyAsSubmenu) lp._wvBuildCopyAsSubmenu(doc, copyAsPop, () => {
+                        if (lp && lp._wvBuildCopyAsSubmenu) lp._wvBuildCopyAsSubmenu(doc, copyAsPop, () => {
                             try {
                                 const ids = lp._wvWTMultiSelTargets
                                     ? lp._wvWTMultiSelTargets(win, win._wvWTCtxTabId) : null;
@@ -17077,7 +17084,9 @@ class _ReaderMixin {
                 // tab menu follows (e.g. "Move Tab" sitting just above "View Online").
                 // (Add Tab to Group is folded into Move Tab; "Remove from Tab Group"
                 // stays its own entry, usually hidden.)
-                const lpOrd: any = (Zotero as any).Weavero?.plugin || this;
+                // Build time, inside this instance's own method: `this` IS the
+                // live instance (no event-time resolution needed here).
+                const lpOrd: any = this;
                 const byKey: any = {
                     showInLibrary, removeFromGroup, moveTab: moveMenu, viewOnline,
                     showFile, externalViewer, openNotes, duplicate, pin: pinTab,
@@ -17389,7 +17398,7 @@ class _ReaderMixin {
      *  menus in Mozilla's focusable tree so Alt-activation works). */
     _ensureReaderCompactMenubarStyles(doc) {
         try {
-            if (doc.getElementById("wv-reader-compact-menubar-styles")) return;
+            wvRemoveStyle(doc, "wv-reader-compact-menubar-styles");   // always replaced (src-ts.md sheet replace)
             const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
             style.id = "wv-reader-compact-menubar-styles";
             style.textContent = [

@@ -45,6 +45,8 @@
 // defineProperties.
 
 import { winOf, wvPopupHost, wvDismissTooltip, wvSetBoolAttr } from "../lib/dom";
+import { wvLivePlugin } from "../lib/live";
+import { wvWrap, wvUnwrap } from "../lib/wrap";
 import { URL_SCHEMES } from "./url";
 import {
     BTN_CLASS, BTN_TREE_CLASS, BTN_PANE_CLASS, BTN_POPUP_CLASS,
@@ -1707,12 +1709,13 @@ class _FilterMixin {
             // itself (as an async arrow-function class field).
             const rp: any = itemsView.rowProvider || itemsView;
             if (!rp || typeof rp.toggleOpenState !== "function") return;
-            // Version-aware marker — bump when the wrapper logic
-            // changes so a plugin reload picks up the new behaviour
-            // instead of keeping the old wrapper stuck on the
-            // persistent `itemsView` object.
-            const WRAPPER_VERSION = "v2-splice";
-            if (rp._wvUserOpenTrackingPatched === WRAPPER_VERSION) return;
+            // Tag-stamped (build + instance, src-ts.md): a reload or upgrade
+            // re-wraps from the stored original instead of keeping the old
+            // wrapper stuck on the persistent provider. (Not the layered
+            // helper yet: the filter's own toggleOpenState patch shares this
+            // member through the per-apply restoreField scheme -- step 4.)
+            const tag = this._wvWireTag();
+            if (rp._wvUserOpenTrackingPatched === tag) return;
             // Peel off any previous wrappers we installed (older
             // version markers, no marker, or plain "true" from
             // pre-versioned builds) so we wrap the TRUE Zotero
@@ -1825,7 +1828,7 @@ class _FilterMixin {
                 }
                 return result;
             };
-            rp._wvUserOpenTrackingPatched = "v2-splice";
+            rp._wvUserOpenTrackingPatched = tag;
         } catch (e) {
             Zotero.debug("[Weavero] _patchUserOpenTracking err: " + e);
         }
@@ -6311,27 +6314,23 @@ class _FilterMixin {
         // `_rowMap` internals) so it holds on both v9 and v10 row
         // plumbing. Idempotent.
         try {
-            const WRAP_VER = 3;
             const itemsView = win && win.ZoteroPane && win.ZoteroPane.itemsView;
-            if (itemsView && typeof itemsView.selectItems === "function"
-                && (itemsView._wvSelectItemsWrapVer || 0) < WRAP_VER) {
-                // Versioned re-wrap: assigning over any previous wrapper
-                // orphans its (possibly stale-instance) closure instead
-                // of stacking on it. `selectItems` is a prototype
-                // method, so teardown restores by deleting the own
-                // property. Bind the PROTOTYPE method, not
-                // `itemsView.selectItems` — the latter could be a
-                // leftover own-property wrapper from a predecessor
-                // instance, and binding it would stack us on a stale
-                // closure.
-                const proto = Object.getPrototypeOf(itemsView);
-                const origSelect = itemsView._wvOrigSelectItems
-                    || ((proto && typeof proto.selectItems === "function")
-                        ? proto.selectItems.bind(itemsView)
-                        : itemsView.selectItems.bind(itemsView));
-                itemsView._wvOrigSelectItems = origSelect;
-                itemsView._wvSelectItemsWrapVer = WRAP_VER;
-                itemsView.selectItems = async (ids, noRecurse, noScroll) => {
+            if (itemsView && typeof itemsView.selectItems === "function") {
+                // Legacy own-prop wrapper from a build before the layered
+                // helper (constant stamp): drop it so the PROTOTYPE method is
+                // the native the helper records -- binding a leftover wrapper
+                // would stack us on a stale closure.
+                if (itemsView._wvSelectItemsWrapVer) {
+                    delete itemsView.selectItems;
+                    delete itemsView._wvOrigSelectItems;
+                    delete itemsView._wvSelectItemsWrapVer;
+                }
+                // Tag-stamped layer "filterParity" (lib/wrap.ts): a reload
+                // re-wraps from the native; `selectItems` is a prototype
+                // method, so the unwrap deletes the own property.
+                wvWrap(itemsView, "selectItems", "filterParity", this._wvWireTag(), (orig: any) => {
+                const origSelect = (ids: any, noRecurse: any, noScroll: any) => orig.call(itemsView, ids, noRecurse, noScroll);
+                return async (ids, noRecurse, noScroll) => {
                     let result = await origSelect(ids, noRecurse, noScroll);
                     try {
                         // Resolve the LIVE plugin instance at call time —
@@ -6339,8 +6338,7 @@ class _FilterMixin {
                         // captured `this` could be a torn-down
                         // predecessor whose clear would fight the
                         // current instance's patches.
-                        const live: any = (Zotero as any).Weavero
-                            && (Zotero as any).Weavero.plugin;
+                        const live: any = wvLivePlugin();
                         // `noRecurse` is Zotero's own retry marker — its
                         // recursive call must not re-trigger us. The
                         // getMainWindow guard scopes the clear to the
@@ -6348,7 +6346,7 @@ class _FilterMixin {
                         // (state is per-window; clearing another
                         // window's filter would be a cross-window
                         // clobber).
-                        if (live && !live._wvDestroyed
+                        if (live
                             && !noRecurse && ids && ids.length
                             && win === Zotero.getMainWindow()
                             && live._isFilterActive(live._filterState)) {
@@ -6398,7 +6396,7 @@ class _FilterMixin {
                         dbg("[Weavero][filter] selectItems filter-parity err: " + e);
                     }
                     return result;
-                };
+                }; });
             }
         } catch (e) {
             dbg("[Weavero][filter] selectItems wrap err: " + e);
@@ -6455,10 +6453,14 @@ class _FilterMixin {
             const itemsView = win && win.ZoteroPane && win.ZoteroPane.itemsView;
             // Restore the selectItems wrap (an own property shadowing
             // the prototype method — delete lets it show through).
-            if (itemsView && itemsView._wvSelectItemsWrapVer) {
-                delete itemsView.selectItems;
-                delete itemsView._wvOrigSelectItems;
-                delete itemsView._wvSelectItemsWrapVer;
+            if (itemsView) {
+                wvUnwrap(itemsView, "selectItems", "filterParity");
+                // Legacy keys (builds before the layered helper).
+                if (itemsView._wvSelectItemsWrapVer) {
+                    delete itemsView.selectItems;
+                    delete itemsView._wvOrigSelectItems;
+                    delete itemsView._wvSelectItemsWrapVer;
+                }
             }
             // The setFilter / changeCollectionTreeRow wraps (own props over
             // the prototype methods) and their stamps. Left in place, the

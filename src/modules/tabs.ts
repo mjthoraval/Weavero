@@ -17,6 +17,9 @@
 // defineProperties (see modules/annotation.ts for the pattern).
 
 import { winOf, wvSetBoolAttr } from "../lib/dom";
+import { wvLivePlugin } from "../lib/live";
+import { wvInjectStyle, wvRemoveStyle } from "../lib/style";
+import { wvWrap, wvUnwrap } from "../lib/wrap";
 import { WV_FUNNEL_DATA_URI } from "./constants";
 
 // Zotero_Tabs is the per-window globals — it's declared as `any`
@@ -999,10 +1002,13 @@ class _TabsMixin {
                 || panel.querySelector("#wv-wtl-list");
             if (!list) return;
             const self = this;
-            const isStale = () => panel._wvRowDnDWiredBy !== self;   // a newer instance re-wired
+            // Stale when a newer instance re-wired the panel OR no live plugin
+            // remains -- the `|| self` fallback kept a dead instance's drag
+            // state answering after a disable (survey 2026-10-06 §3.2).
+            const isStale = () => panel._wvRowDnDWiredBy !== self || !wvLivePlugin();
             const doc = list.ownerDocument;
             const panelWin = winOf(panel);
-            const livePlugin = () => ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || self;
+            const livePlugin = (): any => wvLivePlugin();
             // Clear ONLY the drop-into outline classes — keep the ghost so
             // dragover can REUSE + reposition it (removing + recreating it every
             // dragover event was the flicker source).
@@ -1799,7 +1805,7 @@ class _TabsMixin {
 
     _wvEnsureMvWinGlyphStyles(doc: any) {
         try {
-            if (doc.getElementById("wv-mvwin-glyph-styles")) return;
+            wvRemoveStyle(doc, "wv-mvwin-glyph-styles");   // always replaced (src-ts.md sheet replace)
             const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
             style.id = "wv-mvwin-glyph-styles";
             const anchorSvg = encodeURIComponent(
@@ -4704,37 +4710,41 @@ class _TabsMixin {
         } catch (e) {}
     }
 
-    /** Per-window, versioned, reload-proof wrap of `Zotero_Tabs.close`. */
+    /** Per-window, tag-stamped, reload-proof wrap of `Zotero_Tabs.close`:
+     *  the issue #29 last-view guard as its own LAYER ("lastView"). The
+     *  restore tracing is another layer on the same member; two independent
+     *  own-prop wraps once raced on wiring order and the guard fell out of
+     *  the chain (2026-08-09) -- the layered helper rebuilds the chain from
+     *  the native on every change, so order no longer matters. */
     _wvWireLastViewCloseGuard(win: any) {
         try {
             const Z: any = win && win.Zotero_Tabs;
             if (!Z || typeof Z.close !== "function") return;
-            if (Z._wvLastViewWired === 1) return;
-            if (Z._wvOrigTabsClose) Z.close = Z._wvOrigTabsClose;
-            const orig = Z.close;
-            Z._wvOrigTabsClose = orig;
-            Z.close = function (ids?: any) {
+            // Legacy constant-stamped wrap (builds before the helper): peel it.
+            if (Z._wvOrigTabsClose) {
+                try { Z.close = Z._wvOrigTabsClose; } catch (e) {}
+                delete Z._wvOrigTabsClose; delete Z._wvLastViewWired;
+            }
+            wvWrap(Z, "close", "lastView", (this as any)._wvWireTag(), (orig: any) => function (ids?: any) {
                 try {
-                    // Resolve the LIVE plugin — a closure would go stale
-                    // across reloads.
-                    const lp: any = (Zotero as any).Weavero
-                        && (Zotero as any).Weavero.plugin;
+                    const lp: any = wvLivePlugin();   // never a wire-time closure
                     if (lp) lp._wvBlindNonFinalCloses(win, ids);
                 }
                 catch (e) {}
                 return orig.apply(this, arguments);
-            };
-            Z._wvLastViewWired = 1;
+            });
         } catch (e) {}
     }
 
     _wvUnwireLastViewCloseGuard(win: any) {
         try {
             const Z: any = win && win.Zotero_Tabs;
-            if (!Z || !Z._wvOrigTabsClose) return;
-            Z.close = Z._wvOrigTabsClose;
-            delete Z._wvOrigTabsClose;
-            delete Z._wvLastViewWired;
+            if (!Z) return;
+            if (Z._wvOrigTabsClose) {
+                try { Z.close = Z._wvOrigTabsClose; } catch (e) {}
+                delete Z._wvOrigTabsClose; delete Z._wvLastViewWired;
+            }
+            wvUnwrap(Z, "close", "lastView");
         } catch (e) {}
     }
 
@@ -5722,21 +5732,25 @@ class _TabsMixin {
                         // stale `self`, but every window reads the single live
                         // Zotero.Weavero.plugin — so the source-window ref and
                         // ghost info must live there to be seen cross-window.
-                        const lp: any = (Zotero as any).Weavero?.plugin || self;
-                        lp._wvMainTabDragSourceWin = win;
-                        // Mirror _wvTabDrag onto the LIVE plugin too: a reader
-                        // window's drop reads `Zotero.Weavero.plugin._wvTabDrag`
-                        // (mainTabDrag()), but after a hot-reload this dragstart's
-                        // `self` is the OLD instance, so a self-only write left the
-                        // live plugin's _wvTabDrag null → main→reader drops were
-                        // misrouted to the reader↔reader path (Base mount, source
-                        // not closed → tear-off into a new window).
-                        lp._wvTabDrag = self._wvTabDrag;
-                        lp._wvMergeDragInfo = {
-                            itemID: self._wvTabDrag.itemID,
-                            title: self._wvTabDrag.title || "",
-                            readerType: mergeRt,
-                        };
+                        // The LIVE plugin only (never a `|| self` fallback: a dead
+                        // instance's fields are read by nobody).
+                        const lp: any = wvLivePlugin();
+                        if (lp) {
+                            lp._wvMainTabDragSourceWin = win;
+                            // Mirror _wvTabDrag onto the LIVE plugin too: a reader
+                            // window's drop reads `Zotero.Weavero.plugin._wvTabDrag`
+                            // (mainTabDrag()), but after a hot-reload this dragstart's
+                            // `self` is the OLD instance, so a self-only write left the
+                            // live plugin's _wvTabDrag null → main→reader drops were
+                            // misrouted to the reader↔reader path (Base mount, source
+                            // not closed → tear-off into a new window).
+                            lp._wvTabDrag = self._wvTabDrag;
+                            lp._wvMergeDragInfo = {
+                                itemID: self._wvTabDrag.itemID,
+                                title: self._wvTabDrag.title || "",
+                                readerType: mergeRt,
+                            };
+                        }
                     } catch (er3) {}
                     // Multi-select: show ALL selected tabs as the drag ghost (a
                     // small stack), so dragging N tabs shows N ghosts — not just
@@ -6226,10 +6240,10 @@ class _TabsMixin {
                             // fall through to Zotero's native single-tab
                             // moveToNewWindow hook (preserves the tab's reader state).
                             try {
-                                const lp: any = (Zotero as any).Weavero?.plugin || self;
-                                const targets = lp._wvTabMultiSelTargets
+                                const lp: any = wvLivePlugin();
+                                const targets = (lp && lp._wvTabMultiSelTargets)
                                     ? lp._wvTabMultiSelTargets(win, tab.id) : [tab.id];
-                                if (targets && targets.length > 1) {
+                                if (lp && targets && targets.length > 1) {
                                     lp._wvMainTearOffTabs(win, targets);
                                     return;
                                 }
@@ -6241,13 +6255,13 @@ class _TabsMixin {
                             // notes / unloaded tabs / on failure (returns false only
                             // before any mutation, so the tab is intact to fall back).
                             try {
-                                const lp: any = (Zotero as any).Weavero?.plugin || self;
+                                const lp: any = wvLivePlugin();
                                 const Rdr: any = Zotero.Reader;
                                 let liveS: any = null;
                                 try { if (Rdr && Rdr.getByTabID) liveS = Rdr.getByTabID(tab.id); } catch (er) {}
                                 const iid = tab.data && tab.data.itemID;
                                 if (liveS && liveS._iframe && typeof liveS._iframe.swapDocShells === "function"
-                                        && liveS._internalReader && iid != null && lp._wvSwapTearOffToWindow) {
+                                        && liveS._internalReader && iid != null && lp && lp._wvSwapTearOffToWindow) {
                                     lp._wvSwapTearOffToWindow(win, liveS, iid).then((ok: any) => {
                                         if (ok) return;
                                         try {
@@ -6594,15 +6608,11 @@ class _TabsMixin {
     _ensurePinnedTabStyles(doc) {
         try {
             if (!doc) return;
-            const PIN_STYLE_VERSION = "3";
-            const prev = doc.getElementById("wv-pinned-tab-style");
-            if (prev) {
-                if (prev.getAttribute("data-wv-ver") === PIN_STYLE_VERSION) return;
-                prev.remove();
-            }
+            // Always replaced (src-ts.md sheet replace): a version constant
+            // only worked while someone remembered to bump it.
+            wvRemoveStyle(doc, "wv-pinned-tab-style");
             const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
             style.id = "wv-pinned-tab-style";
-            style.setAttribute("data-wv-ver", PIN_STYLE_VERSION);
             // Bump specificity above .tab.selected (which Zotero uses to
             // size the active tab) by chaining the pinned class with .tab
             // AND #tab-bar-container — the selected rule then loses on
@@ -7810,17 +7820,20 @@ class _TabsMixin {
     _wvPatchTabsGetState(win: any) {
         try {
             const Z = win && win.Zotero_Tabs;
-            if (!Z) return;
-            // Version-based re-wrap: a plugin reload must replace an older
-            // wrap (the flag-guard once left a pre-takeover wrap in place and
-            // the quit save recorded a full session). Always wrap from the
-            // stored ORIGINAL, never over a previous wrap.
-            if (Z._wvGetStatePatchVer === 3) return;
-            if (!Z._wvGetStateOrig) Z._wvGetStateOrig = Z.getState.bind(Z);
-            const orig = Z._wvGetStateOrig;
-            // Full, normalized capture — what Weavero's OWN store records.
-            Z._wvGetStateFull = function () {
-                const state = orig();
+            if (!Z || typeof Z.getState !== "function") return;
+            // Legacy constant-stamped wrap (builds before the layered helper):
+            // peel it through its stored original. The old flag-guard once
+            // left a pre-takeover wrap in place and the quit save recorded a
+            // full session; the constant that replaced it needed bumping.
+            if (Z._wvGetStateOrig) {
+                try { Z.getState = Z._wvGetStateOrig; } catch (e) {}
+                delete Z._wvGetStateOrig; delete Z._wvGetStatePatchVer; delete Z._wvGetStateFull;
+            }
+            // Tag-stamped layer "normalize" (lib/wrap.ts): a reload or upgrade
+            // re-wraps from the native. The public getState IS the full,
+            // normalized capture -- what Weavero's own store records too.
+            wvWrap(Z, "getState", "normalize", (this as any)._wvWireTag(), (orig: any) => function () {
+                const state = orig.apply(this, arguments);
                 try {
                     for (const t of (state || [])) {
                         if (t && typeof t.type === "string" && t.type.endsWith("-loading")) {
@@ -7842,16 +7855,26 @@ class _TabsMixin {
                     }
                 } catch (e) {}
                 return state;
-            };
+            });
             // The public getState stays FULL (normalized): the anchor's tabs
             // remain in Zotero's session so a Troubleshooting-Mode start (or a
             // Weavero-disabled boot) still restores the main workspace
             // natively. Only the READER-WINDOW half of the restore is taken
             // over (see _wvPatchReaderGetWindowStates) — those are
             // Weavero-only content already.
-            Z.getState = Z._wvGetStateFull;
-            Z._wvGetStatePatchVer = 3;
         } catch (e) { Zotero.debug("[Weavero] _wvPatchTabsGetState err: " + e); }
+    }
+
+    _wvUnpatchTabsGetState(win: any) {
+        try {
+            const Z = win && win.Zotero_Tabs;
+            if (!Z) return;
+            wvUnwrap(Z, "getState", "normalize");
+            if (Z._wvGetStateOrig) {
+                try { Z.getState = Z._wvGetStateOrig; } catch (e) {}
+                delete Z._wvGetStateOrig; delete Z._wvGetStatePatchVer; delete Z._wvGetStateFull;
+            }
+        } catch (e) {}
     }
 
     /** RESTORE TAKEOVER, reader-window half: at quit, Zotero's session save
@@ -7927,7 +7950,7 @@ class _TabsMixin {
                 let tabs = null;
                 try {
                     const Z = w.Zotero_Tabs;
-                    tabs = Z && (Z._wvGetStateFull ? Z._wvGetStateFull() : Z.getState());
+                    tabs = Z && Z.getState();   // full, normalized (the "normalize" layer)
                     tabs = this._wvApplyDeferredSelectionToState(w, tabs);
                 } catch (e) {}
                 if (!tabs || tabs.length < 2) continue;   // library tab only → nothing to restore
@@ -8008,7 +8031,7 @@ class _TabsMixin {
             const w: any = (Zotero.getMainWindows() || [])[0];
             if (!w || !w.Zotero_Tabs) return null;
             const Z = w.Zotero_Tabs;
-            const tabs = this._wvApplyDeferredSelectionToState(w, Z._wvGetStateFull ? Z._wvGetStateFull() : Z.getState());
+            const tabs = this._wvApplyDeferredSelectionToState(w, Z.getState());
             if (!tabs || tabs.length < 2) return null;
             let wvMainState: any;
             try {
@@ -8143,7 +8166,7 @@ class _TabsMixin {
                     return;
                 }
                 const Z: any = win.Zotero_Tabs;
-                tabs = (Z && (Z._wvGetStateFull ? Z._wvGetStateFull() : Z.getState())) || [];
+                tabs = (Z && Z.getState()) || [];
                 count = tabs.filter((t: any) => t && t.type !== "library").length;
                 if (!count) { Services.prompt.alert(win, "Weavero", "This window has no document tabs to save."); return; }
             }
@@ -8505,7 +8528,7 @@ class _TabsMixin {
 
     _wvEnsureSavedWindowStyles(doc: any) {
         try {
-            if (doc.getElementById("wv-savedwin-styles")) return;
+            wvRemoveStyle(doc, "wv-savedwin-styles");   // always replaced (src-ts.md sheet replace)
             const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
             style.id = "wv-savedwin-styles";
             style.textContent = [
@@ -9479,30 +9502,31 @@ class _TabsMixin {
         try {
             const Z = win && win.Zotero_Tabs;
             if (!Z) return;
-            // REWIRE on every call: a plugin reload must REPLACE the previous
-            // wrappers, not skip ("already wired") — a skipped rewire leaves
-            // wrappers whose closures capture a DEAD instance, and their side
-            // effects (note re-process, watchdog, title heal) kept firing
+            // Layered, tag-stamped wraps (lib/wrap.ts, layer "trace"): a plugin
+            // reload REPLACES the previous instance's layer from the native
+            // instead of skipping ("already wired") — a skipped rewire once
+            // left wrappers whose closures captured a DEAD instance, and their
+            // side effects (note re-process, watchdog, title heal) kept firing
             // after plugin disable (observed: note editors re-wired from dead
-            // code when a note tab loaded post-disable, 2026-07-03). Peel the
-            // previous wrappers via their stored originals first. Legacy
-            // wrappers (no stored originals) can't be peeled — we wrap over
-            // them; a restart flushes them.
+            // code when a note tab loaded post-disable, 2026-07-03). Wrappers
+            // from builds before the helper are peeled through their stored
+            // originals first.
             try {
-                if (Z._wvOrigRestoreState) { Z.restoreState = Z._wvOrigRestoreState; }
-                if (Z._wvOrigClose) { Z.close = Z._wvOrigClose; }
-                if (Z._wvOrigMarkAsLoaded) { Z.markAsLoaded = Z._wvOrigMarkAsLoaded; }
-                if (Z._wvOrigSelect) { Z.select = Z._wvOrigSelect; }
+                if (Z._wvOrigRestoreState) { Z.restoreState = Z._wvOrigRestoreState; delete Z._wvOrigRestoreState; }
+                if (Z._wvOrigClose) { Z.close = Z._wvOrigClose; delete Z._wvOrigClose; }
+                if (Z._wvOrigMarkAsLoaded) { Z.markAsLoaded = Z._wvOrigMarkAsLoaded; delete Z._wvOrigMarkAsLoaded; }
+                if (Z._wvOrigSelect) { Z.select = Z._wvOrigSelect; delete Z._wvOrigSelect; }
+                delete Z._wvRestoreTraceWired;
             } catch (e) {}
-            Z._wvRestoreTraceWired = true;
+            const tag = (this as any)._wvWireTag();
             // Resolve the LIVE plugin at CALL time — never the wiring-time
             // `this` (stale after every reload; still runs after disable).
-            const LP = (): any => { try { const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; return (p && !p._wvDestroyed) ? p : null; } catch (e) { return null; } };
+            const LP = wvLivePlugin;
             const name = () => { try { const p = LP(); return p ? p._wvWindowName(win) : "?"; } catch (e) { return "?"; } };
             const trace = (m: string) => { try { const p = LP(); if (p) p._wvTrace(m); } catch (e) {} };
-            Z._wvOrigRestoreState = Z.restoreState;
-            const origRestore = Z.restoreState.bind(Z);
-            Z.restoreState = async function (tabs: any) {
+            wvWrap(Z, "restoreState", "trace", tag, (orig: any) => {
+            const origRestore = orig.bind(Z);
+            return async function (tabs: any) {
                 if (!LP()) return origRestore(tabs);   // plugin gone — pure native
                 try { trace("restoreState[" + name() + "] IN: " + (tabs || []).map((t: any) => t.type + (t.selected ? "*" : "")).join(",")); } catch (e) {}
                 // HARDENED per-tab restore. Upstream's loop awaits each type
@@ -9565,43 +9589,34 @@ class _TabsMixin {
                 catch (e) { trace("restoreState[" + name() + "] THREW: " + e); throw e; }
                 try { trace("restoreState[" + name() + "] OUT: " + Z._tabs.map((t: any) => t.type).join(",")); } catch (e) {}
                 return r;
-            };
+            }; });
             const wiredAt = Date.now();
-            Z._wvOrigClose = Z.close;
-            const origClose = Z.close.bind(Z);
-            Z.close = function (ids: any) {
+            // Log-only. The issue #29 last-view guard is its own layer on
+            // `close` (_wvWireLastViewCloseGuard): two independent own-prop
+            // wraps once raced on wiring order and the guard fell OUT of the
+            // chain (diagnosed 9 Aug 2026 against the real Actions & Tags), so
+            // the guard was folded in here; the layered helper rebuilds the
+            // chain from the native on every change, so each feature owns its
+            // layer again.
+            wvWrap(Z, "close", "trace", tag, (orig: any) => {
+            const origClose = orig.bind(Z);
+            return function (ids: any) {
                 try {
                     if (LP() && Date.now() - wiredAt < 90000) {
                         const stack = String(new Error().stack || "").split("\n").slice(1, 4).join(" <- ");
                         trace("close[" + name() + "]: " + JSON.stringify(ids) + " via " + stack);
                     }
                 } catch (e) {}
-                // Issue #29 last-view guard runs HERE, not in a second
-                // wrapper of its own. Two independent wraps of
-                // `Zotero_Tabs.close` (this tracer, keyed `_wvOrigClose`,
-                // and the guard, keyed `_wvOrigTabsClose`) raced on wiring
-                // order and the guard fell OUT of the chain entirely: it
-                // never executed on a real close, while a synthetic test
-                // that called it directly passed and made it look wired.
-                // Diagnosed 9 Aug 2026 against the real Actions & Tags.
-                // One wrapper, both jobs, no ordering hazard. Idempotent —
-                // blinding an id A&T never tracked is a no-op.
-                try {
-                    const lp: any = LP();
-                    if (lp && typeof lp._wvBlindNonFinalCloses === "function") {
-                        lp._wvBlindNonFinalCloses(win, ids);
-                    }
-                } catch (e) {}
                 return origClose(ids);
-            };
+            }; });
             // Tab CONTENT loads (the slow phase, distinct from structure
             // restore): markAsLoaded fires when a lazy tab's load hook
             // resolves — trace each so the timeline separates "windows +
             // groups present" from "tab content loaded".
             if (typeof Z.markAsLoaded === "function") {
-                Z._wvOrigMarkAsLoaded = Z.markAsLoaded;
-                const origMark = Z.markAsLoaded.bind(Z);
-                Z.markAsLoaded = function (id: any) {
+                wvWrap(Z, "markAsLoaded", "trace", tag, (orig: any) => {
+                const origMark = orig.bind(Z);
+                return function (id: any) {
                     const r = origMark(id);
                     if (!LP()) return r;   // plugin gone — no side effects
                     try {
@@ -9639,15 +9654,15 @@ class _TabsMixin {
                         }
                     } catch (e) {}
                     return r;
-                };
+                }; });
             }
             // Stuck-loading WATCHDOG: if a selected tab still shows `-loading`
             // 6 s after its select, the load hook died silently (e.g. the
             // Notes.open wrong-window bug, patched separately, or any future
             // wedge) — reset to `-unloaded` and re-drive the select once.
-            Z._wvOrigSelect = Z.select;
-            const origSelect = Z.select.bind(Z);
-            Z.select = function (id: any, reopening?: any, opts?: any) {
+            wvWrap(Z, "select", "trace", tag, (orig: any) => {
+            const origSelect = orig.bind(Z);
+            return function (id: any, reopening?: any, opts?: any) {
                 const r = origSelect(id, reopening, opts);
                 if (!LP()) return r;   // plugin gone — pass through only
                 try {
@@ -9679,7 +9694,7 @@ class _TabsMixin {
                     }, 6000);
                 } catch (e) {}
                 return r;
-            };
+            }; });
         } catch (e) {}
     }
 
@@ -9690,6 +9705,8 @@ class _TabsMixin {
         try {
             const Z = win && win.Zotero_Tabs;
             if (!Z) return;
+            for (const m of ["restoreState", "close", "markAsLoaded", "select"]) wvUnwrap(Z, m, "trace");
+            // Legacy keys from builds before the layered helper.
             if (Z._wvOrigRestoreState) { Z.restoreState = Z._wvOrigRestoreState; delete Z._wvOrigRestoreState; }
             if (Z._wvOrigClose) { Z.close = Z._wvOrigClose; delete Z._wvOrigClose; }
             if (Z._wvOrigMarkAsLoaded) { Z.markAsLoaded = Z._wvOrigMarkAsLoaded; delete Z._wvOrigMarkAsLoaded; }
@@ -9906,8 +9923,8 @@ class _TabsMixin {
             const orig = R.open;
             R.open = function (itemID: any, _location: any, opts: any) {
                 try {
-                    const lp: any = ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || self;
-                    if (lp._wvReaderOpenHold && opts && opts.openInWindow) {
+                    const lp: any = wvLivePlugin();   // gone -> pure native below
+                    if (lp && lp._wvReaderOpenHold && opts && opts.openInWindow) {
                         const f = lp._wvBootFocusedEntry;
                         const isFocusedReader = !!(f && f.kind === "reader" && f.itemID === itemID);
                         if (!isFocusedReader) {
@@ -11457,13 +11474,7 @@ class _TabsMixin {
                     // use a bright sky blue instead.
                     + `.wv-ui-dark.wv-anchor-window #tab-bar-container .tab[data-id="zotero-pane"]::after{`
                     + `background-color:#9dbcff;}`);
-            let st: any = d.getElementById("wv-anchor-indicator-style");
-            if (!st) {
-                st = d.createElementNS("http://www.w3.org/1999/xhtml", "style");
-                st.id = "wv-anchor-indicator-style";
-                (d.head || d.documentElement).appendChild(st);
-            }
-            if (st.textContent !== css) st.textContent = css;   // refresh if rule changed
+            wvInjectStyle(d, "wv-anchor-indicator-style", css);   // refreshed when the rule changed
             // Show the mark only when MORE THAN ONE window exists (mains and
             // reader windows both counted — user rule 2026-07-15): a lone
             // window has no "which is the main one?" ambiguity.

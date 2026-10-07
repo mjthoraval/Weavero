@@ -1,3 +1,5 @@
+import { wvInjectStyle } from "../lib/style";
+
 // Module: named TAB SESSIONS — capture the set of open tabs across all main
 // windows into a NAMED session, and switch between sessions (close the current
 // reader/note tabs, reopen the saved set).
@@ -1164,15 +1166,9 @@ class _TabSessionsMixin {
                 "  white-space: nowrap; font-weight: 700; }",
                 ".wv-cursess-unsaved .wv-cursess-label { font-weight: 600; font-style: italic; opacity: 0.8; }",
             ].join("\n");
-            // Find-or-create + refresh when changed, so CSS edits take effect on a
-            // plugin reload (the old stylesheet survives the reload otherwise).
-            let st = doc.getElementById("wv-tab-session-styles");
-            if (!st) {
-                st = doc.createElementNS(HTML, "style");
-                st.id = "wv-tab-session-styles";
-                (doc.documentElement || doc).appendChild(st);
-            }
-            if (st.textContent !== css) st.textContent = css;
+            // Refreshed when changed, so CSS edits take effect on a plugin
+            // reload (the old stylesheet survives the reload otherwise).
+            wvInjectStyle(doc, "wv-tab-session-styles", css, doc.documentElement || doc);
         } catch (e) { Zotero.debug("[Weavero] _wvEnsureTabSessionStyles err: " + e); }
     }
 

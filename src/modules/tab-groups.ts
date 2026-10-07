@@ -22,6 +22,7 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
 import { wvSetBoolAttr } from "../lib/dom";
+import { wvRemoveStyle } from "../lib/style";
 
 declare const Zotero: any;
 declare const Services: any;
@@ -619,15 +620,11 @@ class _TabGroupsMixin {
     _ensureTabGroupStyles(doc: any) {
         try { this._wvEnsureSelectedTabRing(doc); } catch (e) {}
         try {
-            const STYLE_VERSION = "27";
-            const old = doc.getElementById("wv-tab-group-styles");
-            if (old) {
-                if (old.getAttribute("data-wv-ver") === STYLE_VERSION) return;
-                old.remove();                       // stale rules from a previous build
-            }
+            // Always replaced (src-ts.md sheet replace): stale rules from a
+            // previous build go whether or not anyone bumped a version.
+            wvRemoveStyle(doc, "wv-tab-group-styles");
             const st = doc.createElementNS(HTML_NS, "style");
             st.id = "wv-tab-group-styles";
-            st.setAttribute("data-wv-ver", STYLE_VERSION);
             st.textContent = [
                 // Member underline — a ::after bar that extends LEFT across the
                 // 4px flex gap to the previous member (7px for the first member,

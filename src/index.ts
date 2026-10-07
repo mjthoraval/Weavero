@@ -16,6 +16,14 @@ import {
     SCHEME_SVG_TEMPLATE, MENU_LABEL_PREFIXES, PLUGIN_CSS,
 } from "./modules/constants";
 import { makeInvisibleRe, TRAILING_RE as TRAILING_RE_LIB } from "./lib/text";
+import { wvLivePlugin } from "./lib/live";
+import { wvTimeout, wvClearTimeout, wvSleep } from "./lib/timers";
+import { wvInjectStyle, wvRemoveStyle } from "./lib/style";
+import { wvWrap, wvUnwrap, wvWrapLayers } from "./lib/wrap";
+
+/** The shared helpers, published as `Zotero.Weavero.lib` so the suite can
+ *  exercise them directly (they are bundled, not otherwise reachable). */
+const WV_LIB = { wvLivePlugin, wvTimeout, wvClearTimeout, wvSleep, wvInjectStyle, wvRemoveStyle, wvWrap, wvUnwrap, wvWrapLayers };
 import { URL_SCHEMES, urlMethods } from "./modules/url";
 import { annotationMethods } from "./modules/annotation";
 import { tabsMethods } from "./modules/tabs";
@@ -2975,7 +2983,7 @@ class WeaveroPlugin {
                 // zotero-types' tab-event union doesn't list it yet, hence
                 // the cast.)
                 if (event !== "add" && (event as string) !== "load") return;
-                try { (Zotero.Weavero && Zotero.Weavero.plugin || this)._wvEnsureReaderTabWindowSafety(); } catch (e) {}
+                try { const lp = wvLivePlugin(); if (lp) lp._wvEnsureReaderTabWindowSafety(); } catch (e) {}
                 for (let i = 0; i < 20; i++) {
                     await new Promise(r => setTimeout(r, 250));
                     for (const reader of Zotero.Reader._readers || [])
@@ -5044,6 +5052,7 @@ class WeaveroPlugin {
         try { (this as any)._wvUnwireLoadURIHook(_window); } catch (e) {}
         try { (this as any)._wvUnwireItemCountBreakdown(_window); } catch (e) {}
         try { (this as any)._wvUnwireLastViewCloseGuard(_window); } catch (e) {}
+        try { (this as any)._wvUnpatchTabsGetState(_window); } catch (e) {}
         try { (this as any)._wvUnwireQuickCopyMultiTab(_window); } catch (e) {}
         try {
             // Window-close upkeep, only when managed windows are in play:
@@ -5314,6 +5323,7 @@ class WeaveroPlugin {
                 // prototype wrap) in place (pre-release review 2026-10-05).
                 try { (this as any)._wvUnwireItemCountBreakdown(w); } catch (e) {}
                 try { (this as any)._wvUnwireLastViewCloseGuard(w); } catch (e) {}
+                try { (this as any)._wvUnpatchTabsGetState(w); } catch (e) {}
                 try { (this as any)._wvUnwireQuickCopyMultiTab(w); } catch (e) {}
                 try { (this as any)._wvUnwireColumnPickerNativeFix(w); } catch (e) {}
                 try { (this as any)._wvUnwireEditUndoMenu(w); } catch (e) {}
@@ -5967,6 +5977,7 @@ Zotero.Weavero = {
                 // Boot-only machinery (session verify-and-repair) keys off this.
                 _Weavero._wvStartupReason = reason;
                 Zotero.Weavero.plugin = _Weavero;
+                (Zotero.Weavero as any).lib = WV_LIB;
                 // Default-child overrides. Wired HERE as well as in
                 // onMainWindowLoad because a plugin RELOAD does not re-fire
                 // onMainWindowLoad for an already-open window, which would

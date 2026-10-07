@@ -2611,17 +2611,17 @@ class WeaveroPlugin {
             // (Martynas Bagdonas, 2026-07-17; fixes forums comment #515471, the same
             // reopen-fails-after-close failure). Native Reader.open now skips entries
             // flagged `_isTabClosed`, i.e. does what dropGhostTabsForItem does by hand.
-            // Verified present/live in the 10.0-source build. BUT the fix is on the
-            // branch tip only — NOT in any tagged release (all tags are 9.0.x) and not
-            // in Zotero 9, both of which Weavero still supports. So KEEP this guard until
-            // the fix ships in the minimum Zotero beta Weavero targets; it coexists
-            // harmlessly with the fix (it only drops entries whose tab is truly gone,
-            // which the fixed Reader.open already ignores).
+            // UPDATE 2026-10-07: c233fcf5f is an ancestor of the 10.0.0 tag (and of
+            // every 10.0.x since), so the guard is dead weight on Zotero 10 and is
+            // now called only when `Zotero.version < 10.0.0` (Zotero 9, which
+            // Weavero still supports: strict_min_version 7.0). It coexists
+            // harmlessly with the fix (it only drops entries whose tab is truly
+            // gone, which the fixed Reader.open already ignores).
             //
-            // When that release trigger is met, delete this whole guard: the
+            // RETIRE WHEN Zotero 9 support ends: delete this whole guard -- the
             // `tabAliveForReader` + `dropGhostTabsForItem` helpers below AND the
-            // `dropGhostTabsForItem(itemID)` call in the Reader.open wrapper. Nothing
-            // else depends on them.
+            // gated `dropGhostTabsForItem(itemID)` call in the Reader.open wrapper.
+            // Nothing else depends on them.
             // ─────────────────────────────────────────────────────────────────────────
             // Defensive guard for an upstream Zotero bug (forums.zotero.org/discussion/132342):
             // a reader whose tab is closed during a PDF page-edit RELOAD can be left behind in
@@ -2714,7 +2714,10 @@ class WeaveroPlugin {
                             }
                         }
                     } catch (e) { Zotero.debug("[Weavero] reader-open redirect err: " + e); }
-                    dropGhostTabsForItem(itemID);   // WV-TEMP-132342: guard, remove when upstream-fixed (see note above)
+                    // WV-TEMP-132342: Zotero 9 only -- the upstream fix (c233fcf5f) is in
+                    // every 10.0.x release (checked 2026-10-07 against the 10.0.0 tag).
+                    // Delete the guard with Zotero 9 support (see note above).
+                    if (Services.vc.compare(Zotero.version, "10.0.0") < 0) dropGhostTabsForItem(itemID);
                     return Reader._wvOrigOpen.call(Reader, itemID, location, opts);
                 };
             }

@@ -234,12 +234,22 @@ describe("Weavero — hidden collections (per window)", () => {
             await wv._wvHidShow(w2, LIB(), null, []);
         }
         finally {
-            // Wait until the window is really gone and the first one has focus
-            // again: the next spec's getMainWindow() must not pick up a
-            // closing window (items-header-contain measured 0-px columns).
+            // Hand focus back to the first window BEFORE closing the second:
+            // closing the active window let the OS activate another app's
+            // window on top, the first window's document went "hidden"
+            // (occluded) and the next spec measured a 0-px header there
+            // (items-header-contain, three full runs 2026-10-05..07). Then
+            // wait until the second window is really gone and the first one
+            // is visible again.
+            try { win.focus(); } catch (_) {}
+            await sleep(100);
             try { w2.close(); } catch (_) {}
             for (let i = 0; i < 60 && Zotero.getMainWindows().includes(w2); i++) await sleep(100);
-            try { win.focus(); } catch (_) {}
+            for (let i = 0; i < 30 && win.document.visibilityState !== "visible"; i++) {
+                try { if (win.windowState === win.STATE_MINIMIZED) win.restore(); } catch (_) {}
+                try { win.focus(); } catch (_) {}
+                await sleep(100);
+            }
             await sleep(300);
         }
     });

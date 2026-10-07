@@ -91,14 +91,45 @@ describe("Weavero — items-list header contributes no intrinsic width", () => {
         assert.isNotOk(b._wvMinWidthPatched, "and left the other column");
     });
 
-    it("its max-content width is its padding, not the sum of its columns", () => {
+    // Named diagnostics: this guard read 0 px in three full runs after the
+    // hidden-collections spec opened and closed a second main window
+    // (2026-10-05..07): the first window's document was "hidden" (occluded
+    // on the desktop once the second window closed), and a hidden window
+    // suspends the table's rendering. Say which window and what state.
+    const diag = () => {
+        try {
+            const all = Zotero.getMainWindows();
+            const r = hdr.getBoundingClientRect();
+            const pane = win.document.getElementById("zotero-items-pane") || win.document.getElementById("zotero-items-pane-container");
+            const pr = pane && pane.getBoundingClientRect();
+            return JSON.stringify({ wins: all.length, index: all.indexOf(win), closed: win.closed, vis: win.document.visibilityState,
+                state: win.windowState, inner: [win.innerWidth, win.innerHeight], hdr: [r.width, r.height], pane: pr && [pr.width, pr.height],
+                tab: win.Zotero_Tabs && win.Zotero_Tabs.selectedType, display: win.getComputedStyle(hdr).display });
+        } catch (e) { return String(e); }
+    };
+
+    it("its max-content width is its padding, not the sum of its columns", async function () {
+        // A layout measurement needs a visible window. Bring it back --
+        // bounded -- and when the desktop keeps it hidden (another app in
+        // front; a process without foreground rights cannot raise itself),
+        // skip and say so: a 0-px reading is not a result. CI (xvfb) never
+        // occludes, so the guard measures there.
+        for (let i = 0; i < 30 && win.document.visibilityState !== "visible"; i++) {
+            try { if (win.windowState === win.STATE_MINIMIZED) win.restore(); } catch (e) {}
+            try { win.focus(); } catch (e) {}
+            await tick(100);
+        }
+        if (win.document.visibilityState !== "visible") {
+            Zotero.debug("[Weavero][test] header max-content: window hidden, not measured " + diag());
+            this.skip();
+        }
         // A fresh test profile shows Zotero's three default columns and none
         // of Weavero's opt-in ones, so the bar is "a real header", not a rich
         // one (the first run of this guard asserted >3 and failed at 3).
         const cells = [...hdr.querySelectorAll(":scope > .cell")];
         assert.isAtLeast(cells.length, 2, "a populated header");
         const sum = cells.reduce((t, c) => t + c.getBoundingClientRect().width, 0);
-        assert.isAbove(sum, 100, "columns actually occupy width: " + sum);
+        assert.isAbove(sum, 100, "columns actually occupy width: " + sum + " " + diag());
         hdr.style.width = "max-content";
         void hdr.offsetWidth;
         const w = hdr.getBoundingClientRect().width;

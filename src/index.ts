@@ -20,10 +20,12 @@ import { wvLivePlugin } from "./lib/live";
 import { wvTimeout, wvClearTimeout, wvSleep } from "./lib/timers";
 import { wvInjectStyle, wvRemoveStyle } from "./lib/style";
 import { wvWrap, wvUnwrap, wvWrapLayers } from "./lib/wrap";
+import { wvStoreDir, wvStorePath, wvStoreChain, wvStoreWrite, wvStoreRead, wvStoreRemove } from "./lib/store";
 
 /** The shared helpers, published as `Zotero.Weavero.lib` so the suite can
  *  exercise them directly (they are bundled, not otherwise reachable). */
-const WV_LIB = { wvLivePlugin, wvTimeout, wvClearTimeout, wvSleep, wvInjectStyle, wvRemoveStyle, wvWrap, wvUnwrap, wvWrapLayers };
+const WV_LIB = { wvLivePlugin, wvTimeout, wvClearTimeout, wvSleep, wvInjectStyle, wvRemoveStyle, wvWrap, wvUnwrap, wvWrapLayers,
+    wvStoreDir, wvStorePath, wvStoreChain, wvStoreWrite, wvStoreRead, wvStoreRemove };
 import { URL_SCHEMES, urlMethods } from "./modules/url";
 import { annotationMethods } from "./modules/annotation";
 import { tabsMethods } from "./modules/tabs";

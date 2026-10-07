@@ -1,4 +1,5 @@
 import { wvInjectStyle } from "../lib/style";
+import { wvStoreWrite, wvStoreRead } from "../lib/store";
 
 // Module: named TAB SESSIONS — capture the set of open tabs across all main
 // windows into a NAMED session, and switch between sessions (close the current
@@ -113,22 +114,29 @@ class _TabSessionsMixin {
     }
 
     /** Load tab-sessions.json into `_wvTabSessionDoc` once (cached promise).
-     *  Missing → fresh; unreadable → backed up to `*.corrupt-<ts>` + start clean. */
+     *  Missing → fresh; corrupt → backed up to `*.corrupt-<ts>` + start
+     *  clean; UNREADABLE (a lock, antivirus, sync) → kept, and the store is
+     *  read-only this session -- one catch used to move it aside and the
+     *  auto-save slot then overwrote the user's sessions with an empty file
+     *  (lib/store.ts, survey 2026-10-06 §3.4). */
     _wvTabSessionInit() {
         if (this._wvTabSessionInitPromise) return this._wvTabSessionInitPromise;
         this._wvTabSessionInitPromise = (async () => {
             const path = this._wvTabSessionPath();
-            try {
-                const text: any = await Zotero.File.getContentsAsync(path);
-                this._wvTabSessionDoc = this._wvTabSessionNormalize(JSON.parse(text));
-            } catch (e) {
-                let exists = false;
-                try { exists = await IOUtils.exists(path); } catch (_) {}
-                if (exists) {
+            const r = await wvStoreRead(path);
+            if (r.status === "ok") {
+                try { this._wvTabSessionDoc = this._wvTabSessionNormalize(r.doc); }
+                catch (e) {
                     const bak = path + ".corrupt-" + Date.now();
                     try { await IOUtils.move(path, bak); } catch (_) {}
-                    Zotero.debug("[Weavero] tab-sessions.json unreadable, backed up to "
-                        + bak + ": " + e);
+                    Zotero.debug("[Weavero] tab-sessions.json unreadable, backed up to " + bak + ": " + e);
+                    this._wvTabSessionDoc = { version: 1, sessions: [] };
+                }
+            }
+            else {
+                if (r.status === "io-error") {
+                    Zotero.debug("[Weavero] tab-sessions.json could not be read (kept; store is READ-ONLY this session): " + r.error);
+                    this._wvTabSessionReadOnly = true;
                 }
                 this._wvTabSessionDoc = { version: 1, sessions: [] };
             }
@@ -247,18 +255,11 @@ class _TabSessionsMixin {
         return out;
     }
 
-    /** Atomic, serialized write of the current doc to disk. */
+    /** Atomic, serialized write of the current doc to disk (lib/store.ts). */
     _wvTabSessionPersist() {
         if (!this._wvTabSessionDoc) return Promise.resolve();
-        const snapshot = JSON.stringify(this._wvTabSessionDoc, null, 2);
-        const dir = this._wvTabSessionDir();
-        const path = this._wvTabSessionPath();
-        this._wvTabSessionWriteChain = (this._wvTabSessionWriteChain || Promise.resolve())
-            .then(async () => {
-                await IOUtils.makeDirectory(dir, { ignoreExisting: true });
-                await IOUtils.writeUTF8(path, snapshot, { tmpPath: path + ".tmp" });
-            })
-            .catch((e: any) => Zotero.debug("[Weavero] tab-sessions persist failed: " + e));
+        if (this._wvTabSessionReadOnly) { Zotero.debug("[Weavero] tab-sessions persist skipped: store is read-only (unreadable at load)"); return Promise.resolve(); }
+        this._wvTabSessionWriteChain = wvStoreWrite(this._wvTabSessionPath(), this._wvTabSessionDoc);
         return this._wvTabSessionWriteChain;
     }
 

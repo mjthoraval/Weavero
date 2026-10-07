@@ -23,6 +23,7 @@
 
 import { wvSetBoolAttr } from "../lib/dom";
 import { wvRemoveStyle } from "../lib/style";
+import { wvStoreWrite, wvStoreRead } from "../lib/store";
 
 declare const Zotero: any;
 declare const Services: any;
@@ -104,23 +105,16 @@ class _TabGroupsMixin {
      *  Rotating only on group-removal keeps the .bak from being churned by
      *  the frequent membership-only rewrites. */
     _wvTabGroupsBackupWrite(this: any, arr: any[]) {
-        const dir = PathUtils.join(Zotero.DataDirectory.dir, "weavero");
-        const path = PathUtils.join(dir, "tab-groups.json");
-        const payload = JSON.stringify({ version: 1, savedAt: new Date().toISOString(), groups: arr || [] }, null, 2);
+        const path = PathUtils.join(Zotero.DataDirectory.dir, "weavero", "tab-groups.json");
         const newIds = new Set((arr || []).map((g: any) => g && g.id));
-        this._wvTabGroupsBackupChain = (this._wvTabGroupsBackupChain || Promise.resolve())
-            .then(async () => {
-                await IOUtils.makeDirectory(dir, { ignoreExisting: true });
-                try {
-                    const prev = JSON.parse(await IOUtils.readUTF8(path));
-                    const prevGroups = (prev && Array.isArray(prev.groups)) ? prev.groups : [];
-                    if (prevGroups.some((g: any) => g && !newIds.has(g.id))) {
-                        await IOUtils.copy(path, path + ".bak");
-                    }
-                } catch (_) {}   // no previous mirror / unreadable -> nothing to rotate
-                await IOUtils.writeUTF8(path, payload, { tmpPath: path + ".tmp" });
-            })
-            .catch((e: any) => Zotero.debug("[Weavero] tab-groups backup write err: " + e));
+        // lib/store.ts: the .bak rotation runs on the chain, against the
+        // previous on-disk document, only when a group is about to vanish.
+        this._wvTabGroupsBackupChain = wvStoreWrite(path,
+            { version: 1, savedAt: new Date().toISOString(), groups: arr || [] },
+            { rotateBak: (prev: any) => {
+                const prevGroups = (prev && Array.isArray(prev.groups)) ? prev.groups : [];
+                return prevGroups.some((g: any) => g && !newIds.has(g.id));
+            } });
         return this._wvTabGroupsBackupChain;
     }
 
@@ -129,8 +123,9 @@ class _TabGroupsMixin {
     async _wvTabGroupsBackupRead(this: any): Promise<any[] | null> {
         try {
             const path = PathUtils.join(Zotero.DataDirectory.dir, "weavero", "tab-groups.json");
-            const d = JSON.parse(await IOUtils.readUTF8(path));
-            return (d && Array.isArray(d.groups)) ? d.groups : null;
+            const r = await wvStoreRead(path, { onParseError: "keep" });
+            const d = r.doc;
+            return (r.status === "ok" && d && Array.isArray(d.groups)) ? d.groups : null;
         } catch (e) { return null; }
     }
 

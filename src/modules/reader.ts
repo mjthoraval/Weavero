@@ -30,6 +30,7 @@ import {
 import { winOf, wvIsHiddenOrCollapsed, wvSetBoolAttr } from "../lib/dom";
 import { wvRemoveStyle } from "../lib/style";
 import { wvLivePlugin } from "../lib/live";
+import { wvStoreWrite, wvStoreRead, wvStoreRemove } from "../lib/store";
 import { wvStageNativeUndo } from "./undo";
 
 class _ReaderMixin {
@@ -9244,9 +9245,8 @@ class _ReaderMixin {
             }
             if (records.length) {
                 try {
-                    const path = this._wvMigrationStorePath();
-                    const json = JSON.stringify({ version: 1, records });
-                    IOUtils.writeUTF8(path, json, { tmpPath: path + ".tmp" });   // durable; not awaited
+                    // Durable, not awaited: issued synchronously on the path's chain.
+                    wvStoreWrite(this._wvMigrationStorePath(), { version: 1, records }, { pretty: null });
                 } catch (e) { Zotero.debug("[Weavero] migration write err: " + e); }
             }
         } catch (e) { Zotero.debug("[Weavero] _wvDisableMigrateReaderTabs err: " + e); }
@@ -9261,12 +9261,14 @@ class _ReaderMixin {
         // off), DON'T consume the hand-off — the strip's OFF→ON transition
         // trigger will pull the tabs back later instead.
         try { if (!(this as any)._getCompactTitleBarReader()) return; } catch (e) {}
-        let text: any = null;
         const path = this._wvMigrationStorePath();
-        try { text = await Zotero.File.getContentsAsync(path); } catch (e) { return; }   // no file → nothing
-        try { await IOUtils.remove(path, { ignoreAbsent: true }); } catch (e) {}         // consume once
-        let doc: any = null;
-        try { doc = JSON.parse(text); } catch (e) { return; }
+        // Consume-once hand-off: a missing or unreadable file means nothing
+        // to do; anything read is removed, parsed or not.
+        const r = await wvStoreRead(path, { onParseError: "keep", retries: 0 });
+        if (r.status === "missing" || r.status === "io-error") return;
+        await wvStoreRemove(path);
+        if (r.status !== "ok") return;
+        const doc: any = r.doc;
         const records: any[] = (doc && Array.isArray(doc.records)) ? doc.records : [];
         if (!records.length) return;
         const mainWin: any = Zotero.getMainWindow();

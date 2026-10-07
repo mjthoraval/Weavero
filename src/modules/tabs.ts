@@ -20,6 +20,7 @@ import { winOf, wvSetBoolAttr } from "../lib/dom";
 import { wvLivePlugin } from "../lib/live";
 import { wvInjectStyle, wvRemoveStyle } from "../lib/style";
 import { wvWrap, wvUnwrap } from "../lib/wrap";
+import { wvStoreWrite, wvStoreRead, wvStoreRemove } from "../lib/store";
 import { WV_FUNNEL_DATA_URI } from "./constants";
 
 // Zotero_Tabs is the per-window globals — it's declared as `any`
@@ -7972,17 +7973,11 @@ class _TabsMixin {
         return groups;
     }
 
-    /** Issue an atomic write of the store doc (chained so writes serialise). */
+    /** Issue an atomic write of the store doc (lib/store.ts: snapshot now,
+     *  serialised on the path's chain, which survives a reload). */
     _wvWindowStoreWrite(doc) {
         try {
-            const dir = PathUtils.join(Zotero.DataDirectory.dir, "weavero");
-            const path = this._wvWindowStorePath();
-            this._wvWindowStoreWriteChain = (this._wvWindowStoreWriteChain || Promise.resolve())
-                .then(async () => {
-                    await IOUtils.makeDirectory(dir, { ignoreExisting: true });
-                    await IOUtils.writeUTF8(path, JSON.stringify(doc, null, 2), { tmpPath: path + ".tmp" });
-                })
-                .catch((e: any) => Zotero.debug("[Weavero] _wvWindowStoreWrite err: " + e));
+            this._wvWindowStoreWriteChain = wvStoreWrite(this._wvWindowStorePath(), doc);
             return this._wvWindowStoreWriteChain;
         } catch (e) { Zotero.debug("[Weavero] _wvWindowStoreWrite err: " + e); }
     }
@@ -8098,26 +8093,18 @@ class _TabsMixin {
         return PathUtils.join(Zotero.DataDirectory.dir, "weavero", "saved-windows.json");
     }
 
-    /** Load saved-windows.json once (cached promise); unreadable → backed
-     *  up and started clean — same contract as tab-sessions.json. */
+    /** Load saved-windows.json once (cached promise); corrupt → backed up
+     *  and started clean; unreadable → kept, store read-only this session
+     *  (lib/store.ts) — same contract as tab-sessions.json. */
     _wvSavedWindowsInit() {
         const p: any = this as any;
         if (p._wvSavedWinInitPromise) return p._wvSavedWinInitPromise;
         p._wvSavedWinInitPromise = (async () => {
-            const path = this._wvSavedWindowsPath();
-            try {
-                const text: any = await Zotero.File.getContentsAsync(path);
-                const doc = JSON.parse(text);
-                p._wvSavedWinDoc = (doc && Array.isArray(doc.windows))
-                    ? { version: 1, windows: doc.windows } : { version: 1, windows: [] };
-            } catch (e) {
-                let exists = false;
-                try { exists = await IOUtils.exists(path); } catch (_) {}
-                if (exists) {
-                    try { await IOUtils.move(path, path + ".corrupt-" + Date.now()); } catch (_) {}
-                }
-                p._wvSavedWinDoc = { version: 1, windows: [] };
-            }
+            const r = await wvStoreRead(this._wvSavedWindowsPath());
+            const doc = r.doc;
+            if (r.status === "io-error") p._wvSavedWinReadOnly = true;
+            p._wvSavedWinDoc = (r.status === "ok" && doc && Array.isArray(doc.windows))
+                ? { version: 1, windows: doc.windows } : { version: 1, windows: [] };
             return p._wvSavedWinDoc;
         })();
         return p._wvSavedWinInitPromise;
@@ -8131,14 +8118,8 @@ class _TabsMixin {
     _wvSavedWindowsPersist() {
         const p: any = this as any;
         if (!p._wvSavedWinDoc) return Promise.resolve();
-        const snapshot = JSON.stringify(p._wvSavedWinDoc, null, 2);
-        const path = this._wvSavedWindowsPath();
-        p._wvSavedWinWriteChain = (p._wvSavedWinWriteChain || Promise.resolve())
-            .then(async () => {
-                await IOUtils.makeDirectory(PathUtils.parent(path), { ignoreExisting: true });
-                await IOUtils.writeUTF8(path, snapshot, { tmpPath: path + ".tmp" });
-            })
-            .catch((e: any) => Zotero.debug("[Weavero] saved-windows persist failed: " + e));
+        if (p._wvSavedWinReadOnly) { Zotero.debug("[Weavero] saved-windows persist skipped: store is read-only (unreadable at load)"); return Promise.resolve(); }
+        p._wvSavedWinWriteChain = wvStoreWrite(this._wvSavedWindowsPath(), p._wvSavedWinDoc);
         return p._wvSavedWinWriteChain;
     }
 
@@ -8841,7 +8822,7 @@ class _TabsMixin {
                         }
                     } catch (e) {}
                     try {
-                        IOUtils.writeUTF8(markerPath, JSON.stringify({ version: 1, closedReaders, closedMains, unpark: liveGroups }), { tmpPath: markerPath + ".tmp" });
+                        wvStoreWrite(markerPath, { version: 1, closedReaders, closedMains, unpark: liveGroups }, { pretty: null });
                     } catch (e) {}
                     Zotero.debug("[Weavero] disable-close: " + closedReaders + " reader + " + closedMains + " managed main window(s) saved+closed");
                 } catch (e) { Zotero.debug("[Weavero] disable-close deferred err: " + e); }
@@ -8856,9 +8837,11 @@ class _TabsMixin {
     async _wvEnableRestoreClosedWindows() {
         try {
             const path = this._wvDisableCloseMarkerPath();
-            let marker: any = null;
-            try { marker = JSON.parse(await IOUtils.readUTF8(path)); } catch (e) { return; }   // no marker → nothing to do
-            try { await IOUtils.remove(path); } catch (e) {}
+            // Consume-once marker: read, then remove whatever its state.
+            const r = await wvStoreRead(path, { onParseError: "keep", retries: 0 });
+            if (r.status === "missing" || r.status === "io-error") return;   // no marker → nothing to do
+            await wvStoreRemove(path);
+            const marker: any = r.doc;
             if (!marker) return;
             // Un-park the groups that the reader-window closes parked at
             // disable-time — their windows are about to come back.
@@ -8953,15 +8936,8 @@ class _TabsMixin {
     _wvTraceFlush(tag: string) {
         try {
             if (!this._wvTraceLog || !this._wvTraceLog.length) return;
-            const dir = PathUtils.join(Zotero.DataDirectory.dir, "weavero");
-            const path = PathUtils.join(dir, "trace-" + tag + ".json");
-            const body = JSON.stringify({ t0: this._wvTraceT0, entries: this._wvTraceLog }, null, 1);
-            (async () => {
-                try {
-                    await IOUtils.makeDirectory(dir, { ignoreExisting: true });
-                    await IOUtils.writeUTF8(path, body, { tmpPath: path + ".tmp" });
-                } catch (e) {}
-            })();
+            const path = PathUtils.join(Zotero.DataDirectory.dir, "weavero", "trace-" + tag + ".json");
+            wvStoreWrite(path, { t0: this._wvTraceT0, entries: this._wvTraceLog }, { pretty: 1 });
         } catch (e) {}
     }
 
@@ -11060,13 +11036,13 @@ class _TabsMixin {
         const self: any = this;
         if (self._wvColStoreDocPromise) return self._wvColStoreDocPromise;
         self._wvColStoreDocPromise = (async () => {
-            try { await ((Zotero as any)._wvColStoreChain || Promise.resolve()); } catch (e) {}
+            // lib/store.ts: the read waits for the path's pending writes (a
+            // previous instance's queued write after a reload), so a fresh
+            // instance sees them.
+            const r = await wvStoreRead(this._wvColStorePath());
             let doc: any = {};
-            try {
-                const text = await IOUtils.readUTF8(this._wvColStorePath());
-                const parsed = JSON.parse(text);
-                if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) doc = parsed;
-            } catch (e) {}
+            if (r.status === "ok" && r.doc && typeof r.doc === "object" && !Array.isArray(r.doc)) doc = r.doc;
+            if (r.status === "io-error") self._wvColStoreReadOnly = true;
             self._wvColStoreDoc = doc;
             return doc;
         })();
@@ -11081,16 +11057,8 @@ class _TabsMixin {
     async _wvColStoreSet(key: string, prefs: any) {
         const doc = await this._wvColStoreLoad();
         doc[key] = prefs;
-        const path = this._wvColStorePath();
-        const snapshot = JSON.stringify(doc, null, 2);
-        const Z: any = Zotero as any;
-        Z._wvColStoreChain = (Z._wvColStoreChain || Promise.resolve())
-            .then(async () => {
-                await IOUtils.makeDirectory(PathUtils.parent(path) as string, { ignoreExisting: true });
-                await IOUtils.writeUTF8(path, snapshot, { tmpPath: path + ".tmp" });
-            })
-            .catch((e: any) => Zotero.debug("[Weavero] colstore persist failed: " + e));
-        return Z._wvColStoreChain;
+        if ((this as any)._wvColStoreReadOnly) { Zotero.debug("[Weavero] colstore persist skipped: store is read-only (unreadable at load)"); return; }
+        return wvStoreWrite(this._wvColStorePath(), doc);
     }
 
     async _wvApplyPerWindowColumns(win) {

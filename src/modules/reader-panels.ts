@@ -26,6 +26,7 @@
 import { BOOKMARK_PATH, BOOKMARK_PATH_14, BOOKMARK_PATH_20, SCHEME_SVG_TEMPLATE, URL_GLOBE_SVG, URL_EXTERNAL_SVG, WV_FUNNEL_DATA_URI, WV_FUNNEL_PATH, WV_FUNNEL_STEM_COLOR } from "./constants";
 import { wvPopupHost, wvDismissTooltip, wvSetBoolAttr } from "../lib/dom";
 import { wvLivePlugin } from "../lib/live";
+import { wvStoreWrite, wvStoreRead } from "../lib/store";
 
 declare const Components: any;
 declare const Services: any;
@@ -2476,11 +2477,11 @@ class _ReaderPanelsMixin {
         this._wvAnnOrderLoading = true;
         (async () => {
             let doc: any = { version: 1, orders: {} };
-            try {
-                const raw = await IOUtils.readUTF8(this._wvAnnOrderPath());
-                const parsed = JSON.parse(raw);
-                if (parsed && typeof parsed === "object" && parsed.orders) doc = parsed;
-            } catch (_) { /* missing file = empty store */ }
+            // lib/store.ts: missing = empty store; corrupt = moved aside;
+            // unreadable = kept, and no write may replace it this session.
+            const r = await wvStoreRead(this._wvAnnOrderPath());
+            if (r.status === "ok" && r.doc && typeof r.doc === "object" && r.doc.orders) doc = r.doc;
+            if (r.status === "io-error") this._wvAnnOrderReadOnly = true;
             if (!this._wvLive || this._wvLive()) {
                 this._wvAnnOrderDoc = doc;
                 this._wvAnnOrderLoading = false;
@@ -2609,10 +2610,10 @@ class _ReaderPanelsMixin {
             if (entry.dates && typeof entry.dates === "object") next.dates = Object.assign({}, entry.dates);
             else if (entry.dates !== null && prev && typeof prev === "object" && prev.dates && typeof prev.dates === "object") next.dates = Object.assign({}, prev.dates);
             this._wvAnnOrderDoc.orders[libraryID + ":" + itemKey] = next;
-            const path = this._wvAnnOrderPath();
-            try { await IOUtils.makeDirectory(PathUtils.parent(path), { ignoreExisting: true }); } catch (_) {}
-            await IOUtils.writeUTF8(path, JSON.stringify(this._wvAnnOrderDoc),
-                { tmpPath: path + ".tmp" });
+            // lib/store.ts: chained (two edits in flight used to race on an
+            // unchained write) and skipped when the file was unreadable at load.
+            if (this._wvAnnOrderReadOnly) Zotero.debug("[Weavero] ann-order persist skipped: store is read-only (unreadable at load)");
+            else await wvStoreWrite(this._wvAnnOrderPath(), this._wvAnnOrderDoc, { pretty: null });
             // Refresh every open reader -- per-document resolution means only
             // readers of this attachment actually change.
             try {

@@ -19,7 +19,7 @@ describe("Weavero — colstore: concurrent window writes keep every window's lay
 
     after(async () => {
         if (!wv) return;
-        try { await (/** @type {any} */ (Zotero)._wvColStoreChain || Promise.resolve()); } catch (_) {}
+        try { await (/** @type {any} */ (Zotero).Weavero.lib.wvStoreChain(path)); } catch (_) {}
         if (savedText == null) { try { await IOUtils.remove(path, { ignoreAbsent: true }); } catch (_) {} }
         else { try { await IOUtils.writeUTF8(path, savedText); } catch (_) {} }
         wv._wvColStoreDocPromise = null;

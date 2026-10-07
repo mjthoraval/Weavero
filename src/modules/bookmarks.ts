@@ -37,6 +37,7 @@ import { BOOKMARK_PATH, BOOKMARK_PATH_20, URL_GLOBE_SVG, URL_EXTERNAL_SVG, WV_FU
 import { BM_HOVERCARD_CSS, WV_PIN_ICON_URI } from "./reader-panels";
 import { wvPopupHost, wvDismissTooltip, wvSetBoolAttr } from "../lib/dom";
 import { wvLivePlugin } from "../lib/live";
+import { wvStoreWrite, wvStoreRead } from "../lib/store";
 
 // Gecko globals — not in the project's TS lib set (cf. tabs.ts).
 declare const IOUtils: any;
@@ -519,18 +520,19 @@ class _BookmarksMixin {
         if (this._wvOutlineInitPromise) return this._wvOutlineInitPromise;
         this._wvOutlineInitPromise = (async () => {
             let root: any = null;
-            try {
-                const text: any = await Zotero.File.getContentsAsync(this._wvOutlineFilePath());
-                const j = JSON.parse(text);
-                if (j && typeof j === "object" && j.outlines && typeof j.outlines === "object") {
-                    root = { producer: "weavero", schemaVersion: j.schemaVersion || 1, outlines: j.outlines };
-                    // Per-document DISPLAY settings (issue #42: page numbers)
-                    // ride in the same file under their own key, so a view
-                    // preference never creates a curated doc and survives
-                    // "Reset to Original", which deletes the doc.
-                    if (j.settings && typeof j.settings === "object") root.settings = j.settings;
-                }
-            } catch (_) {}
+            // lib/store.ts: corrupt -> moved aside, fresh; unreadable -> kept,
+            // store read-only this session (a persist must never replace it).
+            const r = await wvStoreRead(this._wvOutlineFilePath());
+            if (r.status === "io-error") this._wvOutlineReadOnly = true;
+            const j = r.doc;
+            if (r.status === "ok" && j && typeof j === "object" && j.outlines && typeof j.outlines === "object") {
+                root = { producer: "weavero", schemaVersion: j.schemaVersion || 1, outlines: j.outlines };
+                // Per-document DISPLAY settings (issue #42: page numbers)
+                // ride in the same file under their own key, so a view
+                // preference never creates a curated doc and survives
+                // "Reset to Original", which deletes the doc.
+                if (j.settings && typeof j.settings === "object") root.settings = j.settings;
+            }
             if (!root) root = { producer: "weavero", schemaVersion: 1, outlines: {} };
             this._wvOutlineRoot = root;
             try { await this._wvOutlineMigrateFromBookmarks(); } catch (_) {}
@@ -562,18 +564,12 @@ class _BookmarksMixin {
         } catch (_) {}
     }
 
-    /** Atomic, serialized write of the outline root to outlines.json. */
+    /** Atomic, serialized write of the outline root to outlines.json
+     *  (lib/store.ts: per-path chain on the Zotero global). */
     _wvOutlinePersist() {
         if (!this._wvOutlineRoot) return Promise.resolve();
-        const snapshot = JSON.stringify(this._wvOutlineRoot, null, 2);
-        const dir = this._bmDir();
-        const path = this._wvOutlineFilePath();
-        this._wvOutlineWriteChain = (this._wvOutlineWriteChain || Promise.resolve())
-            .then(async () => {
-                await IOUtils.makeDirectory(dir, { ignoreExisting: true });
-                await IOUtils.writeUTF8(path, snapshot, { tmpPath: path + ".tmp" });
-            })
-            .catch((e: any) => Zotero.debug("[Weavero] outlines persist failed: " + e));
+        if (this._wvOutlineReadOnly) { Zotero.debug("[Weavero] outlines persist skipped: store is read-only (unreadable at load)"); return Promise.resolve(); }
+        this._wvOutlineWriteChain = wvStoreWrite(this._wvOutlineFilePath(), this._wvOutlineRoot);
         return this._wvOutlineWriteChain;
     }
 
@@ -1644,25 +1640,24 @@ class _BookmarksMixin {
             // move it aside and the next persist overwrote it with an empty
             // store. Retry the read once; still failing, run READ-ONLY: an
             // empty in-memory store that no persist is allowed to write.
-            let text: any = null, readErr: any = null, exists = false;
-            try { exists = await IOUtils.exists(path); } catch (_) {}
-            if (exists) {
-                for (let attempt = 0; attempt < 2 && text == null; attempt++) {
-                    try { text = await Zotero.File.getContentsAsync(path); readErr = null; }
-                    catch (e) { readErr = e; if (attempt === 0) await new Promise(r => setTimeout(r, 300)); }
-                }
-            }
-            if (!exists) {
+            // (lib/store.ts answers the three cases; a document that parses
+            // but does not normalize is treated as corrupt the same way.)
+            const r = await wvStoreRead(path);
+            if (r.status === "missing") {
                 this._bmDoc = { version: 2, bookmarks: [] };
             }
-            else if (readErr) {
-                Zotero.debug("[Weavero] bookmarks.json could not be read (kept; store is READ-ONLY this session): " + readErr);
+            else if (r.status === "io-error") {
+                Zotero.debug("[Weavero] bookmarks.json could not be read (kept; store is READ-ONLY this session): " + r.error);
                 this._bmReadOnly = true;
+                this._bmDoc = { version: 2, bookmarks: [] };
+            }
+            else if (r.status === "parse-error") {
+                Zotero.debug("[Weavero] bookmarks.json unreadable, backed up to " + r.movedTo + ": " + r.error);
                 this._bmDoc = { version: 2, bookmarks: [] };
             }
             else {
                 try {
-                    this._bmDoc = this._bmNormalize(JSON.parse(text));
+                    this._bmDoc = this._bmNormalize(r.doc);
                 } catch (e) {
                     const bak = path + ".corrupt-" + Date.now();
                     try { await IOUtils.move(path, bak); } catch (_) {}
@@ -2317,16 +2312,8 @@ class _BookmarksMixin {
         // Undo: every user write lands here -- record the step before the
         // file is written (silent writes update the baseline only).
         try { this._wvBmUndoCapture(); } catch (_) {}
-        const snapshot = JSON.stringify(this._bmDoc, null, 2);
-        const dir = this._bmDir();
-        const path = this._bmFilePath();
-        this._bmWriteChain = (this._bmWriteChain || Promise.resolve())
-            .then(async () => {
-                await IOUtils.makeDirectory(dir, { ignoreExisting: true });
-                await IOUtils.writeUTF8(path, snapshot, { tmpPath: path + ".tmp" });
-            })
-            .catch((e: any) =>
-                Zotero.debug("[Weavero] bookmarks persist failed: " + e));
+        // lib/store.ts: snapshot now, atomic write on the per-path chain.
+        this._bmWriteChain = wvStoreWrite(this._bmFilePath(), this._bmDoc);
         // If auto-hide-when-empty is on, the library bookmarks count
         // transitioning from 0→1 (or 1→0) must toggle the toolbar
         // button's visibility in every Zotero main window. Cheap call —

@@ -3354,8 +3354,11 @@ class WeaveroPlugin {
         for (const reader of Zotero.Reader._readers || [])
             await this._setupReaderObserver(reader);
 
-        // 6. Tree: event delegation (no DOM injection, no blink)
-        this._setupTreeClickDelegate();
+        // 6. Tree: event delegation (no DOM injection, no blink) — one per
+        // main window (#17); a cold start has none yet (onMainWindowLoad).
+        for (const w of (Zotero.getMainWindows() || [])) {
+            try { this._setupTreeClickDelegate(w); } catch (e) {}
+        }
 
         // 6a1. Items-list filter bar (chips + popover above the items
         // tree) — one per main window. Self-retries until the items
@@ -3437,8 +3440,10 @@ class WeaveroPlugin {
             this._relationsIconURLDark  = "";
         }
 
-        // 7. Right pane
-        this._setupPaneObserver();
+        // 7. Right pane — one observer per main window (#17).
+        for (const w of (Zotero.getMainWindows() || [])) {
+            try { this._setupPaneObserver(w); } catch (e) {}
+        }
 
         // 7b. Items-tree right-click menu — adds "Add related item…"
         // when the right-clicked selection contains annotation(s).
@@ -4890,15 +4895,13 @@ class WeaveroPlugin {
             // Re-evaluate the anchor dot on every window (count changed → a
             // newly-opened 2nd window reveals the dot on the anchor).
             try { this._wvUpdateAllMainWindowIndicators(); } catch (e) {}
-            this._teardownTreeClickDelegate();
+            // THIS window only (#17): the other main windows keep theirs.
+            this._teardownTreeClickDelegate(_window);
             this._teardownItemsListContextMenu();
-            this._teardownCollectionsContextMenu();
+            this._teardownCollectionsContextMenu(_window);
             this._teardownTabsMenuLibrarySort(_window);
             this._teardownLibrariesBoxHighlight(_window);
-            this._paneObserver?.disconnect();
-            this._paneObserver = null;
-            this._treeMarkObserver?.disconnect();
-            this._treeMarkObserver = null;
+            this._teardownPaneObserver(_window);
             // Drop the URL-title restorer attached to the items-tree
             // XUL element (defends against Zotero's overflow handler
             // stripping our title; see `_setupTreeClickDelegate`).
@@ -4943,7 +4946,7 @@ class WeaveroPlugin {
             try { this.injectStylesInto(_window && _window.document); }
             catch (e) { this.injectStyles(); }
             // Re-attach to the now-live document.
-            this._setupTreeClickDelegate();
+            this._setupTreeClickDelegate(_window);
             this._setupItemsListContextMenu();
             this._setupCollectionsContextMenu();
             this._setupTabExternalRepositioner(_window);
@@ -4951,7 +4954,7 @@ class WeaveroPlugin {
             if (this._getEnableLibraryBookmarks()) {
                 this._setupBookmarksToolbarButton(_window);
             }
-            this._setupPaneObserver();
+            this._setupPaneObserver(_window);
             this._setupItemsListFilter(_window);
             this._setupTabsMenuLibrarySort(_window);
             this._setupLibrariesBoxHighlight(_window);
@@ -5067,7 +5070,7 @@ class WeaveroPlugin {
             } catch (e) {}
             // A closed main window changes the workspace → update the active session.
             try { this._wvTabSessionTrackingUpdate(); } catch (e) {}
-            this._teardownTreeClickDelegate();
+            this._teardownTreeClickDelegate(_window);
             // Per-window: drop only THIS window's items-menu handler. The global
             // _teardownItemsListContextMenu() unbinds AND clears the handler list
             // for every window, so closing one main window would strip the
@@ -5078,17 +5081,15 @@ class WeaveroPlugin {
                     && _window.document.getElementById("zotero-itemmenu");
                 if (closingMenu) this._removeItemMenuHandlerFor(closingMenu);
             } catch (e) {}
-            this._teardownCollectionsContextMenu();
+            this._teardownCollectionsContextMenu(_window);
             this._teardownBookmarksToolbarButton(_window);
             this._teardownTabExternalRepositioner(_window);
             // Revert pinned-tab visuals (and the tab-bar decoration) so a
             // pinned tab returns to normal when the plugin is disabled; the
             // `weavero.pinnedTabs` pref is kept so re-enabling re-pins.
+            this._teardownTabBarWiring(_window);
             this._teardownTabBarLibraryDecoration(_window);
-            this._paneObserver?.disconnect();
-            this._paneObserver = null;
-            this._treeMarkObserver?.disconnect();
-            this._treeMarkObserver = null;
+            this._teardownPaneObserver(_window);
         } catch(e) {
             Zotero.debug("[Weavero] onMainWindowUnload err: " + e);
         }
@@ -5594,7 +5595,7 @@ class WeaveroPlugin {
         try {
             this._teardownLibrariesBoxHighlight(Zotero.getMainWindow());
         } catch (e) {}
-        this._paneObserver?.disconnect(); this._paneObserver = null;
+        this._teardownPaneObserver();
 
         // Clear any `network.protocol-handler.warn-external.<x>`
         // overrides we set so the user's profile doesn't carry our

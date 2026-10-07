@@ -4957,12 +4957,25 @@ class _PaneMixin {
                 this._teardownCollectionsContextMenu();
                 return;
             }
-            const win = Zotero.getMainWindow();
+            // EVERY main window (survey 2026-10-06 #17): bound to
+            // getMainWindow() alone, one window had the entry and closing
+            // any main window removed it from that one too. Same per-menu
+            // handler list as the items menu. Guard: test/survey-fixes-e.spec.js.
+            for (const w of (Zotero.getMainWindows() || [])) {
+                try { this._setupCollectionsMenuForWindow(w); } catch (e) {}
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero] _setupCollectionsContextMenu err: " + e);
+        }
+    }
+
+    _setupCollectionsMenuForWindow(win: any) {
+        try {
             const doc = win && win.document;
             if (!doc) return;
             const menu = doc.getElementById("zotero-collectionmenu");
             if (!menu) return;
-            this._teardownCollectionsContextMenu();
+            this._removeCollectionMenuHandlerFor(menu);   // dedup THIS window only
             const COPY_COLL_ID   = "wv-collectionmenu-copy-link";
             const COPY_SEARCH_ID = "wv-collectionmenu-copy-search-link";
             const ALL_IDS = [COPY_COLL_ID, COPY_SEARCH_ID];
@@ -5044,26 +5057,43 @@ class _PaneMixin {
             };
             menu.addEventListener("popupshowing", onShowingGuarded);
             menu.addEventListener("popuphidden", onHidden);
-            this._collectionMenuHandlers = { menu, onShowing: onShowingGuarded, onHidden };
+            if (!this._collectionMenuHandlersList) this._collectionMenuHandlersList = [];
+            this._collectionMenuHandlersList.push({ menu, onShowing: onShowingGuarded, onHidden });
         } catch (e) {
-            Zotero.debug("[Weavero] _setupCollectionsContextMenu err: " + e);
+            Zotero.debug("[Weavero] _setupCollectionsMenuForWindow err: " + e);
         }
     }
 
-    _teardownCollectionsContextMenu() {
-        if (!this._collectionMenuHandlers) return;
-        try {
-            const { menu, onShowing, onHidden } = this._collectionMenuHandlers;
-            try { menu.removeEventListener("popupshowing", onShowing); } catch (e) {}
-            try { menu.removeEventListener("popuphidden", onHidden); } catch (e) {}
+    /** Remove (and unbind) any previously-bound handler for a specific menu. */
+    _removeCollectionMenuHandlerFor(menu: any) {
+        if (!this._collectionMenuHandlersList) { this._collectionMenuHandlersList = []; return; }
+        this._collectionMenuHandlersList = this._collectionMenuHandlersList.filter((h: any) => {
+            if (h.menu !== menu) return true;
+            try { menu.removeEventListener("popupshowing", h.onShowing); } catch (e) {}
+            try { menu.removeEventListener("popuphidden", h.onHidden); } catch (e) {}
             try {
                 for (const id of ["wv-collectionmenu-copy-link", "wv-collectionmenu-copy-search-link"]) {
                     const stale = menu.ownerDocument.getElementById(id);
                     if (stale) stale.remove();
                 }
             } catch (e) {}
-        } catch (e) {}
-        this._collectionMenuHandlers = null;
+            return false;
+        });
+    }
+
+    /** One window's menu, or every window's with no argument. */
+    _teardownCollectionsContextMenu(win?: any) {
+        if (win) {
+            try {
+                const menu = win.document && win.document.getElementById("zotero-collectionmenu");
+                if (menu) this._removeCollectionMenuHandlerFor(menu);
+            } catch (e) {}
+            return;
+        }
+        for (const h of (this._collectionMenuHandlersList || []).slice()) {
+            try { this._removeCollectionMenuHandlerFor(h.menu); } catch (e) {}
+        }
+        this._collectionMenuHandlersList = [];
     }
 
 
@@ -5126,7 +5156,9 @@ class _PaneMixin {
     }
 
     /** Scan visible annotation-comment cells, stamp data-has-rich, and inject colored URL spans. */
-    _markCellLinks() {
+    /** `docArg`: the window's document when called from that window's
+     *  mark observer (#17); the focused main window's otherwise. */
+    _markCellLinks(docArg?: any) {
         if (!this._getEnableItemsList()) {
             this._stripItemsList();
             // The row decorations at the end of this pass are NOT link
@@ -5135,14 +5167,14 @@ class _PaneMixin {
             // repainting rows that scroll into view when the items-list
             // link surface is off (survey 2026-10-06; each gates itself).
             try {
-                const doc = Zotero.getMainWindow().document;
+                const doc = docArg || Zotero.getMainWindow().document;
                 this._paintAddedByCells(doc);
                 this._applySelectionTargetVisuals();
             } catch (e) {}
             return;
         }
         try {
-            const doc = Zotero.getMainWindow().document;
+            const doc = docArg || Zotero.getMainWindow().document;
             const allCells: any = doc.querySelectorAll(
                     ".annotation-row.tight .cell.annotation-comment");
             this._dbg("[Weavero] _markCellLinks: found " + allCells.length + " annotation cells");
@@ -6579,12 +6611,21 @@ class _PaneMixin {
         if (n) this._dbg("[Weavero] truncation flags updated: " + n + " cells");
     }
 
-    _setupTreeClickDelegate() {
-        const doc  = Zotero.getMainWindow().document;
-        const win  = Zotero.getMainWindow();
+    /** Per WINDOW (survey 2026-10-06 #17): the handlers, the mark observer
+     *  and the timers live on `win._wvTreeDelegate`. As plugin-wide
+     *  singletons, only the last-loaded window had the delegate and closing
+     *  any main window removed it from the focused one (the teardown even
+     *  unbound from `Zotero.getMainWindow()`, whichever window that was).
+     *  Guard: test/survey-fixes-e.spec.js. */
+    _setupTreeClickDelegate(win?: any) {
+        win = win || Zotero.getMainWindow();
+        if (!win || win.closed || !win.document) return;
+        const doc  = win.document;
+        this._teardownTreeClickDelegate(win);
+        const H: any = (win._wvTreeDelegate = { click: null, down: null, up: null, resize: null, resizeTimer: null, mo: null, lastHandled: 0 });
 
         // Initial mark pass
-        this._markCellLinks();
+        this._markCellLinks(doc);
 
         // Watch for tree re-renders to re-mark cells (attribute only — lightweight)
         // Zotero 10 beta.4 (PR #5802 — Item tree refactor) renamed the
@@ -6602,14 +6643,15 @@ class _PaneMixin {
             // the browser could paint between Zotero's DOM mutation and our
             // re-render. The cache check inside _markCellLinks (cachedMode ===
             // wantMode) prevents work amplification on our own DOM writes.
-            this._treeMarkObserver = new win.MutationObserver(() => {
-                try { this._markCellLinks(); }
+            H.mo = new win.MutationObserver(() => {
+                try { this._markCellLinks(doc); }
                 catch(e) { Zotero.debug("[Weavero] tree mark error: " + e); }
             });
-            this._treeMarkObserver.observe(tree,
+            H.mo.observe(tree,
                 { childList: true, subtree: true, characterData: true });
         } else {
-            win.setTimeout(() => this._setupTreeClickDelegate(), 1000);
+            delete win._wvTreeDelegate;
+            win.setTimeout(() => this._setupTreeClickDelegate(win), 1000);
             return;
         }
 
@@ -6896,7 +6938,7 @@ class _PaneMixin {
 
         // Click handler: only fires if mousedown didn't already handle it
         // (e.g. keyboard-synthesised click). Otherwise just suppress the click.
-        this._treeClickHandler = (e) => {
+        H.click = (e) => {
             // Defensive: `click` should not fire for non-left-clicks per the
             // DOM spec, but Mozilla can synthesize one in some platform
             // paths (notably right-click on a focused element that looks
@@ -6908,7 +6950,7 @@ class _PaneMixin {
                 this._dbg("[Weavero] tree click suppressed: button=" + e.button);
                 return;
             }
-            const recentlyHandled = (Date.now() - this._lastHandledTime) < 600;
+            const recentlyHandled = (Date.now() - H.lastHandled) < 600;
             if (recentlyHandled) {
                 e.stopPropagation();
                 if (e.stopImmediatePropagation) e.stopImmediatePropagation();
@@ -6942,8 +6984,8 @@ class _PaneMixin {
         // can re-render the cell and destroy the span before mouseup fires.
         // We block subsequent click/mouseup with a short-lived flag so the
         // action doesn't double-fire.
-        this._lastHandledTime = 0;
-        this._treeMouseDownHandler = (e) => {
+        H.lastHandled = 0;
+        H.down = (e) => {
             const tgt = e.target;
             const tgtDesc = tgt
                 ? (tgt.nodeName + "." + (tgt.className || "(no class)"))
@@ -7035,7 +7077,7 @@ class _PaneMixin {
             e.stopPropagation();
             if (e.stopImmediatePropagation) e.stopImmediatePropagation();
             e.preventDefault();
-            this._lastHandledTime = Date.now();
+            H.lastHandled = Date.now();
 
             if (urlSpan) {
                 // Markdown links [label](url) put the destination in
@@ -7097,10 +7139,10 @@ class _PaneMixin {
                 catch(err) { Zotero.debug("[Weavero] openCommentPopup err: " + err); }
             }, 0);
         };
-        doc.addEventListener("mousedown", this._treeMouseDownHandler, true);
+        doc.addEventListener("mousedown", H.down, true);
 
         // Also block the corresponding click so it can't re-trigger or focus
-        this._treeMouseUpHandler = (e) => {
+        H.up = (e) => {
             // Mirror the mousedown short-circuit for .wv-tree-rel-icon
             // — _handleMouseUp finalises selection on left-click, so
             // we have to suppress the mouseup leg too.
@@ -7111,49 +7153,53 @@ class _PaneMixin {
                 if (e.stopImmediatePropagation) e.stopImmediatePropagation();
                 return;
             }
-            if (Date.now() - this._lastHandledTime < 600) {
+            if (Date.now() - H.lastHandled < 600) {
                 e.stopPropagation();
                 if (e.stopImmediatePropagation) e.stopImmediatePropagation();
                 e.preventDefault();
             }
         };
-        doc.addEventListener("mouseup", this._treeMouseUpHandler, true);
+        doc.addEventListener("mouseup", H.up, true);
 
-        doc.addEventListener("click", this._treeClickHandler, true);
+        doc.addEventListener("click", H.click, true);
 
         // Window resize → re-evaluate truncation flags so the fallback icon
         // toggles when the user widens/narrows the items column.
-        this._resizeHandler = () => {
-            clearTimeout(this._resizeTimer);
-            this._resizeTimer = win.setTimeout(() => {
+        H.resize = () => {
+            if (H.resizeTimer) win.clearTimeout(H.resizeTimer);
+            H.resizeTimer = win.setTimeout(() => {
+                H.resizeTimer = null;
                 try { this._updateTruncationFlags(); }
                 catch(e) { Zotero.debug("[Weavero] resize truncation error: " + e); }
             }, 120);
         };
-        win.addEventListener("resize", this._resizeHandler);
+        win.addEventListener("resize", H.resize);
 
         Zotero.debug("[Weavero] tree mousedown/click delegates attached (document capture)");
     }
 
-    _teardownTreeClickDelegate() {
+    /** One window's delegate, or every main window's with no argument. */
+    _teardownTreeClickDelegate(win?: any) {
+        if (!win) {
+            for (const w of (Zotero.getMainWindows() || [])) {
+                try { this._teardownTreeClickDelegate(w); } catch (e) {}
+            }
+            return;
+        }
+        const H: any = win._wvTreeDelegate;
+        if (!H) return;
         try {
-            const doc = Zotero.getMainWindow().document;
-            const win = Zotero.getMainWindow();
-            doc.removeEventListener("click", this._treeClickHandler, true);
-            doc.removeEventListener("mousedown", this._treeMouseDownHandler, true);
-            doc.removeEventListener("mouseup", this._treeMouseUpHandler, true);
-            if (this._resizeHandler) win.removeEventListener("resize", this._resizeHandler);
-            clearTimeout(this._resizeTimer);
-            if (this._treeMarkObserver) this._treeMarkObserver.disconnect();
-            clearTimeout(this._treeMarkTimer);
+            const doc = win.document;
+            if (doc) {
+                if (H.click) doc.removeEventListener("click", H.click, true);
+                if (H.down) doc.removeEventListener("mousedown", H.down, true);
+                if (H.up) doc.removeEventListener("mouseup", H.up, true);
+            }
+            if (H.resize) win.removeEventListener("resize", H.resize);
+            if (H.resizeTimer) win.clearTimeout(H.resizeTimer);
+            if (H.mo) H.mo.disconnect();
         } catch(e) {}
-        this._treeClickHandler     = null;
-        this._treeMouseDownHandler = null;
-        this._treeMouseUpHandler   = null;
-        this._resizeHandler        = null;
-        this._resizeTimer          = null;
-        this._treeMarkObserver     = null;
-        this._treeMarkTimer        = null;
+        delete win._wvTreeDelegate;
     }
 
     // =====================================================================
@@ -7687,12 +7733,14 @@ class _PaneMixin {
         return true;
     }
 
-    _scanPaneRows() {
+    /** `docArg`: the window's document when called from that window's pane
+     *  observer (#17); the focused main window's otherwise. */
+    _scanPaneRows(docArg?: any) {
         if (!this._getEnableRightPane()) {
             this._stripRightPane();
             return;
         }
-        const doc = Zotero.getMainWindow().document;
+        const doc = docArg || Zotero.getMainWindow().document;
         // Scan ALL <annotation-row> custom elements anywhere in the document.
         // Zotero shows these in two right-pane views — the attachment's
         // annotation list (under #zotero-view-item) and the single-annotation
@@ -7915,12 +7963,19 @@ class _PaneMixin {
         return null;
     }
 
-    _setupPaneObserver() {
-        const doc = Zotero.getMainWindow().document;
-        const win = doc.defaultView;
+    /** Per WINDOW (survey 2026-10-06 #17): the observer, its scan timer and
+     *  the comment focus handlers live on `win._wvPaneObs`. The singleton
+     *  observed one window, and the focus handlers were attached once, to
+     *  whichever window was set up first. Guard: test/survey-fixes-e.spec.js. */
+    _setupPaneObserver(win?: any) {
+        win = win || Zotero.getMainWindow();
+        if (!win || win.closed || !win.document) return;
+        const doc = win.document;
+        this._teardownPaneObserver(win);
+        const P: any = (win._wvPaneObs = { mo: null, focusIn: null, focusOut: null, scanTimer: null });
 
         // Initial pass — there may already be rows present.
-        this._scanPaneRows();
+        this._scanPaneRows(doc);
 
         // Anchor the observer to documentElement, not #zotero-view-item:
         // Zotero's renderer can replace the right-pane container itself when
@@ -7928,9 +7983,8 @@ class _PaneMixin {
         // the inner element. The whole-document observer is broader but the
         // callback exits early unless a mutation involves annotation-row,
         // so the runtime cost stays small.
-        let scanTimer = null;
         const scheduleScan = () => {
-            if (scanTimer) win.clearTimeout(scanTimer);
+            if (P.scanTimer) win.clearTimeout(P.scanTimer);
             // Short debounce: just enough to coalesce a burst of
             // mutations into one scan, while leaving as little
             // visible plain-text "flash" window as possible between
@@ -7939,14 +7993,14 @@ class _PaneMixin {
             // previous 80ms value was long enough that switching
             // between item notes flickered noticeably; 8ms lands in
             // the next animation frame.
-            scanTimer = win.setTimeout(() => {
-                scanTimer = null;
-                try { this._scanPaneRows(); }
+            P.scanTimer = win.setTimeout(() => {
+                P.scanTimer = null;
+                try { this._scanPaneRows(doc); }
                 catch(e) { Zotero.debug("[Weavero] pane scan error: " + e); }
             }, 8);
         };
 
-        this._paneObserver = new win.MutationObserver(mutations => {
+        P.mo = new win.MutationObserver(mutations => {
             const rowsToRender = new Set();
             let needsScan = false;
             let needsRelatedScan = false;
@@ -8043,7 +8097,7 @@ class _PaneMixin {
             // sibling rows added in the same batch but not in mutation targets).
             if (needsScan) scheduleScan();
         });
-        this._paneObserver.observe(doc.documentElement,
+        P.mo.observe(doc.documentElement,
             { childList: true, subtree: true, characterData: true });
         Zotero.debug("[Weavero] pane observer attached to documentElement");
 
@@ -8052,8 +8106,8 @@ class _PaneMixin {
         // editable text. On focusout, swap back to the rendered preview.
         // Also handles shadow-DOM cases since focusin bubbles through
         // shadow boundaries when composed:true (the default).
-        if (!this._paneFocusInHandler) {
-            this._paneFocusInHandler = (e) => {
+        {
+            P.focusIn = (e) => {
                 try {
                     const target = e && e.composedPath ? e.composedPath()[0] : e && e.target;
                     if (!target || !target.classList) return;
@@ -8064,7 +8118,7 @@ class _PaneMixin {
                     }
                 } catch(err) {}
             };
-            this._paneFocusOutHandler = (e) => {
+            P.focusOut = (e) => {
                 try {
                     const target = e && e.composedPath ? e.composedPath()[0] : e && e.target;
                     if (!target || !target.classList) return;
@@ -8078,9 +8132,31 @@ class _PaneMixin {
                     }
                 } catch(err) {}
             };
-            doc.addEventListener("focusin", this._paneFocusInHandler, true);
-            doc.addEventListener("focusout", this._paneFocusOutHandler, true);
+            doc.addEventListener("focusin", P.focusIn, true);
+            doc.addEventListener("focusout", P.focusOut, true);
         }
+    }
+
+    /** One window's observer + focus handlers, or every main window's. */
+    _teardownPaneObserver(win?: any) {
+        if (!win) {
+            for (const w of (Zotero.getMainWindows() || [])) {
+                try { this._teardownPaneObserver(w); } catch (e) {}
+            }
+            return;
+        }
+        const P: any = win._wvPaneObs;
+        if (!P) return;
+        try { if (P.mo) P.mo.disconnect(); } catch (e) {}
+        try { if (P.scanTimer) win.clearTimeout(P.scanTimer); } catch (e) {}
+        try {
+            const doc = win.document;
+            if (doc) {
+                if (P.focusIn) doc.removeEventListener("focusin", P.focusIn, true);
+                if (P.focusOut) doc.removeEventListener("focusout", P.focusOut, true);
+            }
+        } catch (e) {}
+        delete win._wvPaneObs;
     }
 
     // ---- Compact title bar (main window) -----------------------------------

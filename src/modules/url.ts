@@ -131,6 +131,18 @@ export const urlMethods = {
         return this._urlSchemeAltCache;
     },
 
+    /** Is `scheme` one of the App-link schemes the user has enabled (its
+     *  own tick AND the App links master)? The same rule as the URL regex
+     *  above; the no-prompt launch path must never be wider than it. */
+    _wvAppSchemeEnabled(scheme: string): boolean {
+        try {
+            if (!scheme) return false;
+            if (!Zotero.Prefs.get("weavero.enableAppLinks")) return false;
+            const s = String(scheme).toLowerCase();
+            return URL_SCHEMES.some((def: any) => def.name === s && !!Zotero.Prefs.get("weavero." + def.pref));
+        } catch (e) { return false; }
+    },
+
     /** Single-match regex for a URL in plain text. The body class
      *  `[^\s<>"')\]]+` stops at whitespace and the punctuation that's
      *  most commonly trailing punctuation. Cached and invalidated
@@ -1314,7 +1326,14 @@ export const urlMethods = {
                 if (skip) {
                     const m = /^([a-z][a-z0-9+.-]+):/i.exec(url);
                     const scheme = m && m[1].toLowerCase();
-                    if (scheme) {
+                    // ONLY a scheme the user enabled in Settings (and the App
+                    // links master) takes the no-prompt path: `wv-link-app`
+                    // is every non-web scheme, so "open without confirmation"
+                    // for one scheme used to hand ANY scheme in a shared note
+                    // (ms-msdt:, search-ms:, ...) straight to the OS handler
+                    // (survey 2026-10-06). Everything else falls through to
+                    // Zotero.launchURL and its prompt.
+                    if (scheme && this._wvAppSchemeEnabled(scheme)) {
                         const svc = Components.classes[
                             "@mozilla.org/uriloader/external-protocol-service;1"]
                             .getService(Components.interfaces.nsIExternalProtocolService);

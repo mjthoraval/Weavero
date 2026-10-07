@@ -14615,6 +14615,13 @@ class _FilterMixin {
                 restoreField("isContainerOpen", "_wvOrigIsContainerOpen");
                 restoreField("isContainerEmpty", "_wvOrigIsContainerEmpty");
                 restoreField("toggleOpenState", "_wvOrigToggleOpenState");
+                // The standalone user-open tracking wrapper (_patchUserOpenTracking)
+                // was overwritten by the filter's own toggle wrapper above (which
+                // tracks too) and is gone with it now -- but its stamp stayed, so
+                // the tree observer's re-patch returned early and manual-expand
+                // tracking was dead from the first filter clear until a reload
+                // (survey 2026-10-06). Clear the stamp: the next tick re-installs it.
+                try { delete rp._wvUserOpenTrackingPatched; delete rp._wvUserOpenTrackingOrig; } catch (e) {}
                 // expandRows / collapseRows don't exist on v9 — we
                 // only patched them on v10 (prototype methods).
                 if (rp._wvOrigExpandRows) {

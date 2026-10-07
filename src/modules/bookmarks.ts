@@ -1415,7 +1415,7 @@ class _BookmarksMixin {
      *  showed up as a second step, "Edit Bookmark". */
     _wvBmUndoDerived(k: string): boolean {
         return k === "sortIndex" || k === "sortIndexPos" || k === "sortIndexAlgo" || k === "_sortIndexTried"
-            || k === "sortIndexAnn" || k === "sortIndexAnnAlgo";
+            || k === "_wvDomSortTried" || k === "sortIndexAnn" || k === "sortIndexAnnAlgo";
     }
 
     /** id -> {rec, pos} for every node of a tree; `rec` = own fields without

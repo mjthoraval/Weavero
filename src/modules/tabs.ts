@@ -669,12 +669,19 @@ class _TabsMixin {
             // session rows built by _wvTabsMenuTabRow carry `data-wv-library` +
             // `data-wv-itemtype` but no current-window tab id.
             const rows = [...tabsList.querySelectorAll(".row[data-tab-id], .row[data-wv-library]")] as any[];
+            // The PANEL's window's tabs: the bare `Zotero_Tabs` global does not
+            // exist in the plugin sandbox, so this threw (swallowed) on every
+            // native row, which was then never stamped and always passed the
+            // filter -- in Sort-by-library mode the post-pass un-hid the rows
+            // the grouping pass had just hidden (survey 2026-10-06).
+            const pw: any = winOf(panel);
+            const ZT: any = pw && pw.Zotero_Tabs;
             for (const row of rows) {
                 // Stamp native current-window rows so the per-row checks work
                 // uniformly (other-window rows are already stamped at build time).
                 if (!(row.getAttribute && row.getAttribute("data-wv-itemtype"))) {
                     try {
-                        const tab = Zotero_Tabs._tabs.find((t: any) => t.id === row.dataset.tabId);
+                        const tab = ZT && ZT._tabs.find((t: any) => t.id === row.dataset.tabId);
                         const iid = tab && tab.data && tab.data.itemID;
                         const it: any = iid && Zotero.Items.get(iid);
                         if (it) {
@@ -9473,7 +9480,7 @@ class _TabsMixin {
                 // the hook API isn't there (older Zotero).
                 if (Z.tabHooks && Z.parseTabType && Z._getHook) {
                     const itemIDs: any[] = [];
-                    const failed: any[] = [];
+                    const failed: Array<{ tab: any; i: number }> = [];
                     const runOne = async (tab: any, i: number) => {
                         const { tabContentType } = Z.parseTabType(tab.type);
                         const hook = Z._getHook(tabContentType, "restoreState");
@@ -9489,17 +9496,23 @@ class _TabsMixin {
                     };
                     for (let i = 0; i < (tabs || []).length; i++) {
                         try { await runOne(tabs[i], i); }
-                        catch (e) { failed.push(tabs[i]); trace("restoreState[" + name() + "] tab " + i + " (" + (tabs[i] && tabs[i].type) + ") failed: " + e); }
+                        catch (e) { failed.push({ tab: tabs[i], i }); trace("restoreState[" + name() + "] tab " + i + " (" + (tabs[i] && tabs[i].type) + ") failed: " + e); }
                     }
                     if (failed.length) {
                         await new Promise((res) => { try { win.setTimeout(res, 1500); } catch (e) { res(null); } });
-                        for (const tab of failed) {
+                        // Retried tabs go back to their SAVED slot, in ascending
+                        // order: the index is what the hook adds the tab at, and
+                        // `Z._tabs.length` appended every retried tab at the end
+                        // of the strip -- exactly the tabs that missed the item
+                        // cache lost their position (survey 2026-10-06).
+                        failed.sort((a, b) => a.i - b.i);
+                        for (const { tab, i } of failed) {
                             try {
                                 // Force-load the item into the cache first — the usual
                                 // failure is a too-early Zotero.Items.exists() miss.
                                 try { if (tab.data && tab.data.itemID) await Zotero.Items.getAsync(tab.data.itemID); } catch (e2) {}
-                                await runOne(tab, Z._tabs.length);
-                                trace("restoreState[" + name() + "] retry OK: " + tab.type);
+                                await runOne(tab, Math.min(i, Z._tabs.length));
+                                trace("restoreState[" + name() + "] retry OK: " + tab.type + " at " + Math.min(i, Z._tabs.length));
                             }
                             catch (e) { trace("restoreState[" + name() + "] retry FAILED (" + tab.type + "): " + e); }
                         }
@@ -9657,6 +9670,36 @@ class _TabsMixin {
      *  at "note-loading" forever (upstream zotero/xpcom/data/notes.js:49; hit
      *  repeatedly in the restart protocol). Wrap: resolve the tab's OWNING
      *  window and point getMainWindow at it for the duration of the call. */
+    /** Run `fn` with `Zotero.getMainWindow()` answering `owner` -- the
+     *  multi-window patch for Notes.open / Reader.open, whose upstream code
+     *  hard-codes the focused window. RE-ENTRANT: the real function is kept
+     *  ONCE on the Zotero global and restored only when the outermost call
+     *  ends. Each wrapper used to save "the current getMainWindow" and
+     *  restore it in its own finally, so two overlapping loads (A then B)
+     *  left A's lambda installed for good once A finished first --
+     *  Zotero-wide getMainWindow() then returned window A for the session,
+     *  even after A closed (survey 2026-10-06). */
+    async _wvWithMainWindow(owner: any, fn: () => any) {
+        const Z: any = Zotero as any;
+        if (!Z._wvGMWStack) { Z._wvGMWStack = []; Z._wvGMWOrig = Z.getMainWindow; }
+        const stack: any[] = Z._wvGMWStack;
+        const token = { owner };
+        stack.push(token);
+        // The most recently entered owner answers; when it leaves, the one
+        // still loading underneath takes over again.
+        Z.getMainWindow = () => (stack.length ? stack[stack.length - 1].owner : Z._wvGMWOrig.call(Z));
+        try { return await fn(); }
+        finally {
+            const i = stack.indexOf(token);
+            if (i !== -1) stack.splice(i, 1);
+            if (!stack.length) {
+                Z.getMainWindow = Z._wvGMWOrig;
+                delete Z._wvGMWOrig;
+                delete Z._wvGMWStack;
+            }
+        }
+    }
+
     _wvPatchNotesOpenForMultiWindow() {
         // Versioned re-wiring (NOT a boolean guard): the old `_wvOpenPatched`
         // boolean survived destroy() while the wrapper itself was unpeeled, so
@@ -9711,13 +9754,14 @@ class _TabsMixin {
                 } catch (e) {}
                 const zAny: any = Zotero;
                 if (!owner || owner === zAny.getMainWindow()) return orig.apply(this, arguments);
-                // Temporary, restored in finally; other getMainWindow callers in
-                // this narrow window get the owning window — harmless for the
-                // rare mid-load overlap, and strictly better than a wedged tab.
-                const origGMW = zAny.getMainWindow;
-                zAny.getMainWindow = () => owner;
-                try { return await orig.apply(this, arguments); }
-                finally { zAny.getMainWindow = origGMW; }
+                // Temporary, restored when the outermost overlapping load ends
+                // (_wvWithMainWindow); other getMainWindow callers in this
+                // narrow window get the owning window — harmless for the rare
+                // mid-load overlap, and strictly better than a wedged tab.
+                const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                const args = arguments;
+                if (!lp || !lp._wvWithMainWindow) return orig.apply(this, args);
+                return lp._wvWithMainWindow(owner, () => orig.apply(this, args));
             };
             N._wvOpenPatchedV = WV_OPEN_PATCH_V;
         } catch (e) { Zotero.debug("[Weavero] _wvPatchNotesOpenForMultiWindow err: " + e); }
@@ -9744,10 +9788,10 @@ class _TabsMixin {
                 } catch (e) {}
                 const zAny: any = Zotero;
                 if (!owner || owner === zAny.getMainWindow()) return origR.apply(this, arguments);
-                const origGMW = zAny.getMainWindow;
-                zAny.getMainWindow = () => owner;
-                try { return await origR.apply(this, arguments); }
-                finally { zAny.getMainWindow = origGMW; }
+                const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                const args = arguments;
+                if (!lp || !lp._wvWithMainWindow) return origR.apply(this, args);
+                return lp._wvWithMainWindow(owner, () => origR.apply(this, args));
             };
             R._wvOpenPatchedV = WV_OPEN_PATCH_V;
         } catch (e) { Zotero.debug("[Weavero] Reader.open multi-window patch err: " + e); }

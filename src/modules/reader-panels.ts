@@ -2496,6 +2496,13 @@ class _ReaderPanelsMixin {
                         try {
                             const idoc2 = r._iframeWindow && r._iframeWindow.document;
                             if (idoc2) this._wvAnnSortEnsure(r, idoc2);
+                            // A pane-filter state cached before the load is the
+                            // default, not the document's: forget it and re-apply.
+                            if (this._wvAnnPaneProvisional && this._wvAnnPaneProvisional.has(r)) {
+                                this._wvAnnPaneProvisional.delete(r);
+                                try { this._wvAnnPaneForget(r); } catch (_) {}
+                                if (idoc2) { try { this._wvAnnListEnsure(r, idoc2); } catch (_) {} }
+                            }
                         } catch (_) {}
                     }
                 } catch (_) {}
@@ -3155,6 +3162,12 @@ class _ReaderPanelsMixin {
                     try { w[ref] = null; w[stamp] = null; } catch (_) {}
                 }
             }
+            // "Hide Annotations in the Reader": the blocked setAnnotations,
+            // the per-view hide stylesheet and the DOM views' showAnnotations
+            // live on the READER and were never undone -- a disable or reload
+            // left the annotations invisible with the new checkbox unchecked
+            // (survey 2026-10-06).
+            try { this._wvReaderHideAnnotationsTeardown(reader); } catch (_) {}
             // The reader instance's undo / redo wrappers (most-recent-wins)
             // and the history-point stamping callback.
             try { this._wvReaderUnwrapUndo(reader); } catch (_) {}
@@ -14234,6 +14247,16 @@ class _ReaderPanelsMixin {
         let st = this._wvAnnPaneWM.get(reader);
         if (st) return st;
         st = this._wvAnnPaneDefaultState();
+        // PROVISIONAL while ann-order.json has not loaded: the document's
+        // stored departure is unreadable yet, so this state is the default,
+        // and the load completion must forget it (it used to be cached for
+        // good: the first readers of a session ignored their per-document
+        // filter while the button and footer said "This Document Only" --
+        // survey 2026-10-06).
+        if (!this._wvAnnOrderDoc) {
+            if (!this._wvAnnPaneProvisional) this._wvAnnPaneProvisional = new WeakSet();
+            this._wvAnnPaneProvisional.add(reader);
+        }
         try {
             const att = this._wvReaderAtt(reader);
             const e = att && att.libraryID != null && att.itemKey
@@ -16255,6 +16278,27 @@ class _ReaderPanelsMixin {
         } catch (e) {
             Zotero.debug("[Weavero] _wvReaderApplyHideAnnotations err: " + e);
         }
+    }
+
+    /** Undo everything "Hide Annotations in the Reader" put on a reader:
+     *  unblock the views, drop the hide stylesheet, and show the DOM views'
+     *  annotations again. Teardown-safe: no-op when nothing is hidden. */
+    _wvReaderHideAnnotationsTeardown(reader: any) {
+        try {
+            const ir = reader && reader._internalReader;
+            if (!ir) return;
+            const views = [ir._primaryView, ir._secondaryView, ir._lastView].filter(Boolean);
+            const blocked = views.some((v: any) => v && v._wvOrigSetAnnotations);
+            const styled = views.some((v: any) => { try { return !!(v._iframeWindow && v._iframeWindow.document.getElementById("wv-hide-annotations")); } catch (_) { return false; } });
+            const flagged = !!(this._wvReaderHideAnnWM && this._wvReaderHideAnnWM.get(reader));
+            if (!blocked && !styled && !flagged) return;
+            if (blocked) this._wvReaderSetViewAnnotationsBlocked(reader, false);
+            this._wvReaderSetOverlayHideCss(reader, false);
+            try { if (typeof ir.showAnnotations === "function") ir.showAnnotations(true); } catch (_) {}
+            try { if (this._wvReaderHideAnnWM) this._wvReaderHideAnnWM.delete(reader); } catch (_) {}
+            // Repaint the real (filtered) set in the unblocked views.
+            try { if (blocked) this._wvApplyReaderFilter(reader, this._wvReaderNativeIncludes(reader)); } catch (_) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvReaderHideAnnotationsTeardown err: " + e); }
     }
 
     /** Inject/remove a CSS rule in each view's inner doc that hides the DOM
@@ -18760,7 +18804,10 @@ class _ReaderPanelsMixin {
                 } catch (_) {}
             }
             if (!changed) return;
-            await this._bmPersist();
+            // SILENT, like the PDF twin: a derived key is never an undo step
+            // (the 2026-10-05 "Add gives Add + Edit" bug, on DOM views -- the
+            // flag and the key are both in _wvBmUndoDerived).
+            await this._bmPersistSilent();
             try {
                 const idoc = reader._iframeWindow && reader._iframeWindow.document;
                 if (idoc && this._wvReaderBmSortMode("local", reader) === "location") {

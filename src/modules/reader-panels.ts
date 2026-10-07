@@ -8969,16 +8969,34 @@ class _ReaderPanelsMixin {
             const doc = iwin && iwin.document;
             if (!doc) { this._wvReaderPanelNote(idoc, "Reading Mode view not ready."); return; }
             this._wvReaderPanelNote(idoc, "Select text in the document (Esc to cancel).");
+            // Same zombie-arm guard as _wvOutlineArmSelectRegion (shared
+            // per-reader generation): without it two arms stacked and one
+            // selection created two entries, and an arm from a dead instance
+            // kept consuming selections after a reload (survey 2026-10-06 #23).
+            const armGen = (reader._wvSelArmGen = (reader._wvSelArmGen || 0) + 1);
+            const lp = this;
+            const armStale = () => {
+                try {
+                    if (reader._wvSelArmGen !== armGen) return true;
+                    const cur: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    return cur !== lp;
+                } catch (_) { return true; }
+            };
             let onUp: any, onKey: any;
             const cleanup = () => {
                 try { doc.removeEventListener("pointerup", onUp, true); } catch (_) {}
                 try { doc.removeEventListener("keydown", onKey, true); } catch (_) {}
             };
-            onKey = (e: any) => { if (e.key === "Escape") { cleanup(); this._wvReaderPanelNote(idoc, "Cancelled."); } };
+            onKey = (e: any) => {
+                if (armStale()) { cleanup(); return; }
+                if (e.key === "Escape") { cleanup(); this._wvReaderPanelNote(idoc, "Cancelled."); }
+            };
             onUp = () => {
+                if (armStale()) { cleanup(); return; }
                 const w: any = Zotero.getMainWindow();
                 ((w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout)(() => {
                     try {
+                        if (armStale()) { cleanup(); return; }
                         const selObj = iwin.getSelection();
                         if (!selObj || selObj.isCollapsed || !selObj.rangeCount) return;   // keep waiting
                         const rg = selObj.getRangeAt(0);

@@ -89,9 +89,16 @@ class _TabsMixin {
      *  reorder the DOM in-place. */
     _setupTabsMenuLibrarySort(win) {
         if (!win) return;
-        // Tab-bar decoration (group-library tints + tooltip suffix)
-        // is independent of the popup patch — set it up first so it
-        // works even before the user opens the popup once.
+        // Structural tab-bar wiring (pins, groups, drag/drop, multi-select,
+        // the mutation observer) first and UNGATED: it once lived inside the
+        // glyph decoration, so turning the cosmetic "Group-library glyph" off
+        // silently disabled pinned tabs, tab-bar drops, group DnD and
+        // Ctrl/Shift+click (survey 2026-10-06 #15). Guard: test/survey-fixes-d.spec.js.
+        try { this._setupTabBarWiring(win); }
+        catch (e) { Zotero.debug("[Weavero] tab-bar wiring err: " + e); }
+        // Tab-bar decoration (group-library tints + tooltip): the glyph
+        // pref's own surface, independent of the popup patch — set up
+        // before the user opens the popup once.
         // Pref gate (Visual extras → Group-library glyph).
         if (this._getEnableGroupLibraryGlyph()) {
             try { this._setupTabBarLibraryDecoration(win); }
@@ -214,9 +221,10 @@ class _TabsMixin {
                 && doc.getElementById("wv-tab-bar-filter-style");
             if (tabBarStyle) tabBarStyle.remove();
         } catch (e) {}
-        // Tear down group-library tints and tooltip suffixes — also
-        // global to the window, also needs cleaning regardless of
-        // popup state.
+        // Tear down the structural wiring (observer, pins) and the
+        // group-library tints + tooltip — both global to the window, both
+        // need cleaning regardless of popup state.
+        try { this._teardownTabBarWiring(win); } catch (e) {}
         try { this._teardownTabBarLibraryDecoration(win); } catch (e) {}
         // Drop the file-type filter button + popup from the panel
         // and clear any open-popup outside-click listener.
@@ -4123,6 +4131,28 @@ class _TabsMixin {
         if (titleBar) {
             titleBar.setAttribute("tooltip", "wv-tab-library-tooltip");
         }
+        // Initial tint pass; the wiring's observer (_setupTabBarWiring)
+        // keeps it fresh while the glyph pref is on.
+        try { this._decorateTabBar(win); } catch (e) {}
+    }
+
+    /** Structural tab-bar wiring for one main window: pinned tabs, tab
+     *  groups, drops onto the strip, Ctrl/Shift+click multi-select, and the
+     *  mutation observer that re-applies pins/groups (and the glyph
+     *  decoration while that pref is on) after every React re-render.
+     *  Independent of the group-library glyph (survey 2026-10-06 #15; it
+     *  used to live inside _setupTabBarLibraryDecoration). Torn down by
+     *  _teardownTabBarWiring. */
+    _setupTabBarWiring(win) {
+        if (!win) return;
+        const doc = win.document;
+        if (!doc) return;
+        const container = doc.getElementById("tab-bar-container");
+        if (!container) {
+            // Tab bar mounts asynchronously — retry shortly.
+            win.setTimeout(() => this._setupTabBarWiring(win), 1000);
+            return;
+        }
 
         // Inject the static stylesheet for pinned tabs (icon-only width,
         // hidden title + close). Lives in the chrome window's head so it
@@ -4144,8 +4174,7 @@ class _TabsMixin {
         try { (this as any)._wvWireTabMultiSel(win); } catch (e) {}
 
         // Initial pass before we attach the observer so the user
-        // sees decoration + pin state immediately on plugin install / Zotero open.
-        try { this._decorateTabBar(win); } catch (e) {}
+        // sees pin state immediately on plugin install / Zotero open.
         try { this._applyPinnedTabs(win); } catch (e) {}
         try { this._applyTabGroups(win); } catch (e) {}
 
@@ -4166,7 +4195,8 @@ class _TabsMixin {
                     if (allOurs) return;
                 }
             } catch (e) {}
-            try { this._decorateTabBar(win); } catch (e) {}
+            // The glyph decoration rides the same observer, under its own pref.
+            try { if (this._getEnableGroupLibraryGlyph()) this._decorateTabBar(win); } catch (e) {}
             try { this._applyPinnedTabs(win); } catch (e) {}
             try { this._applyTabGroups(win); } catch (e) {}
             // Self-heal the Ctrl/Shift+click multi-select wiring: a session
@@ -11652,7 +11682,10 @@ class _TabsMixin {
         } catch (e) {}
     }
 
-    _teardownTabBarLibraryDecoration(win) {
+    /** Undo _setupTabBarWiring: the observer and the pinned-tab visuals.
+     *  Separate from the glyph teardown so that turning the glyph off (or
+     *  starting with it off) leaves pins/groups/DnD wired (#15). */
+    _teardownTabBarWiring(win) {
         if (!win) return;
         const doc = win.document;
         try {
@@ -11683,6 +11716,13 @@ class _TabsMixin {
                 if (pinStyle) pinStyle.remove();
             }
         } catch (e) {}
+    }
+
+    /** Undo _setupTabBarLibraryDecoration only: the tint stylesheet and the
+     *  library tooltip. The structural wiring stays (see _teardownTabBarWiring). */
+    _teardownTabBarLibraryDecoration(win) {
+        if (!win) return;
+        const doc = win.document;
         try {
             const tintStyle = doc
                 && doc.getElementById("wv-tab-bar-tint-style");

@@ -4973,8 +4973,16 @@ class _FilterMixin {
             if (v !== group.inOtherLibrary) return false;
         }
         if (group.itemType && group.itemType.length) {
-            if (!isReg) return false;
-            if (!group.itemType.includes(root.itemType)) return false;
+            // Rule 1 parent-level OR pair (Item Type <-> Standalone Note): a
+            // standalone-note root is the other half of the pair, so it is not
+            // held to the item type. The per-row check already read it this
+            // way (standaloneNoteSelfMatched); this tree-level check rejected
+            // every note first (survey 2026-10-06 #12).
+            const rootIsSN = !!(root.isNote && root.isNote() && !root.parentItem);
+            if (!(group.standaloneNote === true && rootIsSN)) {
+                if (!isReg) return false;
+                if (!group.itemType.includes(root.itemType)) return false;
+            }
         }
         if (group.itemTypeExclude && group.itemTypeExclude.length) {
             if (isReg && group.itemTypeExclude.includes(root.itemType)) return false;
@@ -6451,6 +6459,18 @@ class _FilterMixin {
                 delete itemsView.selectItems;
                 delete itemsView._wvOrigSelectItems;
                 delete itemsView._wvSelectItemsWrapVer;
+            }
+            // The setFilter / changeCollectionTreeRow wraps (own props over
+            // the prototype methods) and their stamps. Left in place, the
+            // next quick search re-applied the old filter from a dead
+            // instance with no chip bar to clear it (survey 2026-10-06 #14).
+            if (itemsView && itemsView._wvSetFilterWrapped) {
+                delete itemsView.setFilter;
+                delete itemsView._wvSetFilterWrapped;
+            }
+            if (itemsView && itemsView._wvCollChangeWrapped) {
+                delete itemsView.changeCollectionTreeRow;
+                delete itemsView._wvCollChangeWrapped;
             }
             // The first column's model minimum (paired with the CSS floor).
             try { this._wvUnpatchFirstColumnMinWidth(itemsView); } catch (e) {}
@@ -13700,7 +13720,7 @@ class _FilterMixin {
         const untrusted = prevSelectedIDs === null;
         const state = this._filterState;
         if (!state || !this._isFilterActive(state)) return;
-        const win = Zotero.getMainWindow();
+        const win = this._wvFilterTargetWin();   // same window as `state` (#10)
         const iv: any = win && win.ZoteroPane && win.ZoteroPane.itemsView;
         if (!iv || !iv.selection || typeof iv.getRowCount !== "function") {
             return;
@@ -14437,7 +14457,12 @@ class _FilterMixin {
         // user just collapsed via the twisty/`-` key). Only the
         // explicit color-picker click passes `cascade: true`.
         const cascade = !!(opts && opts.cascade);
-        const win = Zotero.getMainWindow();
+        // The TARGET window (override while a targeted apply/teardown runs,
+        // else the focused main): the `_filterState` accessors already bind
+        // there, so binding the tree to `Zotero.getMainWindow()` filtered the
+        // focused window's tree with a background window's state (survey
+        // 2026-10-06 #10; the per-main-window invariant in CLAUDE.md).
+        const win = this._wvFilterTargetWin();
         if (!win) return;
         const itemsView = win.ZoteroPane && win.ZoteroPane.itemsView;
         if (!itemsView || !itemsView.tree) return;
@@ -14468,10 +14493,13 @@ class _FilterMixin {
         // every row fail the global check in library B (none of the
         // items in B belong to A's collections). Detect the switch
         // and reset both filters + the saved-search results cache.
+        // Per WINDOW: a plugin-global "last library" wiped a window's
+        // collection filter whenever applies alternated between two
+        // windows on different libraries (#10).
         try {
             const curLib = this._wvSelectedLibraryID(win);
-            if (this._lastLibraryID !== undefined
-                && this._lastLibraryID !== curLib
+            if (win._wvLastLibraryID !== undefined
+                && win._wvLastLibraryID !== curLib
                 && this._filterState) {
                 if (this._filterState.collections
                     && this._filterState.collections.length) {
@@ -14484,7 +14512,7 @@ class _FilterMixin {
                 this._savedSearchResults = null;
                 try { this._renderFilterBar(); } catch (e) {}
             }
-            this._lastLibraryID = curLib;
+            win._wvLastLibraryID = curLib;
         } catch (e) {
             dbg("[Weavero][filter] library-change check err: " + e);
         }

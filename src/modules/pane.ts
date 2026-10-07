@@ -795,7 +795,12 @@ class _PaneMixin {
             if (!repAtt && !repNote) return;   // nothing openable in the selection
 
             const targets = this._wvOpenInTargetWindows();
-            const groups = (this._tabGroupsGet ? this._tabGroupsGet() : [])
+            // Group rows and "New Group" only while tab groups are ON: with
+            // the option off they still created groups and stamped tabs --
+            // invisible state that resurfaced when the option came back
+            // (survey 2026-10-06).
+            const groupsOn = !!(this._getEnableTabGroups && this._getEnableTabGroups());
+            const groups = (groupsOn && this._tabGroupsGet ? this._tabGroupsGet() : [])
                 .filter((g: any) => g && !g.saved && this._wvTabGroupHomeWin(g.id));
             // Always shown — "New Window" is always a valid destination.
 
@@ -851,13 +856,15 @@ class _PaneMixin {
                         pop.appendChild(gItem);
                     }
                 }
-                const ng = doc.createXULElement("menuitem");
-                ng.setAttribute("label", "New Group");
-                ng.classList.add("menuitem-iconic");
-                ng.setAttribute("style", INDENT);
-                ng.setAttribute("image", plusIcon);
-                ng.addEventListener("command", () => { this._wvOpenInTarget(win, w, null, true); });
-                pop.appendChild(ng);
+                if (groupsOn) {
+                    const ng = doc.createXULElement("menuitem");
+                    ng.setAttribute("label", "New Group");
+                    ng.classList.add("menuitem-iconic");
+                    ng.setAttribute("style", INDENT);
+                    ng.setAttribute("image", plusIcon);
+                    ng.addEventListener("command", () => { this._wvOpenInTarget(win, w, null, true); });
+                    pop.appendChild(ng);
+                }
             }
 
             // "New Window" — open in a brand-new main window, plus its
@@ -869,8 +876,8 @@ class _PaneMixin {
                 pop.appendChild((this as any)._wvNewWindowIconRow(doc, dark, [
                     { main: true, grp: false, tip: "New Main Window",
                         fn: () => this._wvOpenInNewMainWindow(win, false) },
-                    { main: true, grp: true, tip: "A New Group in a New Main Window",
-                        fn: () => this._wvOpenInNewMainWindow(win, true) },
+                    ...(groupsOn ? [{ main: true, grp: true, tip: "A New Group in a New Main Window",
+                        fn: () => this._wvOpenInNewMainWindow(win, true) }] : []),
                 ]));
             }
 
@@ -8427,12 +8434,14 @@ class _PaneMixin {
             win._wvCompactTitleBar = stash;
         } catch (e) {
             Zotero.debug("[Weavero] _applyCompactTitleBar err: " + e);
-            // Auto-revert any partial mutations from this apply attempt
-            // and disable the pref so the next startup doesn't retry.
-            // Without this, a crash here can leave the window in a
-            // half-mutated state that breaks subsequent operations.
+            // Auto-revert any partial mutations from this apply attempt so
+            // the window is never left half-mutated, and skip this WINDOW
+            // for the session. The user's master pref is NOT touched: one
+            // transient failure in one window used to switch the setting
+            // off permanently for every window type, and the observer then
+            // migrated reader-window tabs into main (survey 2026-10-06).
             try { this._revertCompactTitleBar(win); } catch (er) {}
-            try { Zotero.Prefs.set("weavero.compactTitleBar", false); } catch (er) {}
+            try { win._wvCompactTitleBarFailed = true; } catch (er) {}
         }
     }
 
@@ -9213,7 +9222,14 @@ class _PaneMixin {
      *  place. A fresh manager gets the bar before first show, so no jump. */
     _wvPMReapplyChrome(this: any) {
         try {
-            const on = (Zotero as any).isMac ? false : !!(this._getCompactTitleBarPluginsManager && this._getCompactTitleBarPluginsManager());
+            // The drawn bar needs the `dialog=no` reroute that "Plugins
+            // Manager extras" owns (a fresh manager checks both, pane.ts
+            // _wvPMMaybeInject); the live re-apply checked only the title-bar
+            // child and drew caption buttons on a dialog window (survey
+            // 2026-10-06).
+            const on = (Zotero as any).isMac ? false
+                : !!(this._getCompactTitleBarPluginsManager && this._getCompactTitleBarPluginsManager()
+                    && this._getEnablePluginsSearch && this._getEnablePluginsSearch());
             // @ts-ignore - enumerator is iterable in Zotero's Gecko
             for (const w of Services.wm.getEnumerator("zotero:basicViewer") as any) {
                 try {

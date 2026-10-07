@@ -1970,6 +1970,16 @@ class _ReaderPanelsMixin {
             this._wvReaderEnsureFilterButton(reader, idoc);
             this._wvReaderEnsureBookmarksTab(reader, idoc);
             this._wvReaderEnsureOutlinePanel(reader, idoc);
+            // The merged undo (reader undo / redo take Weavero's newer steps,
+            // MJT 2026-10-01), the history stamps and the toolbar Undo / Redo
+            // buttons belong to the TAB, not to the outline takeover: wired
+            // from inside the takeover ensure, they vanished with
+            // `readerOutlineTakeover` off (survey 2026-10-06). The wrap
+            // carries its own instance tag and is re-laid by every new
+            // instance; the buttons gate themselves on their own pref.
+            try { this._wvReaderWrapUndo(reader); } catch (_) {}
+            try { this._wvReaderStampHistory(reader); } catch (_) {}
+            try { this._wvReaderEnsureUndoButtons(reader, idoc); } catch (_) {}
             this._wvEnsureSpringDragEnd(reader, idoc);
             this._wvAnnSortEnsure(reader, idoc);
             this._wvAnnListEnsure(reader, idoc);
@@ -3009,6 +3019,11 @@ class _ReaderPanelsMixin {
                     + " m.render();})()");
             }
         } catch (e) {}
+        // The pane funnel's hiding rides the render wrapper just restored:
+        // drop the funnel's apply signature so the next scan re-wires it
+        // instead of finding "already applied" (survey 2026-10-06: sort off
+        // silently stopped the funnel from hiding).
+        try { (reader as any).__wvAnnListSig = null; } catch (e) {}
     }
 
     /** Tear down this reader doc's injected panel surfaces so the ensure calls
@@ -3311,13 +3326,9 @@ class _ReaderPanelsMixin {
             // every hot reload would stack another copy; a stacked dblclick
             // handler toggle-alls TWICE = visibly nothing). Live-plugin
             // resolution keeps a surviving listener inert after disable.
-            // The reader's undo / redo take Weavero's newer steps (MJT
-            // 2026-10-01). Outside the tab-wiring stamp below: that stamp
-            // survives a plugin reload, this wrap carries its own instance
-            // tag and must be re-laid by every new instance.
-            try { this._wvReaderWrapUndo(reader); } catch (_) {}
-            try { this._wvReaderStampHistory(reader); } catch (_) {}
-            try { this._wvReaderEnsureUndoButtons(reader, idoc); } catch (_) {}
+            // (The reader undo wrap, the history stamps and the toolbar undo
+            // buttons are wired from _wvProcessReaderPanels, independent of
+            // the takeover gate above -- survey 2026-10-06.)
             if ((idoc as any)._wvOutlineTabWired !== RP_BM_CTX_WIRE_V) {
                 try { if ((idoc as any)._wvOutlineTabClickH) idoc.removeEventListener("click", (idoc as any)._wvOutlineTabClickH, true); } catch (_) {}
                 try { if ((idoc as any)._wvOutlineTabDblH) idoc.removeEventListener("dblclick", (idoc as any)._wvOutlineTabDblH, true); } catch (_) {}
@@ -14862,8 +14873,11 @@ class _ReaderPanelsMixin {
             }
             g._wvAnnListPrefObsVer = tag;
             const typePrefs = this._wvAnnListTypes().map(t => this._wvAnnListPrefName(t));
+            // `enableFilters` is the pane funnel's MASTER (_wvAnnPaneEnabled):
+            // the root observer only re-ran the sort on it, so the funnel
+            // stayed applied or absent until the next scan (survey 2026-10-06).
             const watched = typePrefs.concat(["weavero.annPaneDefault",
-                "weavero.enableAnnPaneFilter", "weavero.hideNativeAnnSelector"]);
+                "weavero.enableAnnPaneFilter", "weavero.hideNativeAnnSelector", "weavero.enableFilters"]);
             g._wvAnnListPrefObs = watched.map(name => Zotero.Prefs.registerObserver(
                 name,
                 () => {

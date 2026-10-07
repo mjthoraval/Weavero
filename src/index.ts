@@ -4094,6 +4094,24 @@ class WeaveroPlugin {
                             for (const w of Zotero.getMainWindows()) this._applyTabGroups(w);
                         } catch (e) {}
                     }
+                    // Window identity -- per-window icons, taskbar overlay
+                    // badges, taskbar identities and title glyphs. `windowIcons`
+                    // had no live watcher at all and the section master refreshed
+                    // none of these, so the Settings checkbox needed a restart
+                    // and icons / badges stayed up after the master went off
+                    // (survey 2026-10-06). Each refresher self-gates on its pref;
+                    // the forceOff / clear flag covers the master going off.
+                    if (data === "extensions.zotero.weavero.windowIcons"
+                            || data === "extensions.zotero.weavero.separateTaskbarButtons"
+                            || data === "extensions.zotero.weavero.enableTabsAndWindows") {
+                        try {
+                            const off = !this._getTabsAndWindowsMaster();
+                            try { (this as any)._wvRefreshWindowIcons(off); } catch (e) {}
+                            try { (this as any)._wvRefreshTaskbarOverlays(off); } catch (e) {}
+                            try { (this as any)._wvRefreshWindowTaskbarIdentities(); } catch (e) {}
+                            try { (this as any)._wvRefreshTitleGlyphs(off); } catch (e) {}
+                        } catch (e) { Zotero.debug("[Weavero] window-identity toggle err: " + e); }
+                    }
                     // Reader item pane (Tabs and Windows section) — apply to the
                     // open standalone reader windows immediately: the ensure
                     // function self-gates on the pref (and the section master),
@@ -4251,6 +4269,12 @@ class WeaveroPlugin {
                             this._applySurfacePref("readerSidebar");
                             this._applySurfacePref("readerView");
                             this._applySurfacePref("notes");
+                            // The notes child strips its decoration when turned
+                            // off; the MASTER went through _applySurfacePref,
+                            // a no-op once the getters read false, and left the
+                            // notes decorated (survey 2026-10-06).
+                            if (!this._getEnableLinksAndRelations()) { try { (this as any)._stripNotes(); } catch (e) {} }
+                            try { (this as any)._refreshNoteLinkifyRegex && (this as any)._refreshNoteLinkifyRegex(); } catch (e) {}
                             try { this._markCellLinks(); } catch (e) {}
                         } catch (e) {
                             Zotero.debug("[Weavero] tab-1 master toggle err: " + e);

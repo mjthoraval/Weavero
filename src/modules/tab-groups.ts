@@ -937,19 +937,25 @@ class _TabGroupsMixin {
                 "}",
                 // Room for the selected swatch's ring (2px gap + 2px ring).
                 ".wv-tg-swatches { display: flex; gap: 9px; flex-wrap: wrap; padding: 3px 3px 4px; }",
-                // Firefox's picker: CIRCLES, the selected one ringed in its
-                // own colour with a gap (MJT 2026-10-07; the 2026-07-15
-                // rounded-square picker, which mirrored the chip glyph, is
-                // superseded -- Firefox's chip is a rounded label and its
-                // picker still uses circles). `--wv-sw` is the swatch's hex,
-                // set inline by _wvTabGroupSwatchRow. The WINDOW swatch rows
-                // still override the shape per kind inline (circle = reader,
-                // square = main).
+                // Firefox's picker (tabs.css `.tab-group-editor-swatch`, verified
+                // 2026-10-07): CIRCLES; the current one ringed with a gap in
+                // the FOCUS colour -- `input:checked + .tab-group-editor-swatch
+                // { border-color: var(--focus-outline-color) }` -- the same
+                // colour whatever the swatch (MJT: "the circle is always the
+                // same color"). Weavero's Firefox focus colour is --wv-ff-focus
+                // (nova's violet, from the selected-tab ring sheet); toolkit's
+                // --focus-outline-color / AccentColor are the fallbacks. The
+                // 2026-07-15 rounded squares, which mirrored the chip glyph, are
+                // superseded (Firefox's chip is a rounded label, its picker
+                // still circles). The WINDOW swatch rows override the shape per
+                // kind inline (circle = reader, square = main).
                 ".wv-tg-swatch {",
                 "  width: 16px; height: 16px; border-radius: 50%; cursor: pointer;",
                 "  box-sizing: border-box;",
                 "}",
-                ".wv-tg-swatch.wv-selected { outline: 2px solid var(--wv-sw, currentColor); outline-offset: 2px; }",
+                ".wv-tg-swatch.wv-selected {",
+                "  outline: 2px solid var(--wv-ff-focus, var(--focus-outline-color, AccentColor)); outline-offset: 2px;",
+                "}",
                 ".wv-tg-btnrow { display: flex; gap: 6px; justify-content: flex-end; }",
                 ".wv-tg-btn {",
                 "  padding: 3px 10px; border-radius: 5px; cursor: pointer;",
@@ -5634,9 +5640,7 @@ class _TabGroupsMixin {
         for (const c of WV_GROUP_COLORS) {
             const sw = doc.createElementNS(HTML_NS, "div");
             sw.className = "wv-tg-swatch" + (c.id === selected ? " wv-selected" : "");
-            const hex = this._tabGroupColorHex(c.id);
-            sw.style.background = hex;   // what the chip will show
-            sw.style.setProperty("--wv-sw", hex);   // the selected ring's colour
+            sw.style.background = this._tabGroupColorHex(c.id);   // what the chip will show
             sw.setAttribute("title", c.id);
             sw.addEventListener("click", () => {
                 try {

@@ -30,19 +30,28 @@ describe("Weavero — tab-group editor: features first, information last", () =>
         const kids = [...body.children];
         const cls = (el) => String(el.className || "");
         assert.include(cls(kids[0]), "wv-tg-swatches", "colour swatches come first");
-        // Firefox's picker: circles; the current colour ringed in its own
-        // colour with a gap (MJT 2026-10-07).
+        // Firefox's picker (tabs.css, verified 2026-10-07): circles; the
+        // current colour ringed with a gap in the FOCUS colour -- the same
+        // ring whatever the swatch, never the swatch's own colour.
         const sws = [...kids[0].querySelectorAll(".wv-tg-swatch")];
         assert.isAbove(sws.length, 3);
-        const sel = sws.filter(s => s.classList.contains("wv-selected"));
-        assert.strictEqual(sel.length, 1, "exactly one swatch is marked current");
-        const csSel = win.getComputedStyle(sel[0]);
+        const current = () => sws.filter(s => s.classList.contains("wv-selected"));
+        assert.strictEqual(current().length, 1, "exactly one swatch is marked current");
+        const csSel = win.getComputedStyle(current()[0]);
         assert.match(csSel.borderRadius, /^(50%|8px)/, "a circle");
         assert.strictEqual(csSel.outlineStyle, "solid", "the current one carries the ring");
         assert.strictEqual(csSel.outlineOffset, "2px", "with a gap");
-        assert.strictEqual(csSel.outlineColor, csSel.backgroundColor, "ring in the swatch's own colour");
+        const ringA = csSel.outlineColor;
+        assert.notStrictEqual(ringA, csSel.backgroundColor, "the ring is not the swatch's colour");
         const csOther = win.getComputedStyle(sws.find(s => !s.classList.contains("wv-selected")));
         assert.strictEqual(csOther.outlineStyle, "none", "the others carry none");
+        // Pick another colour: the ring moves, its colour does not.
+        const other = sws.find(s => !s.classList.contains("wv-selected"));
+        other.click();
+        assert.strictEqual(current()[0], other, "the clicked swatch is current");
+        const csB = win.getComputedStyle(other);
+        assert.strictEqual(csB.outlineColor, ringA, "one ring colour for every swatch");
+        assert.notStrictEqual(csB.outlineColor, csB.backgroundColor);
         assert.include(cls(kids[1]), "wv-tg-row", "the name field is right under the swatches");
         const input = kids[1].querySelector("input.wv-tg-name-input");
         assert.isOk(input);

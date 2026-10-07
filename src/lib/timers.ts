@@ -7,8 +7,9 @@
 // UI work should still use that window's own timer so it dies with the
 // window; these are for plugin-level state, watchdogs and holds.
 
-/** `setTimeout` on the sandbox global. */
-export function wvTimeout(fn: () => void, ms: number): any {
+/** `setTimeout` on the sandbox global (same shape, so a Promise resolver
+ *  or any callback goes in unchanged). */
+export function wvTimeout(fn: (...args: any[]) => void, ms: number): any {
     return setTimeout(fn, ms);
 }
 

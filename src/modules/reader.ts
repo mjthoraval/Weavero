@@ -31,6 +31,7 @@ import { winOf, wvIsHiddenOrCollapsed, wvSetBoolAttr } from "../lib/dom";
 import { wvRemoveStyle } from "../lib/style";
 import { wvLivePlugin } from "../lib/live";
 import { wvStoreWrite, wvStoreRead, wvStoreRemove } from "../lib/store";
+import { wvTimeout } from "../lib/timers";
 import { wvStageNativeUndo } from "./undo";
 
 class _ReaderMixin {
@@ -876,8 +877,7 @@ class _ReaderMixin {
         const doAdd = (e) => {
             try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
             try { panel.style.display = "none"; } catch (er) {}
-            const w = Zotero.getMainWindow();
-            const st = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            const st = wvTimeout;
             st(() => {
                 try {
                     this._addRelatedItemDialog([annotationItem])
@@ -1585,10 +1585,7 @@ class _ReaderMixin {
                     // dialog while the menu is still tearing down has
                     // been the trigger of native crashes when
                     // chrome/iframe lifetimes overlap.
-                    const win = Zotero.getMainWindow();
-                    const setTimeoutFn = win && win.setTimeout
-                        ? win.setTimeout.bind(win)
-                        : setTimeout;
+                    const setTimeoutFn = wvTimeout;
                     setTimeoutFn(() => {
                         try {
                             const fresh = capturedKeys
@@ -3548,7 +3545,7 @@ class _ReaderMixin {
             // "on" flag stuck so no later drag ever got a watchdog (survey
             // 2026-10-06; TIMER HOSTS rule). The drag-session probe resolves a
             // live window per tick.
-            const setT = setTimeout;
+            const setT = wvTimeout;
             const sessionActive = () => {
                 try {
                     const ds: any = Cc["@mozilla.org/widget/dragservice;1"].getService(Ci.nsIDragService);
@@ -7691,7 +7688,7 @@ class _ReaderMixin {
         try {
             if (!entries || !entries.length) return;
             const mainWin: any = Zotero.getMainWindow();
-            const setT = (mainWin && mainWin.setTimeout) ? mainWin.setTimeout.bind(mainWin) : setTimeout;
+            const setT = wvTimeout;
             const readerWins = () => {
                 const out: any[] = [];
                 try { const en = Services.wm.getEnumerator("zotero:reader"); while (en.hasMoreElements()) out.push(en.getNext()); } catch (e) {}
@@ -7790,7 +7787,7 @@ class _ReaderMixin {
             const itemID = tab.itemID;
             const isNote = (tab.type === "note");
             const mainWin: any = Zotero.getMainWindow();
-            const setT = (mainWin && mainWin.setTimeout) ? mainWin.setTimeout.bind(mainWin) : setTimeout;
+            const setT = wvTimeout;
             const classic = () => {
                 try { (this as any)._wvForgetTabGroupForItem(itemID); } catch (e) {}
                 try { this._wvWTCloseTab(win, tabId); } catch (e) {}
@@ -8726,8 +8723,7 @@ class _ReaderMixin {
             // (Backstop — consumption clears the flag as entries are used, see
             // _wvWTRestoreMaybeDone.)
             try {
-                const win = Zotero.getMainWindow();
-                const setT = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+                const setT = wvTimeout;
                 setT(() => { this._wvWTRestoreActive = false; this._wvWTRestoreMap = {}; }, 30000);
             } catch (e) {}
             return map;
@@ -17505,8 +17501,7 @@ class _ReaderMixin {
             const isPdf = !!(win && win.PDFViewerApplication);
             if (!pv || typeof pv._onSetOverlayPopup !== "function" || !isPdf) {
                 if (n < 40) {
-                    const w0: any = Zotero.getMainWindow();
-                    ((w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout)(
+                    wvTimeout(
                         () => { try { this._wvWirePreviewLinkZones(reader, n + 1); } catch (_) {} }, 250);
                 }
                 return;
@@ -17569,8 +17564,7 @@ class _ReaderMixin {
             const isPdf = !!(win && win.PDFViewerApplication);
             if (!pv || typeof pv.pointerEventToPosition !== "function" || !isPdf) {
                 if (n < 40) {
-                    const w0: any = Zotero.getMainWindow();
-                    ((w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout)(
+                    wvTimeout(
                         () => { try { this._wvWireExternalLinkTip(reader, n + 1); } catch (_) {} }, 250);
                 }
                 return;
@@ -17730,8 +17724,7 @@ class _ReaderMixin {
             const win = reader && reader._iframeWindow;
             if (!win || !win.document || !win.document.body) {
                 if (n < 40) {
-                    const w0: any = Zotero.getMainWindow();
-                    ((w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout)(
+                    wvTimeout(
                         () => { try { this._wvWireReaderDocLinkTip(reader, n + 1); } catch (_) {} }, 250);
                 }
                 return;

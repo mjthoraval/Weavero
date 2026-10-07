@@ -21,6 +21,7 @@ import { wvLivePlugin } from "../lib/live";
 import { wvInjectStyle, wvRemoveStyle } from "../lib/style";
 import { wvWrap, wvUnwrap } from "../lib/wrap";
 import { wvStoreWrite, wvStoreRead, wvStoreRemove } from "../lib/store";
+import { wvTimeout } from "../lib/timers";
 import { WV_FUNNEL_DATA_URI } from "./constants";
 
 // Zotero_Tabs is the per-window globals — it's declared as `any`
@@ -8072,8 +8073,8 @@ class _TabsMixin {
     _wvWindowStoreSaveDebounced() {
         if (this._wvWindowStoreFrozen || (this as any)._wvQuitting) return;
         try {
-            const win = Zotero.getMainWindow();
-            const setT = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+            const win: any = Zotero.getMainWindow();
+            const setT = wvTimeout;
             const clearT = (win && win.clearTimeout) ? win.clearTimeout.bind(win) : clearTimeout;
             if (this._wvWindowStoreSaveTimer) { try { clearT(this._wvWindowStoreSaveTimer); } catch (e) {} }
             this._wvWindowStoreSaveTimer = setT(() => {
@@ -8801,8 +8802,7 @@ class _TabsMixin {
             // windows "appearing very late"). So wait a beat and only close if
             // the plugin did NOT come back — a reload re-attaches
             // Zotero.Weavero.plugin within milliseconds.
-            const mainWin: any = Zotero.getMainWindow();
-            const setT = (mainWin && mainWin.setTimeout) ? mainWin.setTimeout.bind(mainWin) : setTimeout;
+            const setT = wvTimeout;
             const markerPath = this._wvDisableCloseMarkerPath();
             setT(() => {
                 try {
@@ -9022,7 +9022,7 @@ class _TabsMixin {
             if ((this as any)._wvBootSelGuardOn) return;
             (this as any)._wvBootSelGuardOn = true;
             const w0: any = Zotero.getMainWindow();
-            const setT = (w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout;
+            const setT = wvTimeout;
             const anchor: any = (Zotero.getMainWindows() || []).find((w: any) => !w._wvManagedWindow) || w0;
             const EVS = ["mousedown", "keydown", "wheel"];
             const onUser = () => {
@@ -9914,8 +9914,7 @@ class _TabsMixin {
                             if (!lp._wvReaderOpenCapArmed) {
                                 lp._wvReaderOpenCapArmed = true;
                                 try {
-                                    const w1: any = Zotero.getMainWindow();
-                                    ((w1 && w1.setTimeout) ? w1.setTimeout.bind(w1) : setTimeout)(
+                                    wvTimeout(
                                         () => { try { lp._wvReleaseReaderOpens("1.5s cap"); } catch (e) {} }, 1500);
                                 } catch (e) {}
                             }
@@ -9928,8 +9927,7 @@ class _TabsMixin {
             R._wvHoldWrapped = tag;
             // Hard backstop from install — the hold must never outlive startup
             // (the 1.5 s cap arms on the first queued open; see the wrap).
-            const w0: any = Zotero.getMainWindow();
-            ((w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout)(
+            wvTimeout(
                 () => { try { this._wvReleaseReaderOpens("timeout backstop"); } catch (e) {} }, 10000);
         } catch (e) { Zotero.debug("[Weavero] _wvHoldReaderWindowOpens err: " + e); }
     }
@@ -10005,8 +10003,7 @@ class _TabsMixin {
             } catch (e) {}
             if (!targets.length) return;
             this._wvTrace("idle loader: warming " + targets.length + " deferred reader-window tab(s) in the background");
-            const w0: any = Zotero.getMainWindow();
-            const setT = (w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout;
+            const setT = wvTimeout;
             let i = 0;
             const next = () => {
                 // Each background load can make its reader window steal focus
@@ -10515,8 +10512,7 @@ class _TabsMixin {
             const self = this;
             const findTarget = () => self._wvRestoreFindTargetWin();
             let ticks = 0;
-            const w0: any = Zotero.getMainWindow();
-            const setT = (w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout;
+            const setT = wvTimeout;
             const tick = () => {
                 ticks++;
                 const done = !(this as any)._wvTabGroupRestoreGuard || ticks > 45;
@@ -10773,8 +10769,8 @@ class _TabsMixin {
                         (self as any)._wvQuitting = true;
                         try { if ((Zotero as any).Weavero) (Zotero as any).Weavero._quitting = true; } catch (e) {}
                         self._wvTrace && self._wvTrace("quit-application-requested");
-                        const w = Zotero.getMainWindow();
-                        const setT = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+                        const w: any = Zotero.getMainWindow();
+                        const setT = wvTimeout;
                         if (self._wvQuitResetTimer) { try { ((w && w.clearTimeout) ? w.clearTimeout.bind(w) : clearTimeout)(self._wvQuitResetTimer); } catch (e) {} }
                         self._wvQuitResetTimer = setT(() => {
                             // No grant arrived → the quit was vetoed; resume normal life.

@@ -3566,7 +3566,7 @@ class WeaveroPlugin {
                         await (this as any)._wvWTLoadRestoreMap();
                         const f = (this as any)._wvBootFocusedEntry;
                         if (!f || f.kind !== "reader" || f.itemID == null) return;
-                        const wait = (ms: number) => new Promise((r) => { const w: any = Zotero.getMainWindow(); ((w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout)(r, ms); });
+                        const wait = (ms: number) => wvSleep(ms);
                         for (let i = 0; i < 4; i++) {
                             if ((this as any)._wvReaderWindowHostingItem(f.itemID)) return;
                             // A window for the item is already OPENING (the
@@ -3592,8 +3592,7 @@ class WeaveroPlugin {
                 // consumed — instead of a flat 6 s; 6 s stays as the cap.
                 .then(() => new Promise((res) => {
                     try {
-                        const w: any = Zotero.getMainWindow();
-                        const setT = ((w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout);
+                        const setT = wvTimeout;
                         let last = -1, stable = 0, waited = 0;
                         const tick = () => {
                             waited += 500;
@@ -3636,8 +3635,7 @@ class WeaveroPlugin {
                 // — was 8 s against a 30 s expiry timer. 35 s backstop unchanged.
                 .then(() => {
                     try {
-                        const win: any = Zotero.getMainWindow();
-                        const setT = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+                        const setT = wvTimeout;
                         let waited = 0;
                         let structLogged = false;
                         const tick = () => {
@@ -4705,8 +4703,7 @@ class WeaveroPlugin {
         // so a tab left blank by a reload or context loss heals without the
         // user having to click away and back.
         try {
-            const mw0: any = Zotero.getMainWindow();
-            const setT0 = (mw0 && mw0.setTimeout) ? mw0.setTimeout.bind(mw0) : setTimeout;
+            const setT0 = wvTimeout;
             setT0(() => {
                 try {
                     const ren = Services.wm.getEnumerator("zotero:reader");
@@ -5562,8 +5559,7 @@ class WeaveroPlugin {
                 // real disable it runs 1.5s later (the deferred window-close
                 // usually removes the windows first anyway).
                 try {
-                    const mw: any = Zotero.getMainWindow();
-                    const setT = (mw && mw.setTimeout) ? mw.setTimeout.bind(mw) : setTimeout;
+                    const setT = wvTimeout;
                     setT(() => {
                         try {
                             if ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) return;   // reload — keep the decks

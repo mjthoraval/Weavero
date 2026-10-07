@@ -18,6 +18,7 @@
  *  then slash `name://`). Keep in sync with the SCHEMES list in
  *  prefs.js and the grid in prefs.html. */
 import { schemeAltPart, joinSchemeAlt, buildUrlRegex, urlLinkClass } from "../lib/links";
+import { wvTimeout } from "../lib/timers";
 
 export const URL_SCHEMES = [
     // ---- Tier 1: bare-colon schemes (name:) -------------------------------
@@ -679,8 +680,7 @@ export const urlMethods = {
             seq = (pv as any)._wvLinkPinSeq;
         }
         const live = () => (pv as any)._wvLinkPinSeq === seq;
-        const w: any = Zotero.getMainWindow();
-        const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+        const st = wvTimeout;
         try {
             const app = pv && pv._iframeWindow
                 && (pv._iframeWindow.PDFViewerApplication
@@ -827,8 +827,7 @@ export const urlMethods = {
                     // still opening) -- keep polling, same budget as the base
                     // path.
                     if (n < 120) {
-                        const w0: any = Zotero.getMainWindow();
-                        const st0: any = (w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout;
+                        const st0 = wvTimeout;
                         st0(() => this._wvHighlightAfterOpen(itemID, position, n + 1, kind), 150);
                     } else {
                         this._wvLinkRing("highlightAfterOpen: RM view never became ready");
@@ -905,8 +904,7 @@ export const urlMethods = {
         } catch (e) {}
         if (n >= 60) this._wvLinkRing("highlightAfterOpen: GAVE UP after 60 tries");
         if (n < 60) {
-            const w: any = Zotero.getMainWindow();
-            const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            const st = wvTimeout;
             st(() => this._wvHighlightAfterOpen(itemID, position, n + 1, kind), 150);
         }
     },

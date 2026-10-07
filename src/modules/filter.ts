@@ -47,6 +47,7 @@
 import { winOf, wvPopupHost, wvDismissTooltip, wvSetBoolAttr } from "../lib/dom";
 import { wvLivePlugin } from "../lib/live";
 import { wvWrap, wvUnwrap } from "../lib/wrap";
+import { wvTimeout } from "../lib/timers";
 import { URL_SCHEMES } from "./url";
 import {
     BTN_CLASS, BTN_TREE_CLASS, BTN_PANE_CLASS, BTN_POPUP_CLASS,
@@ -12963,8 +12964,7 @@ class _FilterMixin {
         try {
             (this as any)._wvCascadeRetryUntil = Date.now() + 3000;
             if ((this as any)._wvCascadeRetryTimer) return;   // already pending
-            const win = Zotero.getMainWindow();
-            const setT = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+            const setT = wvTimeout;
             (this as any)._wvCascadeRetryTimer = setT(() => {
                 const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                 if (!P || P !== this) return;                  // stale instance
@@ -13373,8 +13373,7 @@ class _FilterMixin {
             // flickering). The stale-keep retry defers while this is set.
             (this as any)._wvFAHold = true;
             if ((this as any)._wvFATimer) return;          // tick loop already running
-            const win = Zotero.getMainWindow();
-            const setT = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+            const setT = wvTimeout;
             const tick = () => {
                 (this as any)._wvFATimer = null;
                 try {
@@ -13453,9 +13452,7 @@ class _FilterMixin {
                 (this as any)._wvStaleKeepUntil = now + 4000;
             }
             if ((this as any)._wvStaleKeepTimer) return;       // already pending
-            const win = Zotero.getMainWindow();
-            const setT = (win && win.setTimeout)
-                ? win.setTimeout.bind(win) : setTimeout;
+            const setT = wvTimeout;
             (this as any)._wvStaleKeepTimer = setT(() => {
                 (this as any)._wvStaleKeepTimer = null;
                 try {
@@ -13976,8 +13973,7 @@ class _FilterMixin {
             const self: any = this;
             if (self._wvDestroyed) return;
             const win: any = Zotero.getMainWindow();
-            const st = (win && !win.closed && win.setTimeout)
-                ? win.setTimeout.bind(win) : setTimeout;
+            const st = wvTimeout;
             const ct = (win && !win.closed && win.clearTimeout)
                 ? win.clearTimeout.bind(win) : clearTimeout;
             if (self._wvDataChangeTimer) {
@@ -14021,9 +14017,7 @@ class _FilterMixin {
                     // debounced per edit burst, and an apply that finds
                     // nothing to change is cheap.
                     if (n < 3) {
-                        const w2: any = Zotero.getMainWindow();
-                        const st2 = (w2 && !w2.closed && w2.setTimeout)
-                            ? w2.setTimeout.bind(w2) : setTimeout;
+                        const st2 = wvTimeout;
                         st2(() => pass(n + 1), n === 0 ? 450 : (n === 1 ? 800 : 1400));
                     }
                 } catch (e) {

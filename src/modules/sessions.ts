@@ -1,5 +1,6 @@
 import { wvInjectStyle } from "../lib/style";
 import { wvStoreWrite, wvStoreRead } from "../lib/store";
+import { wvTimeout } from "../lib/timers";
 
 // Module: named TAB SESSIONS — capture the set of open tabs across all main
 // windows into a NAMED session, and switch between sessions (close the current
@@ -843,8 +844,7 @@ class _TabSessionsMixin {
             try { await this._wvTabSessionReconstructReaderWindow(rw); } catch (_) {}
         }
         try {
-            const w = Zotero.getMainWindow();
-            const st = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            const st = wvTimeout;
             st(() => {
                 try {
                     const wins = Zotero.getMainWindows();
@@ -862,8 +862,7 @@ class _TabSessionsMixin {
             // Lift the guard once windows (esp. async reader windows) have settled,
             // then re-apply so the new groups render and any stale empties clear.
             try {
-                const w = Zotero.getMainWindow();
-                const st = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+                const st = wvTimeout;
                 st(() => {
                     try { (this as any)._wvTabGroupRestoreGuard = false; } catch (e) {}
                     try { (this as any)._wvTabGroupApplyEverywhere(); } catch (e) {}

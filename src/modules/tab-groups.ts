@@ -23,6 +23,7 @@
 
 import { wvSetBoolAttr } from "../lib/dom";
 import { wvInjectStyle, wvRemoveStyle } from "../lib/style";
+import { wvTimeout } from "../lib/timers";
 import { wvStoreWrite, wvStoreRead } from "../lib/store";
 
 declare const Zotero: any;
@@ -4928,7 +4929,7 @@ class _TabGroupsMixin {
             } catch (eLog) {}
             try { this._wvTabGroupApplyEverywhere(); } catch (e) {}
             // Re-apply once the new window's React strip has rendered the tabs.
-            try { const mw: any = Zotero.getMainWindow(); const st = (mw && mw.setTimeout) ? mw.setTimeout.bind(mw) : setTimeout; st(() => { try { this._wvTabGroupApplyEverywhere(); } catch (e) {} }, 220); } catch (e) {}
+            try { wvTimeout(() => { try { this._wvTabGroupApplyEverywhere(); } catch (e) {} }, 220); } catch (e) {}
         }
     }
 

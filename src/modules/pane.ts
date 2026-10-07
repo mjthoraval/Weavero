@@ -32,6 +32,7 @@ import {
 import { BBT_BIBTEX_TRANSLATOR_ID, BBT_BIBLATEX_TRANSLATOR_ID } from "./url";
 import { winOf, wvSetBoolAttr } from "../lib/dom";
 import { wvRemoveStyle } from "../lib/style";
+import { wvTimeout } from "../lib/timers";
 
 class _PaneMixin {
     [k: string]: any;
@@ -1856,8 +1857,7 @@ class _PaneMixin {
      *  would fight the user's next focus change). */
     _wvRaiseNewMainWindow(before: Set<any>) {
         try {
-            const mw: any = Zotero.getMainWindow();
-            const setT = (mw && mw.setTimeout) ? mw.setTimeout.bind(mw) : setTimeout;
+            const setT = wvTimeout;
             const t0 = Date.now();
             let nw: any = null, tries = 0;
             const tick = () => {
@@ -3701,8 +3701,7 @@ class _PaneMixin {
                 nw = Services.ww.openWindow(null, AppConstants.BROWSER_CHROME_URL,
                     "_blank", this._wvAdvSearchWindowFeatures(), null);
             } catch (e) { (this as any)._wvPendingDevWindow = false; throw e; }
-            const mw: any = Zotero.getMainWindow();
-            const setT = (mw && mw.setTimeout) ? mw.setTimeout.bind(mw) : setTimeout;
+            const setT = wvTimeout;
             const t0 = Date.now();
             // Gate on a FUNCTIONAL items view, not just ZoteroPane + deck:
             // toggleAdvancedSearchState reaches itemsView.setFilter, and
@@ -8683,9 +8682,8 @@ class _PaneMixin {
                     try {
                         const lp: any = g.Weavero && g.Weavero.plugin;
                         if (!lp || lp._wvWireTag() !== obs._wvTag) return;
-                        const mw: any = Zotero.getMainWindow();
                         const later = (fn: () => void, ms: number) => {
-                            try { (mw && mw.setTimeout ? mw.setTimeout.bind(mw) : setTimeout)(fn, ms); } catch (e) {}
+                            try { wvTimeout(fn, ms); } catch (e) {}
                         };
                         later(() => { try { lp._wvRefreshStaleCsdWindows(); } catch (e) {} }, 400);
                         later(() => { try { lp._wvRefreshStaleCsdWindows(); } catch (e) {} }, 1500);

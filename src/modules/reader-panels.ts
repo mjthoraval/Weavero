@@ -27,6 +27,7 @@ import { BOOKMARK_PATH, BOOKMARK_PATH_14, BOOKMARK_PATH_20, SCHEME_SVG_TEMPLATE,
 import { wvPopupHost, wvDismissTooltip, wvSetBoolAttr } from "../lib/dom";
 import { wvLivePlugin } from "../lib/live";
 import { wvStoreWrite, wvStoreRead } from "../lib/store";
+import { wvTimeout, wvClearTimeout } from "../lib/timers";
 
 declare const Components: any;
 declare const Services: any;
@@ -2479,9 +2480,9 @@ class _ReaderPanelsMixin {
             let doc: any = { version: 1, orders: {} };
             // lib/store.ts: missing = empty store; corrupt = moved aside;
             // unreadable = kept, and no write may replace it this session.
-            const r = await wvStoreRead(this._wvAnnOrderPath());
-            if (r.status === "ok" && r.doc && typeof r.doc === "object" && r.doc.orders) doc = r.doc;
-            if (r.status === "io-error") this._wvAnnOrderReadOnly = true;
+            const rd = await wvStoreRead(this._wvAnnOrderPath());
+            if (rd.status === "ok" && rd.doc && typeof rd.doc === "object" && rd.doc.orders) doc = rd.doc;
+            if (rd.status === "io-error") this._wvAnnOrderReadOnly = true;
             if (!this._wvLive || this._wvLive()) {
                 this._wvAnnOrderDoc = doc;
                 this._wvAnnOrderLoading = false;
@@ -3373,8 +3374,7 @@ class _ReaderPanelsMixin {
                         // to 45 s because the FIRST RM activation converts the
                         // document (readingModeLoading can run tens of seconds).
                         if (t.closest(".toolbar, .appearance-popup, [class*='appearance']")) {
-                            const w4: any = Zotero.getMainWindow();
-                            const st4 = (w4 && w4.setTimeout) ? w4.setTimeout.bind(w4) : setTimeout;
+                            const st4 = wvTimeout;
                             for (const ms of [500, 1500, 3000, 6000, 12000, 24000, 45000]) {
                                 st4(() => {
                                     try {
@@ -3474,7 +3474,7 @@ class _ReaderPanelsMixin {
                 // zero renders). Same trap the flash timing hit.
                 const schedOutlineRender = (thenFocusOutline?: boolean) => {
                     const w: any = Zotero.getMainWindow();
-                    const st2 = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+                    const st2 = wvTimeout;
                     const ct2 = (w && w.clearTimeout) ? w.clearTimeout.bind(w) : clearTimeout;
                     if ((idoc as any)._wvOutlineSearchT) ct2((idoc as any)._wvOutlineSearchT);
                     (idoc as any)._wvOutlineSearchT = st2(() => {
@@ -3567,8 +3567,7 @@ class _ReaderPanelsMixin {
                                 if (t0 && t0.closest
                                         && t0.closest("." + RP_OUTLINE_VIEW_CLASS + ", ." + RP_BM_VIEW_CLASS)) {
                                     tlog("STAB keydown", { target: desc(t0) });
-                                    const wS: any = Zotero.getMainWindow();
-                                    ((wS && wS.setTimeout) ? wS.setTimeout.bind(wS) : setTimeout)(() => {
+                                    wvTimeout(() => {
                                         try {
                                             const aeS = idoc.activeElement;
                                             const stuckS = (aeS === t0) || !aeS
@@ -3597,8 +3596,7 @@ class _ReaderPanelsMixin {
                                 const bmOn = cont0 && cont0.classList.contains(RP_BM_TAB_ON);
                                 tlog("TAB branch", { outlineOn: !!outlineOn, bmOn: !!bmOn });
                                 if (outlineOn || bmOn) {
-                                    const w3: any = Zotero.getMainWindow();
-                                    ((w3 && w3.setTimeout) ? w3.setTimeout.bind(w3) : setTimeout)(() => {
+                                    wvTimeout(() => {
                                         try {
                                             // "Stuck" isn't only focus-still-in-the-input:
                                             // the manager's focus() on the hidden native
@@ -3656,8 +3654,7 @@ class _ReaderPanelsMixin {
                             schedOutlineRender(true);
                             return;
                         }
-                        const w2: any = Zotero.getMainWindow();
-                        ((w2 && w2.setTimeout) ? w2.setTimeout.bind(w2) : setTimeout)(() => {
+                        wvTimeout(() => {
                             try {
                                 const sc = idoc.getElementById("sidebarContainer");
                                 if (!sc) return;
@@ -4419,7 +4416,7 @@ class _ReaderPanelsMixin {
             // Track layout changes for as long as the pin is up (zoom, width
             // drag, font change): cheap re-measure on the chrome clock.
             const w: any = Zotero.getMainWindow();
-            const st = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            const st = wvTimeout;
             const iv = (w && w.setInterval) ? w.setInterval.bind(w) : setInterval;
             const ci = (w && w.clearInterval) ? w.clearInterval.bind(w) : clearInterval;
             const timer = iv(() => { if (!place()) { try { ci(timer); } catch (_) {} } }, 250);
@@ -4521,8 +4518,7 @@ class _ReaderPanelsMixin {
                     const target = Math.max(0, from + rectTop - iwin.innerHeight * 0.25);
                     try { se.scrollTo(Cu.cloneInto({ top: target, behavior: "smooth" }, iwin)); }
                     catch (_) { iwin.scrollTo(iwin.scrollX || 0, target); }
-                    const w5: any = Zotero.getMainWindow();
-                    ((w5 && w5.setTimeout) ? w5.setTimeout.bind(w5) : setTimeout)(() => {
+                    wvTimeout(() => {
                         try {
                             if (Math.abs(se.scrollTop - from) < 5 && Math.abs(target - from) > 20) {
                                 iwin.scrollTo(iwin.scrollX || 0, target);
@@ -8099,8 +8095,7 @@ class _ReaderPanelsMixin {
         try { shown = !!this._wvOutlineShowDomEntryPin(reader, node, target); } catch (_) {}
         if (shown) return;
         if ((reader && reader._type) === "epub" && n < 14) {   // 4 x 15 ms + 10 x 150 ms: the same ~1.5 s window
-            const w: any = Zotero.getMainWindow();
-            const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            const st = wvTimeout;
             // Fast first retries: in PAGINATED mode a jump into another
             // chapter mounts it a moment after the click, and a flat 150 ms
             // retry showed the pin a visible beat late (158 ms measured, MJT
@@ -8995,8 +8990,7 @@ class _ReaderPanelsMixin {
             };
             onUp = () => {
                 if (armStale()) { cleanup(); return; }
-                const w: any = Zotero.getMainWindow();
-                ((w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout)(() => {
+                wvTimeout(() => {
                     try {
                         if (armStale()) { cleanup(); return; }
                         const selObj = iwin.getSelection();
@@ -11327,8 +11321,7 @@ class _ReaderPanelsMixin {
         // tick spacing well past 200ms. The loop is passive until stability,
         // so a long cap costs nothing.
         if (done || n > 150) return;
-        const w0: any = Zotero.getMainWindow();
-        ((w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout)(
+        wvTimeout(
             () => this._wvOutlinePrepareNewDomWindow(attId, entry, gen, n + 1, top, h), 200);
     }
 
@@ -11372,8 +11365,7 @@ class _ReaderPanelsMixin {
             }
         } catch (_) {}
         if (!done && n < 200) {
-            const w: any = Zotero.getMainWindow();
-            const sc: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            const sc = wvTimeout;
             sc(() => this._wvOutlinePrepareNewWindow(attId, position, gen, n + 1, held, didRaise), 55);
         }
     }
@@ -13464,8 +13456,7 @@ class _ReaderPanelsMixin {
     _wvOutlineNavPageTop(reader: any, pv: any, pageIndex: number) {
         try {
             if (pageIndex == null || pageIndex < 0) return;
-            const w0: any = Zotero.getMainWindow();
-            ((w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout)(() => {
+            wvTimeout(() => {
                 try { this._wvShowPageAnchorMarker(reader, pv, pageIndex, false); } catch (_) {}
             }, 260);
             const win = pv && pv._iframeWindow;
@@ -13497,8 +13488,7 @@ class _ReaderPanelsMixin {
     _wvOutlineNavPageBottom(reader: any, pv: any, pageIndex: number) {
         try {
             if (pageIndex == null || pageIndex < 0) return;
-            const w0: any = Zotero.getMainWindow();
-            ((w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout)(() => {
+            wvTimeout(() => {
                 try { this._wvShowPageAnchorMarker(reader, pv, pageIndex, true); } catch (_) {}
             }, 260);
             const win = pv && pv._iframeWindow;
@@ -16747,8 +16737,7 @@ class _ReaderPanelsMixin {
             // classification catches most, these idempotent passes are the
             // insurance that no row stays bare longer than ~120ms. Cheap: the
             // painters' data-source caches make a no-op pass trivial.
-            const w: any = Zotero.getMainWindow();
-            const t = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            const t = wvTimeout;
             for (const d of [60, 150, 300, 600, 1000]) t(repaint, d);
         } catch (_) {}
     }
@@ -16863,8 +16852,7 @@ class _ReaderPanelsMixin {
             let pos: any = null;
             try { pos = typeof a.annotationPosition === "string" ? JSON.parse(a.annotationPosition) : a.annotationPosition; } catch (_) {}
             const pageIndex = (pos && Number.isInteger(pos.pageIndex)) ? pos.pageIndex : 0;
-            const w: any = Zotero.getMainWindow();
-            const t = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            const t = wvTimeout;
             // Guard against a newer flash superseding this one (rapid clicks).
             const gen = (pv._wvFlashSeq = (pv._wvFlashSeq || 0) + 1);
             // Wait until the target's page is FULLY rendered (renderingState 3)
@@ -17002,10 +16990,10 @@ class _ReaderPanelsMixin {
         } catch (_) {}
         if (!hit.length) return;
         try {
-            const win = Zotero.getMainWindow();
-            if (this._wvReaderFilterNotifyTimer && win) win.clearTimeout(this._wvReaderFilterNotifyTimer);
-            const st = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
-            this._wvReaderFilterNotifyTimer = st(() => {
+            // Sandbox clock: a debounce hosted on the focused main window
+            // died with it (and its handle could not be cleared from another).
+            wvClearTimeout(this._wvReaderFilterNotifyTimer);
+            this._wvReaderFilterNotifyTimer = wvTimeout(() => {
                 this._wvReaderFilterNotifyTimer = null;
                 const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                 if (!P) return;
@@ -17046,10 +17034,8 @@ class _ReaderPanelsMixin {
         if (!hit) return;
         // Debounce: coalesce a burst of edits into one re-render of visible panes.
         try {
-            const win = Zotero.getMainWindow();
-            if (this._wvReaderBmNotifyTimer && win) win.clearTimeout(this._wvReaderBmNotifyTimer);
-            const st = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
-            this._wvReaderBmNotifyTimer = st(() => {
+            wvClearTimeout(this._wvReaderBmNotifyTimer);
+            this._wvReaderBmNotifyTimer = wvTimeout(() => {
                 this._wvReaderBmNotifyTimer = null;
                 for (const p of this._wvReaderVisibleBmReaders()) {
                     try { this._wvReaderRenderBmList(p.reader, p.idoc); } catch (_) {}
@@ -17823,8 +17809,7 @@ class _ReaderPanelsMixin {
                         // with no annotations, 2026-07-29). Our takeover CSS
                         // doesn't depend on that state, so showing the outline
                         // pane beats showing nothing.
-                        const w6: any = Zotero.getMainWindow();
-                        ((w6 && w6.setTimeout) ? w6.setTimeout.bind(w6) : setTimeout)(() => {
+                        wvTimeout(() => {
                             try {
                                 const st6 = ir._state || {};
                                 if (st6.sidebarView !== undefined || !st6.sidebarOpen) return;
@@ -24458,7 +24443,7 @@ class _ReaderPanelsMixin {
             ready = !!(pView && pView.viewport && pView.div && pView.renderingState === 3);
         } catch (_) {}
         const w: any = Zotero.getMainWindow();
-        const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+        const st = wvTimeout;
         if (ready) {
             try {
                 // Cancel the prior clear timer and clear a highlight still
@@ -24594,8 +24579,7 @@ class _ReaderPanelsMixin {
                 // (found on a fresh tab reload, 2026-08-26). Same retry shape
                 // as _wvOutlineInstallRecovery.
                 if (n < 40) {
-                    const w0: any = Zotero.getMainWindow();
-                    ((w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout)(
+                    wvTimeout(
                         () => { try { this._wvWireDomSelTracker(reader, n + 1); } catch (_) {} }, 250);
                 }
                 return;
@@ -24766,8 +24750,7 @@ class _ReaderPanelsMixin {
             return;
         }
         if (n < 40) {
-            const w: any = Zotero.getMainWindow();
-            const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            const st = wvTimeout;
             st(() => this._wvOutlineInstallRecovery(reader, n + 1), 150);
         }
     }
@@ -24792,8 +24775,7 @@ class _ReaderPanelsMixin {
             }
         } catch (_) {}
         if (n < 40) {
-            const w: any = Zotero.getMainWindow();
-            const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            const st = wvTimeout;
             st(() => this._wvShowPinWhenReady(reader, position, bmId, n + 1, opts), 150);
         }
     }

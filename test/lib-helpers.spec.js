@@ -107,6 +107,29 @@ describe("Weavero — shared helpers (src/lib)", () => {
         assert.deepEqual(offenders, [], "a captured instance must never stand in for a missing live plugin");
     });
 
+    it("no method takes Zotero.getMainWindow() as a mere timer host (an arbitrary window that can close)", () => {
+        // The "(w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout" idiom
+        // on the FOCUSED main window hosted plugin-level timers (holds, tick
+        // loops, flag resets) on whichever window happened to be focused --
+        // dead when that window closed (src-ts.md timer hosts). Such sites
+        // use wvTimeout now; a timer hosted on the window the work concerns
+        // (`win.setTimeout`) is a deliberate "dies with the window" choice.
+        const offenders = [];
+        let o = Object.getPrototypeOf(wv);
+        while (o && o !== Object.prototype) {
+            for (const k of Object.getOwnPropertyNames(o)) {
+                try {
+                    const d = Object.getOwnPropertyDescriptor(o, k);
+                    if (!d || typeof d.value !== "function") continue;
+                    const s = String(d.value);
+                    if (/getMainWindow\(\);[^\n]*\n[^\n]*(?:\n[^\n]*)?setTimeout\.bind\(/.test(s)) offenders.push(k);
+                } catch (_) {}
+            }
+            o = Object.getPrototypeOf(o);
+        }
+        assert.deepEqual(offenders, [], "plugin-level timers run on the sandbox clock (wvTimeout)");
+    });
+
     it("Zotero_Tabs and itemsView wraps are layered under the instance tag; legacy keys are gone", () => {
         const Z = win.Zotero_Tabs, tag = wv._wvWireTag();
         const layers = (host, m) => lib.wvWrapLayers(host, m);

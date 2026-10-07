@@ -38,6 +38,7 @@ import { BM_HOVERCARD_CSS, WV_PIN_ICON_URI } from "./reader-panels";
 import { wvPopupHost, wvDismissTooltip, wvSetBoolAttr } from "../lib/dom";
 import { wvLivePlugin } from "../lib/live";
 import { wvStoreWrite, wvStoreRead } from "../lib/store";
+import { wvTimeout } from "../lib/timers";
 
 // Gecko globals — not in the project's TS lib set (cf. tabs.ts).
 declare const IOUtils: any;
@@ -3366,7 +3367,7 @@ class _BookmarksMixin {
             if (bm && bm.type === "position" && bm.position) {
                 const itemID = t.attachment && t.attachment.id;
                 const win: any = Zotero.getMainWindow();
-                const st: any = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+                const st = wvTimeout;
                 const tryShow = (tries: number) => {
                     let r: any = opened;
                     if (!r) {

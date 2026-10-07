@@ -28,6 +28,19 @@
 
 describe("Weavero — wire stamps are build-keyed (hot-upgrade rewiring)", () => {
     let wv, win, iv;
+    // What Zotero.Reader._readers holds, for a failure message: class, item,
+    // whether its window is gone (a dead Proxy reads as "dead").
+    const describeReaders = (R) => {
+        try {
+            return (R._readers || []).map((r) => {
+                try {
+                    let w = "";
+                    try { w = r._window && r._window.closed ? "(window closed)" : ""; } catch (e) { w = "(window dead)"; }
+                    return (r.constructor && r.constructor.name) + ":" + r.itemID + w;
+                } catch (e) { return "dead"; }
+            }).join(", ");
+        } catch (e) { return String(e); }
+    };
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
@@ -35,6 +48,18 @@ describe("Weavero — wire stamps are build-keyed (hot-upgrade rewiring)", () =>
         win = Zotero.getMainWindow();
         iv = win.ZoteroPane && win.ZoteroPane.itemsView;
         if (!iv) this.skip();
+        // Isolation (same as tearoff.spec.js): an earlier spec's plain-closed
+        // reader window can leave its reader in Zotero.Reader._readers for a
+        // beat; the getWindowStates cases below run the NATIVE on purpose,
+        // which derefs such a reader's dead iframe. Drop window-dead entries.
+        try {
+            const rs = /** @type {any[]} */ (Zotero.Reader._readers || []);
+            for (let i = rs.length - 1; i >= 0; i--) {
+                let dead = false;
+                try { const r = rs[i]; dead = !r || !r._window || r._window.closed; } catch (e) { dead = true; }
+                if (dead) rs.splice(i, 1);
+            }
+        } catch (e) {}
     });
 
     it("the tag is build-keyed, not a constant", () => {
@@ -231,13 +256,41 @@ describe("Weavero — wire stamps are build-keyed (hot-upgrade rewiring)", () =>
             assert.strictEqual(R._wvGWSOrig, native, "the native is the saved original again");
             assert.isUndefined(R._wvOrigGetWindowStates, "the dead outer layer's saved ref is dropped");
             assert.strictEqual(R._wvGWSPatchVer, wv._wvWireTag());
-            assert.deepEqual(R.getWindowStates(), native.call(R), "the live wrapper passes through outside a quit");
+            // Two calls, each named: a ReaderWindow left in `_readers` by an
+            // earlier spec with its window gone makes the NATIVE throw
+            // "can't access dead object" (getSecondViewState on a dead
+            // iframe); the wrapper's purge must have dropped it first.
+            let viaWrapper, viaNative;
+            try { viaWrapper = R.getWindowStates(); }
+            catch (e) { assert.fail("the live wrapper threw: " + e + " (readers: " + describeReaders(R) + ")"); }
+            try { viaNative = native.call(R); }
+            catch (e) { assert.fail("the native threw after the wrapper's purge: " + e + " (readers: " + describeReaders(R) + ")"); }
+            assert.deepEqual(viaWrapper, viaNative, "the live wrapper passes through outside a quit");
         }
         finally {
             R.getWindowStates = saved.f;
             for (const [k, v] of [["_wvGWSOrig", saved.a], ["_wvOrigGetWindowStates", saved.b], ["_wvGWSPatchVer", saved.v], ["_wvGWSWired", saved.w]]) {
                 if (v === undefined) delete R[k]; else R[k] = v;
             }
+        }
+    });
+
+    it("Reader.getWindowStates: the wrapper's purge drops a reader whose window is already closed", function () {
+        // The native derefs such a reader's torn-down iframe and throws
+        // (getSecondViewState), which would sink the quit-time session save.
+        // Pre-fix the purge only dropped dead Proxies (an itemID read that
+        // throws); a live object with a closed window stayed.
+        if (typeof wv._wvPatchReaderGetWindowStates !== "function") this.skip();
+        const R = /** @type {any} */ (Zotero.Reader);
+        const ghost = /** @type {any} */ ({ itemID: 0, _window: { closed: true } });
+        R._readers.push(ghost);
+        try {
+            assert.doesNotThrow(() => R.getWindowStates());
+            assert.notInclude(R._readers, ghost, "a closed-window reader is purged before the native runs");
+        }
+        finally {
+            const i = R._readers.indexOf(ghost);
+            if (i >= 0) R._readers.splice(i, 1);
         }
     });
 

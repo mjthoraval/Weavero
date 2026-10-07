@@ -2615,7 +2615,20 @@ class WeaveroPlugin {
                     const arr: any[] = Reader && Reader._readers;
                     if (!Array.isArray(arr)) return;
                     for (let i = arr.length - 1; i >= 0; i--) {
-                        try { void arr[i].itemID; } catch (e) { arr.splice(i, 1); }
+                        let drop = false;
+                        try { void arr[i].itemID; } catch (e) { drop = true; }
+                        // A reader whose window is already CLOSED is as dead as
+                        // a Proxy for both paths: it cannot be restored, and the
+                        // native getWindowStates derefs its torn-down iframe
+                        // (getSecondViewState -> "can't access dead object"),
+                        // which would sink Zotero's quit-time session save. Seen
+                        // 2026-10-07 after a suite plain-closed a just-reopened
+                        // reader window before its unload cleanup ran.
+                        if (!drop) {
+                            try { const w = arr[i]._window; if (w && w.closed) drop = true; }
+                            catch (e) { drop = true; }
+                        }
+                        if (drop) arr.splice(i, 1);
                     }
                 } catch (e) {}
             };

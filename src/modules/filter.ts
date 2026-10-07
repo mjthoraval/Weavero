@@ -75,6 +75,24 @@ function dbg(...args: any[]) {
     try { if (Zotero.Prefs.get("weavero.debug")) (Zotero.debug as any)(...args); } catch (_) {}
 }
 
+// The row-provider members the items-list filter translates, with the
+// key the saved native is published under (`rp._wvOrigGetRow` is read by
+// the cascade, the stale-keep retry and the live suites). One list for
+// the install and every removal path (survey 2026-10-06 step 4).
+const WV_FILTER_RP_MEMBERS: Array<[string, string]> = [
+    ["getRow", "_wvOrigGetRow"],
+    ["getRowCount", "_wvOrigGetRowCount"],
+    ["getLevel", "_wvOrigGetLevel"],
+    ["isContainer", "_wvOrigIsContainer"],
+    ["isContainerOpen", "_wvOrigIsContainerOpen"],
+    ["isContainerEmpty", "_wvOrigIsContainerEmpty"],
+    ["toggleOpenState", "_wvOrigToggleOpenState"],
+    ["expandRows", "_wvOrigExpandRows"],
+    ["collapseRows", "_wvOrigCollapseRows"],
+    ["expandAllRows", "_wvOrigExpandAllRows"],
+    ["collapseAllRows", "_wvOrigCollapseAllRows"],
+];
+
 // PubMed identifiers live in the Extra field by Zotero convention
 // ("PMID: 123456" / "PMCID: PMC123456" — the PubMed translator's
 // format). Shared by the Has PMID / Has PMCID filters.
@@ -433,67 +451,475 @@ class _FilterMixin {
      *  branch of `_applyItemsListFilterInner` (line ~11934). The
      *  next `_applyItemsListFilter()` call re-installs the patches
      *  with a fresh `keep` array. */
-    _pauseFilterPatches() {
+    /** Take the filter's row-provider translation OFF this window's
+     *  provider (a collection swap or quick-search rebuild: Zotero's load
+     *  must read raw rows). One body for every unpatch path -- survey
+     *  2026-10-06 step 4: this sequence used to exist in three copies
+     *  (here, the inactive apply branch, the teardown). */
+    _pauseFilterPatches(win?: any) {
         try {
-            const win = Zotero.getMainWindow();
-            const itemsView = win && win.ZoteroPane && win.ZoteroPane.itemsView;
+            const w = win || this._wvFilterTargetWin();
+            const itemsView = w && w.ZoteroPane && w.ZoteroPane.itemsView;
             const rp = itemsView && itemsView.rowProvider;
             if (!rp || !rp._wvOrigGetRow) return;
-            // Same reasoning as the deactivation branch: the watermark
-            // only means something while the translation is installed.
-            delete rp._wvKeepRowsLen;
-            delete rp.getRow;
-            delete rp.getRowCount;
-            delete rp._wvOrigGetRow;
-            delete rp._wvOrigGetRowCount;
-            // Restore the item pane's count getter (own property on the
-            // itemsView; deleting it re-exposes the prototype getter).
-            // The host is stored on `rp` because these teardown sites
-            // only have `rp` in scope.
-            if (rp._wvObjRowCountHost) {
-                try { delete rp._wvObjRowCountHost.objectRowCount; }
-                catch (e) {}
-                delete rp._wvObjRowCountHost;
-            }
-            if (rp._wvOrigGetLevel) {
-                delete rp.getLevel;
-                delete rp._wvOrigGetLevel;
-            }
-            if (rp._wvOrigIsContainer) {
-                delete rp.isContainer;
-                delete rp._wvOrigIsContainer;
-            }
-            if (rp._wvOrigIsContainerOpen) {
-                delete rp.isContainerOpen;
-                delete rp._wvOrigIsContainerOpen;
-            }
-            if (rp._wvOrigIsContainerEmpty) {
-                delete rp.isContainerEmpty;
-                delete rp._wvOrigIsContainerEmpty;
-            }
-            if (rp._wvOrigToggleOpenState) {
-                delete rp.toggleOpenState;
-                delete rp._wvOrigToggleOpenState;
-            }
-            if (rp._wvOrigExpandRows) {
-                delete rp.expandRows;
-                delete rp._wvOrigExpandRows;
-            }
-            if (rp._wvOrigCollapseRows) {
-                delete rp.collapseRows;
-                delete rp._wvOrigCollapseRows;
-            }
-            if (rp._wvOrigExpandAllRows) {
-                delete rp.expandAllRows;
-                delete rp._wvOrigExpandAllRows;
-            }
-            if (rp._wvOrigCollapseAllRows) {
-                delete rp.collapseAllRows;
-                delete rp._wvOrigCollapseAllRows;
-            }
-            delete rp._wvFilterSelfCall;
+            this._wvFilterPatchRemove(rp, itemsView);
         } catch (e) {
             dbg("[Weavero][filter] _pauseFilterPatches err: " + e);
+        }
+    }
+
+    /** Install the filter's row-provider translation ONCE per instance
+     *  (lib/wrap.ts layers: "filter"; Zotero 9's null-safe probes as
+     *  "v9safe"). The wrappers read the per-apply VIEW `rp._wvFilterView`
+     *  ({keep, keepRowsLen}; absent = pass through) on every call instead
+     *  of closing over one apply's `keep` -- so an apply publishes a new
+     *  view object and installs nothing, and the item-pane count getter
+     *  can never be left on a stale closure (the 2026-08-08 "20,508 items
+     *  in this view" bug). The natives are captured as bound `rp._wvOrig*`
+     *  (the cascade, the stale-keep retry and the live suites read them).
+     *  Idempotent per instance; another instance's layers are replaced.
+     *
+     *  SELF flag: rp's own internals (e.g. _toggleOpenState) call
+     *  `this.getRow(idx)` / `this.getLevel(idx)` with REAL indices into
+     *  `_rows`. Without a bypass the translating wrappers double-translate
+     *  (keep[realIdx]) and the toggle operates on the wrong row. The flag is
+     *  set during calls into the original toggleOpenState / expandRows /
+     *  collapseRows, so any nested data access falls through raw. */
+    _wvFilterPatchInstall(rp: any, itemsView: any, isV9: boolean) {
+        const tag = this._wvWireTag();
+        if (rp._wvFilterPatchTag === tag) return;
+        const SELF = "_wvFilterSelfCall";
+        // Another instance's install (a reload, an upgrade), or a build from
+        // before the layered helper (own-prop wrappers, no layer table):
+        // take it off whole, so the natives captured below are Zotero's.
+        if (rp._wvOrigGetRow) this._wvFilterPatchRemove(rp, itemsView);
+        // The manual-expand tracker is the layer UNDER the translation (it
+        // reads real indices); make sure it is in place before "filter"
+        // goes on top -- layers chain in install order.
+        this._wvInstallUserOpenTracking(itemsView);
+        // Save the natives on first activation. Cover `getLevel` too:
+        // virtualized-table.jsx's `_getDepth(index)` (used for indent and
+        // parent twisty arrows) walks the shared `_rows` array through
+        // `getLevel(idx)` / `getParentIndex(idx)`, so without mapping `idx`
+        // back to the original space the visual depth is computed for the
+        // wrong row. Always walk to the PROTOTYPE-defined method, not
+        // whatever's currently on the instance (a stale own-prop wrapper
+        // would otherwise be saved as "the original").
+        // V9-COMPAT: Zotero 9 defines `isContainer` / `getRow` / etc. as
+        // arrow-function class fields (OWN properties); accept those when no
+        // prototype method exists so v9 has originals to wrap.
+        const findProtoMethod = (obj, name) => {
+            let p = Object.getPrototypeOf(obj);
+            while (p) {
+                if (Object.prototype.hasOwnProperty.call(p, name)
+                    && typeof p[name] === "function") {
+                    return p[name];
+                }
+                p = Object.getPrototypeOf(p);
+            }
+            if (Object.prototype.hasOwnProperty.call(obj, name)
+                && typeof obj[name] === "function") {
+                return obj[name];
+            }
+            return null;
+        };
+        // Patch the rowProvider only. `itemsView.getLevel` etc. are
+        // arrow-function fields on the LibraryTree base that simply
+        // delegate to `this.rowProvider.<same>(idx)` — so patching at the
+        // rp level is reached by every public consumer. Patching itemsView
+        // in addition would double-stack mapping (keep[keep[idx]]).
+        if (!rp._wvOrigGetRow) {
+            const rpGetRow = findProtoMethod(rp, "getRow");
+            const rpGetRowCount = findProtoMethod(rp, "getRowCount");
+            const rpGetLevel = findProtoMethod(rp, "getLevel");
+            const rpIsContainer = findProtoMethod(rp, "isContainer");
+            const rpIsContainerOpen = findProtoMethod(rp, "isContainerOpen");
+            const rpIsContainerEmpty = findProtoMethod(rp, "isContainerEmpty");
+            const rpToggle = findProtoMethod(rp, "toggleOpenState");
+            const rpExpand = findProtoMethod(rp, "expandRows");
+            const rpCollapse = findProtoMethod(rp, "collapseRows");
+            const rpExpandAll = findProtoMethod(rp, "expandAllRows");
+            const rpCollapseAll = findProtoMethod(rp, "collapseAllRows");
+            rp._wvOrigGetRow = (rpGetRow || rp.getRow).bind(rp);
+            // Zotero 9 has no `getRowCount` method — the count comes from
+            // `_rows.length`. Synthesise one so the rest is uniform.
+            if (rpGetRowCount) {
+                rp._wvOrigGetRowCount = rpGetRowCount.bind(rp);
+            } else if (typeof rp.getRowCount === "function") {
+                rp._wvOrigGetRowCount = rp.getRowCount.bind(rp);
+            } else {
+                rp._wvOrigGetRowCount = function () {
+                    return (rp._rows && rp._rows.length) || 0;
+                };
+            }
+            if (rpGetLevel) rp._wvOrigGetLevel = rpGetLevel.bind(rp);
+            if (rpIsContainer) rp._wvOrigIsContainer = rpIsContainer.bind(rp);
+            if (rpIsContainerOpen) rp._wvOrigIsContainerOpen = rpIsContainerOpen.bind(rp);
+            if (rpIsContainerEmpty) rp._wvOrigIsContainerEmpty = rpIsContainerEmpty.bind(rp);
+            if (rpToggle) rp._wvOrigToggleOpenState = rpToggle.bind(rp);
+            if (rpExpand) rp._wvOrigExpandRows = rpExpand.bind(rp);
+            if (rpCollapse) rp._wvOrigCollapseRows = rpCollapse.bind(rp);
+            if (rpExpandAll) rp._wvOrigExpandAllRows = rpExpandAll.bind(rp);
+            if (rpCollapseAll) rp._wvOrigCollapseAllRows = rpCollapseAll.bind(rp);
+        }
+
+        // V9-COMPAT: Zotero 9's `isContainer` / `isContainerOpen` are
+        // instance-field arrow functions that do `getRow(i).ref` /
+        // `getRow(i).isOpen` UNCONDITIONALLY. The cascade opens containers
+        // (on v9, single `toggleOpenState` calls), each of which mutates
+        // `_rows` and fires a re-render that calls these probes while the
+        // view is not published yet -- a transient out-of-range index hands
+        // back `undefined` and `.ref`/`.isOpen` crashes the whole window
+        // via `Zotero.crash()` (itemTree.js:2290 / :2295). Null-safe
+        // probes (inner layer; the "filter" layer above calls the saved
+        // native directly) make a bad index return false instead.
+        if (isV9) {
+            wvWrap(rp, "isContainer", "v9safe", tag, () => function (index) {
+                const r = rp.getRow(index);
+                if (!r || !r.ref) return false;
+                try {
+                    return !!(r.ref.isRegularItem
+                        && (r.ref.isRegularItem() || r.ref.isFileAttachment()));
+                } catch (e) { return false; }
+            });
+            if (typeof rp.isContainerOpen === "function") {
+                wvWrap(rp, "isContainerOpen", "v9safe", tag, () => function (index) {
+                    const r = rp.getRow(index);
+                    return !!(r && r.isOpen);
+                });
+            }
+            // Re-apply after Zotero's own refreshes (e.g. the
+            // hideContextAnnotationRows pref observer) so the toggle's
+            // expanded view isn't left collapsed. v10 gets this from the
+            // rowProvider._refresh wrap; v9 needs it on the itemsView.
+            try { this._patchV9RefreshReapply(itemsView); } catch (e) {}
+        }
+
+        // ---- the translation, reading the view ----
+        // keep is stale whenever `_rows.length` no longer matches what was
+        // measured when the view was built (a quick-search refresh empties
+        // + re-fills `_rows`): translating through a stale keep is what
+        // produced the search-clear crash AND the duplicate-row glitch. Fall
+        // through to the unfiltered original until the observer-driven
+        // reapply publishes a fresh view.
+        const stale = () => {
+            const v = rp._wvFilterView;
+            return !v || rp._rows.length !== v.keepRowsLen;
+        };
+        // Bounds-checked translation: between an original toggle's
+        // `runListeners('update', ..., {restoreSelection: true})` and our
+        // reapply, `_rows` may have shrunk while `keep` still holds an index
+        // past the new tail.
+        const safeReal = function (idx): number {
+            const v = rp._wvFilterView;
+            const r = v ? (v.keep[idx] as number) : undefined;
+            if (r === undefined) return -1;
+            if (r >= rp._rows.length) return -1;
+            return r;
+        };
+        // V9-COMPAT: Zotero 9 calls `getRow(index).ref` / `.isOpen`
+        // UNCONDITIONALLY in several places, so the patched getRow must
+        // NEVER return undefined there -- clamp every lookup to a valid row.
+        const safeRaw = function (i) {
+            const len = rp._rows.length;
+            if (!len) return rp._wvOrigGetRow(0);
+            let j = i;
+            if (j == null || j < 0 || j >= len) j = 0;
+            const row = rp._wvOrigGetRow(j);
+            return row === undefined ? rp._wvOrigGetRow(0) : row;
+        };
+        // The virtualized table reads the data layer through the
+        // rowProvider directly (itemTree.jsx:1362); patching
+        // `itemsView.getRow` alone would miss it.
+        wvWrap(rp, "getRow", "filter", tag, () => function (idx) {
+            // The SELF / stale branches differ between versions ONLY for
+            // out-of-range indices: v9 must never see `undefined` (its
+            // probes deref it and crash the window), v10 tolerated it and
+            // is left as it was to avoid any phantom-row flash.
+            if (this[SELF]) return isV9 ? safeRaw(idx) : rp._wvOrigGetRow(idx);
+            if (stale()) return isV9 ? safeRaw(idx) : rp._wvOrigGetRow(idx);
+            const r = safeReal(idx);
+            if (r < 0) return safeRaw(idx);
+            return safeRaw(r);
+        });
+        const countWrapper = function () {
+            if (this[SELF] || stale()) return rp._wvOrigGetRowCount();
+            return rp._wvFilterView.keep.length;
+        };
+        if (typeof rp.getRowCount === "function") {
+            wvWrap(rp, "getRowCount", "filter", tag, () => countWrapper);
+        } else {
+            // V9: no such method -- a plain own function, removed with the rest.
+            rp.getRowCount = countWrapper;
+            rp._wvFilterSynthGetRowCount = true;
+        }
+        // The item pane's "N items in this view" message reads
+        // `itemsView.objectRowCount` (itemPane.js), which reduces over
+        // `this._rows` DIRECTLY -- it never goes through getRow /
+        // getRowCount, so the translation does not reach it and the pane
+        // reported the UNFILTERED library count while a chip was active
+        // (measured 2026-08-08: "17,928 items in this view" over 15,329
+        // rows). Patched on the itemsView INSTANCE (the getter lives on the
+        // prototype), so teardown is a plain `delete`; the host is
+        // remembered on `rp`. Reads the live view, so it can never serve an
+        // earlier apply's count. The related upstream bug (expanding a row
+        // does not refresh the message, zotero/zotero#5913) is NOT patched.
+        try {
+            const findProtoGetter = (obj, name) => {
+                let o = obj;
+                while (o) {
+                    const d = Object.getOwnPropertyDescriptor(o, name);
+                    if (d && typeof d.get === "function") return d.get;
+                    o = Object.getPrototypeOf(o);
+                }
+                return null;
+            };
+            const host: any = itemsView;
+            if (!host._wvOrigObjCountGetter) {
+                const g = findProtoGetter(Object.getPrototypeOf(itemsView), "objectRowCount");
+                if (g) host._wvOrigObjCountGetter = g;
+            }
+            const origObjCount = host._wvOrigObjCountGetter;
+            if (origObjCount) {
+                Object.defineProperty(itemsView, "objectRowCount", {
+                    configurable: true,
+                    get: function () {
+                        try {
+                            if (stale()) return origObjCount.call(this);
+                            const keep = rp._wvFilterView.keep;
+                            let n = 0;
+                            for (let i = 0; i < keep.length; i++) {
+                                const row = rp._wvOrigGetRow(keep[i] as number);
+                                if (row && row.isObjectRow) n++;
+                            }
+                            return n;
+                        }
+                        catch (e) {
+                            try { return origObjCount.call(this); }
+                            catch (e2) { return 0; }
+                        }
+                    },
+                });
+                rp._wvObjRowCountHost = itemsView;
+            }
+        } catch (e) {}
+        if (rp._wvOrigGetLevel) {
+            wvWrap(rp, "getLevel", "filter", tag, () => function (idx) {
+                if (this[SELF] || stale()) return rp._wvOrigGetLevel(idx);
+                const r = safeReal(idx);
+                if (r < 0) return 0;
+                return rp._wvOrigGetLevel(r);
+            });
+        }
+        // The container probes call `this.getRow(idx)` internally --
+        // method-dispatch on `rp.getRow` (the translating wrapper). Set SELF
+        // for the duration of the original call so the inner getRow sees
+        // the raw real index instead of translating a second time.
+        const wrapProbe = function (origFn, fallback) {
+            return function (idx) {
+                if (this[SELF] || stale()) return origFn.call(this, idx);
+                const realIdx = safeReal(idx);
+                if (realIdx < 0) return fallback;
+                const wasFlag = this[SELF];
+                this[SELF] = true;
+                try { return origFn.call(this, realIdx); }
+                finally { this[SELF] = wasFlag; }
+            };
+        };
+        // `orig` is the layer below: the native on v10, the null-safe probe
+        // on v9 (which reads through the translating getRow with SELF set,
+        // so it clamps instead of dereferencing undefined).
+        if (rp._wvOrigIsContainer) wvWrap(rp, "isContainer", "filter", tag, (orig: any) => wrapProbe(orig, false));
+        if (rp._wvOrigIsContainerOpen) wvWrap(rp, "isContainerOpen", "filter", tag, (orig: any) => wrapProbe(orig, false));
+        if (rp._wvOrigIsContainerEmpty) wvWrap(rp, "isContainerEmpty", "filter", tag, (orig: any) => wrapProbe(orig, true));
+
+        // Twisty clicks (toggleOpenState) and `+`/`-` (expandRows /
+        // collapseRows) hand FILTERED indices to the rowProvider. Translate
+        // through `keep`, set SELF so internal `this.getRow`/`this.getLevel`
+        // calls inside the original see raw indices. The original then
+        // mutates `_rows` AND fires `runListeners('update', ...,
+        // {restoreSelection: true})`, which restores the selection from
+        // `rowMap[id]` (REAL idx) via `selection.select(realIdx)` -- but
+        // `selection` is in FILTERED space, so the table would look up
+        // `getRow(realIdx)` past the end of `keep` and crash. Defer the
+        // listeners until AFTER keep is rebuilt: swap `runListeners` for a
+        // queue while the original runs, rebuild synchronously, then flush.
+        // Manual opens / closes are recorded so the next rebuild force-keeps
+        // the children of containers the user just expanded (without it a
+        // non-matching container's children showed for one frame). Recorded
+        // BEFORE the original runs: the direction is inferred from the row's
+        // CURRENT state, which the original is about to flip; upstream
+        // `_expandRows` only toggles closed rows and `collapseRows` only
+        // open ones, so "was open" == "this call is a collapse" everywhere.
+        const noteUserToggle = function (realIdx) {
+            try {
+                const lp: any = wvLivePlugin();
+                if (!lp) return;
+                const row = rp._rows[realIdx as number];
+                const wasOpen = row && row.isOpen;
+                const id = row && row.ref && row.ref.id;
+                if (id == null) return;
+                if (!lp._userOpenedIDs) lp._userOpenedIDs = new Set();
+                if (!lp._userClosedIDs) lp._userClosedIDs = new Set();
+                if (wasOpen) {
+                    lp._userOpenedIDs.delete(id);
+                    lp._userClosedIDs.add(id);
+                } else {
+                    lp._userOpenedIDs.add(id);
+                    lp._userClosedIDs.delete(id);
+                }
+            } catch (e) {}
+        };
+        const runQueued = function (origFn, callArgs, realIdxs) {
+            for (const r of realIdxs) noteUserToggle(r);
+            const wasFlag = this[SELF];
+            this[SELF] = true;
+            const queued = [];
+            const origListeners = rp.runListeners;
+            rp.runListeners = function (...args) { queued.push(args); };
+            try {
+                return origFn.apply(this, callArgs);
+            } finally {
+                rp.runListeners = origListeners;
+                this[SELF] = wasFlag;
+                const lp: any = wvLivePlugin();
+                if (lp) lp._reapplyFilterSync();
+                for (const args of queued) {
+                    try { rp.runListeners.apply(rp, args); }
+                    catch (e) { dbg("[Weavero][filter] listener err: " + e); }
+                }
+            }
+        };
+        if (rp._wvOrigToggleOpenState) {
+            // Pass-through goes to `orig` (the layer below: the manual-expand
+            // tracker), so a toggle in a stale window is still tracked. The
+            // translated call goes to the NATIVE: this layer records the
+            // toggle itself, and the tracker's v9 context-hide splice must
+            // not run on filter-driven opens (the pre-layer wrapper replaced
+            // the tracker outright, so that is the behaviour kept).
+            wvWrap(rp, "toggleOpenState", "filter", tag, (orig: any) => function (filteredIdx, skipRowMapRefresh) {
+                if (this[SELF] || stale()) return orig.call(this, filteredIdx, skipRowMapRefresh);
+                const realIdx = rp._wvFilterView.keep[filteredIdx];
+                if (realIdx === undefined) return;
+                return runQueued.call(this, rp._wvOrigToggleOpenState, [realIdx, skipRowMapRefresh], [realIdx]);
+            });
+        }
+        const multi = (orig: any) => function (indices) {
+            if (this[SELF] || stale()) return orig.call(this, indices);
+            const keep = rp._wvFilterView.keep;
+            // Same user-open bookkeeping as the single-row toggle: the
+            // keyboard paths (multi-select ArrowRight -> expandRows) opened
+            // the container but the immediate reapply dropped its
+            // non-matching children again (2026-08-04).
+            const real = (indices || []).map(i => keep[i]).filter(x => x !== undefined);
+            return runQueued.call(this, orig, [real], real);
+        };
+        if (rp._wvOrigExpandRows) wvWrap(rp, "expandRows", "filter", tag, multi);
+        if (rp._wvOrigCollapseRows) wvWrap(rp, "collapseRows", "filter", tag, multi);
+        // `+` (expandAllRows) and `-` (collapseAllRows) take no indices --
+        // they iterate `this.rowCount` (raw) and call `this.isContainer(i)`
+        // with real indices. Run them with SELF set so the probes pass
+        // through; same listener queue + sync reapply.
+        const all = (orig: any) => function (...args) {
+            if (this[SELF]) return orig.apply(this, args);
+            return runQueued.call(this, orig, args, []);
+        };
+        if (rp._wvOrigExpandAllRows) wvWrap(rp, "expandAllRows", "filter", tag, all);
+        if (rp._wvOrigCollapseAllRows) wvWrap(rp, "collapseAllRows", "filter", tag, all);
+        rp._wvFilterPatchTag = tag;
+    }
+
+    /** V9-COMPAT: Zotero 9's virtualized-table React props are captured
+     *  at render time as bound closures (`getRowCount` is hardwired to
+     *  `() => this._rows.length`) and the WindowedList captures
+     *  `getItemCount` at construction, before the plugin loads. Rebind
+     *  the live props once and the windowed list's reference on EVERY
+     *  apply (robust to its re-construction). */
+    _wvFilterPatchV9Props(itemsView: any, rp: any) {
+        if (!itemsView || !itemsView.tree || !itemsView.tree.props) return;
+        const tp: any = itemsView.tree.props;
+        if (!tp._wvV9PropsPatched) {
+            tp._wvOrigGetRowCount = tp.getRowCount;
+            tp.getRowCount = () => (rp.getRowCount ? rp.getRowCount() : rp._rows.length);
+            tp._wvOrigIsContainer = tp.isContainer;
+            tp.isContainer = (idx) => rp.isContainer(idx);
+            tp._wvOrigIsContainerOpen = tp.isContainerOpen;
+            tp.isContainerOpen = (idx) => rp.isContainerOpen(idx);
+            tp._wvOrigIsContainerEmpty = tp.isContainerEmpty;
+            tp.isContainerEmpty = (idx) => rp.isContainerEmpty(idx);
+            tp._wvOrigToggleOpenState = tp.toggleOpenState;
+            tp.toggleOpenState = (idx, skip) => rp.toggleOpenState(idx, skip);
+            tp._wvV9PropsPatched = true;
+        }
+        const jsWin: any = itemsView.tree._jsWindow;
+        if (jsWin && jsWin.getItemCount !== tp.getRowCount) {
+            jsWin._wvOrigGetItemCount = jsWin._wvOrigGetItemCount || jsWin.getItemCount;
+            jsWin.getItemCount = tp.getRowCount;
+            if (typeof jsWin._getItemCount === "function") {
+                try { jsWin._getItemCount(); } catch (e) {}
+            }
+        }
+    }
+
+    /** Remove the translation: every "filter" / "v9safe" layer, the saved
+     *  natives, the count getter, v9's rebound props, the view and the
+     *  watermark. The user-open tracker (its own layer) survives. */
+    _wvFilterPatchRemove(rp: any, itemsView: any) {
+        try {
+            // A pre-layer build's own-prop wrappers (saved natives, no tag):
+            // v9's natives are own arrow fields, so the saved one goes back;
+            // v10's live on the prototype, so the own property goes.
+            const legacy = !rp._wvFilterPatchTag;
+            const isV9 = !!itemsView && !itemsView.rowProvider;
+            for (const [m, k] of WV_FILTER_RP_MEMBERS) {
+                wvUnwrap(rp, m, "filter");
+                wvUnwrap(rp, m, "v9safe");
+                if (legacy && rp[k] && Object.prototype.hasOwnProperty.call(rp, m)
+                        && !(rp._wvWraps && rp._wvWraps[m])) {
+                    try { if (isV9) rp[m] = rp[k]; else delete rp[m]; } catch (e) {}
+                }
+                delete rp[k];
+            }
+            if (rp._wvFilterSynthGetRowCount) {
+                delete rp.getRowCount;
+                delete rp._wvFilterSynthGetRowCount;
+            }
+            if (rp._wvObjRowCountHost) {
+                try { delete rp._wvObjRowCountHost.objectRowCount; } catch (e) {}
+                delete rp._wvObjRowCountHost;
+            }
+            const tp: any = itemsView && itemsView.tree && itemsView.tree.props;
+            if (tp && tp._wvV9PropsPatched) {
+                if (tp._wvOrigGetRowCount) tp.getRowCount = tp._wvOrigGetRowCount;
+                if (tp._wvOrigIsContainer) tp.isContainer = tp._wvOrigIsContainer;
+                if (tp._wvOrigIsContainerOpen) tp.isContainerOpen = tp._wvOrigIsContainerOpen;
+                if (tp._wvOrigIsContainerEmpty) tp.isContainerEmpty = tp._wvOrigIsContainerEmpty;
+                if (tp._wvOrigToggleOpenState) tp.toggleOpenState = tp._wvOrigToggleOpenState;
+                delete tp._wvOrigGetRowCount;
+                delete tp._wvOrigIsContainer;
+                delete tp._wvOrigIsContainerOpen;
+                delete tp._wvOrigIsContainerEmpty;
+                delete tp._wvOrigToggleOpenState;
+                delete tp._wvV9PropsPatched;
+                const jsWin: any = itemsView.tree._jsWindow;
+                if (jsWin && jsWin._wvOrigGetItemCount) {
+                    jsWin.getItemCount = jsWin._wvOrigGetItemCount;
+                    delete jsWin._wvOrigGetItemCount;
+                    if (typeof jsWin._getItemCount === "function") {
+                        try { jsWin._getItemCount(); } catch (e) {}
+                    }
+                }
+            }
+            delete rp._wvFilterSelfCall;
+            // The watermark describes a TRANSLATED view; with the translation
+            // gone, indices mean what they say (a leftover one made
+            // `_captureSelectedItemIDs` return null for the rest of the
+            // session, 2026-08-07).
+            delete rp._wvKeepRowsLen;
+            delete rp._wvFilterView;
+            delete rp._wvFilterPatchTag;
+        } catch (e) {
+            dbg("[Weavero][filter] _wvFilterPatchRemove err: " + e);
         }
     }
 
@@ -1699,41 +2125,45 @@ class _FilterMixin {
         this._wvFirstVisibleAnnUnderAtt = firstVisibleChild;
     }
 
-    _patchUserOpenTracking() {
+    /** The manual-expand tracker on the target window's row source. */
+    _patchUserOpenTracking(win?: any) {
         try {
-            const win = Zotero.getMainWindow();
-            const itemsView = win && win.ZoteroPane
-                && win.ZoteroPane.itemsView;
+            const w = win || this._wvFilterTargetWin();
+            const itemsView = w && w.ZoteroPane && w.ZoteroPane.itemsView;
             if (!itemsView) return;
-            // V9-COMPAT: Zotero 10 puts `toggleOpenState` on
-            // `rowProvider`; Zotero 9 keeps it on the itemsView
-            // itself (as an async arrow-function class field).
+            this._wvInstallUserOpenTracking(itemsView);
+        } catch (e) {
+            Zotero.debug("[Weavero] _patchUserOpenTracking err: " + e);
+        }
+    }
+
+    /** Record manual opens / closes (`_userOpenedIDs` / `_userClosedIDs`)
+     *  so a filter rebuild force-keeps the children of a container the
+     *  user just expanded. A lib/wrap.ts layer ("userOpenTracking") on
+     *  `toggleOpenState`, installed UNDER the filter's translation (it
+     *  reads real indices) and left in place by every filter clear --
+     *  only the plugin's teardown takes it off. (Before step 4 the
+     *  filter's own per-apply wrapper replaced it and the clear deleted
+     *  both, leaving a stale stamp that blocked the re-install: tracking
+     *  was dead from the first filter clear until a reload.) */
+    _wvInstallUserOpenTracking(itemsView: any) {
+        try {
+            // V9-COMPAT: Zotero 10 puts `toggleOpenState` on `rowProvider`;
+            // Zotero 9 keeps it on the itemsView (an async arrow field).
             const rp: any = itemsView.rowProvider || itemsView;
             if (!rp || typeof rp.toggleOpenState !== "function") return;
-            // Tag-stamped (build + instance, src-ts.md): a reload or upgrade
-            // re-wraps from the stored original instead of keeping the old
-            // wrapper stuck on the persistent provider. (Not the layered
-            // helper yet: the filter's own toggleOpenState patch shares this
-            // member through the per-apply restoreField scheme -- step 4.)
-            const tag = this._wvWireTag();
-            if (rp._wvUserOpenTrackingPatched === tag) return;
-            // Peel off any previous wrappers we installed (older
-            // version markers, no marker, or plain "true" from
-            // pre-versioned builds) so we wrap the TRUE Zotero
-            // original instead of stacking wrappers.
-            if (rp._wvUserOpenTrackingPatched && rp._wvUserOpenTrackingOrig) {
+            // A pre-layer build's own-prop wrapper: restore its saved
+            // original so the layer table captures Zotero's native.
+            if (rp._wvUserOpenTrackingOrig && !(rp._wvWraps && rp._wvWraps.toggleOpenState)) {
                 rp.toggleOpenState = rp._wvUserOpenTrackingOrig;
-                delete rp._wvUserOpenTrackingOrig;
             }
-            const orig = rp.toggleOpenState.bind(rp);
-            rp._wvUserOpenTrackingOrig = rp.toggleOpenState;
-            const self = this;
-            // V9-COMPAT: detect whether this is an itemsView (v9, no
-            // rowProvider) so the post-toggle splice below only runs
-            // there. On v10 the equivalent filtering is done upstream
-            // via `_patchHideContextAttachments` on row classes.
+            delete rp._wvUserOpenTrackingOrig;
+            delete rp._wvUserOpenTrackingPatched;
+            // V9-COMPAT: the post-toggle splice below only runs on v9. On
+            // v10 the equivalent filtering is done upstream via
+            // `_patchHideContextAttachments` on row classes.
             const isV9Toggle = !itemsView.rowProvider;
-            rp.toggleOpenState = function (idx, skipRowMapRefresh) {
+            wvWrap(rp, "toggleOpenState", "userOpenTracking", this._wvWireTag(), (orig: any) => function (idx, skipRowMapRefresh) {
                 let wasOpenBeforeOrig = false;
                 let parentLevel = 0;
                 try {
@@ -1749,23 +2179,24 @@ class _FilterMixin {
                     // everything." Heuristic: track only calls with
                     // `skipRowMapRefresh=false` (== arity 1, manual
                     // twisty/keyboard) and skip internal `(i, true)`.
-                    if (!skipRowMapRefresh) {
+                    const lp: any = wvLivePlugin();
+                    if (lp && !skipRowMapRefresh) {
                         const row = rp._rows[idx];
                         const wasOpen = row && row.isOpen;
                         const id = row && row.ref && row.ref.id;
                         if (id != null) {
-                            if (!self._userOpenedIDs) {
-                                self._userOpenedIDs = new Set();
+                            if (!lp._userOpenedIDs) {
+                                lp._userOpenedIDs = new Set();
                             }
-                            if (!self._userClosedIDs) {
-                                self._userClosedIDs = new Set();
+                            if (!lp._userClosedIDs) {
+                                lp._userClosedIDs = new Set();
                             }
                             if (wasOpen) {
-                                self._userOpenedIDs.delete(id);
-                                self._userClosedIDs.add(id);
+                                lp._userOpenedIDs.delete(id);
+                                lp._userClosedIDs.add(id);
                             } else {
-                                self._userOpenedIDs.add(id);
-                                self._userClosedIDs.delete(id);
+                                lp._userOpenedIDs.add(id);
+                                lp._userClosedIDs.delete(id);
                             }
                         }
                     }
@@ -1775,7 +2206,7 @@ class _FilterMixin {
                         parentLevel = (r && r.level) || 0;
                     }
                 } catch (e) {}
-                const result = orig(idx, skipRowMapRefresh);
+                const result = orig.call(this, idx, skipRowMapRefresh);
                 // V9-COMPAT: replicate v10's `_patchHideContextAttachments`
                 // by post-splicing non-matching attachment/note rows
                 // out of `_rows`. Only when:
@@ -1828,10 +2259,9 @@ class _FilterMixin {
                         "[Weavero] post-toggle context-hide err: " + e);
                 }
                 return result;
-            };
-            rp._wvUserOpenTrackingPatched = tag;
+            });
         } catch (e) {
-            Zotero.debug("[Weavero] _patchUserOpenTracking err: " + e);
+            Zotero.debug("[Weavero] _wvInstallUserOpenTracking err: " + e);
         }
     }
 
@@ -6031,7 +6461,7 @@ class _FilterMixin {
         this._patchIsSelectable();
         this._patchExpandMatchParents();
         this._patchHideContextAttachments();
-        this._patchUserOpenTracking();
+        this._patchUserOpenTracking(win);
         this._installHiddenBadgeClickHandler();
 
         // Re-apply filter when scroll / data-change brings new rows into
@@ -6071,7 +6501,7 @@ class _FilterMixin {
                 // so retry on every tree mutation. Self-bails once
                 // the prototype is patched.
                 try { this._patchHideContextAttachments(); } catch (e) {}
-                try { this._patchUserOpenTracking(); } catch (e) {}
+                try { this._patchUserOpenTracking(win); } catch (e) {}
                 try { this._installHiddenBadgeClickHandler(); } catch (e) {}
             });
             this._filterTreeObserver.observe(treeInner,
@@ -6479,63 +6909,17 @@ class _FilterMixin {
             try { this._wvUnpatchFirstColumnMinWidth(itemsView); } catch (e) {}
             const rp = itemsView && itemsView.rowProvider;
             if (rp && rp._wvOrigGetRow) {
-                // Delete the own-property monkey-patches so the
-                // prototype methods show through. Reassigning to
-                // `rp._wvOrigGetRow` would just reinstall a bound
-                // copy (which still works, but `delete` is cleaner
-                // and avoids re-stacking on next reload).
-                delete rp.getRow;
-                delete rp.getRowCount;
-                delete rp._wvOrigGetRow;
-                delete rp._wvOrigGetRowCount;
-                // Restore the item pane's count getter (own property on the
-                // itemsView; deleting it re-exposes the prototype getter).
-                // The host is stored on `rp` because these teardown sites
-                // only have `rp` in scope.
-                if (rp._wvObjRowCountHost) {
-                    try { delete rp._wvObjRowCountHost.objectRowCount; }
-                    catch (e) {}
-                    delete rp._wvObjRowCountHost;
-                }
-                if (rp._wvOrigGetLevel) {
-                    delete rp.getLevel;
-                    delete rp._wvOrigGetLevel;
-                }
-                if (rp._wvOrigIsContainer) {
-                    delete rp.isContainer;
-                    delete rp._wvOrigIsContainer;
-                }
-                if (rp._wvOrigIsContainerOpen) {
-                    delete rp.isContainerOpen;
-                    delete rp._wvOrigIsContainerOpen;
-                }
-                if (rp._wvOrigIsContainerEmpty) {
-                    delete rp.isContainerEmpty;
-                    delete rp._wvOrigIsContainerEmpty;
-                }
-                if (rp._wvOrigToggleOpenState) {
-                    delete rp.toggleOpenState;
-                    delete rp._wvOrigToggleOpenState;
-                }
-                if (rp._wvOrigExpandRows) {
-                    delete rp.expandRows;
-                    delete rp._wvOrigExpandRows;
-                }
-                if (rp._wvOrigCollapseRows) {
-                    delete rp.collapseRows;
-                    delete rp._wvOrigCollapseRows;
-                }
-                if (rp._wvOrigExpandAllRows) {
-                    delete rp.expandAllRows;
-                    delete rp._wvOrigExpandAllRows;
-                }
-                if (rp._wvOrigCollapseAllRows) {
-                    delete rp.collapseAllRows;
-                    delete rp._wvOrigCollapseAllRows;
-                }
-                delete rp._wvFilterSelfCall;
+                this._wvFilterPatchRemove(rp, itemsView);
                 this._partialCollapseOnFilterClear(rp, itemsView);
                 try { itemsView.tree && itemsView.tree.invalidate(); } catch (e) {}
+            }
+            // The manual-expand tracker outlives filter clears; the
+            // plugin's teardown is what takes it off.
+            const trp: any = itemsView && (itemsView.rowProvider || itemsView);
+            if (trp) {
+                wvUnwrap(trp, "toggleOpenState", "userOpenTracking");
+                delete trp._wvUserOpenTrackingPatched;
+                delete trp._wvUserOpenTrackingOrig;
             }
         } catch (e) {}
         try {
@@ -14605,92 +14989,13 @@ class _FilterMixin {
             // so it became a visible "my selection keeps vanishing" bug.
             delete rp._wvKeepRowsLen;
             if (rp._wvOrigGetRow) {
-                // getRow / getLevel / getRowCount / *expand* /
-                // *collapse* live on the prototype on v10 and on
-                // v9's LibraryTree prototype too — safe to delete.
-                delete rp.getRow;
-                delete rp.getRowCount;
-                delete rp._wvOrigGetRow;
-                delete rp._wvOrigGetRowCount;
-                // Restore the item pane's count getter (own property on the
-                // itemsView; deleting it re-exposes the prototype getter).
-                // The host is stored on `rp` because these teardown sites
-                // only have `rp` in scope.
-                if (rp._wvObjRowCountHost) {
-                    try { delete rp._wvObjRowCountHost.objectRowCount; }
-                    catch (e) {}
-                    delete rp._wvObjRowCountHost;
-                }
-                if (rp._wvOrigGetLevel) {
-                    delete rp.getLevel;
-                    delete rp._wvOrigGetLevel;
-                }
-                // The container probes + toggleOpenState are
-                // OWN-property arrow fields on v9 — restore via
-                // assignment so the original is preserved.
-                const restoreField = (name, origKey) => {
-                    if (rp[origKey]) {
-                        if (isV9) rp[name] = rp[origKey];
-                        else delete rp[name];
-                        delete rp[origKey];
-                    }
-                };
-                restoreField("isContainer", "_wvOrigIsContainer");
-                restoreField("isContainerOpen", "_wvOrigIsContainerOpen");
-                restoreField("isContainerEmpty", "_wvOrigIsContainerEmpty");
-                restoreField("toggleOpenState", "_wvOrigToggleOpenState");
-                // The standalone user-open tracking wrapper (_patchUserOpenTracking)
-                // was overwritten by the filter's own toggle wrapper above (which
-                // tracks too) and is gone with it now -- but its stamp stayed, so
-                // the tree observer's re-patch returned early and manual-expand
-                // tracking was dead from the first filter clear until a reload
-                // (survey 2026-10-06). Clear the stamp: the next tick re-installs it.
-                try { delete rp._wvUserOpenTrackingPatched; delete rp._wvUserOpenTrackingOrig; } catch (e) {}
-                // expandRows / collapseRows don't exist on v9 — we
-                // only patched them on v10 (prototype methods).
-                if (rp._wvOrigExpandRows) {
-                    delete rp.expandRows;
-                    delete rp._wvOrigExpandRows;
-                }
-                if (rp._wvOrigCollapseRows) {
-                    delete rp.collapseRows;
-                    delete rp._wvOrigCollapseRows;
-                }
-                if (rp._wvOrigExpandAllRows) {
-                    delete rp.expandAllRows;
-                    delete rp._wvOrigExpandAllRows;
-                }
-                if (rp._wvOrigCollapseAllRows) {
-                    delete rp.collapseAllRows;
-                    delete rp._wvOrigCollapseAllRows;
-                }
-                // V9-COMPAT: restore the React props we rebound
-                // to live patches on v9.
-                if (isV9 && itemsView.tree && itemsView.tree.props
-                    && itemsView.tree.props._wvV9PropsPatched) {
-                    const tp: any = itemsView.tree.props;
-                    if (tp._wvOrigGetRowCount) tp.getRowCount = tp._wvOrigGetRowCount;
-                    if (tp._wvOrigIsContainer) tp.isContainer = tp._wvOrigIsContainer;
-                    if (tp._wvOrigIsContainerOpen) tp.isContainerOpen = tp._wvOrigIsContainerOpen;
-                    if (tp._wvOrigIsContainerEmpty) tp.isContainerEmpty = tp._wvOrigIsContainerEmpty;
-                    if (tp._wvOrigToggleOpenState) tp.toggleOpenState = tp._wvOrigToggleOpenState;
-                    delete tp._wvOrigGetRowCount;
-                    delete tp._wvOrigIsContainer;
-                    delete tp._wvOrigIsContainerOpen;
-                    delete tp._wvOrigIsContainerEmpty;
-                    delete tp._wvOrigToggleOpenState;
-                    delete tp._wvV9PropsPatched;
-                    // Restore WindowedList's captured getItemCount too.
-                    const jsWin: any = itemsView.tree._jsWindow;
-                    if (jsWin && jsWin._wvOrigGetItemCount) {
-                        jsWin.getItemCount = jsWin._wvOrigGetItemCount;
-                        delete jsWin._wvOrigGetItemCount;
-                        if (typeof jsWin._getItemCount === "function") {
-                            try { jsWin._getItemCount(); } catch (e) {}
-                        }
-                    }
-                }
-                delete rp._wvFilterSelfCall;
+                // The translation off whole (layers, natives, count getter,
+                // v9 props, view) -- the manual-expand tracker is its own
+                // layer and stays: it used to go with the filter's wrapper
+                // while its stamp stayed, so the observer's re-install
+                // returned early and tracking was dead from the first
+                // filter clear until a reload (survey 2026-10-06).
+                this._wvFilterPatchRemove(rp, itemsView);
                 this._partialCollapseOnFilterClear(rp, itemsView);
                 try { itemsView.tree.invalidate(); } catch (e) {}
             }
@@ -14760,143 +15065,27 @@ class _FilterMixin {
             }
             (this as any)._wvRevealScopeKey = scopeKey;
         } catch (e) {}
-        // Whether our getRow patch was ALREADY installed when this apply
+        // Whether a translated view was ALREADY live when this apply
         // began — used by the identical-keep invalidate skip below (a
         // first activation must always re-render).
-        const _wasPatchedAtEntry = !!rp._wvOrigGetRow
-            && Object.prototype.hasOwnProperty.call(rp, "getRow");
+        const _wasPatchedAtEntry = !!(rp._wvFilterPatchTag && rp._wvFilterView);
         if (!cascade
             && this._wvLastApplySig === _sig
             && this._wvLastApplyRawRows === rp._rows.length
-            && rp._wvOrigGetRow
-            && Object.prototype.hasOwnProperty.call(rp, "getRow")) {
+            && _wasPatchedAtEntry) {
             (Zotero as any)._wvFilterPerfSkips
                 = ((Zotero as any)._wvFilterPerfSkips || 0) + 1;
             return;
         }
 
-        // Save originals on first activation. Cover `getLevel` too:
-        // virtualized-table.jsx's `_getDepth(index)` (used for indent
-        // and parent twisty arrows) walks the shared `_rows` array
-        // through `getLevel(idx)` / `getParentIndex(idx)`, so without
-        // mapping `idx` back to the original space the visual depth
-        // is computed for the wrong row.
-        //
-        // Always walk to the PROTOTYPE-defined method, not whatever's
-        // currently on the instance. Plugin disable+enable leaves
-        // monkey-patched versions on the instance (via own properties)
-        // whose closures hold stale `keep` arrays from the previous
-        // plugin module — saving those as "the original" and then
-        // re-patching produces a chain with mismatched indices.
-        //
-        // V9-COMPAT: Zotero 9 defines `isContainer` / `getRow` / etc.
-        // as arrow-function class fields, which live as OWN properties
-        // on the instance rather than the prototype. We accept those
-        // (and trust our own marker checks below to detect our own
-        // installed wrappers) so v9 has originals to wrap.
-        const findProtoMethod = (obj, name) => {
-            // Skip own props that ARE our wrappers — checking the
-            // chain below still finds the real prototype original.
-            // For v9 (no proto method), accept the own prop.
-            let p = Object.getPrototypeOf(obj);
-            while (p) {
-                if (Object.prototype.hasOwnProperty.call(p, name)
-                    && typeof p[name] === "function") {
-                    return p[name];
-                }
-                p = Object.getPrototypeOf(p);
-            }
-            // V9-COMPAT: fall back to the instance's own property
-            // when no prototype method exists.
-            if (Object.prototype.hasOwnProperty.call(obj, name)
-                && typeof obj[name] === "function") {
-                return obj[name];
-            }
-            return null;
-        };
-        // Patch the rowProvider only. `itemsView.getLevel` etc. are
-        // arrow-function fields on the LibraryTree base that simply
-        // delegate to `this.rowProvider.<same>(idx)` — so patching at
-        // the rp level is reached by every public consumer (the
-        // virtualized table's bound props all dispatch through to rp).
-        // Patching itemsView in addition would double-stack mapping
-        // (keep[keep[idx]]).
-        if (!rp._wvOrigGetRow) {
-            const rpGetRow = findProtoMethod(rp, "getRow");
-            const rpGetRowCount = findProtoMethod(rp, "getRowCount");
-            const rpGetLevel = findProtoMethod(rp, "getLevel");
-            const rpIsContainer = findProtoMethod(rp, "isContainer");
-            const rpIsContainerOpen = findProtoMethod(rp, "isContainerOpen");
-            const rpIsContainerEmpty = findProtoMethod(rp, "isContainerEmpty");
-            const rpToggle = findProtoMethod(rp, "toggleOpenState");
-            const rpExpand = findProtoMethod(rp, "expandRows");
-            const rpCollapse = findProtoMethod(rp, "collapseRows");
-            const rpExpandAll = findProtoMethod(rp, "expandAllRows");
-            const rpCollapseAll = findProtoMethod(rp, "collapseAllRows");
-            rp._wvOrigGetRow = (rpGetRow || rp.getRow).bind(rp);
-            // Zotero 9 has no `getRowCount` method — the count comes
-            // from `_rows.length`. Synthesise one so the rest of the
-            // patch code is uniform.
-            if (rpGetRowCount) {
-                rp._wvOrigGetRowCount = rpGetRowCount.bind(rp);
-            } else if (typeof rp.getRowCount === "function") {
-                rp._wvOrigGetRowCount = rp.getRowCount.bind(rp);
-            } else {
-                rp._wvOrigGetRowCount = function () {
-                    return (rp._rows && rp._rows.length) || 0;
-                };
-            }
-            if (rpGetLevel) rp._wvOrigGetLevel = rpGetLevel.bind(rp);
-            if (rpIsContainer) rp._wvOrigIsContainer = rpIsContainer.bind(rp);
-            if (rpIsContainerOpen) rp._wvOrigIsContainerOpen = rpIsContainerOpen.bind(rp);
-            if (rpIsContainerEmpty) rp._wvOrigIsContainerEmpty = rpIsContainerEmpty.bind(rp);
-            if (rpToggle) rp._wvOrigToggleOpenState = rpToggle.bind(rp);
-            if (rpExpand) rp._wvOrigExpandRows = rpExpand.bind(rp);
-            if (rpCollapse) rp._wvOrigCollapseRows = rpCollapse.bind(rp);
-            if (rpExpandAll) rp._wvOrigExpandAllRows = rpExpandAll.bind(rp);
-            if (rpCollapseAll) rp._wvOrigCollapseAllRows = rpCollapseAll.bind(rp);
-        }
-
-        // V9-COMPAT: Zotero 9's `isContainer` / `isContainerOpen` are
-        // instance-field arrow functions that do `getRow(i).ref` /
-        // `getRow(i).isOpen` UNCONDITIONALLY. The cascade pass below
-        // opens containers (on v9, single `toggleOpenState` calls),
-        // each of which mutates `_rows` and fires a re-render that
-        // calls these probes — and at that point our translating
-        // `getRow` patch isn't installed yet (it goes in AFTER the
-        // cascade), so a transient out-of-range index hands back
-        // `undefined` and `.ref`/`.isOpen` crashes the whole window
-        // via `Zotero.crash()` (itemTree.js:2290 / :2295). The
-        // `wrapProbe` install later only guards the post-cascade
-        // window. Make the live probes null-safe NOW, before the
-        // cascade, so any transient bad index returns false instead
-        // of throwing. v10's probes already tolerate undefined, so
-        // this is gated to v9. They delegate to whatever `getRow` is
-        // current (native during the cascade, the patched translating
-        // version afterwards) — null-safe either way.
-        if (isV9) {
-            rp.isContainer = function (index) {
-                const r = rp.getRow(index);
-                if (!r || !r.ref) return false;
-                try {
-                    return !!(r.ref.isRegularItem
-                        && (r.ref.isRegularItem()
-                            || r.ref.isFileAttachment()));
-                } catch (e) { return false; }
-            };
-            if (typeof rp.isContainerOpen === "function") {
-                rp.isContainerOpen = function (index) {
-                    const r = rp.getRow(index);
-                    return !!(r && r.isOpen);
-                };
-            }
-            // Re-apply after Zotero's own refreshes (e.g. the
-            // hideContextAnnotationRows pref observer) so the toggle's
-            // expanded view isn't left collapsed. v10 gets this from
-            // the rowProvider._refresh wrap; v9 needs it on the
-            // itemsView. Idempotent.
-            try { this._patchV9RefreshReapply(itemsView); } catch (e) {}
-        }
+        // The row-provider translation: installed ONCE per instance
+        // (_wvFilterPatchInstall: lib/wrap.ts layers reading the per-apply
+        // view `rp._wvFilterView`, published at the end of this apply).
+        // Installed before the cascade: with no view yet, or a stale one,
+        // the layers pass through to the natives, and v9's null-safe
+        // probes must be live while the cascade opens containers (a
+        // transient bad index used to crash the window there).
+        this._wvFilterPatchInstall(rp, itemsView, isV9);
 
         const origGetRow = rp._wvOrigGetRow;
         const origGetRowCount = rp._wvOrigGetRowCount;
@@ -15843,421 +16032,14 @@ class _FilterMixin {
         dbg("[Weavero][filter] kept " + keep.length
             + " of " + total + " rows");
 
-        // Patch the data layer on the rowProvider — the virtualized
-        // table reads through it directly (see itemTree.jsx:1362).
-        // Patching `itemsView.getRow` alone would only catch the
-        // ItemTree wrapper, not the prop the virtualized table calls.
-        //
-        // SELF flag: rp's own internals (e.g. _toggleOpenState) call
-        // `this.getRow(idx)` / `this.getLevel(idx)` etc. with REAL
-        // indices into `_rows`. Without a bypass our translating
-        // patches double-translate (keep[realIdx]) and the toggle
-        // operates on the wrong row — twisty/+ key would no-op or
-        // open the wrong subtree. The flag is set during calls into
-        // the original toggleOpenState / expandRows / collapseRows,
-        // so any nested data-access falls through to the raw method.
-        const SELF = "_wvFilterSelfCall";
-        const self = this;
-
-        // Defensive bounds-check: between an original toggle's
-        // `runListeners('update', ..., {restoreSelection: true})` and
-        // our reapply, `_rows` may have shrunk while `keep` still
-        // holds an index past the new tail. Returning `undefined`
-        // (rather than letting the original throw "non-existent tree
-        // row N") lets the caller no-op cleanly. The pre-crash
-        // path `_restoreSelection -> selection.select(realIdx) ->
-        // itemSelected -> getRow(...).ref` would still throw on
-        // `.ref`, but the fix below (sync reapply before listeners
-        // fire) prevents that path from being reached.
-        const safeReal = function (idx): number {
-            const r = keep[idx] as number;
-            if (r === undefined) return -1;
-            if (r >= rp._rows.length) return -1;
-            return r;
-        };
-
-        // Helper: keep is stale whenever `_rows.length` no longer
-        // matches what we measured at apply time. Translating through
-        // a stale keep is what produced the search-clear crash AND
-        // the duplicate-row glitch. We fall through to the unfiltered
-        // original until the MutationObserver-driven reapply runs.
-        const stale = () => rp._rows.length !== keepRowsLen;
-
-        // V9-COMPAT: Zotero 9 calls `getRow(index).ref` /
-        // `.isOpen` UNCONDITIONALLY in several places — most notably
-        // `isContainer` / `isContainerOpen`, which on v9 are
-        // instance-field arrow functions (NOT prototype methods), so
-        // our `wrapProbe` never replaces them and they hit this
-        // patched `getRow` directly. If we ever return `undefined`
-        // (out-of-range index, or a stale window where a cached
-        // larger row count is still being iterated) the `.ref`
-        // access throws and crashes the whole window via
-        // `Zotero.crash()`. v10 callers tolerated `undefined`, but v9
-        // does not — so this patched getRow must NEVER return
-        // undefined. `safeRaw` clamps every lookup to a valid row.
-        const safeRaw = function (i) {
-            const len = rp._rows.length;
-            if (!len) return rp._wvOrigGetRow(0);
-            let j = i;
-            if (j == null || j < 0 || j >= len) j = 0;
-            const row = rp._wvOrigGetRow(j);
-            return row === undefined ? rp._wvOrigGetRow(0) : row;
-        };
-        rp.getRow = function (idx) {
-            // The SELF / stale branches differ between versions ONLY
-            // for out-of-range indices: v9 must never see `undefined`
-            // (its `isContainer`/`isContainerOpen` deref it and crash
-            // the window), so it clamps via `safeRaw`; v10 tolerated
-            // `undefined` and is left byte-identical to pre-dev.70 to
-            // avoid any phantom-row flash in a stale window.
-            if (this[SELF]) {
-                return isV9 ? safeRaw(idx) : rp._wvOrigGetRow(idx);
-            }
-            if (stale()) {
-                return isV9 ? safeRaw(idx) : rp._wvOrigGetRow(idx);
-            }
-            // These branches already returned a valid (clamped) row on
-            // both versions pre-dev.70 — `safeRaw` is equivalent here,
-            // with a harmless extra undefined-guard.
-            const r = safeReal(idx);
-            if (r < 0) return safeRaw(idx);
-            return safeRaw(r);
-        };
-        rp.getRowCount = function () {
-            if (this[SELF]) return rp._wvOrigGetRowCount();
-            if (stale()) return rp._wvOrigGetRowCount();
-            return keep.length;
-        };
-        // The item pane's "N items in this view" message reads
-        // `itemsView.objectRowCount` (itemPane.js), which reduces over
-        // `this._rows` DIRECTLY -- it never goes through getRow /
-        // getRowCount, so our translation does not reach it and the pane
-        // reports the UNFILTERED library count while a chip is active.
-        // Measured 2026-08-08 on the real library: pane said "17,928
-        // items in this view" with 15,329 rows actually shown.
-        //
-        // This is Weavero's discrepancy to fix, and is deliberately
-        // scoped to it. The related upstream bug -- expanding a row does
-        // not refresh the message at all, because zoteroPane.js only
-        // updates it from `itemsView.onRefresh` (added for
-        // zotero/zotero#5913, whose own comment lists only refresh-driven
-        // causes) -- is NOT patched here: it affects every Zotero user,
-        // and two mechanisms racing on the same message once upstream
-        // fixes it would be worse than the bug.
-        //
-        // Patched on the itemsView INSTANCE (the getter lives on the
-        // prototype), so teardown is a plain `delete`. The host is
-        // remembered on `rp` because the teardown sites only have `rp`.
-        try {
-            const findProtoGetter = (obj, name) => {
-                let o = obj;
-                while (o) {
-                    const d = Object.getOwnPropertyDescriptor(o, name);
-                    if (d && typeof d.get === "function") return d.get;
-                    o = Object.getPrototypeOf(o);
-                }
-                return null;
-            };
-            // Capture the REAL prototype getter exactly once. After the
-            // first install the own property IS our getter, so re-reading
-            // it here would capture ourselves and recurse. Cached on the
-            // itemsView and cleared on teardown.
-            const host: any = itemsView;
-            if (!host._wvOrigObjCountGetter) {
-                const g = findProtoGetter(
-                    Object.getPrototypeOf(itemsView), "objectRowCount");
-                if (g) host._wvOrigObjCountGetter = g;
-            }
-            const origObjCount = host._wvOrigObjCountGetter;
-            // REDEFINE ON EVERY APPLY. The previous version installed once
-            // and skipped thereafter if the own property existed, so the
-            // getter kept closing over the FIRST apply's `keep` and
-            // watermark. Every later apply then tripped its own stale()
-            // check and fell through to the UNFILTERED count -- the item
-            // pane read "20,508 items in this view" over a 2,190-row
-            // filtered view, while the tiers (which go through the
-            // per-apply getRow/getRowCount patches) stayed correct.
-            // Reported 2026-08-08.
-            if (origObjCount) {
-                Object.defineProperty(itemsView, "objectRowCount", {
-                    configurable: true,
-                    get: function () {
-                        try {
-                            // Same contract as the other patched
-                            // accessors: a stale keep means fall through
-                            // to the unfiltered original.
-                            if (stale()) return origObjCount.call(this);
-                            let n = 0;
-                            for (let i = 0; i < keep.length; i++) {
-                                const row = rp._wvOrigGetRow(keep[i] as number);
-                                if (row && row.isObjectRow) n++;
-                            }
-                            return n;
-                        }
-                        catch (e) {
-                            try { return origObjCount.call(this); }
-                            catch (e2) { return 0; }
-                        }
-                    },
-                });
-                rp._wvObjRowCountHost = itemsView;
-            }
-        } catch (e) {}
-        if (rp._wvOrigGetLevel) {
-            rp.getLevel = function (idx) {
-                if (this[SELF]) return rp._wvOrigGetLevel(idx);
-                if (stale()) return rp._wvOrigGetLevel(idx);
-                const r = safeReal(idx);
-                if (r < 0) return 0;
-                return rp._wvOrigGetLevel(r);
-            };
-        }
-        // The Container probes call `this.getRow(idx)` internally —
-        // method-dispatch on `rp.getRow` (our patched translating
-        // version). Set SELF for the duration of the original call so
-        // the inner getRow sees the raw real index instead of doing a
-        // second `keep[idx]` translation. Same for getLevel-using
-        // probes (only isContainerEmpty in some impls), but
-        // getLevel/getRow themselves are field-accesses with no
-        // dispatch, so they don't need the flag.
-        const wrapProbe = function (origFn, fallback) {
-            return function (idx) {
-                if (this[SELF]) return origFn.call(this, idx);
-                if (stale()) return origFn.call(this, idx);
-                const realIdx = safeReal(idx);
-                if (realIdx < 0) return fallback;
-                const wasFlag = this[SELF];
-                this[SELF] = true;
-                try { return origFn.call(this, realIdx); }
-                finally { this[SELF] = wasFlag; }
-            };
-        };
-        if (rp._wvOrigIsContainer) {
-            rp.isContainer = wrapProbe(rp._wvOrigIsContainer, false);
-        }
-        if (rp._wvOrigIsContainerOpen) {
-            rp.isContainerOpen = wrapProbe(rp._wvOrigIsContainerOpen, false);
-        }
-        if (rp._wvOrigIsContainerEmpty) {
-            rp.isContainerEmpty = wrapProbe(rp._wvOrigIsContainerEmpty, true);
-        }
-
-        // Twisty clicks (toggleOpenState) and `+`/`-` keyboard
-        // shortcuts (expandRows / collapseRows) hand FILTERED indices
-        // to the rowProvider. Translate through `keep`, set the SELF
-        // flag so internal `this.getRow`/`this.getLevel` calls inside
-        // the original see the raw real index. The original then
-        // mutates `_rows` AND fires `runListeners('update', ...,
-        // {restoreSelection: true})`, which dispatches a selection
-        // restore that reads `rowMap[id]` (REAL idx after the toggle)
-        // and calls `selection.select(realIdx)` — but `selection` is
-        // in FILTERED space, so the table looks up `getRow(realIdx)`
-        // which lands past the end of `keep` and crashes.
-        //
-        // Defer the listeners until AFTER we rebuild `keep`, so
-        // selection restoration sees a fresh filtered view. We swap
-        // `runListeners` for a queue while the original runs, rebuild
-        // keep synchronously, then flush.
-        // Track manual user opens / closes so the next keep rebuild
-        // force-keeps the children of containers the user just expanded.
-        // Without this, opening a non-matching container reveals its
-        // children for one frame and the reapply immediately drops them
-        // again because they don't satisfy the filter.
-        //
-        // Call BEFORE the original runs — the direction is inferred from
-        // the row's CURRENT state, which the original is about to flip.
-        // The same inference serves both the toggle and the multi-row
-        // paths: upstream `_expandRows` only toggles rows that are closed
-        // and `collapseRows` only rows that are open, so "was open" ==
-        // "this call is a collapse" in every case.
-        const noteUserToggle = function (realIdx) {
-            try {
-                const row = rp._rows[realIdx as number];
-                const wasOpen = row && row.isOpen;
-                const id = row && row.ref && row.ref.id;
-                if (id == null) return;
-                if (!self._userOpenedIDs) self._userOpenedIDs = new Set();
-                if (!self._userClosedIDs) self._userClosedIDs = new Set();
-                if (wasOpen) {
-                    // Collapsing → record so the cascade and
-                    // `_expandMatchParents` skip it on later reapplies.
-                    self._userOpenedIDs.delete(id);
-                    self._userClosedIDs.add(id);
-                } else {
-                    // Expanding → record so reapply force-keeps the
-                    // children even if they don't satisfy the filter.
-                    self._userOpenedIDs.add(id);
-                    self._userClosedIDs.delete(id);
-                }
-            } catch (e) {}
-        };
-        const wrapToggle = function (origFn) {
-            return function (filteredIdx, skipRowMapRefresh) {
-                if (this[SELF]) {
-                    return origFn.call(this, filteredIdx, skipRowMapRefresh);
-                }
-                if (stale()) {
-                    return origFn.call(this, filteredIdx, skipRowMapRefresh);
-                }
-                const realIdx = keep[filteredIdx];
-                if (realIdx === undefined) return;
-                noteUserToggle(realIdx);
-                const wasFlag = this[SELF];
-                this[SELF] = true;
-                const queued = [];
-                const origListeners = rp.runListeners;
-                rp.runListeners = function (...args) { queued.push(args); };
-                try {
-                    return origFn.call(this, realIdx, skipRowMapRefresh);
-                } finally {
-                    rp.runListeners = origListeners;
-                    this[SELF] = wasFlag;
-                    self._reapplyFilterSync();
-                    for (const args of queued) {
-                        try { rp.runListeners.apply(rp, args); }
-                        catch (e) {
-                            dbg("[Weavero][filter] listener err: " + e);
-                        }
-                    }
-                }
-            };
-        };
-        const wrapMulti = function (origFn) {
-            return function (indices) {
-                if (this[SELF]) return origFn.call(this, indices);
-                if (stale()) return origFn.call(this, indices);
-                const real = (indices || []).map(i => keep[i])
-                    .filter(x => x !== undefined);
-                // Same user-open bookkeeping as the single-row toggle.
-                // Without it the keyboard paths (multi-select ArrowRight /
-                // ArrowLeft -> itemTree.expandSelectedRows ->
-                // rowProvider.expandRows) opened the container but the
-                // immediate reapply dropped its non-matching children
-                // again -- an open twisty with nothing under it, while
-                // clicking the same twisty by hand worked (2026-08-04).
-                for (const realIdx of real) noteUserToggle(realIdx);
-                const wasFlag = this[SELF];
-                this[SELF] = true;
-                const queued = [];
-                const origListeners = rp.runListeners;
-                rp.runListeners = function (...args) { queued.push(args); };
-                try {
-                    return origFn.call(this, real);
-                } finally {
-                    rp.runListeners = origListeners;
-                    this[SELF] = wasFlag;
-                    self._reapplyFilterSync();
-                    for (const args of queued) {
-                        try { rp.runListeners.apply(rp, args); }
-                        catch (e) {
-                            dbg("[Weavero][filter] listener err: " + e);
-                        }
-                    }
-                }
-            };
-        };
-        if (rp._wvOrigToggleOpenState) {
-            rp.toggleOpenState = wrapToggle(rp._wvOrigToggleOpenState);
-        }
-        if (rp._wvOrigExpandRows) {
-            rp.expandRows = wrapMulti(rp._wvOrigExpandRows);
-        }
-        if (rp._wvOrigCollapseRows) {
-            rp.collapseRows = wrapMulti(rp._wvOrigCollapseRows);
-        }
-
-        // `+` (expandAllRows) and `-` (collapseAllRows) keys take no
-        // indices — they iterate `this.rowCount` (= `_rows.length`,
-        // raw real count) and call `this.isContainer(i)` etc. with
-        // real indices. Run them with SELF set so our patched probes
-        // pass-through to the originals (real-space). Same listener
-        // queue + sync reapply pattern as wrapToggle, since the
-        // original fires `runListeners('update', ..., {restoreSelection})`
-        // at the end.
-        const wrapAll = function (origFn) {
-            return function (...args) {
-                if (this[SELF]) return origFn.apply(this, args);
-                const wasFlag = this[SELF];
-                this[SELF] = true;
-                const queued = [];
-                const origListeners = rp.runListeners;
-                rp.runListeners = function (...lArgs) { queued.push(lArgs); };
-                try {
-                    return origFn.apply(this, args);
-                } finally {
-                    rp.runListeners = origListeners;
-                    this[SELF] = wasFlag;
-                    self._reapplyFilterSync();
-                    for (const lArgs of queued) {
-                        try { rp.runListeners.apply(rp, lArgs); }
-                        catch (e) {
-                            dbg("[Weavero][filter] listener err: " + e);
-                        }
-                    }
-                }
-            };
-        };
-        if (rp._wvOrigExpandAllRows) {
-            rp.expandAllRows = wrapAll(rp._wvOrigExpandAllRows);
-        }
-        if (rp._wvOrigCollapseAllRows) {
-            rp.collapseAllRows = wrapAll(rp._wvOrigCollapseAllRows);
-        }
-
-        // V9-COMPAT: Zotero 9's virtualized-table React props are
-        // captured at render time as bound closures. `getRowCount` is
-        // hardwired to `() => this._rows.length` and bypasses our
-        // `iv.getRowCount` patch entirely. Rebind the live prop so the
-        // table reads our filtered count. We do the same for the
-        // toggle / probe props — they were captured by VALUE so the
-        // table still calls the original arrow-function fields, not
-        // our wrapped own-property versions on the itemsView.
-        //
-        // CRITICAL: the underlying WindowedList ALSO captures
-        // `getItemCount` at its construction time (virtualized-table
-        // line 1114). That capture happens at Zotero startup before
-        // our plugin loads, so `_jsWindow.getItemCount` always points
-        // at the original `() => this._rows.length`. Patching the
-        // React prop alone is insufficient — the windowed list never
-        // re-reads the prop. We also overwrite `_jsWindow.getItemCount`.
-        if (isV9 && itemsView.tree && itemsView.tree.props) {
-            const tp: any = itemsView.tree.props;
-            if (!tp._wvV9PropsPatched) {
-                tp._wvOrigGetRowCount = tp.getRowCount;
-                tp.getRowCount = () => (rp.getRowCount
-                    ? rp.getRowCount()
-                    : rp._rows.length);
-                // Re-bind data-layer probes to whatever's currently on
-                // the itemsView (= our wrapped versions). These need to
-                // stay live — Zotero's setFilter may rebuild props, in
-                // which case we re-patch on the next apply pass.
-                tp._wvOrigIsContainer = tp.isContainer;
-                tp.isContainer = (idx) => rp.isContainer(idx);
-                tp._wvOrigIsContainerOpen = tp.isContainerOpen;
-                tp.isContainerOpen = (idx) => rp.isContainerOpen(idx);
-                tp._wvOrigIsContainerEmpty = tp.isContainerEmpty;
-                tp.isContainerEmpty = (idx) => rp.isContainerEmpty(idx);
-                tp._wvOrigToggleOpenState = tp.toggleOpenState;
-                tp.toggleOpenState = (idx, skip) => rp.toggleOpenState(idx, skip);
-                tp._wvV9PropsPatched = true;
-            }
-            // Always update the WindowedList's captured reference —
-            // it's the actual source-of-truth for row-count rendering.
-            // Doing this on every apply (not just first install) keeps
-            // us robust to WindowedList re-construction.
-            const jsWin: any = itemsView.tree._jsWindow;
-            if (jsWin && jsWin.getItemCount !== tp.getRowCount) {
-                jsWin._wvOrigGetItemCount = jsWin._wvOrigGetItemCount
-                    || jsWin.getItemCount;
-                jsWin.getItemCount = tp.getRowCount;
-                // Force a re-read so `_lastItemCount` updates against
-                // the fresh count and the table re-renders to the new
-                // size on the next paint.
-                if (typeof jsWin._getItemCount === "function") {
-                    try { jsWin._getItemCount(); } catch (e) {}
-                }
-            }
-        }
+        // Publish THIS apply's view. The translation layers (installed once
+        // per instance by _wvFilterPatchInstall, before the cascade) read it
+        // on every call; a view whose watermark disagrees with `_rows.length`
+        // is stale and they pass through to the natives.
+        rp._wvFilterView = { keep, keepRowsLen };
+        // V9-COMPAT: the table's captured props and the windowed list's
+        // count are rebound on every apply (robust to re-construction).
+        if (isV9) this._wvFilterPatchV9Props(itemsView, rp);
 
         _mark("gatePatch");
         // Identical keep + already-patched view => nothing visible can

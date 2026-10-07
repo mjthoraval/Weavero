@@ -203,14 +203,17 @@ describe("Weavero — items-tree filter", () => {
     // ---- Zotero 9 compatibility contracts ------------------------
 
     describe("Zotero 9 compatibility", () => {
+        // The translation moved from per-apply closures in the apply to a
+        // once-per-instance install (survey step 4, 2026-10-07).
         it("getRow patch clamps to a valid row (never undefined)", () => {
-            expect(wv._applyItemsListFilterInner.toString())
+            expect(wv._wvFilterPatchInstall.toString())
                 .to.include("safeRaw");
         });
         it("installs null-safe container probes on v9", () => {
-            const src = wv._applyItemsListFilterInner.toString();
+            const src = wv._wvFilterPatchInstall.toString();
             expect(src).to.include("isV9");
             expect(src).to.include("isContainerOpen");
+            expect(src).to.include('"v9safe"');
         });
         it("opens cascade containers highest-index-first on the v9 fallback", () => {
             expect(wv._applyItemsListFilterInner.toString())

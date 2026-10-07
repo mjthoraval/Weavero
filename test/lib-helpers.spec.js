@@ -156,7 +156,10 @@ describe("Weavero — shared helpers (src/lib)", () => {
         assert.deepEqual(layers(iv, "selectItems").map(l => l.layer), ["filterParity"]);
         assert.isUndefined(iv._wvSelectItemsWrapVer);
         const rp = iv.rowProvider || iv;
-        if (rp._wvUserOpenTrackingPatched !== undefined) assert.strictEqual(rp._wvUserOpenTrackingPatched, tag);
+        assert.isUndefined(rp._wvUserOpenTrackingPatched, "legacy tracker stamp");
+        const trk = lib.wvWrapLayers(rp, "toggleOpenState").filter(l => l.layer === "userOpenTracking");
+        assert.lengthOf(trk, 1, "the manual-expand tracker is a layer");
+        assert.strictEqual(trk[0].tag, tag);
     });
 
     it("a reload leaves nothing of the previous instance on Zotero_Tabs (simulated foreign layer)", () => {

@@ -103,7 +103,10 @@ name to a Zotero object, window, or document.
   rebuilt from the native on every change, foreign-instance layers drop,
   a prototype original is deleted and an own-property one restored
   (`Zotero_Tabs` getState/close/restoreState/markAsLoaded/select,
-  itemsView.selectItems). `wvInjectStyle(doc, id, css)` / `wvRemoveStyle`
+  itemsView.selectItems; the filter's row-provider translation is the
+  "filter" layer set reading `rp._wvFilterView` — an apply publishes a
+  view, it never re-wraps; the manual-expand tracker is the
+  "userOpenTracking" layer under it). `wvInjectStyle(doc, id, css)` / `wvRemoveStyle`
   — a sheet is always replaced, never skip-if-exists or version-stamped.
   `wvTimeout` / `wvSleep` / `wvClearTimeout` — the sandbox clock for
   plugin-level work. Published as `Zotero.Weavero.lib` for the suite.

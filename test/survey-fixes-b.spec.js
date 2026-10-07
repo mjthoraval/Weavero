@@ -130,10 +130,13 @@ describe("Weavero — survey fixes, round B", () => {
         assert.notInclude(s, "runOne(tab, Z._tabs.length)");
     });
 
-    it("clearing the filter lets manual-expand tracking be re-installed", () => {
+    it("clearing the filter leaves manual-expand tracking installed", () => {
+        // Step 4 (2026-10-07) made the tracker its own wrap layer under the
+        // filter's translation; the clear removes the translation only.
+        // The behavioural contract lives in test/filter-patch-layers.spec.js.
         const s = src("_applyItemsListFilterInner");
-        const at = s.indexOf('restoreField("toggleOpenState"');
-        assert.isAbove(at, -1);
-        assert.isAbove(s.indexOf("delete rp._wvUserOpenTrackingPatched", at), -1, "the tracking stamp is cleared with the filter wrapper");
+        assert.include(s, "this._wvFilterPatchRemove(rp, itemsView)");
+        assert.notInclude(s, "_wvUserOpenTrackingPatched");
+        assert.notInclude(src("_wvFilterPatchRemove"), "userOpenTracking");
     });
 });

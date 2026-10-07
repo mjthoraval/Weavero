@@ -76,6 +76,17 @@ for (const w of mains) {
 		if (iv && iv._wvWraps) F(label + ": itemsView still carries a wrap table (" + Object.keys(iv._wvWraps).join(",") + ")");
 	} catch (e) {}
 	if (w._wvTabBarDecoMo) F(label + ": tab-bar decoration MutationObserver still connected");
+	// Orphan UI glyphs: a wv- element unwrapped instead of removed leaves its
+	// text (the scope button's "▾", the tabs-menu twisties) in native containers
+	// (2026-10-07: thirteen chevrons in the quick-search box).
+	try {
+		for (const id of ["search-wrapper", "zotero-tabs-menu-list"]) {
+			const host = w.document.getElementById(id);
+			if (!host) continue;
+			const stray = [...host.childNodes].filter(n => n.nodeType === 3 && /^[▾▸▴\s]+$/.test(n.nodeValue) && n.nodeValue.trim());
+			if (stray.length) F(label + ": " + stray.length + " orphan glyph text node(s) in #" + id);
+		}
+	} catch (e) {}
 	// Note editors: Weavero stylesheet + claim tokens must be gone.
 	for (const ne of w.document.querySelectorAll("note-editor")) {
 		try {

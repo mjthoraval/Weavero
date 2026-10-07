@@ -5182,16 +5182,29 @@ class WeaveroPlugin {
         try { this._wvRestoreDecoratedText(doc); } catch (e) {}
         // Class-only Weavero elements (no wv- id — e.g. the quick-search
         // scope button): if EVERY class is wv-* and there's no id, the
-        // element is ours. If it WRAPS anything -- native content (any
-        // descendant with an id or a non-wv class) OR plain text -- UNWRAP
-        // it: removing the shell outright once deleted the native tabs-menu
-        // list inside a `.wv-winscope` wrapper, leaving the List All Tabs
-        // popup permanently EMPTY (rows rebuilt into the detached node), and
-        // deleted the user's text inside link / markdown spans (survey
-        // 2026-10-06). Only EMPTY elements are removed whole. Native
-        // elements we merely decorated keep the element and lose just the
-        // wv- classes.
+        // element is ours. If it WRAPS NATIVE content (any descendant with
+        // an id or a non-wv class) UNWRAP it: removing the shell outright
+        // once deleted the native tabs-menu list inside a `.wv-winscope`
+        // wrapper, leaving the List All Tabs popup permanently EMPTY (rows
+        // rebuilt into the detached node). Otherwise REMOVE it whole, text
+        // and all: by now the user's text is already back in place (the
+        // decorated-text pass above), so what remains inside an all-wv
+        // element is Weavero's own UI -- glyphs, labels, chips. Unwrapping
+        // THAT leaked a "▾" from the scope button into the native search box
+        // and twisties into the tabs-menu list on every reload (thirteen
+        // chevrons in the search field, MJT 2026-10-07). Native elements we
+        // merely decorated keep the element and lose just the wv- classes.
+        // Guard: test/strip-chrome-text.spec.js.
         try {
+            const wrapsNative = (el: any) => {
+                try {
+                    for (const d of el.querySelectorAll("*")) {
+                        if (d.id) return true;
+                        for (const c of d.classList) if (!String(c).startsWith("wv-")) return true;
+                    }
+                } catch (e) {}
+                return false;
+            };
             for (const el of [...doc.querySelectorAll("[class*='wv-']")]) {
                 try {
                     if (!el.isConnected) continue;   // already handled via an ancestor
@@ -5199,7 +5212,7 @@ class WeaveroPlugin {
                     const wv = classes.filter((c) => c.startsWith("wv-"));
                     if (!wv.length) continue;
                     if (wv.length === classes.length && !el.id) {
-                        if (el.childNodes.length) {
+                        if (wrapsNative(el)) {
                             const p = el.parentNode;
                             if (p) { while (el.firstChild) p.insertBefore(el.firstChild, el); }
                         }

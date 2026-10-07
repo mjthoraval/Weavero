@@ -35,6 +35,12 @@ describe("Weavero — tab-group editor: features first, information last", () =>
         // ring whatever the swatch, never the swatch's own colour.
         const sws = [...kids[0].querySelectorAll(".wv-tg-swatch")];
         assert.isAbove(sws.length, 3);
+        // Firefox's order (tabgroup-menu.js COLORS) and nova's 20px discs
+        // with Firefox-style tabs on, 16px otherwise.
+        assert.deepEqual(sws.map(s => s.getAttribute("title")),
+            ["blue", "purple", "cyan", "orange", "yellow", "pink", "green", "gray", "red"]);
+        const want = wv._getSelectedTabRing() ? "20px" : "16px";
+        assert.strictEqual(win.getComputedStyle(sws[0]).width, want, "disc size follows the Firefox-style pref");
         const current = () => sws.filter(s => s.classList.contains("wv-selected"));
         assert.strictEqual(current().length, 1, "exactly one swatch is marked current");
         const csSel = win.getComputedStyle(current()[0]);
@@ -69,5 +75,29 @@ describe("Weavero — tab-group editor: features first, information last", () =>
         assert.match(footer.textContent, /^Saved · 0 tabs/, "status, count (and window when active)");
         assert.isAbove(kids.indexOf(footer), kids.indexOf(items[items.length - 1]), "footer below the last action");
         assert.strictEqual(labels[labels.length - 1], "Delete group", "the destructive action stays last among the actions");
+    });
+
+    it("the chip colours are Firefox's in both looks: nova tokens with Firefox-style tabs, the classic pair without", () => {
+        // Own-prop stubs for the two inputs; deleted afterwards so the
+        // prototype methods show through again.
+        const stub = (ring, dark) => { wv._getSelectedTabRing = () => ring; wv._wvUiIsDark = () => dark; };
+        try {
+            stub(true, false);
+            assert.strictEqual(wv._tabGroupColorHex("blue"), "#455fe7", "nova blue-50 (light)");
+            assert.strictEqual(wv._tabGroupTextHex("blue"), "#ffffff");
+            stub(true, true);
+            assert.strictEqual(wv._tabGroupColorHex("blue"), "#7bb2ff", "nova blue-30 (dark)");
+            assert.strictEqual(wv._tabGroupTextHex("blue"), "#111524", "nova blue-90 text (dark)");
+            stub(false, false);
+            assert.strictEqual(wv._tabGroupColorHex("blue"), "#0053cb", "classic blue-70 (light)");
+            assert.strictEqual(wv._tabGroupTextHex("blue"), "#e2f7ff", "classic blue-0 text (light)");
+            assert.strictEqual(wv._tabGroupColorHex("gray"), "#5e6a77", "classic gray is Firefox's hard-coded pair");
+            stub(false, true);
+            assert.strictEqual(wv._tabGroupColorHex("blue"), "#84c6ff", "classic blue-20 (dark)");
+            assert.strictEqual(wv._tabGroupTextHex("blue"), "#0053cb", "classic blue-70 text (dark)");
+            assert.strictEqual(wv._tabGroupColorHex("gray"), "#99a6b4");
+            assert.strictEqual(wv._tabGroupColorHex("no-such-colour"), wv._tabGroupColorHex("blue"), "an unknown name shows as blue");
+        }
+        finally { delete wv._getSelectedTabRing; delete wv._wvUiIsDark; }
     });
 });

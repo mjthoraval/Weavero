@@ -22,7 +22,7 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
 import { wvSetBoolAttr } from "../lib/dom";
-import { wvRemoveStyle } from "../lib/style";
+import { wvInjectStyle, wvRemoveStyle } from "../lib/style";
 import { wvStoreWrite, wvStoreRead } from "../lib/store";
 
 declare const Zotero: any;
@@ -31,20 +31,43 @@ declare const Services: any;
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 
 /** Firefox-like group palette. `id` is what the pref stores. */
+/** Firefox's nine group colours in Firefox's picker order (tabgroup-menu.js
+ *  `COLORS`: blue, purple, cyan, orange, yellow, pink, green, gray, red --
+ *  MJT 2026-10-07; the order also drives the auto-colour of new groups).
+ *  Stored by name; an older Weavero shows an unknown name as blue (the
+ *  _tabGroupColorHex fallback), without rewriting it. `hex` is the classic
+ *  light-theme colour (WV_CLASSIC_GROUP_COLORS.l), the last-resort fallback. */
 const WV_GROUP_COLORS: Array<{ id: string; hex: string }> = [
-    { id: "blue", hex: "#4f7ce0" },
-    { id: "red", hex: "#d9534f" },
-    // Firefox's 9th group colour (MJT 2026-09-28). Stored by name like the
-    // others; an older Weavero shows an unknown name as blue (the
-    // _tabGroupColorHex fallback), without rewriting it.
-    { id: "orange", hex: "#dc7633" },
-    { id: "yellow", hex: "#c99613" },
-    { id: "green", hex: "#2e9e5b" },
-    { id: "pink", hex: "#d65db1" },
-    { id: "purple", hex: "#8a63d2" },
-    { id: "cyan", hex: "#2aa1b3" },
-    { id: "gray", hex: "#7a7f87" },
+    { id: "blue", hex: "#0053cb" },
+    { id: "purple", hex: "#8627a8" },
+    { id: "cyan", hex: "#007792" },
+    { id: "orange", hex: "#ae2000" },
+    { id: "yellow", hex: "#985500" },
+    { id: "pink", hex: "#ad0059" },
+    { id: "green", hex: "#007700" },
+    { id: "gray", hex: "#5e6a77" },
+    { id: "red", hex: "#b20037" },
 ];
+
+/** Firefox's NON-nova group colours, used while Firefox-style tabs are OFF
+ *  (tabs.css default block: --tab-group-<c> = light-dark(--color-<c>-70,
+ *  --color-<c>-20), text --tab-group-<c>-invert = light-dark(--color-<c>-0,
+ *  --color-<c>-70); gray hard-coded light-dark(#5e6a77, #99a6b4) with text
+ *  light-dark(#f2f9ff, #5e6a77)). The oklch tokens (tokens-shared.css) are
+ *  resolved by Gecko itself -- canvas fillStyle on Zotero 10 / Gecko 140,
+ *  2026-10-07 -- so the chips carry what Firefox paints. l/d = light/dark
+ *  background, tl/td = light/dark-theme text. */
+const WV_CLASSIC_GROUP_COLORS: { [id: string]: { l: string; d: string; tl: string; td: string } } = {
+    blue:   { l: "#0053cb", d: "#84c6ff", tl: "#e2f7ff", td: "#0053cb" },
+    purple: { l: "#8627a8", d: "#eaabff", tl: "#ffecff", td: "#8627a8" },
+    cyan:   { l: "#007792", d: "#61dce9", tl: "#cfffff", td: "#007792" },
+    orange: { l: "#ae2000", d: "#ffb57a", tl: "#ffecd8", td: "#ae2000" },
+    yellow: { l: "#985500", d: "#f5cc58", tl: "#fff4d0", td: "#985500" },
+    pink:   { l: "#ad0059", d: "#ff9fc3", tl: "#ffe8f4", td: "#ad0059" },
+    green:  { l: "#007700", d: "#8adf8d", tl: "#e1ffe1", td: "#007700" },
+    gray:   { l: "#5e6a77", d: "#99a6b4", tl: "#f2f9ff", td: "#5e6a77" },
+    red:    { l: "#b20037", d: "#ffa0aa", tl: "#ffe8ea", td: "#b20037" },
+};
 
 /** Firefox 157 nova group colours, used while Firefox-style tabs are on:
  *  --tab-group-<c> = light-dark(--color-<c>-50, --color-<c>-30) and
@@ -131,24 +154,34 @@ class _TabGroupsMixin {
 
     _tabGroupColorHex(colorID: any) {
         const c = WV_GROUP_COLORS.find(x => x.id === colorID) || WV_GROUP_COLORS[0];
-        // Firefox-style tabs on: nova's group colours, light or dark
-        // (MJT 2026-09-28, comparison C). Every consumer gets a real hex
-        // (menu dots are generated SVGs), so the choice happens here and
-        // _wvTabGroupApplyEverywhere re-renders on a design or theme switch.
+        // Firefox's colours either way: nova's with Firefox-style tabs on
+        // (MJT 2026-09-28, comparison C), Firefox's classic non-nova ones
+        // otherwise (MJT 2026-10-07) -- both light or dark with the theme.
+        // Every consumer gets a real hex (menu dots are generated SVGs), so
+        // the choice happens here and _wvTabGroupApplyEverywhere re-renders
+        // on a design or theme switch.
         try {
+            const dark = this._wvUiIsDark();
             const n = WV_NOVA_GROUP_COLORS[c.id];
-            if (n && (this as any)._getSelectedTabRing()) return this._wvUiIsDark() ? n.d : n.l;
+            if (n && (this as any)._getSelectedTabRing()) return dark ? n.d : n.l;
+            const k = WV_CLASSIC_GROUP_COLORS[c.id];
+            if (k) return dark ? k.d : k.l;
         } catch (e) {}
         return c.hex;
     }
 
-    /** Text on a group chip: white, except nova's dark text in dark theme
-     *  with Firefox-style tabs (--tab-group-<colour>-text). */
+    /** Text on a group chip, Firefox's: nova (Firefox-style tabs on) white in
+     *  the light theme and --tab-group-<colour>-text in the dark one; classic
+     *  (off) the --tab-group-<colour>-invert pair -- the pale tint in the
+     *  light theme, the deep colour in the dark one. */
     _tabGroupTextHex(colorID: any) {
         try {
             const c = WV_GROUP_COLORS.find(x => x.id === colorID) || WV_GROUP_COLORS[0];
+            const dark = this._wvUiIsDark();
             const n = WV_NOVA_GROUP_COLORS[c.id];
-            if (n && (this as any)._getSelectedTabRing() && this._wvUiIsDark()) return n.td;
+            if (n && (this as any)._getSelectedTabRing()) return dark ? n.td : "#ffffff";
+            const k = WV_CLASSIC_GROUP_COLORS[c.id];
+            if (k) return dark ? k.td : k.tl;
         } catch (e) {}
         return "#ffffff";
     }
@@ -300,15 +333,16 @@ class _TabGroupsMixin {
         try {
             if (!doc) return;
             const on = !!(this as any)._getSelectedTabRing();
-            // nova's group colours differ per theme: re-render chips and lines
-            // when the theme flips. One listener per window, calling the LIVE
-            // plugin (it survives reloads; a stale instance does nothing).
+            // The group colours differ per theme (nova's AND the classic ones):
+            // re-render chips and lines when the theme flips. One listener per
+            // window, calling the LIVE plugin (it survives reloads; a stale
+            // instance does nothing).
             try {
                 const win: any = doc.defaultView;
                 if (win && win.matchMedia && !win._wvThemeMQ) {
                     const mq = win.matchMedia("(prefers-color-scheme: dark)");
                     const fn = () => {
-                        try { const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; if (p && !p._wvDestroyed && p._getSelectedTabRing()) p._wvTabGroupApplyEverywhere(); } catch (e) {}
+                        try { const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; if (p && !p._wvDestroyed) p._wvTabGroupApplyEverywhere(); } catch (e) {}
                     };
                     mq.addEventListener("change", fn);
                     win._wvThemeMQ = { mq, fn };
@@ -316,14 +350,9 @@ class _TabGroupsMixin {
             } catch (e) {}
             // Narrow tabs: close buttons only on the selected tab (Firefox).
             try { this._wvScheduleCloseButtons(doc.defaultView); } catch (e) {}
-            const old = doc.getElementById("wv-selected-tab-ring");
-            if (!on) { if (old) old.remove(); return; }
-            const VER = "13";
-            if (old && old.getAttribute("data-wv-ver") === VER) return;
-            if (old) old.remove();
-            const st = doc.createElementNS(HTML_NS, "style");
-            st.id = "wv-selected-tab-ring";
-            st.setAttribute("data-wv-ver", VER);
+            if (!on) { wvRemoveStyle(doc, "wv-selected-tab-ring"); return; }
+            // Written through wvInjectStyle (only when the text changed): no
+            // version constant to remember (src-ts.md sheet replace).
             // Pinned tabs are drawn by Weavero's MIRRORS (#wv-pinned-mirrors
             // .wv-pinned-mirror; the real pinned .tab is display:none), with
             // their own 6px radius + Zotero's raised shadow (tabs.ts
@@ -337,7 +366,7 @@ class _TabGroupsMixin {
             const ring = "#tab-bar-container .tab.selected:not(.wv-multisel)::before,"
                 + " .wv-window-tabs .wv-window-tab.wv-active:not(.wv-multisel)::before,"
                 + " " + MIR + ".selected::before";
-            st.textContent = [
+            const css = [
                 // nova's pill shape, for EVERY tab (hover, selected, multi-
                 // selected, the group-create drop target): --tab-border-radius
                 // -> --button-border-radius -> --border-radius-xlarge = 24px
@@ -477,6 +506,11 @@ class _TabGroupsMixin {
                 // Weavero's = Firefox's: 1px, 2px on the selected one.
                 ":root { --wv-ff-tab-selected: #ffffff; --wv-ff-focus: #764edd; }",
                 "@media (prefers-color-scheme: dark) { :root { --wv-ff-tab-selected: #171519; --wv-ff-focus: #b89cff; } }",
+                // The colour picker's discs are 20px under nova (tabs.css
+                // `.tab-group-editor-swatch` in the browser.nova.enabled block;
+                // 16px otherwise -- the base rule in the tab-group sheet, which
+                // comes AFTER this one, hence the higher specificity here).
+                ".wv-tg-swatches .wv-tg-swatch { width: 20px; height: 20px; }",
                 "@media not ((prefers-contrast) or (forced-colors)) {",
                 sel + " { background: var(--wv-ff-tab-selected); }",
                 "#tab-bar-container .tab.wv-multisel.wv-multisel.wv-multisel,",
@@ -545,7 +579,7 @@ class _TabGroupsMixin {
                 "}",
                 "}",
             ].join("\n");
-            (doc.head || doc.documentElement).appendChild(st);
+            wvInjectStyle(doc, "wv-selected-tab-ring", css);
         } catch (e) { Zotero.debug("[Weavero] _wvEnsureSelectedTabRing err: " + e); }
     }
 

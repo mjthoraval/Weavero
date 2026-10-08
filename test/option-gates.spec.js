@@ -74,7 +74,8 @@ describe("Weavero — option gates", () => {
 
     it("row decorations are repainted even when the items-list link surface is off (source contract)", () => {
         const src = String(wv._markCellLinks);
-        const early = src.indexOf("_stripItemsList()");
+        // `_stripItemsList(docArg)` since the per-window pass (step 4).
+        const early = src.indexOf("_stripItemsList(");
         const firstReturn = src.indexOf("return;", early);
         assert.isAbove(early, -1);
         const dec = src.indexOf("_applySelectionTargetVisuals", early);

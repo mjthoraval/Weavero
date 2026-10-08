@@ -16,6 +16,9 @@
 describe("Weavero — filter translation as wrap layers", () => {
     let wv, lib, win, iv, rp, tag, stateSnap, item;
     const src = (name) => { assert.isFunction(wv[name], name); return String(wv[name]); };
+    // The apply's phases, in driver order (survey step 4, second slice).
+    const WV_APPLY_PHASES = ["_wvFilterApplyBegin", "_wvFilterApplyInactive", "_wvFilterApplySkip", "_wvFilterApplyPrepare",
+        "_wvFilterApplyCascade", "_wvFilterApplyKeep", "_wvFilterApplyMaterialise", "_wvFilterApplyPublish"];
     const layers = (m) => lib.wvWrapLayers(rp, m).map(l => l.layer);
     const ACTIVE = () => ({ groups: [{ annotationColor: ["#ffd400"] }],
         collections: [], savedSearches: [], activeGroupIndex: 0 });
@@ -135,13 +138,33 @@ describe("Weavero — filter translation as wrap layers", () => {
         apply(CLEAR());
     });
 
+    it("the apply is a driver over phases that hand one context on, in order", () => {
+        const d = src("_applyItemsListFilterInner");
+        let last = -1;
+        for (const name of WV_APPLY_PHASES) {
+            const at = d.indexOf("this." + name + "(");
+            assert.isAbove(at, last, name + " is called by the driver, after the previous phase");
+            last = at;
+        }
+        // The driver resolves nothing itself: every window / tree read is a phase's.
+        assert.notInclude(d, "ZoteroPane");
+        assert.notInclude(d, "getMainWindow");
+        // The phases that read the tree bind to the target window's state, never a bare global.
+        for (const name of WV_APPLY_PHASES) assert.notInclude(src(name), "Zotero.getMainWindow()", name);
+        assert.include(src("_wvFilterApplyBegin"), "this._wvFilterTargetWin()");
+        // A phase-published field is read by a later phase, never recomputed.
+        assert.include(src("_wvFilterApplyPublish"), "keepRowsLen");
+        assert.notInclude(src("_wvFilterApplyPublish"), "rp._rows.slice");
+    });
+
     it("source contracts: one removal body, no per-apply own-property wrappers, tracker untouched by removal", () => {
-        const applyS = src("_applyItemsListFilterInner");
+        // The apply is phases over a context (step 4 split): scan them all.
+        const applyS = WV_APPLY_PHASES.map(src).join("\n");
         assert.notInclude(applyS, "rp.getRow = function");
         assert.notInclude(applyS, "restoreField(");
         assert.notInclude(applyS, "delete rp.getRow");
-        assert.include(applyS, "this._wvFilterPatchInstall(rp, itemsView, isV9)");
-        assert.include(applyS, "rp._wvFilterView = { keep, keepRowsLen }");
+        assert.include(src("_wvFilterApplyPrepare"), "this._wvFilterPatchInstall(rp, itemsView, isV9)");
+        assert.include(src("_wvFilterApplyPublish"), "rp._wvFilterView = { keep, keepRowsLen }");
         const removeS = src("_wvFilterPatchRemove");
         assert.notInclude(removeS, "userOpenTracking");
         assert.notInclude(removeS, "_wvUserOpenTrackingPatched");

@@ -38,10 +38,13 @@ describe("Weavero — survey fixes, round D", () => {
             if (hadOwn) wv._patchRefreshForReveals = orig; else delete wv._patchRefreshForReveals;
         }
         assert.strictEqual(calls, 0, "the focused window's tree was touched for a target that has none");
-        const s = src("_applyItemsListFilterInner");
+        // The apply is phases over a context since step 4 (2026-10-07): the
+        // window and the per-window library memory live in the begin phase.
+        const s = src("_wvFilterApplyBegin");
         assert.notInclude(s, "const win = Zotero.getMainWindow()");
         assert.notInclude(s, "this._lastLibraryID", "the last-library memory is per window");
         assert.include(s, "win._wvLastLibraryID");
+        assert.include(src("_applyItemsListFilterInner"), "this._wvFilterApplyBegin(opts)");
         // Every pipeline stage that restores the selection after an apply
         // resolves the same window as the state it reads.
         const stages = [];

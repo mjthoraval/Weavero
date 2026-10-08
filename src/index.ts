@@ -1575,7 +1575,7 @@ class WeaveroPlugin {
     }
 
     /** Strip every decoration we add to the items-tree annotation rows. */
-    _stripItemsList() {
+    _stripItemsList(docArg?: any) {
         // Re-entry guard: with the items-list mutation observer running
         // synchronously (v0.0.132), every DOM change we make here instantly
         // re-fires _markCellLinks, which would call us again. Without this
@@ -1584,7 +1584,7 @@ class WeaveroPlugin {
         if (this._stripItemsListBusy) return;
         this._stripItemsListBusy = true;
         try {
-            const doc = Zotero.getMainWindow().document;
+            const doc = docArg || Zotero.getMainWindow().document;
             // 1. Restore tight annotation-comment cells (highlight / underline /
             //    image / ink / note rows) to plain text. SKIP cells that are
             //    already clean — touching them triggers redundant childList
@@ -4060,7 +4060,11 @@ class WeaveroPlugin {
                     if (data === "extensions.zotero.weavero.enableNotesList") {
                         // Note-item titles in the items list.
                         try {
-                            if (!this._getEnableNotesList()) this._stripItemsList();
+                            if (!this._getEnableNotesList()) {
+                                for (const w of (Zotero.getMainWindows() || [])) {
+                                    try { this._stripItemsList(w.document); } catch (e2) {}
+                                }
+                            }
                         } catch(e) { Zotero.debug("[Weavero] strip-notes-list err: " + e); }
                         try { this._markCellLinks(); } catch(e) {}
                     }
@@ -4515,7 +4519,9 @@ class WeaveroPlugin {
                     }
                     if (data === "extensions.zotero.weavero.enableSelectionTarget"
                         || data === "extensions.zotero.weavero.enableFilters") {
-                        try { this._applySelectionTargetVisuals(); } catch (e) {}
+                        for (const w of (Zotero.getMainWindows() || [])) {
+                            try { this._applySelectionTargetVisuals(w); } catch (e) {}
+                        }
                     }
                     if (data === "extensions.zotero.weavero.enableTabsLibraryFilter"
                         || data === "extensions.zotero.weavero.enableTabsFileTypeFilter"

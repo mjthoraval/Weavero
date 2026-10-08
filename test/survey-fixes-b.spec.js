@@ -134,7 +134,8 @@ describe("Weavero — survey fixes, round B", () => {
         // Step 4 (2026-10-07) made the tracker its own wrap layer under the
         // filter's translation; the clear removes the translation only.
         // The behavioural contract lives in test/filter-patch-layers.spec.js.
-        const s = src("_applyItemsListFilterInner");
+        // The clear branch is the apply's inactive phase (step 4 split).
+        const s = src("_wvFilterApplyInactive");
         assert.include(s, "this._wvFilterPatchRemove(rp, itemsView)");
         assert.notInclude(s, "_wvUserOpenTrackingPatched");
         assert.notInclude(src("_wvFilterPatchRemove"), "userOpenTracking");

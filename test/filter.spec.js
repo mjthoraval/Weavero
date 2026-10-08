@@ -216,7 +216,8 @@ describe("Weavero — items-tree filter", () => {
             expect(src).to.include('"v9safe"');
         });
         it("opens cascade containers highest-index-first on the v9 fallback", () => {
-            expect(wv._applyItemsListFilterInner.toString())
+            // Pass 1 is the apply's cascade phase (step 4 split).
+            expect(wv._wvFilterApplyCascade.toString())
                 .to.include("toOpen.length - 1");
         });
         it("re-applies after Zotero's refresh and peels the wrap on reload", () => {

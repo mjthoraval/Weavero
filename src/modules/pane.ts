@@ -5160,7 +5160,7 @@ class _PaneMixin {
      *  mark observer (#17); the focused main window's otherwise. */
     _markCellLinks(docArg?: any) {
         if (!this._getEnableItemsList()) {
-            this._stripItemsList();
+            this._stripItemsList(docArg);
             // The row decorations at the end of this pass are NOT link
             // features: Selection Target dimming / match styling (Sort &
             // Filters) and the Added By tints (Visual extras) must keep
@@ -5169,7 +5169,7 @@ class _PaneMixin {
             try {
                 const doc = docArg || Zotero.getMainWindow().document;
                 this._paintAddedByCells(doc);
-                this._applySelectionTargetVisuals();
+                this._applySelectionTargetVisuals(doc.defaultView);
             } catch (e) {}
             return;
         }
@@ -5491,10 +5491,10 @@ class _PaneMixin {
 
             // After layout settles, mark cells whose text-wrap is overflowing
             // so the icon shows as a fallback even when the pref is off.
-            const win = Zotero.getMainWindow();
+            const win = doc.defaultView;
             if (win && win.requestAnimationFrame) {
                 win.requestAnimationFrame(() => {
-                    try { this._updateTruncationFlags(); }
+                    try { this._updateTruncationFlags(doc); }
                     catch(e) { Zotero.debug("[Weavero] truncation flag error: " + e); }
                 });
             }
@@ -5534,7 +5534,7 @@ class _PaneMixin {
             // Selection Target visual state — apply `.wv-not-target`
             // to row divs whose kind isn't in the selection-target
             // tick set (mirrors Zotero's `.context-row` behaviour).
-            this._applySelectionTargetVisuals();
+            this._applySelectionTargetVisuals(doc.defaultView);
         } catch(e) {
             Zotero.debug("[Weavero] _markCellLinks error: " + e);
         }
@@ -5552,14 +5552,18 @@ class _PaneMixin {
      *  `isSelectable` patch (see `_patchIsSelectable`), this
      *  reproduces Zotero's quick-search context-row behaviour:
      *  unticked kinds are dimmed AND skipped by Ctrl+A select-all. */
-    _applySelectionTargetVisuals() {
+    _applySelectionTargetVisuals(winArg?: any) {
         try {
+            // Per window (survey 2026-10-06 step 4): the tree painted is the
+            // caller's window's, else the filter's target window -- the same
+            // window `_filterState` (read below) binds to. The focused window
+            // was painted with another window's state before.
             // Pref gate (Filters group → Selection Target).
             if (!this._getEnableSelectionTarget()) {
                 // When toggled off, clear any wv-not-target classes so
                 // previously-dimmed rows return to normal.
                 try {
-                    const win0 = Zotero.getMainWindow();
+                    const win0 = winArg || this._wvFilterTargetWin();
                     const doc0 = win0 && win0.document;
                     if (doc0) {
                         for (const r of doc0.querySelectorAll(".row.wv-not-target") as any) {
@@ -5573,7 +5577,7 @@ class _PaneMixin {
             // React replaces props on each re-render, so a single
             // patch at init can be wiped. Idempotent.
             try { this._patchIsSelectable(); } catch (e) {}
-            const win = Zotero.getMainWindow();
+            const win = winArg || this._wvFilterTargetWin();
             const doc = win && win.document;
             if (!doc) return;
             // Keep the Selection Target chip cue in an open filter popup in
@@ -6589,8 +6593,8 @@ class _PaneMixin {
     }
 
     /** Toggle data-truncated on cells whose text-wrap is overflowing. */
-    _updateTruncationFlags() {
-        const doc = Zotero.getMainWindow().document;
+    _updateTruncationFlags(docArg?: any) {
+        const doc = docArg || Zotero.getMainWindow().document;
         const cells: any = doc.querySelectorAll(
             ".annotation-row.tight .cell.annotation-comment[data-has-rich]");
         let n = 0;
@@ -7169,7 +7173,7 @@ class _PaneMixin {
             if (H.resizeTimer) win.clearTimeout(H.resizeTimer);
             H.resizeTimer = win.setTimeout(() => {
                 H.resizeTimer = null;
-                try { this._updateTruncationFlags(); }
+                try { this._updateTruncationFlags(doc); }
                 catch(e) { Zotero.debug("[Weavero] resize truncation error: " + e); }
             }, 120);
         };

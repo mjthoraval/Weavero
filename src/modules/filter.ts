@@ -75,6 +75,24 @@ function dbg(...args: any[]) {
     try { if (Zotero.Prefs.get("weavero.debug")) (Zotero.debug as any)(...args); } catch (_) {}
 }
 
+// One items-list filter apply's working context, handed from phase to phase
+// (survey 2026-10-06 step 4): fixed inputs first, then what each phase
+// publishes for the next. `_applyItemsListFilterInner` is the driver.
+interface WvFilterApplyCtx {
+    win: any; itemsView: any; rp: any; isV9: boolean; cascade: boolean;
+    state: any; active: boolean;
+    perf: any; perfNow: () => number; perfT0: number; mark: (k: string) => void;
+    // phase 2
+    sig: any; wasPatchedAtEntry: boolean;
+    // phase 3
+    origGetRow: any; origGetRowCount: any;
+    isPrimary: any; hasMatch: any; hasPrimaryDescendant: any;
+    // phase 5
+    total: number; keepSet: Set<any> | null; primaryIDs: Set<number> | null;
+    // phase 6
+    keep: number[] | null; keepHash: number; keepRowsLen: number;
+}
+
 // The row-provider members the items-list filter translates, with the
 // key the saved native is published under (`rp._wvOrigGetRow` is read by
 // the cascade, the stale-keep retry and the live suites). One list for
@@ -13385,7 +13403,7 @@ class _FilterMixin {
         // observer cycle described in _wvArmFinalApply would loop.
         try {
             if (!(this as any)._wvViaSetFilter) {
-                const _w0 = Zotero.getMainWindow();
+                const _w0 = this._wvFilterTargetWin();
                 const _sb0: any = _w0 && _w0.document
                     && _w0.document.getElementById("zotero-tb-search");
                 if (_sb0 && _sb0.value && String(_sb0.value).trim()) {
@@ -13465,7 +13483,7 @@ class _FilterMixin {
         // own re-apply) keeps it from looping. Cost: a visible tree
         // re-render on such chip changes. TODO: a non-flickery re-invoke.
         try {
-            const _win = Zotero.getMainWindow();
+            const _win = this._wvFilterTargetWin();
             const _sb: any = _win && _win.document
                 .getElementById("zotero-tb-search");
             const _live = (_sb && _sb.value) ? String(_sb.value).trim() : "";
@@ -13495,7 +13513,7 @@ class _FilterMixin {
         // Make sure Zotero's own pre-mutation capture point is mirrored before
         // we read the selection (idempotent; cheap when already wired).
         try {
-            const _w = Zotero.getMainWindow();
+            const _w = this._wvFilterTargetWin();
             const _iv2 = _w && _w.ZoteroPane && _w.ZoteroPane.itemsView;
             this._wvPatchCacheStateForSelection(_iv2);
             // Same idea one level earlier: capture on every genuine
@@ -13515,8 +13533,6 @@ class _FilterMixin {
             catch (e) {}
         }
         finally {
-            const win = Zotero.getMainWindow();
-            const setT = (win && win.setTimeout) || setTimeout;
             // Set a post-apply observer-suppression window. The
             // `tree.invalidate()` call inside the inner apply produces
             // DOM mutations that arrive ASYNCHRONOUSLY over the next
@@ -13535,9 +13551,10 @@ class _FilterMixin {
                 || (this as any)._suppressTreeObserverUntil < post) {
                 (this as any)._suppressTreeObserverUntil = post;
             }
-            setT(() => {
-                this._filterApplying = false;
-            }, 80);
+            // A plugin-level flag runs on the sandbox clock, never on a
+            // window that can close (src-ts.md timer hosts; this site's
+            // idiom escaped the step-3 scan).
+            wvTimeout(() => { this._filterApplying = false; }, 80);
         }
     }
 
@@ -13565,7 +13582,7 @@ class _FilterMixin {
      *  `_rowMap` by id, never by index. */
     _captureSelectedItemIDs() {
         try {
-            const win = Zotero.getMainWindow();
+            const win = this._wvFilterTargetWin();
             const ZP = win && win.ZoteroPane;
             if (!ZP || typeof ZP.getSelectedItems !== "function") return [];
             const iv: any = ZP.itemsView;
@@ -13768,7 +13785,7 @@ class _FilterMixin {
                         (this as any)._wvFAHold = false;                // episode over
                         return;
                     }
-                    const w2 = Zotero.getMainWindow();
+                    const w2 = this._wvFilterTargetWin();
                     const iv: any = w2 && w2.ZoteroPane && w2.ZoteroPane.itemsView;
                     const rp: any = iv && (iv.rowProvider || iv);
                     if (!rp) { (this as any)._wvFAHold = false; return; }
@@ -13862,7 +13879,7 @@ class _FilterMixin {
                         this._wvScheduleStaleKeepRetry();
                         return;
                     }
-                    const w2 = Zotero.getMainWindow();
+                    const w2 = this._wvFilterTargetWin();
                     const iv: any = w2 && w2.ZoteroPane && w2.ZoteroPane.itemsView;
                     const rp: any = iv && (iv.rowProvider || iv);
                     if (!rp) return;
@@ -14341,11 +14358,12 @@ class _FilterMixin {
      *  sync fires hundreds, so the timer coalesces them into a single
      *  apply after the traffic stops.
      *
-     *  FOCUSED WINDOW ONLY, deliberately. `_applyItemsListFilterInner`
-     *  resolves its working window with `Zotero.getMainWindow()`, so an
-     *  apply "aimed" at a background window lands in the foreground one
-     *  (measured 2026-08-07: the target was A, the rows moved in B) --
-     *  and stealing focus to fix a background window would be worse than
+     *  FOCUSED WINDOW ONLY, deliberately. The apply pipeline binds to
+     *  `_wvFilterTargetWin()` -- the focused main unless a targeted
+     *  setup/teardown pass overrides it -- so an apply "aimed" at a
+     *  background window from here would land in the foreground one
+     *  (measured 2026-08-07: the target was A, the rows moved in B), and
+     *  stealing focus to fix a background window would be worse than
      *  the staleness. Other windows recompute on their next apply
      *  (chip, search, collection switch), which is what they did for
      *  every edit before this hook existed.
@@ -14832,6 +14850,24 @@ class _FilterMixin {
     }
 
     _applyItemsListFilterInner(opts?) {
+        // One apply, in phases over a context (survey 2026-10-06 step 4):
+        // the bodies are the former single method's, moved verbatim, each
+        // reading and extending `ctx`. Behaviour is unchanged by design.
+        const ctx = this._wvFilterApplyBegin(opts);
+        if (!ctx) return;
+        if (!ctx.active) { this._wvFilterApplyInactive(ctx); return; }
+        if (this._wvFilterApplySkip(ctx)) return;
+        this._wvFilterApplyPrepare(ctx);
+        this._wvFilterApplyCascade(ctx);
+        this._wvFilterApplyKeep(ctx);
+        this._wvFilterApplyMaterialise(ctx);
+        this._wvFilterApplyPublish(ctx);
+    }
+
+    /** Phase 0: resolve the target window, its tree and row source, snapshot
+     *  the quick search, detect a library change, start the perf clock,
+     *  read the state. Null when there is nothing to apply to. */
+    _wvFilterApplyBegin(opts?): WvFilterApplyCtx | null {
         // Auto-expand cascade is opt-IN. The MutationObserver-fired
         // reapply must NOT cascade (it would re-open every parent the
         // user just collapsed via the twisty/`-` key). Only the
@@ -14843,9 +14879,9 @@ class _FilterMixin {
         // focused window's tree with a background window's state (survey
         // 2026-10-06 #10; the per-main-window invariant in CLAUDE.md).
         const win = this._wvFilterTargetWin();
-        if (!win) return;
+        if (!win) return null;
         const itemsView = win.ZoteroPane && win.ZoteroPane.itemsView;
-        if (!itemsView || !itemsView.tree) return;
+        if (!itemsView || !itemsView.tree) return null;
 
         // Re-arm the reveal hook on the CURRENT collection-tree rows.
         // Selecting another collection swaps `rowProvider.collectionTreeRows`
@@ -14911,7 +14947,7 @@ class _FilterMixin {
         // - No `expandRows` / `collapseRows` / `_refreshContainer`
         //   / `_openContainer` — single-row async operations only.
         const rp: any = itemsView.rowProvider || itemsView;
-        if (!rp) return;
+        if (!rp) return null;
         const isV9 = !itemsView.rowProvider;
 
         // ---- Filter-apply phase timing (always on, ~µs overhead) ----
@@ -14940,92 +14976,104 @@ class _FilterMixin {
 
         const state = this._filterState;
         const active = this._isFilterActive(state);
+        const ctx: WvFilterApplyCtx = {
+            win, itemsView, rp, isV9, cascade, state, active,
+            perf: _perf, perfNow: _perfNow, perfT0: _perfT0, mark: _mark,
+            sig: null, wasPatchedAtEntry: false,
+            origGetRow: null, origGetRowCount: null,
+            isPrimary: null, hasMatch: null, hasPrimaryDescendant: null,
+            total: 0, keepSet: null, primaryIDs: null,
+            keep: null, keepHash: 0, keepRowsLen: 0,
+        };
+        return ctx;
+    }
 
-        // Filter cleared: restore originals by deleting the
-        // own-property patches so prototype methods show through.
-        // V9-COMPAT: for methods that were originally OWN-property
-        // arrow-function fields on the itemsView (not prototype
-        // methods), `delete` would remove the original too. Reassign
-        // from the saved `_wvOrig*` instead.
-        if (!active) {
-            // Drop transient per-row reveal state ONLY on the
-            // active→inactive transition (Weavero filter just got
-            // cleared). The user-revealed set must survive subsequent
-            // inactive applies — otherwise a chevron click during
-            // quick-search-only mode would re-enter this branch on
-            // the click's own apply call and immediately undo itself.
-            if (this._wvFilterWasActive) {
-                if (this._userRevealedAllIDs
-                    && this._userRevealedAllIDs.size) {
-                    this._userRevealedAllIDs.clear();
-                }
-                // Also drop the manual expand/collapse state so clearing
-                // the filter returns the tree to its default expansion.
-                // The user's per-row collapse/expand was relative to the
-                // filtered view, so it must NOT be remembered once the
-                // filter is gone (re-applying should start fresh).
-                if (this._userOpenedIDs && this._userOpenedIDs.size) {
-                    this._userOpenedIDs.clear();
-                }
-                if (this._userClosedIDs && this._userClosedIDs.size) {
-                    this._userClosedIDs.clear();
-                }
+    /** Phase 1 (filter cleared): take the translation off, settle the tree
+     *  (partial collapse, chevron maps for a quick search), repaint, refresh
+     *  the item-pane count. */
+    _wvFilterApplyInactive(ctx: WvFilterApplyCtx) {
+        const { win, itemsView, rp } = ctx;
+        // Drop transient per-row reveal state ONLY on the
+        // active→inactive transition (Weavero filter just got
+        // cleared). The user-revealed set must survive subsequent
+        // inactive applies — otherwise a chevron click during
+        // quick-search-only mode would re-enter this branch on
+        // the click's own apply call and immediately undo itself.
+        if (this._wvFilterWasActive) {
+            if (this._userRevealedAllIDs
+                && this._userRevealedAllIDs.size) {
+                this._userRevealedAllIDs.clear();
             }
-            this._wvFilterWasActive = false;
-            // Even with no Weavero filter, populate the chevron maps
-            // from Zotero's quick-search state so the indicator
-            // renders on first visible children of quick-search-
-            // hiding containers. Empty maps if no search either.
-            this._wvComputeChevronMapsForQuickSearch(rp);
-            // The keep watermark describes a TRANSLATED view. With the
-            // patches gone `getRow` is Zotero's own again and indices
-            // mean what they say, so a leftover watermark would keep
-            // reporting a stale mapping forever (it is only ever
-            // compared against the LIVE `_rows.length`, which changes on
-            // every collapse/expand). That made `_captureSelectedItemIDs`
-            // return null permanently after the first filter of a
-            // session — harmless while the reconcile merely bailed, but
-            // since 2026-08-07 the untrusted path CLEARS the selection,
-            // so it became a visible "my selection keeps vanishing" bug.
-            delete rp._wvKeepRowsLen;
-            if (rp._wvOrigGetRow) {
-                // The translation off whole (layers, natives, count getter,
-                // v9 props, view) -- the manual-expand tracker is its own
-                // layer and stays: it used to go with the filter's wrapper
-                // while its stamp stayed, so the observer's re-install
-                // returned early and tracking was dead from the first
-                // filter clear until a reload (survey 2026-10-06).
-                this._wvFilterPatchRemove(rp, itemsView);
-                this._partialCollapseOnFilterClear(rp, itemsView);
-                try { itemsView.tree.invalidate(); } catch (e) {}
+            // Also drop the manual expand/collapse state so clearing
+            // the filter returns the tree to its default expansion.
+            // The user's per-row collapse/expand was relative to the
+            // filtered view, so it must NOT be remembered once the
+            // filter is gone (re-applying should start fresh).
+            if (this._userOpenedIDs && this._userOpenedIDs.size) {
+                this._userOpenedIDs.clear();
             }
-            // Repaint so chevrons (just computed by the helper above
-            // for quick-search-only mode) actually appear on the rows
-            // the tree painted BEFORE the MutationObserver ran the
-            // apply pass. Without this, the first paint after a quick
-            // search has empty maps and skips the chevron path; the
-            // user sees no indicator until something else mutates the
-            // tree. Pure paint invalidate — doesn't add/remove rows —
-            // so it can't loop through the MutationObserver.
-            try { itemsView.tree.invalidate(); } catch (e) {}
-            // Re-render the item pane count on the CLEAR path too. The
-            // count getter has just been unpatched, but the message
-            // itself is only refreshed from `itemsView.onRefresh`
-            // upstream, so without this it keeps showing the FILTERED
-            // number after the filter is gone (measured 2026-08-08:
-            // message stuck at 15,329 with 17,928 rows restored).
-            // Same empty-selection gate as the apply path.
-            try {
-                const _zp: any = win && win.ZoteroPane;
-                const _sel: any = itemsView && itemsView.selection;
-                if (_zp && typeof _zp.itemSelected === "function"
-                    && _sel && _sel.count === 0) {
-                    Promise.resolve(_zp.itemSelected()).catch(() => {});
-                }
-            } catch (e) {}
-            return;
+            if (this._userClosedIDs && this._userClosedIDs.size) {
+                this._userClosedIDs.clear();
+            }
         }
+        this._wvFilterWasActive = false;
+        // Even with no Weavero filter, populate the chevron maps
+        // from Zotero's quick-search state so the indicator
+        // renders on first visible children of quick-search-
+        // hiding containers. Empty maps if no search either.
+        this._wvComputeChevronMapsForQuickSearch(rp);
+        // The keep watermark describes a TRANSLATED view. With the
+        // patches gone `getRow` is Zotero's own again and indices
+        // mean what they say, so a leftover watermark would keep
+        // reporting a stale mapping forever (it is only ever
+        // compared against the LIVE `_rows.length`, which changes on
+        // every collapse/expand). That made `_captureSelectedItemIDs`
+        // return null permanently after the first filter of a
+        // session — harmless while the reconcile merely bailed, but
+        // since 2026-08-07 the untrusted path CLEARS the selection,
+        // so it became a visible "my selection keeps vanishing" bug.
+        delete rp._wvKeepRowsLen;
+        if (rp._wvOrigGetRow) {
+            // The translation off whole (layers, natives, count getter,
+            // v9 props, view) -- the manual-expand tracker is its own
+            // layer and stays: it used to go with the filter's wrapper
+            // while its stamp stayed, so the observer's re-install
+            // returned early and tracking was dead from the first
+            // filter clear until a reload (survey 2026-10-06).
+            this._wvFilterPatchRemove(rp, itemsView);
+            this._partialCollapseOnFilterClear(rp, itemsView);
+            try { itemsView.tree.invalidate(); } catch (e) {}
+        }
+        // Repaint so chevrons (just computed by the helper above
+        // for quick-search-only mode) actually appear on the rows
+        // the tree painted BEFORE the MutationObserver ran the
+        // apply pass. Without this, the first paint after a quick
+        // search has empty maps and skips the chevron path; the
+        // user sees no indicator until something else mutates the
+        // tree. Pure paint invalidate — doesn't add/remove rows —
+        // so it can't loop through the MutationObserver.
+        try { itemsView.tree.invalidate(); } catch (e) {}
+        // Re-render the item pane count on the CLEAR path too. The
+        // count getter has just been unpatched, but the message
+        // itself is only refreshed from `itemsView.onRefresh`
+        // upstream, so without this it keeps showing the FILTERED
+        // number after the filter is gone (measured 2026-08-08:
+        // message stuck at 15,329 with 17,928 rows restored).
+        // Same empty-selection gate as the apply path.
+        try {
+            const _zp: any = win && win.ZoteroPane;
+            const _sel: any = itemsView && itemsView.selection;
+            if (_zp && typeof _zp.itemSelected === "function"
+                && _sel && _sel.count === 0) {
+                Promise.resolve(_zp.itemSelected()).catch(() => {});
+            }
+        } catch (e) {}
+    }
 
+    /** Phase 2: the state signature, the reveal-scope reset, and the no-op
+     *  skip (true = nothing to do). Publishes `ctx.sig` / `ctx.wasPatchedAtEntry`. */
+    _wvFilterApplySkip(ctx: WvFilterApplyCtx): boolean {
+        const { win, itemsView, rp, cascade } = ctx;
         // ---- No-op skip (perf fix #1, 2026-08-05) ----
         // Observer-triggered re-applies frequently arrive with NOTHING
         // changed — measured as ~650ms x4 bursts after a single click.
@@ -15069,15 +15117,24 @@ class _FilterMixin {
         // began — used by the identical-keep invalidate skip below (a
         // first activation must always re-render).
         const _wasPatchedAtEntry = !!(rp._wvFilterPatchTag && rp._wvFilterView);
+        ctx.sig = _sig;
+        ctx.wasPatchedAtEntry = _wasPatchedAtEntry;
         if (!cascade
             && this._wvLastApplySig === _sig
             && this._wvLastApplyRawRows === rp._rows.length
             && _wasPatchedAtEntry) {
             (Zotero as any)._wvFilterPerfSkips
                 = ((Zotero as any)._wvFilterPerfSkips || 0) + 1;
-            return;
+            return true;
         }
+        return false;
+    }
 
+    /** Phase 3: the row-provider translation (once per instance), the native
+     *  accessors, and the sig-keyed verdict caches both passes share. */
+    _wvFilterApplyPrepare(ctx: WvFilterApplyCtx) {
+        const { itemsView, rp, isV9, state, mark: _mark } = ctx;
+        const _sig = ctx.sig;
         // The row-provider translation: installed ONCE per instance
         // (_wvFilterPatchInstall: lib/wrap.ts layers reading the per-apply
         // view `rp._wvFilterView`, published at the end of this apply).
@@ -15220,6 +15277,19 @@ class _FilterMixin {
         };
 
         _mark("setup");
+        ctx.origGetRow = origGetRow;
+        ctx.origGetRowCount = origGetRowCount;
+        ctx.isPrimary = isPrimary;
+        ctx.hasMatch = hasMatch;
+        ctx.hasPrimaryDescendant = hasPrimaryDescendant;
+    }
+
+    /** Phase 4 (pass 1, opt-in): open every container with a strictly
+     *  deeper primary match -- by construction (build mode) or by depth
+     *  scans over expandRows. */
+    _wvFilterApplyCascade(ctx: WvFilterApplyCtx) {
+        const { itemsView, rp, cascade, state, perf: _perf, mark: _mark,
+            origGetRow, origGetRowCount, hasPrimaryDescendant } = ctx;
         // Pass 1 — auto-expand containers whose subtree contains a
         // STRICTLY DEEPER primary match (an attachment under a parent,
         // an annotation under an attachment, etc.). Walk FORWARDS so
@@ -15450,6 +15520,13 @@ class _FilterMixin {
         }
 
         _mark("pass1");
+    }
+
+    /** Phase 5 (pass 2): the keep set -- primaries and their ancestors, the
+     *  context rules (non-matching attachments / annotations), the user's
+     *  reveals and opens, fresh items, then the quick-search scope gate. */
+    _wvFilterApplyKeep(ctx: WvFilterApplyCtx) {
+        const { isV9, state, mark: _mark, origGetRow, origGetRowCount, isPrimary, hasMatch } = ctx;
         // Pass 2 — collect indices to keep: primary matches + every
         // ancestor row that contains them (so the tree shape is
         // preserved). For item-scope-alone matches the entire subtree
@@ -15911,6 +15988,15 @@ class _FilterMixin {
                     + toDrop.length + " out-of-scope row(s)");
             }
         }
+        ctx.total = total;
+        ctx.keepSet = keepSet;
+        ctx.primaryIDs = _primaryIDs;
+    }
+
+    /** Phase 6: the keep array and its hash, the chevron maps (hidden
+     *  counts, first visible child), the watermark. */
+    _wvFilterApplyMaterialise(ctx: WvFilterApplyCtx) {
+        const { rp, origGetRow, hasMatch, keepSet, total } = ctx;
         // Materialise the deduped keep set as a sorted array. The
         // rest of the apply logic (`getRow` patch etc.) consumes
         // this as the row-index translation table.
@@ -16031,7 +16117,18 @@ class _FilterMixin {
 
         dbg("[Weavero][filter] kept " + keep.length
             + " of " + total + " rows");
+        ctx.keep = keep;
+        ctx.keepHash = _keepHash;
+        ctx.keepRowsLen = keepRowsLen;
+    }
 
+    /** Phase 7: publish the view the translation layers read, repaint
+     *  (unless identical), record perf and the no-op watermarks, hand the
+     *  primary ids to the reconcile, refresh the item-pane count. */
+    _wvFilterApplyPublish(ctx: WvFilterApplyCtx) {
+        const { win, itemsView, rp, isV9, perf: _perf, perfNow: _perfNow, perfT0: _perfT0, mark: _mark,
+            keep, keepRowsLen, primaryIDs: _primaryIDs } = ctx;
+        const _sig = ctx.sig, _keepHash = ctx.keepHash, _wasPatchedAtEntry = ctx.wasPatchedAtEntry;
         // Publish THIS apply's view. The translation layers (installed once
         // per instance by _wvFilterPatchInstall, before the cascade) read it
         // on every call; a view whose watermark disagrees with `_rows.length`
@@ -16134,7 +16231,7 @@ class _FilterMixin {
         // collapse should only fire when the tree is truly going
         // back to its default unfiltered/unsearched view.
         try {
-            const win = Zotero.getMainWindow();
+            const win = this._wvFilterTargetWin();
             const sb: any = win && win.document.getElementById("zotero-tb-search");
             const qs = (sb && sb.value ? String(sb.value).trim() : "");
             if (qs) return;

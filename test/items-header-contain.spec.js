@@ -14,7 +14,7 @@
 // 878 px with 15 columns; post-fix it is padding only.
 
 describe("Weavero — items-list header contributes no intrinsic width", () => {
-    let win, hdr, prevWidth;
+    let win, hdr, prevWidth, item;
     const HDR_SEL = "#item-tree-main-default .virtualized-table-header, #item-tree-main .virtualized-table-header";
     const header = () => win.document.querySelector(HDR_SEL);
     const tree = () => win.ZoteroPane.itemsView.tree;
@@ -22,16 +22,33 @@ describe("Weavero — items-list header contributes no intrinsic width", () => {
     const visible = () => cols().filter(c => !c.hidden).sort((a, b) => a.ordinal - b.ordinal);
     const tick = ms => new Promise(r => win.setTimeout(r, ms));
 
-    before(function () {
+    before(async function () {
         if (!(Zotero.Weavero && Zotero.Weavero.plugin)) this.skip();
         win = Zotero.getMainWindow();
+        // A populated view: itemTree.jsx passes `hide: showMessage` to the
+        // virtualized table (rendered `display: none` then), and the empty
+        // view shows a message -- the header measures 0 x 0. In the full
+        // suite this guard ran right after a spec that left the library
+        // empty (every full run since 2026-10-05 read 0 px). One fixture
+        // item keeps the measurement meaningful whatever ran before.
+        const libID = Zotero.Libraries.userLibraryID;
+        item = new Zotero.Item("journalArticle");
+        item.libraryID = libID;
+        item.setField("title", "WV-TEST header-contain fixture");
+        await item.saveTx();
+        try {
+            await /** @type {any} */ (win.ZoteroPane.collectionsView).selectLibrary(libID);
+            await win.ZoteroPane.itemsView.waitForLoad();
+        } catch (e) {}
+        await tick(150);
         hdr = win && header();
         if (!hdr) this.skip();
         prevWidth = hdr.style.width;
     });
 
-    after(() => {
+    after(async () => {
         try { if (hdr) hdr.style.width = prevWidth; } catch (e) {}
+        try { if (item) await item.eraseTx(); } catch (e) {}
     });
 
     it("the header is contained in the inline axis", () => {
@@ -102,9 +119,20 @@ describe("Weavero — items-list header contributes no intrinsic width", () => {
             const r = hdr.getBoundingClientRect();
             const pane = win.document.getElementById("zotero-items-pane") || win.document.getElementById("zotero-items-pane-container");
             const pr = pane && pane.getBoundingClientRect();
+            // The header's ancestors: which box is collapsed to 0.
+            const chain = [];
+            let el = hdr;
+            for (let i = 0; el && i < 8; i++) {
+                const cr = el.getBoundingClientRect();
+                const cs = win.getComputedStyle(el);
+                chain.push((el.localName || "?") + (el.id ? "#" + el.id : "") + (el.className && typeof el.className === "string" ? "." + el.className.split(" ")[0] : "")
+                    + " " + Math.round(cr.width) + "x" + Math.round(cr.height) + " " + cs.display + (el.hidden ? " hidden" : "") + (el.getAttribute && el.getAttribute("collapsed") ? " collapsed" : ""));
+                el = el.parentElement;
+            }
             return JSON.stringify({ wins: all.length, index: all.indexOf(win), closed: win.closed, vis: win.document.visibilityState,
-                state: win.windowState, inner: [win.innerWidth, win.innerHeight], hdr: [r.width, r.height], pane: pr && [pr.width, pr.height],
-                tab: win.Zotero_Tabs && win.Zotero_Tabs.selectedType, display: win.getComputedStyle(hdr).display });
+                state: win.windowState, connected: hdr.isConnected, same: header() === hdr, headers: win.document.querySelectorAll(HDR_SEL).length,
+                inner: [win.innerWidth, win.innerHeight], hdr: [r.width, r.height], pane: pr && [pr.width, pr.height],
+                tab: win.Zotero_Tabs && win.Zotero_Tabs.selectedType, rows: win.ZoteroPane.itemsView && win.ZoteroPane.itemsView.rowCount, chain });
         } catch (e) { return String(e); }
     };
 
@@ -123,17 +151,28 @@ describe("Weavero — items-list header contributes no intrinsic width", () => {
             Zotero.debug("[Weavero][test] header max-content: window hidden, not measured " + diag());
             this.skip();
         }
+        // And a loaded tree: an earlier spec's trailing collection change
+        // can leave the items list mid-reload here.
+        try { await win.ZoteroPane.itemsView.waitForLoad(); } catch (e) {}
+        await tick(100);
+        // The LIVE header: the tree re-renders its header on a column
+        // reorder (the case above) and on the collection changes an earlier
+        // spec's trailing async work can land here, so the element captured
+        // in `before` may be detached by now (0-px rects on a visible window,
+        // full run 2026-10-07).
+        const h = header() || hdr;
+        if (h !== hdr) { hdr = h; prevWidth = h.style.width; }
         // A fresh test profile shows Zotero's three default columns and none
         // of Weavero's opt-in ones, so the bar is "a real header", not a rich
         // one (the first run of this guard asserted >3 and failed at 3).
-        const cells = [...hdr.querySelectorAll(":scope > .cell")];
+        const cells = [...h.querySelectorAll(":scope > .cell")];
         assert.isAtLeast(cells.length, 2, "a populated header");
         const sum = cells.reduce((t, c) => t + c.getBoundingClientRect().width, 0);
         assert.isAbove(sum, 100, "columns actually occupy width: " + sum + " " + diag());
-        hdr.style.width = "max-content";
-        void hdr.offsetWidth;
-        const w = hdr.getBoundingClientRect().width;
-        hdr.style.width = prevWidth;
+        h.style.width = "max-content";
+        void h.offsetWidth;
+        const w = h.getBoundingClientRect().width;
+        h.style.width = prevWidth;
         // Pre-fix this was the sum above (one label width per column plus the
         // fixed columns); contained, only padding remains.
         assert.isBelow(w, 40, "intrinsic width collapsed by containment: " + w);

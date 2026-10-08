@@ -24,7 +24,7 @@ describe("Weavero — session tracking never captures mid-switch or while quitti
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
         assert.isFunction(wv._wvTabSessionTrackingAllowed, "_wvTabSessionTrackingAllowed");
         assert.isFunction(wv._wvTabSessionTrackingCancel, "_wvTabSessionTrackingCancel");
         flags = {

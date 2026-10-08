@@ -53,7 +53,7 @@ describe("Weavero — File / Edit menubar entries for the window commands", () =
 
 	before(function () {
 		wv = Zotero.Weavero && Zotero.Weavero.plugin;
-		if (!wv) this.skip();
+		if (!wv) wvT.absent('!wv');
 		if (!(Zotero.MenuManager && typeof Zotero.MenuManager.registerMenu === "function")) this.skip();
 		win = Zotero.getMainWindow();
 		doc = win.document;

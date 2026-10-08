@@ -25,7 +25,7 @@ describe("Weavero — session list sort order", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvTabSessionSorted !== "function") this.skip();
+        if (!wv || typeof wv._wvTabSessionSorted !== "function") wvT.absent('!wv || typeof wv._wvTabSessionSorted !== "function"');
         win = Zotero.getMainWindow(); doc = win.document;
         panel = doc.getElementById("zotero-tabs-menu-panel");
         list = panel && (panel._tabsList || panel.querySelector("#zotero-tabs-menu-list"));

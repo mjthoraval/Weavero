@@ -12,7 +12,7 @@ describe("Weavero — stuck-state and tab-loss contracts", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
     });
 
     it("the final-apply backstop releases the hold (filter stale-keep repair stays alive)", () => {

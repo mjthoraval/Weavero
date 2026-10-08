@@ -13,7 +13,7 @@ describe("Weavero — region editor candidate range", () => {
 
 	before(function () {
 		wv = Zotero.Weavero && Zotero.Weavero.plugin;
-		if (!wv || typeof wv._wvDomRegionCandidate !== "function") this.skip();
+		if (!wv || typeof wv._wvDomRegionCandidate !== "function") wvT.absent('!wv || typeof wv._wvDomRegionCandidate !== "function"');
 		doc = Zotero.getMainWindow().document.implementation.createHTMLDocument("wv-region-test");
 		doc.body.innerHTML = "<p id='a'>Alpha bravo charlie</p><p id='b'>Delta echo foxtrot</p>"
 			+ "<p id='c'>Golf hotel india</p>";

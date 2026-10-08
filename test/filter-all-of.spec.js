@@ -22,7 +22,7 @@ describe("Weavero — filter: multi-valued picks must ALL match", () => {
     before(async function () {
         this.timeout(30000);
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._emptyFilterGroup !== "function") this.skip();
+        if (!wv || typeof wv._emptyFilterGroup !== "function") wvT.absent('!wv || typeof wv._emptyFilterGroup !== "function"');
         prevFilter = wv._filterState;
         const mkC = async (name) => { const c = new Zotero.Collection(); c.name = name; await c.saveTx(); return c; };
         cA = await mkC("wv-allof-A"); cB = await mkC("wv-allof-B");

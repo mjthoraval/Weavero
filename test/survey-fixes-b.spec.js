@@ -10,7 +10,7 @@ describe("Weavero — survey fixes, round B", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
     });
 
     it("the multi-window getMainWindow swap is re-entrant: overlapping loads restore the real function", async () => {

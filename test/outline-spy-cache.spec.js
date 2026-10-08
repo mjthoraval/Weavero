@@ -17,7 +17,7 @@ describe("Weavero — outline scroll-spy cache retries misses", () => {
 
 	before(function () {
 		wv = Zotero.Weavero && Zotero.Weavero.plugin;
-		if (!wv || typeof wv._wvOutlineSpyPickDom !== "function") this.skip();
+		if (!wv || typeof wv._wvOutlineSpyPickDom !== "function") wvT.absent('!wv || typeof wv._wvOutlineSpyPickDom !== "function"');
 		doc = Zotero.getMainWindow().document;
 	});
 

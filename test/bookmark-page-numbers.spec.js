@@ -19,7 +19,7 @@ describe("Weavero — bookmark page numbers: per-document override + global pref
 
     before(async function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvBmPagesShown !== "function") this.skip();
+        if (!wv || typeof wv._wvBmPagesShown !== "function") wvT.absent('!wv || typeof wv._wvBmPagesShown !== "function"');
         await wv._wvOutlineInit();
         savedPref = Zotero.Prefs.get(PREF);
         savedOutlinePref = Zotero.Prefs.get(OUTLINE_PREF);

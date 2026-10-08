@@ -15,7 +15,7 @@ describe("Weavero — undo engine", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvUndoPush !== "function") this.skip();
+        if (!wv || typeof wv._wvUndoPush !== "function") wvT.absent('!wv || typeof wv._wvUndoPush !== "function"');
         wv._wvUndoClear(SCOPE);
         wv._wvUndoRegisterType("spec.step", {
             undo(d) { d.log.push("undo " + d.label); },

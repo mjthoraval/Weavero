@@ -16,7 +16,7 @@ describe("Weavero — external-link URL tip", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvExtTipRender !== "function") this.skip();
+        if (!wv || typeof wv._wvExtTipRender !== "function") wvT.absent('!wv || typeof wv._wvExtTipRender !== "function"');
         win = Zotero.getMainWindow();
     });
 

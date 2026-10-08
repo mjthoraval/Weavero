@@ -13,7 +13,7 @@ describe("Weavero — annotation card dates (#49)", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvAnnDatesShown !== "function") this.skip();
+        if (!wv || typeof wv._wvAnnDatesShown !== "function") wvT.absent('!wv || typeof wv._wvAnnDatesShown !== "function"');
         prevA = Zotero.Prefs.get(P_A); prevM = Zotero.Prefs.get(P_M);
         Zotero.Prefs.set(P_A, false); Zotero.Prefs.set(P_M, false);
     });

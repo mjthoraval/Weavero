@@ -14,7 +14,7 @@ describe("Weavero — collections-tree placement after a bookmark jump", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._bmPlaceCollectionRow !== "function") this.skip();
+        if (!wv || typeof wv._bmPlaceCollectionRow !== "function") wvT.absent('!wv || typeof wv._bmPlaceCollectionRow !== "function"');
         prev = Zotero.Prefs.get(PREF);
     });
     after(() => { try { Zotero.Prefs.set(PREF, prev || "top"); } catch (_) {} });

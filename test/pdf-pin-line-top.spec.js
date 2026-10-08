@@ -12,7 +12,7 @@ describe("Weavero — PDF pin jumps place the pin's text line", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
     });
 
     const fixture = async () => {

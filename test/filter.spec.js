@@ -23,7 +23,7 @@ describe("Weavero — items-tree filter", () => {
     let wv;
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
     });
 
     // ---- _rowKindOf: kind classification --------------------------
@@ -815,7 +815,7 @@ describe("Weavero — items-tree filter", () => {
         let group, groupLibID, junk;
         before(async function () {
             this.timeout(30000);
-            if (typeof wv._wvCollectLinkedLibraries !== "function") this.skip();
+            if (typeof wv._wvCollectLinkedLibraries !== "function") wvT.absent('typeof wv._wvCollectLinkedLibraries !== "function"');
             // A local group library (upstream's own createGroup pattern —
             // needs a current user in the users table).
             let uid = Zotero.Users.getCurrentUserID();

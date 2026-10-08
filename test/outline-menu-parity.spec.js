@@ -16,7 +16,7 @@ describe("Weavero — outline menu matches the collections pane", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
     });
 
     const fixture = (selectedIds) => {

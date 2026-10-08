@@ -26,7 +26,7 @@ describe("Weavero — option gates", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
         win = Zotero.getMainWindow();
     });
 
@@ -116,7 +116,7 @@ describe("Weavero — option contracts (source)", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
     });
 
     it("a failed title-bar apply never rewrites the user's master pref", () => {

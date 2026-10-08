@@ -13,7 +13,7 @@ describe("Weavero — default attachment: a failed legacy import keeps the offer
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
         assert.isFunction(wv._wvApplyLegacyChoice);
         for (const k of KEYS) saved[k] = Zotero.Prefs.get(k);
         ownImport = Object.prototype.hasOwnProperty.call(wv, "_wvImportLegacyMappings");

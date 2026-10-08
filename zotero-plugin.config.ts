@@ -5,8 +5,12 @@ import { basename, join } from "node:path";
 /** `test` (the whole suite), or a scratch directory holding only the specs
  *  named in WV_TEST_ENTRIES -- see the `test.entries` note below. */
 function wvTestEntries(): string[] {
-  const want = (process.env.WV_TEST_ENTRIES || "").split(",").map(s => s.trim()).filter(Boolean);
-  if (!want.length) return ["test"];
+  const listed = (process.env.WV_TEST_ENTRIES || "").split(",").map(s => s.trim()).filter(Boolean);
+  if (!listed.length) return ["test"];
+  // The 000- files (failure recorder, shared helpers + readiness + pending
+  // allowlist) are part of every run: a targeted spec may call `wvT.*`.
+  const want = ["test/000-diagnostics.spec.js", "test/000-helpers.spec.js", ...listed]
+    .filter((f, i, a) => a.indexOf(f) === i);
   // Not under `.scaffold/`: the scaffold's glob skips dot-directories.
   const dir = "test-targeted";
   rmSync(dir, { recursive: true, force: true });
@@ -101,12 +105,15 @@ export default defineConfig({
     // globs DIRECTORIES, so the listed files are copied into a scratch
     // directory it can scan; specs are self-contained (no relative imports).
     entries: wvTestEntries(),
-    // We don't yet expose an "initialized" flag on a global, so
-    // wait a fixed delay after Zotero starts before kicking off
-    // the test suite. Once the plugin is converted to set a
-    // `Zotero._weaveroReady = true` flag in init(), switch to
-    // `waitForPlugin: () => Zotero._weaveroReady`.
-    startupDelay: 8_000,
+    // The suite starts once the plugin's init has SETTLED: index.ts raises
+    // `Zotero._weaveroReady` when `init()` resolves (or rejects -- the
+    // error is recorded for the readiness spec in test/000-helpers.spec.js
+    // to report). The scaffold evals this string in its bootstrap and polls
+    // it every 100 ms for up to 10 s after `startupDelay` (survey
+    // 2026-10-06 §6, step 5; a fixed 8 s delay before, with nothing
+    // asserting that the plugin had loaded at all).
+    startupDelay: 3_000,
+    waitForPlugin: "() => Zotero._weaveroReady === true",
     abortOnFail: false,
     // One-shot run: exit after a single pass instead of staying in
     // watch mode (the scaffold's local default). This is the

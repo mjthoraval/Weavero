@@ -11,7 +11,7 @@ describe("Weavero — an unreadable bookmarks.json is kept, never replaced", () 
 
     before(async function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
         assert.isFunction(wv._bmInit, "_bmInit");
         await wv._bmInit();
         path = wv._bmFilePath();

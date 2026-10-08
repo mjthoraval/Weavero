@@ -16,7 +16,7 @@ describe("Weavero — teardown keeps the text inside link / markdown spans", () 
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
         assert.isFunction(wv._wvRestoreDecoratedText, "_wvRestoreDecoratedText");
         assert.isFunction(wv._wvStripWindowChrome, "_wvStripWindowChrome");
         sdoc = Zotero.getMainWindow().document.implementation.createHTMLDocument("wv-strip");

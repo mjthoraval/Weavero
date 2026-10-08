@@ -13,7 +13,7 @@ describe("Weavero — Delete Weavero Outline", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
     });
 
     const stub = (hasCurated) => {

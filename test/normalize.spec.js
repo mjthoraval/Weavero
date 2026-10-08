@@ -10,7 +10,7 @@ describe("Weavero — string normalization", () => {
 
     before(function () {
         wv = Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
     });
 
     describe("normalize()", () => {

@@ -12,7 +12,7 @@ describe("Weavero — drag overlays: a second show restores the first drag's loc
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
         assert.isFunction(wv._wvShowReaderDragOverlays, "_wvShowReaderDragOverlays");
         assert.isFunction(wv._wvHideReaderDragOverlays, "_wvHideReaderDragOverlays");
         const doc = Zotero.getMainWindow().document;

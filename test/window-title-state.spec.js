@@ -11,7 +11,7 @@ describe("Weavero — custom window titles live in the window's state", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvWindowSetCustomTitle !== "function") this.skip();
+        if (!wv || typeof wv._wvWindowSetCustomTitle !== "function") wvT.absent('!wv || typeof wv._wvWindowSetCustomTitle !== "function"');
         win = Zotero.getMainWindow();
         prev = win._wvWindowTitle;
     });

@@ -46,7 +46,7 @@ describe("Weavero — Advanced Search to Quick Search mapping", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvQuickSearchFromAdvanced !== "function") this.skip();
+        if (!wv || typeof wv._wvQuickSearchFromAdvanced !== "function") wvT.absent('!wv || typeof wv._wvQuickSearchFromAdvanced !== "function"');
     });
 
     it("maps each seeded mode back to its quick search", () => {

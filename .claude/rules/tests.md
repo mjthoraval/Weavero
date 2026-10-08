@@ -10,6 +10,26 @@ paths:
   monitor with bounded checks — the runner can stall silently at 0 bytes on a
   Zotero binary/profile lock. Kill orphaned temp-profile `zotero.exe`
   afterwards (the `--profile …/.scaffold/test/profile` one), never the user's.
+- SKIP DISCIPLINE (survey 2026-10-06 §6, step 5): a missing plugin, method
+  or constant is a FAILURE — `wvT.absent("plugin.x")` (or `wvT.method`,
+  `wvT.src`), never `this.skip()`: 141 guards used to skip exactly when the
+  regression happened. `this.skip()` is for platform / version / runner
+  reasons only, with the reason in a trailing comment, and every pending
+  test must match an entry of `wvT.PENDING_ALLOWLIST` in
+  test/000-helpers.spec.js (reason per entry) — the root `after` hook
+  there fails the run on any other. The run starts once
+  `Zotero._weaveroReady` is raised (init settled) AND a root `before`
+  barrier has awaited Zotero's own readiness (schemaUpdatePromise — the
+  bundled-files install on a fresh profile holds the DB for many seconds —
+  uiReadyPromise, the items tree's load, a free DB): without it the first
+  spec's `saveTx` timed out at 20 s. The readiness spec in the same file
+  is the first of every run.
+- SHARED HELPERS: `wvT` (test/000-helpers.spec.js, a global of the runner
+  page; typed in test/wvT.d.ts) — plugin/lib/win, sleep/waitFor, withPref
+  (restores a user value, clears a defaulted pref, never writes a default
+  as a user value), minimalPDFBytes/createTestPDFItem (temp files removed
+  at the end of the run), createItem/erase, purgeDeadReaders. Prefer them
+  to a per-file copy; a targeted run always stages the 000- files.
 - Popup contracts are locked by `test/popups.spec.js` — run after touching
   popup code. `test/compat.spec.js` asserts the ownerGlobal/documentGlobal
   bundle invariants.

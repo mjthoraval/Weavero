@@ -41,7 +41,7 @@ describe("Weavero — reader close leaves no dead-window observer errors", funct
 
     before(async function () {
         const wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
         win = Zotero.getMainWindow();
         const path = PathUtils.join(PathUtils.tempDir, "wv-close-" + Date.now() + ".pdf");
         await IOUtils.writeUTF8(path, minimalPDFBytes());

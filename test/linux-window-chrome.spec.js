@@ -17,11 +17,11 @@ describe("Weavero -- Linux window chrome", () => {
 
 	before(function () {
 		wv = Zotero.Weavero && Zotero.Weavero.plugin;
-		if (!wv) this.skip();
+		if (!wv) wvT.absent('!wv');
 	});
 
 	it("reader-window caption buttons use GTK icons and the window keeps a background on Linux", function () {
-		if (typeof wv._ensureReaderWindowTabStripStyles !== "function") this.skip();
+		if (typeof wv._ensureReaderWindowTabStripStyles !== "function") wvT.absent('typeof wv._ensureReaderWindowTabStripStyles !== "function"');
 		const mw = Zotero.getMainWindow();
 		const d = mw.document.implementation.createHTMLDocument("wv-linux-chrome-test");
 		wv._ensureReaderWindowTabStripStyles(d);

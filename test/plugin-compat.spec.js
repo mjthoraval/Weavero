@@ -51,7 +51,7 @@ describe("Weavero — plugin compat: Default Attachment (real XPI)", function ()
     before(async function () {
         if (!gated()) this.skip();
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
 
         const dir = Services.env.get("WV_COMPAT_XPI_DIR");
         const { AddonManager } = ChromeUtils.importESModule(
@@ -170,7 +170,7 @@ describe("Weavero — plugin compat: Zotero Reading List (real XPI)", function (
     before(async function () {
         if (!gated()) this.skip();
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvReadStatusOf !== "function") this.skip();
+        if (!wv || typeof wv._wvReadStatusOf !== "function") wvT.absent('!wv || typeof wv._wvReadStatusOf !== "function"');
         const dir = Services.env.get("WV_COMPAT_XPI_DIR");
         const { AddonManager } = ChromeUtils.importESModule(
             "resource://gre/modules/AddonManager.sys.mjs");
@@ -341,7 +341,7 @@ describe("Weavero — plugin compat: Annotation Markdown (real XPI)", function (
     before(async function () {
         if (!gated()) this.skip();
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvAmActiveInDoc !== "function") this.skip();
+        if (!wv || typeof wv._wvAmActiveInDoc !== "function") wvT.absent('!wv || typeof wv._wvAmActiveInDoc !== "function"');
         win = Zotero.getMainWindow();
 
         const dir = Services.env.get("WV_COMPAT_XPI_DIR");
@@ -688,7 +688,7 @@ describe("Weavero — plugin compat: Better Notes (real XPI)", function () {
     before(async function () {
         if (!gated()) this.skip();
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._processNoteEditors !== "function") this.skip();
+        if (!wv || typeof wv._processNoteEditors !== "function") wvT.absent('!wv || typeof wv._processNoteEditors !== "function"');
         win = Zotero.getMainWindow();
         doc = win.document;
 

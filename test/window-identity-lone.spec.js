@@ -12,7 +12,7 @@ describe("Weavero — no identity colour on a lone (anchor) window", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvDecorateWindowTargetMenuitem !== "function") this.skip();
+        if (!wv || typeof wv._wvDecorateWindowTargetMenuitem !== "function") wvT.absent('!wv || typeof wv._wvDecorateWindowTargetMenuitem !== "function"');
         win = Zotero.getMainWindow(); doc = win.document;
         if (Zotero.getMainWindows().length !== 1) this.skip();   // needs the lone-window case
     });

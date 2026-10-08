@@ -11,7 +11,7 @@ describe("Weavero — filter Collection tree", () => {
     before(async function () {
         this.timeout(20000);
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvCollTreeValues !== "function") this.skip();
+        if (!wv || typeof wv._wvCollTreeValues !== "function") wvT.absent('!wv || typeof wv._wvCollTreeValues !== "function"');
         prevRec = Zotero.Prefs.get("recursiveCollections");
         const mk = async (name, parentID) => { const c = new Zotero.Collection(); c.name = name; if (parentID) c.parentID = parentID; await c.saveTx(); return c; };
         parent = await mk("wvct-B-parent");

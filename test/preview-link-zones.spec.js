@@ -11,7 +11,7 @@ describe("Weavero — preview link-zone rect mapping", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvPreviewMapRect !== "function") this.skip();
+        if (!wv || typeof wv._wvPreviewMapRect !== "function") wvT.absent('!wv || typeof wv._wvPreviewMapRect !== "function"');
     });
 
     // Viewport-space in, image CSS px out: subtract the trim origin, divide
@@ -48,7 +48,7 @@ describe("Weavero — overlay-popup re-hover guard", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvWirePreviewLinkZones !== "function") this.skip();
+        if (!wv || typeof wv._wvWirePreviewLinkZones !== "function") wvT.absent('!wv || typeof wv._wvWirePreviewLinkZones !== "function"');
     });
 
     const stubReader = () => {

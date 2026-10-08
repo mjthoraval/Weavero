@@ -10,7 +10,7 @@ describe("Weavero — URL classification", () => {
     let wv;
     before(function () {
         wv = Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
     });
 
     describe("_urlLinkClass()", () => {
@@ -59,7 +59,7 @@ describe("Weavero — URL_REGEX", () => {
     let wv;
     before(function () {
         wv = Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
     });
 
     it("matches a bare https URL", () => {
@@ -106,7 +106,7 @@ describe("Weavero — hasURI()", () => {
     let wv;
     before(function () {
         wv = Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
     });
 
     it("true for any string containing a recognised scheme", () => {
@@ -136,7 +136,7 @@ describe("Weavero — MD_REGEX", () => {
     let wv;
     before(function () {
         wv = Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
     });
 
     it("matches **bold**", () => {

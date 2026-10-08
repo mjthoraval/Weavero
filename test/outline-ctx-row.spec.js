@@ -12,7 +12,7 @@ describe("Weavero — outline context-menu target cue", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
     });
 
     const fixture = () => {

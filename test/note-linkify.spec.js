@@ -59,7 +59,7 @@ describe("Weavero — note-editor bare-URL decoration", () => {
     before(async function () {
         this.timeout(60000);
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
         win = Zotero.getMainWindow();
         doc = win.document;
         ZP = win.ZoteroPane;

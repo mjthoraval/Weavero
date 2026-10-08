@@ -13,7 +13,7 @@ describe("Weavero — collections-tree reading aids", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvCollAidsUpdate !== "function") this.skip();
+        if (!wv || typeof wv._wvCollAidsUpdate !== "function") wvT.absent('!wv || typeof wv._wvCollAidsUpdate !== "function"');
         prevMax = Zotero.Prefs.get(PREF);
     });
     after(() => { try { Zotero.Prefs.set(PREF, prevMax || 7); } catch (_) {} });

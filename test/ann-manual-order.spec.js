@@ -13,7 +13,7 @@ describe("Weavero — per-document annotation sort + manual order", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvAnnManualMove !== "function") this.skip();
+        if (!wv || typeof wv._wvAnnManualMove !== "function") wvT.absent('!wv || typeof wv._wvAnnManualMove !== "function"');
     });
 
     const withAtt = async (key, fn) => {

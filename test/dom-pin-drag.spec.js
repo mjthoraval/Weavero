@@ -26,7 +26,7 @@ describe("Weavero — DOM-view pin drag and location keys", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvDomAnchorFromContentPoint !== "function") this.skip();
+        if (!wv || typeof wv._wvDomAnchorFromContentPoint !== "function") wvT.absent('!wv || typeof wv._wvDomAnchorFromContentPoint !== "function"');
         doc = Zotero.getMainWindow().document;
     });
 
@@ -87,7 +87,7 @@ describe("Weavero — DOM-view pin drag and location keys", () => {
 
     describe("resolving a stored anchor back to a range", () => {
         it("uses the CFI resolver when the bookmark has one", function () {
-            if (typeof wv._wvDomRangeForAnchor !== "function") this.skip();
+            if (typeof wv._wvDomRangeForAnchor !== "function") wvT.absent('typeof wv._wvDomRangeForAnchor !== "function"');
             const range = { getBoundingClientRect: () => ({ left: 1, top: 2, width: 3, height: 4 }) };
             const v = view({ epub: true, range });
             v.getRange = () => ({ toRange: () => range });
@@ -95,7 +95,7 @@ describe("Weavero — DOM-view pin drag and location keys", () => {
         });
 
         it("uses the selector resolver for a rect-less position", function () {
-            if (typeof wv._wvDomRangeForAnchor !== "function") this.skip();
+            if (typeof wv._wvDomRangeForAnchor !== "function") wvT.absent('typeof wv._wvDomRangeForAnchor !== "function"');
             const range = { getBoundingClientRect: () => ({ left: 1, top: 2, width: 3, height: 4 }) };
             assert.strictEqual(
                 wv._wvDomRangeForAnchor(view({ range }), { position: { type: "CssSelector", value: "#p1" } }),
@@ -103,7 +103,7 @@ describe("Weavero — DOM-view pin drag and location keys", () => {
         });
 
         it("declines a PDF geometry position", function () {
-            if (typeof wv._wvDomRangeForAnchor !== "function") this.skip();
+            if (typeof wv._wvDomRangeForAnchor !== "function") wvT.absent('typeof wv._wvDomRangeForAnchor !== "function"');
             assert.isNull(wv._wvDomRangeForAnchor(view({ range: {} }),
                 { position: { pageIndex: 0, rects: [[0, 0, 1, 1]] } }));
         });
@@ -138,7 +138,7 @@ describe("Weavero — DOM-view pin drag and location keys", () => {
         };
 
         it("a small movement does NOT move the pin", function () {
-            if (typeof wv._wvWireDomPinDrag !== "function") this.skip();
+            if (typeof wv._wvWireDomPinDrag !== "function") wvT.absent('typeof wv._wvWireDomPinDrag !== "function"');
             const { d, pin } = wirePin();
             send(pin, "pointerdown", 500, 500);
             send(d, "pointermove", 502, 501);           // ~2px, under threshold
@@ -147,7 +147,7 @@ describe("Weavero — DOM-view pin drag and location keys", () => {
         });
 
         it("a real drag moves it by the pointer delta", function () {
-            if (typeof wv._wvWireDomPinDrag !== "function") this.skip();
+            if (typeof wv._wvWireDomPinDrag !== "function") wvT.absent('typeof wv._wvWireDomPinDrag !== "function"');
             const { d, pin } = wirePin();
             send(pin, "pointerdown", 500, 500);
             send(d, "pointermove", 540, 530);           // 40/30 => well over
@@ -156,14 +156,14 @@ describe("Weavero — DOM-view pin drag and location keys", () => {
         });
 
         it("disarms the fade so the pin cannot vanish mid-drag", function () {
-            if (typeof wv._wvWireDomPinDrag !== "function") this.skip();
+            if (typeof wv._wvWireDomPinDrag !== "function") wvT.absent('typeof wv._wvWireDomPinDrag !== "function"');
             const { pin, counts } = wirePin();
             send(pin, "pointerdown", 500, 500);
             assert.equal(counts().disarmed, 1);
         });
 
         it("ignores non-primary buttons", function () {
-            if (typeof wv._wvWireDomPinDrag !== "function") this.skip();
+            if (typeof wv._wvWireDomPinDrag !== "function") wvT.absent('typeof wv._wvWireDomPinDrag !== "function"');
             const { d, pin } = wirePin();
             const ev = d.createEvent("Event");
             ev.initEvent("pointerdown", true, true);

@@ -19,7 +19,7 @@ describe("Weavero -- Plugins Manager title bar is one row on every platform", ()
 
 	before(function () {
 		wv = Zotero.Weavero && Zotero.Weavero.plugin;
-		if (!wv || typeof wv._wvPMSetupChrome !== "function") this.skip();
+		if (!wv || typeof wv._wvPMSetupChrome !== "function") wvT.absent('!wv || typeof wv._wvPMSetupChrome !== "function"');
 		if (!wv._getEnablePluginsSearch || !wv._getEnablePluginsSearch()) this.skip();
 	});
 

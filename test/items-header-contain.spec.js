@@ -23,7 +23,7 @@ describe("Weavero — items-list header contributes no intrinsic width", () => {
     const tick = ms => new Promise(r => win.setTimeout(r, ms));
 
     before(async function () {
-        if (!(Zotero.Weavero && Zotero.Weavero.plugin)) this.skip();
+        if (!(Zotero.Weavero && Zotero.Weavero.plugin)) wvT.absent('!(Zotero.Weavero && Zotero.Weavero.plugin)');
         win = Zotero.getMainWindow();
         // A populated view: itemTree.jsx passes `hide: showMessage` to the
         // virtualized table (rendered `display: none` then), and the empty

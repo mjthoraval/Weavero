@@ -29,7 +29,7 @@ describe("Weavero — snapshot position pin", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvReaderDrawDomPin !== "function") this.skip();
+        if (!wv || typeof wv._wvReaderDrawDomPin !== "function") wvT.absent('!wv || typeof wv._wvReaderDrawDomPin !== "function"');
         doc = Zotero.getMainWindow().document;
     });
 
@@ -153,7 +153,7 @@ describe("Weavero — snapshot position pin", () => {
         });
 
         it("resolves a stored selector and draws the pin", function () {
-            if (typeof wv._wvReaderShowSnapshotPin !== "function") this.skip();
+            if (typeof wv._wvReaderShowSnapshotPin !== "function") wvT.absent('typeof wv._wvReaderShowSnapshotPin !== "function"');
             const d = freshDoc(), w = stubWin();
             const ok = wv._wvReaderShowSnapshotPin(
                 readerWith(viewFor(d, w, stubRange(RECT))),
@@ -163,7 +163,7 @@ describe("Weavero — snapshot position pin", () => {
         });
 
         it("declines a PDF geometry position, so the PDF pin still runs", function () {
-            if (typeof wv._wvReaderShowSnapshotPin !== "function") this.skip();
+            if (typeof wv._wvReaderShowSnapshotPin !== "function") wvT.absent('typeof wv._wvReaderShowSnapshotPin !== "function"');
             const d = freshDoc(), w = stubWin();
             const ok = wv._wvReaderShowSnapshotPin(
                 readerWith(viewFor(d, w, stubRange(RECT))),
@@ -173,14 +173,14 @@ describe("Weavero — snapshot position pin", () => {
         });
 
         it("declines a view with no selector resolver", function () {
-            if (typeof wv._wvReaderShowSnapshotPin !== "function") this.skip();
+            if (typeof wv._wvReaderShowSnapshotPin !== "function") wvT.absent('typeof wv._wvReaderShowSnapshotPin !== "function"');
             assert.isFalse(wv._wvReaderShowSnapshotPin(
                 readerWith({ _iframeWindow: stubWin(), _iframeDocument: freshDoc() }),
                 { type: "CssSelector", value: "#x" }));
         });
 
         it("declines when the selector no longer resolves", function () {
-            if (typeof wv._wvReaderShowSnapshotPin !== "function") this.skip();
+            if (typeof wv._wvReaderShowSnapshotPin !== "function") wvT.absent('typeof wv._wvReaderShowSnapshotPin !== "function"');
             const d = freshDoc();
             assert.isFalse(wv._wvReaderShowSnapshotPin(
                 readerWith(viewFor(d, stubWin(), null)),

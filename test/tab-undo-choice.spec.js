@@ -29,7 +29,7 @@ describe("Weavero — tab-level undo choice", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvTabUndoChoice !== "function") this.skip();
+        if (!wv || typeof wv._wvTabUndoChoice !== "function") wvT.absent('!wv || typeof wv._wvTabUndoChoice !== "function"');
         origAtt = wv._wvReaderAtt; origScope = wv._wvReaderBmScope; origRun = wv._wvUndoRun;
         origActivate = wv._wvReaderActivateOutlineTakeover; origSetBm = wv._wvReaderSetBmActive;
         wv._wvReaderAtt = () => att;

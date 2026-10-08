@@ -11,7 +11,7 @@ describe("Weavero — DOM jumps place the text, not the element box", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
     });
 
     it("an element with space above its text lands its text at the quarter", async () => {

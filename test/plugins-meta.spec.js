@@ -12,7 +12,7 @@ describe("Weavero — Plugins Manager card meta", () => {
 
 	before(function () {
 		wv = Zotero.Weavero && Zotero.Weavero.plugin;
-		if (!wv || typeof wv._wvPMRelTime !== "function") this.skip();
+		if (!wv || typeof wv._wvPMRelTime !== "function") wvT.absent('!wv || typeof wv._wvPMRelTime !== "function"');
 	});
 
 	describe("_wvPMRelTime", () => {

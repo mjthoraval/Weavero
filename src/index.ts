@@ -6053,8 +6053,20 @@ Zotero.Weavero = {
                         _Weavero._wvWireDefaultChildMenu(w);
                     }
                 } catch (e) {}
-                _Weavero.init().catch(e =>
-                    Zotero.debug("[Weavero] init error: " + e)
+                // Readiness flag for the test runner (zotero-plugin.config.ts
+                // `waitForPlugin`): the suite starts once init has SETTLED,
+                // not after a fixed delay. A failed init still raises the
+                // flag (the runner would otherwise time out) and records
+                // the error for the readiness spec to report.
+                (Zotero as any)._weaveroReady = false;
+                (Zotero as any)._weaveroInitError = null;
+                _Weavero.init().then(
+                    () => { (Zotero as any)._weaveroReady = true; },
+                    (e) => {
+                        Zotero.debug("[Weavero] init error: " + e);
+                        (Zotero as any)._weaveroInitError = String(e);
+                        (Zotero as any)._weaveroReady = true;
+                    },
                 );
             } catch (e) {
                 Zotero.debug("[Weavero] startup error: " + e);
@@ -6063,6 +6075,7 @@ Zotero.Weavero = {
         onShutdown(reason) {
             if (_Weavero) { _Weavero.destroy(reason); _Weavero = null; }
             Zotero.Weavero.plugin = null;
+            (Zotero as any)._weaveroReady = false;
         },
         onMainWindowLoad(window) {
             if (!_Weavero) return;

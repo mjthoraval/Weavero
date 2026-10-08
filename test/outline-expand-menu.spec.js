@@ -12,7 +12,7 @@ describe("Weavero — Outline tab menu: Expand All / Collapse All", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvOutlineShowTabMenu !== "function") this.skip();
+        if (!wv || typeof wv._wvOutlineShowTabMenu !== "function") wvT.absent('!wv || typeof wv._wvOutlineShowTabMenu !== "function"');
     });
 
     const open = (parentKeys, expanded) => {

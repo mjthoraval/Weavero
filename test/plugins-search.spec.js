@@ -11,7 +11,7 @@ describe("Weavero — Plugins Manager search box", () => {
 
 	before(function () {
 		wv = Zotero.Weavero && Zotero.Weavero.plugin;
-		if (!wv || typeof wv._wvPMInject !== "function") this.skip();
+		if (!wv || typeof wv._wvPMInject !== "function") wvT.absent('!wv || typeof wv._wvPMInject !== "function"');
 	});
 
 	// A stand-in about:addons document (#main > addon-list > addon-card…) and

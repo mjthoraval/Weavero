@@ -11,7 +11,7 @@ describe("Weavero — outline scroll-spy in paginated EPUB", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
     });
 
     it("orders CFIs by book position", () => {

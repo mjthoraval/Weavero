@@ -39,7 +39,7 @@ describe("Weavero — reader selection menu order", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvReaderViewContextMenu !== "function") this.skip();
+        if (!wv || typeof wv._wvReaderViewContextMenu !== "function") wvT.absent('!wv || typeof wv._wvReaderViewContextMenu !== "function"');
     });
 
     for (const type of ["pdf", "snapshot", "epub"]) {

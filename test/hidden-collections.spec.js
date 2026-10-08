@@ -18,7 +18,7 @@ describe("Weavero — hidden collections (per window)", () => {
     before(async function () {
         this.timeout(20000);
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvHidApply !== "function") this.skip();
+        if (!wv || typeof wv._wvHidApply !== "function") wvT.absent('!wv || typeof wv._wvHidApply !== "function"');
         win = Zotero.getMainWindow();
         cv = win.ZoteroPane.collectionsView;
         const mk = async (name, parentID) => { const c = new Zotero.Collection(); c.name = name; if (parentID) c.parentID = parentID; await c.saveTx(); return c; };

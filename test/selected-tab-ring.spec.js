@@ -14,7 +14,7 @@ describe("Weavero — selected-tab outline (Firefox nova)", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvEnsureSelectedTabRing !== "function") this.skip();
+        if (!wv || typeof wv._wvEnsureSelectedTabRing !== "function") wvT.absent('!wv || typeof wv._wvEnsureSelectedTabRing !== "function"');
         win = Zotero.getMainWindow(); doc = win.document;
         prev = Zotero.Prefs.get(PREF);
     });

@@ -61,7 +61,7 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
 
     before(async function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvAnnPaneState !== "function") this.skip();
+        if (!wv || typeof wv._wvAnnPaneState !== "function") wvT.absent('!wv || typeof wv._wvAnnPaneState !== "function"');
         win = Zotero.getMainWindow();
         const path = PathUtils.join(PathUtils.tempDir, "wv-al-" + Date.now() + ".pdf");
         await IOUtils.writeUTF8(path, minimalPDFBytes());

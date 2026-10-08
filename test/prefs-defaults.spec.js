@@ -72,7 +72,7 @@ describe("Weavero — Settings prefs have registered defaults", () => {
     };
 
     before(function () {
-        if (!Zotero.Weavero || !Zotero.Weavero.plugin) this.skip();
+        if (!Zotero.Weavero || !Zotero.Weavero.plugin) wvT.absent('!Zotero.Weavero || !Zotero.Weavero.plugin');
         db = Services.prefs.getDefaultBranch("extensions.zotero.");
     });
 
@@ -101,7 +101,7 @@ describe("Weavero — Settings prefs have registered defaults", () => {
 
     it("the read-status getter agrees with its checkbox once defaults exist", () => {
         const wv = Zotero.Weavero.plugin;
-        if (typeof wv._getEnableReadStatusFilter !== "function") this.skip();
+        if (typeof wv._getEnableReadStatusFilter !== "function") wvT.absent('typeof wv._getEnableReadStatusFilter !== "function"');
         // With the items-tree filter master on, the checkbox value (the pref)
         // and the feature getter must agree when the user has made no choice.
         if (!wv._getEnableItemsTreeFilter()) this.skip();
@@ -116,7 +116,7 @@ describe("Weavero — Settings prefs have registered defaults", () => {
     // a retired user-only pref cannot be re-created until restart.
     it("the showNativeAnnSelector carry-over runs once and retires the old key", function () {
         const wv = Zotero.Weavero.plugin;
-        if (typeof wv._wvRegisterDefaultPrefs !== "function") this.skip();
+        if (typeof wv._wvRegisterDefaultPrefs !== "function") wvT.absent('typeof wv._wvRegisterDefaultPrefs !== "function"');
         const PB = Services.prefs.getBranch("extensions.zotero.weavero.");
         if (PB.prefHasUserValue("showNativeAnnSelector")) this.skip();   // a real profile choice: leave it
         const savedHide = PB.prefHasUserValue("hideNativeAnnSelector") ? Zotero.Prefs.get("weavero.hideNativeAnnSelector") : undefined;

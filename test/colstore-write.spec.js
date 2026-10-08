@@ -11,7 +11,7 @@ describe("Weavero — colstore: concurrent window writes keep every window's lay
 
     before(async function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
         assert.isFunction(wv._wvColStoreSet, "_wvColStoreSet");
         path = wv._wvColStorePath();
         try { savedText = await IOUtils.readUTF8(path); } catch (_) { savedText = null; }

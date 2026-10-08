@@ -44,7 +44,7 @@ describe("Weavero — reader sidebar toolbar and popup geometry", function () {
 
     before(async function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvAnnListEnsureButton !== "function") this.skip();
+        if (!wv || typeof wv._wvAnnListEnsureButton !== "function") wvT.absent('!wv || typeof wv._wvAnnListEnsureButton !== "function"');
         win = Zotero.getMainWindow();
         const path = PathUtils.join(PathUtils.tempDir, "wv-look-" + Date.now() + ".pdf");
         await IOUtils.writeUTF8(path, minimalPDFBytes());

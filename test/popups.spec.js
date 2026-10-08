@@ -34,7 +34,7 @@ describe("Weavero — popup infrastructure", () => {
     let wv;
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
     });
 
     // -------- 1. _resolvePopupWin -----------------------------------

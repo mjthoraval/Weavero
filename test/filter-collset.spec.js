@@ -14,7 +14,7 @@ describe("Weavero — intersection of the selected collections", () => {
     before(async function () {
         this.timeout(30000);
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvCollSetPasses !== "function") this.skip();
+        if (!wv || typeof wv._wvCollSetPasses !== "function") wvT.absent('!wv || typeof wv._wvCollSetPasses !== "function"');
         win = Zotero.getMainWindow();
         prevRec = Zotero.Prefs.get("recursiveCollections");
         prevState = win._wvFilterState;

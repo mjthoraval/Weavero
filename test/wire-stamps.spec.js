@@ -44,7 +44,7 @@ describe("Weavero — wire stamps are build-keyed (hot-upgrade rewiring)", () =>
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvWireTag !== "function") this.skip();
+        if (!wv || typeof wv._wvWireTag !== "function") wvT.absent('!wv || typeof wv._wvWireTag !== "function"');
         win = Zotero.getMainWindow();
         iv = win.ZoteroPane && win.ZoteroPane.itemsView;
         if (!iv) this.skip();
@@ -163,7 +163,7 @@ describe("Weavero — wire stamps are build-keyed (hot-upgrade rewiring)", () =>
     });
 
     it("the native-navigate outline wrapper peels a boolean-era wrap", function () {
-        if (typeof wv._wvOutlineInstallRecovery !== "function") this.skip();
+        if (typeof wv._wvOutlineInstallRecovery !== "function") wvT.absent('typeof wv._wvOutlineInstallRecovery !== "function"');
         // A view whose navigate lives on the PROTOTYPE, wrapped by a stale
         // own-prop from "another build" under the boolean stamp -- the exact
         // state that killed native outline clicks on 2026-08-26.
@@ -198,7 +198,7 @@ describe("Weavero — wire stamps are build-keyed (hot-upgrade rewiring)", () =>
     };
 
     it("Notes.open / Reader.open: a constant-era stamp over a dead two-layer chain is peeled to the native and re-wrapped", function () {
-        if (typeof wv._wvPatchNotesOpenForMultiWindow !== "function" || typeof wv._wvOpenPatchPeel !== "function") this.skip();
+        if (typeof wv._wvPatchNotesOpenForMultiWindow !== "function" || typeof wv._wvOpenPatchPeel !== "function") wvT.absent('typeof wv._wvPatchNotesOpenForMultiWindow !== "function" || typeof wv._wvOpenPatchPeel !== "function"');
         for (const host of [Zotero.Notes, Zotero.Reader]) {
             const saved = saveOpen(host);
             const native = host._wvMwOrigOpen || host._wvOrigOpen || host.open;
@@ -239,7 +239,7 @@ describe("Weavero — wire stamps are build-keyed (hot-upgrade rewiring)", () =>
     });
 
     it("Reader.getWindowStates: a constant-era inner stamp over a dead two-layer chain is peeled to the native and re-wrapped", function () {
-        if (typeof wv._wvPatchReaderGetWindowStates !== "function" || typeof wv._wvReaderGWSPeel !== "function") this.skip();
+        if (typeof wv._wvPatchReaderGetWindowStates !== "function" || typeof wv._wvReaderGWSPeel !== "function") wvT.absent('typeof wv._wvPatchReaderGetWindowStates !== "function" || typeof wv._wvReaderGWSPeel !== "function"');
         const R = Zotero.Reader;
         const saved = { f: R.getWindowStates, a: R._wvGWSOrig, b: R._wvOrigGetWindowStates, v: R._wvGWSPatchVer, w: R._wvGWSWired };
         const native = R._wvGWSOrig || R._wvOrigGetWindowStates || R.getWindowStates;
@@ -280,7 +280,7 @@ describe("Weavero — wire stamps are build-keyed (hot-upgrade rewiring)", () =>
         // (getSecondViewState), which would sink the quit-time session save.
         // Pre-fix the purge only dropped dead Proxies (an itemID read that
         // throws); a live object with a closed window stayed.
-        if (typeof wv._wvPatchReaderGetWindowStates !== "function") this.skip();
+        if (typeof wv._wvPatchReaderGetWindowStates !== "function") wvT.absent('typeof wv._wvPatchReaderGetWindowStates !== "function"');
         const R = /** @type {any} */ (Zotero.Reader);
         const ghost = /** @type {any} */ ({ itemID: 0, _window: { closed: true } });
         R._readers.push(ghost);
@@ -295,7 +295,7 @@ describe("Weavero — wire stamps are build-keyed (hot-upgrade rewiring)", () =>
     });
 
     it("the destroy-side peel returns a singleton member to the innermost saved original with no stamp left", function () {
-        if (typeof wv._wvSingletonPeel !== "function") this.skip();
+        if (typeof wv._wvSingletonPeel !== "function") wvT.absent('typeof wv._wvSingletonPeel !== "function"');
         const native = function native() { return "native"; };
         const mid = function mid() { return "mid"; };
         const fake = { open: function outer() {}, _wvMwOrigOpen: native, _wvOrigOpen: mid, _wvOpenPatchedV: "x", _wvOpenWired: "y", _wvHoldWrapped: "z", _wvOther: 1 };

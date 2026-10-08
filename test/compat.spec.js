@@ -22,7 +22,7 @@ describe("Weavero — Firefox 153 compatibility", () => {
     let bundle;
 
     before(async function () {
-        if (!(Zotero.Weavero && Zotero.Weavero.plugin)) this.skip();
+        if (!(Zotero.Weavero && Zotero.Weavero.plugin)) wvT.absent('!(Zotero.Weavero && Zotero.Weavero.plugin)');
         // Zotero.Plugins.getRootURI resolves the installed XPI's jar: URI.
         // Deliberately NOT wrapped in a try/skip: a guard that quietly skips
         // itself when it cannot read the bundle is worse than no guard, since

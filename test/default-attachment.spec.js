@@ -39,7 +39,7 @@ describe("Weavero — default child (attachments, notes, links)", () => {
     let wv;
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvSetDefaultChild !== "function") this.skip();
+        if (!wv || typeof wv._wvSetDefaultChild !== "function") wvT.absent('!wv || typeof wv._wvSetDefaultChild !== "function"');
     });
 
     // ---- 1. the tag name is a contract ----------------------------
@@ -375,7 +375,7 @@ describe("Weavero — default child (attachments, notes, links)", () => {
         // `_openableAttachmentFor` (url.ts) is a third private replica of the
         // ranking and used to ignore the marker entirely.
         it("an Open link targets the chosen default, not the ranking", async function () {
-            if (typeof wv._buildOpenLink !== "function") this.skip();
+            if (typeof wv._buildOpenLink !== "function") wvT.absent('typeof wv._buildOpenLink !== "function"');
             const second = new Zotero.Item("attachment");
             second.libraryID = Zotero.Libraries.userLibraryID;
             second.parentID = parent.id;

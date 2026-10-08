@@ -14,7 +14,7 @@ describe("Weavero — DOM overlays ignore the reader's content zoom", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
     });
 
     // Async tests must use mkViewLoaded: the iframe's initial about:blank load

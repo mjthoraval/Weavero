@@ -66,7 +66,7 @@ describe("Weavero — outline scroll-spy", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
         doc = Zotero.getMainWindow().document;
         host = doc.createElement("div");
         // Kept out of layout -- the spy queries structure, not geometry.
@@ -297,7 +297,7 @@ describe("Weavero — outline scroll-spy wiring (DOM views)", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvOutlineSpyWire !== "function") this.skip();
+        if (!wv || typeof wv._wvOutlineSpyWire !== "function") wvT.absent('!wv || typeof wv._wvOutlineSpyWire !== "function"');
     });
 
     const stubWin = () => {
@@ -366,7 +366,7 @@ describe("Weavero \u2014 DOM spy reading line (1/4)", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvOutlineSpyPickDom !== "function") this.skip();
+        if (!wv || typeof wv._wvOutlineSpyPickDom !== "function") wvT.absent('!wv || typeof wv._wvOutlineSpyPickDom !== "function"');
         origRange = wv._wvDomRangeForAnchor;
     });
 

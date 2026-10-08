@@ -23,7 +23,7 @@ describe("Weavero — collections-pane toggle button", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvApplyCollectionsPaneToggle !== "function") this.skip();
+        if (!wv || typeof wv._wvApplyCollectionsPaneToggle !== "function") wvT.absent('!wv || typeof wv._wvApplyCollectionsPaneToggle !== "function"');
         win = Zotero.getMainWindow();
         doc = win.document;
         pane = doc.getElementById("zotero-collections-pane");

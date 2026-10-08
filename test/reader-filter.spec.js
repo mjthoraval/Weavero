@@ -25,37 +25,8 @@ describe("Weavero — reader annotation filter hides annotations", function () {
     let annNote = null;      // note
     let reader = null;
 
-    const sleep = ms => new Promise(r => win.setTimeout(r, ms));
-
-    async function waitFor(cb, timeout = 15000, interval = 150) {
-        const start = Date.now();
-        for (;;) {
-            let v = null;
-            try { v = cb(); } catch (e) {}
-            if (v) return v;
-            if (Date.now() - start > timeout) return null;
-            await sleep(interval);
-        }
-    }
 
     // Same correct-xref one-page PDF as tearoff.spec.js.
-    function minimalPDFBytes() {
-        const objs = [
-            "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
-            "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
-            "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>\nendobj\n",
-        ];
-        const header = "%PDF-1.4\n";
-        let body = header;
-        const offsets = [];
-        for (const o of objs) { offsets.push(body.length); body += o; }
-        const xrefPos = body.length;
-        let xref = "xref\n0 4\n0000000000 65535 f \n";
-        for (const off of offsets) xref += String(off).padStart(10, "0") + " 00000 n \n";
-        const trailer = "trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n" + xrefPos + "\n%%EOF\n";
-        return body + xref + trailer;
-    }
-
     // Upstream support.js createAnnotation pattern, pinned to page 0 (the
     // fixture PDF's only page).
     async function createAnnotation(type, parent, opts) {
@@ -93,23 +64,23 @@ describe("Weavero — reader annotation filter hides annotations", function () {
         const st = p._wvReaderFilterState(reader);
         mutate(st);
         await p._wvApplyReaderFilter(reader);
-        await sleep(400);   // let the manager render pass settle
+        await wvT.sleep(400);   // let the manager render pass settle
     }
 
     before(async function () {
         win = Zotero.getMainWindow();
-        p = await waitFor(() => Zotero.Weavero && Zotero.Weavero.plugin, 20000);
+        p = await wvT.waitFor(() => Zotero.Weavero && Zotero.Weavero.plugin, 20000);
         expect(p, "Weavero plugin not initialized").to.exist;
 
         const path = PathUtils.join(PathUtils.tempDir, "wv-filter-" + Date.now() + ".pdf");
-        await IOUtils.writeUTF8(path, minimalPDFBytes());
+        await IOUtils.writeUTF8(path, wvT.minimalPDFBytes());
         att = await Zotero.Attachments.importFromFile({ file: Zotero.File.pathToFile(path) });
         annHl1 = await createAnnotation("highlight", att, { color: "#ffd400" });
         annHl2 = await createAnnotation("highlight", att, { color: "#ff6666" });
         annNote = await createAnnotation("note", att, { comment: "a note" });
 
         await Zotero.Reader.open(att.id, null, { allowDuplicate: false });
-        reader = await waitFor(() => {
+        reader = await wvT.waitFor(() => {
             const r = (Zotero.Reader._readers || []).find(x => {
                 try { return x.itemID === att.id && x._internalReader && x._iframeWindow; } catch (e) { return false; }
             });
@@ -117,7 +88,7 @@ describe("Weavero — reader annotation filter hides annotations", function () {
         });
         expect(reader, "reader never became ready").to.exist;
         // All three fixture annotations must be in the manager before testing.
-        const loaded = await waitFor(() => {
+        const loaded = await wvT.waitFor(() => {
             const k = visibleKeys();
             return k && k.length === 3 ? k : null;
         });

@@ -26,42 +26,10 @@ describe("Weavero — reader tear-off / merge-back lifecycle", function () {
 
     // ---- helpers (support.js-style, self-contained) ----------------------
 
-    const sleep = ms => new Promise(r => win.setTimeout(r, ms));
-
-    async function waitFor(cb, timeout = 15000, interval = 150) {
-        const start = Date.now();
-        for (;;) {
-            let v = null;
-            try { v = cb(); } catch (e) {}
-            if (v) return v;
-            if (Date.now() - start > timeout) return null;
-            await sleep(interval);
-        }
-    }
-
-    // Minimal one-page PDF assembled with correct xref offsets, so pdf.js
-    // opens it without recovery heuristics. No text content needed — the
-    // suite only cares about reader lifecycle, not rendering.
-    function minimalPDFBytes() {
-        const objs = [
-            "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
-            "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
-            "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>\nendobj\n",
-        ];
-        const header = "%PDF-1.4\n";
-        let body = header;
-        const offsets = [];
-        for (const o of objs) { offsets.push(body.length); body += o; }
-        const xrefPos = body.length;
-        let xref = "xref\n0 4\n0000000000 65535 f \n";
-        for (const off of offsets) xref += String(off).padStart(10, "0") + " 00000 n \n";
-        const trailer = "trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n" + xrefPos + "\n%%EOF\n";
-        return body + xref + trailer;
-    }
 
     async function createTestPDFItem(name) {
         const path = PathUtils.join(PathUtils.tempDir, name + "-" + Date.now() + ".pdf");
-        await IOUtils.writeUTF8(path, minimalPDFBytes());
+        await IOUtils.writeUTF8(path, wvT.minimalPDFBytes());
         const file = Zotero.File.pathToFile(path);
         const att = await Zotero.Attachments.importFromFile({ file });
         expect(att.attachmentContentType).to.equal("application/pdf");
@@ -73,7 +41,7 @@ describe("Weavero — reader tear-off / merge-back lifecycle", function () {
     async function openAsReadyTab(itemID) {
         win.focus();
         await Zotero.Reader.open(itemID, null, { allowDuplicate: false });
-        const reader = await waitFor(() => {
+        const reader = await wvT.waitFor(() => {
             const r = (Zotero.Reader._readers || []).find(x => {
                 try { return x.itemID === itemID && x._window === win; } catch (e) { return false; }
             });
@@ -105,7 +73,7 @@ describe("Weavero — reader tear-off / merge-back lifecycle", function () {
 
     before(async function () {
         win = Zotero.getMainWindow();
-        p = await waitFor(() => Zotero.Weavero && Zotero.Weavero.plugin, 20000);
+        p = await wvT.waitFor(() => Zotero.Weavero && Zotero.Weavero.plugin, 20000);
         expect(p, "Weavero plugin not initialized").to.exist;
         // Isolation: a watch-mode re-run executes in the SAME Zotero after a
         // plugin reload, leaving dead reader wrappers from the previous pass
@@ -131,7 +99,7 @@ describe("Weavero — reader tear-off / merge-back lifecycle", function () {
         // Leave the temp profile tidy for any later spec file: close every
         // torn-off window and every tab this suite created.
         for (const w of tornWindows()) { try { w.close(); } catch (e) {} }
-        await sleep(500);
+        await wvT.sleep(500);
         for (const it2 of [itemA, itemB]) {
             if (!it2) continue;
             const t = mainTabFor(it2.id);
@@ -155,7 +123,7 @@ describe("Weavero — reader tear-off / merge-back lifecycle", function () {
 
     it("tears off without reload; source selects a loaded neighbour (Firefox rule)", async function () {
         win.Zotero_Tabs.select(tabB);
-        await sleep(300);
+        await wvT.sleep(300);
         const S = readerFor(itemB.id);
         tornWin = await p._wvSwapTearOffToWindow(win, S, itemB.id);
         expect(tornWin, "swap tear-off fell back / failed").to.be.ok;
@@ -166,7 +134,7 @@ describe("Weavero — reader tear-off / merge-back lifecycle", function () {
         expect(S._iframeWindow.document.readyState).to.equal("complete");
         // …its shell ends up active despite beta.10's deactivation machinery
         // (sync assert + 700 ms deferred re-assert in the tear-off)…
-        const active = await waitFor(() => S._iframe.docShellIsActive === true, 5000);
+        const active = await wvT.waitFor(() => S._iframe.docShellIsActive === true, 5000);
         expect(active, "torn-off shell stayed deactivated").to.be.ok;
         // …the strip tab keeps the original main-tab id (identity carry)…
         const stripIds = tornWin._wvWT.tabs.map(t => t.id);
@@ -186,7 +154,7 @@ describe("Weavero — reader tear-off / merge-back lifecycle", function () {
         // later turn, and under a loaded headless runner that can exceed 300ms —
         // which flaked this assertion (2026-07-27, one failure in three runs).
         // Polling asserts the same invariant without encoding a timing guess.
-        await waitFor(() => S._iframe.docShellIsActive === true, 5000, 100);
+        await wvT.waitFor(() => S._iframe.docShellIsActive === true, 5000, 100);
         expect(S._iframe.docShellIsActive, "safety wrapper did not re-activate").to.equal(true);
     });
 
@@ -196,19 +164,19 @@ describe("Weavero — reader tear-off / merge-back lifecycle", function () {
         // The tab appears under the DONOR's id first; the commit renames it
         // back to the original id ~150-300ms later — wait for the rename, not
         // just for existence (asserting on first appearance races it).
-        const tab = await waitFor(() => {
+        const tab = await wvT.waitFor(() => {
             const t = mainTabFor(itemB.id);
             return (t && t.id === tabB) ? t : null;
         });
         expect(tab, "merged tab never re-appeared under its original id").to.exist;
         // …the dragged tab is the ACTIVE tab (adoptTab selectTab rule) — this
         // was the dev.36 stale-donor-id regression…
-        const selected = await waitFor(() => win.Zotero_Tabs.selectedID === tabB, 5000);
+        const selected = await wvT.waitFor(() => win.Zotero_Tabs.selectedID === tabB, 5000);
         expect(selected, "merged tab not selected").to.be.ok;
         // …the native tab machinery can resolve it…
         expect(Zotero.Reader.getByTabID(tabB)).to.equal(S);
         // …and the source window is gone.
-        const closed = await waitFor(() => tornWin.closed, 5000);
+        const closed = await wvT.waitFor(() => tornWin.closed, 5000);
         expect(closed, "torn-off window still open after merge").to.be.ok;
         tornWin = null;
     });
@@ -218,20 +186,20 @@ describe("Weavero — reader tear-off / merge-back lifecycle", function () {
         // the RESTORED-torn-window shape that produced the frozen/zombie
         // merge-backs (dev.34) and the drag-out tab loss (dev.35).
         const t = mainTabFor(itemB.id);
-        if (t) { win.Zotero_Tabs.close(t.id); await sleep(600); }
+        if (t) { win.Zotero_Tabs.close(t.id); await wvT.sleep(600); }
         await Zotero.Reader.open(itemB.id, null, { openInWindow: true, allowDuplicate: true });
-        const S = await waitFor(() => {
+        const S = await wvT.waitFor(() => {
             const r = readerFor(itemB.id);
             return (r && r.constructor.name === "ReaderWindow" && r._internalReader) ? r : null;
         });
         expect(S, "classic reader window never became ready").to.exist;
         const rwWin = S._window;
         // The strip model wires from renderToolbar; ensure it exists.
-        await waitFor(() => rwWin._wvWT && rwWin._wvWT.tabs.length, 10000);
+        await wvT.waitFor(() => rwWin._wvWT && rwWin._wvWT.tabs.length, 10000);
         if (!(rwWin._wvWT && rwWin._wvWT.tabs.length)) p._wvWTEnsureNativeTab(rwWin);
         const stripId = rwWin._wvWT.tabs[0].id;
         p._wvWTMoveTabToMain(rwWin, stripId, win);
-        const tab = await waitFor(() => mainTabFor(itemB.id));
+        const tab = await wvT.waitFor(() => mainTabFor(itemB.id));
         expect(tab, "merged tab never appeared").to.exist;
         // CLASS ADOPTION: the re-homed instance must be a real ReaderTab so
         // every `instanceof ReaderTab` filter in reader.js sees it.
@@ -241,11 +209,11 @@ describe("Weavero — reader tear-off / merge-back lifecycle", function () {
         // "expected 'ReaderWindow' to equal 'ReaderTab'"). The contract is
         // that adoption happens on merge-back, not that it is synchronous
         // with tab creation.
-        await waitFor(() => S.constructor.name === "ReaderTab", 5000);
+        await wvT.waitFor(() => S.constructor.name === "ReaderTab", 5000);
         expect(S.constructor.name).to.equal("ReaderTab");
         expect(Zotero.Reader.getByTabID(tab.id)).to.equal(S);
         // Native activity semantics govern it: selected -> active.
-        const active = await waitFor(() => S._iframe.docShellIsActive === true, 5000);
+        const active = await wvT.waitFor(() => S._iframe.docShellIsActive === true, 5000);
         expect(active, "adopted reader's shell not active while selected").to.be.ok;
         expect(S._iframeWindow.document.readyState).to.equal("complete");
     });
@@ -254,7 +222,7 @@ describe("Weavero — reader tear-off / merge-back lifecycle", function () {
         const tab = mainTabFor(itemB.id);
         expect(tab).to.exist;
         win.Zotero_Tabs.close(tab.id);
-        const gone = await waitFor(() => !readerFor(itemB.id), 5000);
+        const gone = await wvT.waitFor(() => !readerFor(itemB.id), 5000);
         // On failure, name the corpse: which wrapper leaked and in what state
         // (aborted-uninit corpses have _isUninitialized true; a missing flag
         // means disposal never even found the reader).
@@ -295,20 +263,20 @@ describe("Weavero — reader tear-off / merge-back lifecycle", function () {
         expect(gone, "reader instance leaked in Zotero.Reader._readers" + forensics).to.be.ok;
         // The zombie poisoned Reader.open pre-dev.34 — reopening must work.
         await Zotero.Reader.open(itemB.id, null, {});
-        const back = await waitFor(() => mainTabFor(itemB.id));
+        const back = await wvT.waitFor(() => mainTabFor(itemB.id));
         expect(back, "item could not be reopened after close").to.exist;
         tabB = back.id;
     });
 
     it("plain-closing a torn-off window records it for Reopen Closed Window", async function () {
         const S = readerFor(itemB.id);
-        await waitFor(() => S._internalReader && S._iframeWindow);
+        await wvT.waitFor(() => S._internalReader && S._iframeWindow);
         tornWin = await p._wvSwapTearOffToWindow(win, S, itemB.id);
         expect(tornWin).to.be.ok;
-        await sleep(400);
+        await wvT.sleep(400);
         const stackBefore = (p._wvClosedStack || []).length;
         tornWin.reader.close();
-        const recorded = await waitFor(() => {
+        const recorded = await wvT.waitFor(() => {
             const top = p._wvClosedPeek && p._wvClosedPeek();
             return top && top.kind === "readerWindow"
                 && (top.tabs || []).some(x => x.itemID === itemB.id) ? top : null;
@@ -318,7 +286,7 @@ describe("Weavero — reader tear-off / merge-back lifecycle", function () {
         // …and reopening restores it as a live reader window.
         const ok = p._wvClosedReopenLast(win);
         expect(ok).to.equal(true);
-        const reopened = await waitFor(() => {
+        const reopened = await wvT.waitFor(() => {
             const r = readerFor(itemB.id);
             try {
                 return r && r._window.document.documentElement.getAttribute("windowtype") === "zotero:reader"

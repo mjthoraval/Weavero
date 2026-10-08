@@ -34,7 +34,6 @@ describe("Weavero — tab-group chip resilience", function () {
 
     // ---- helpers ---------------------------------------------------------
 
-    const sleep = ms => new Promise(r => win.setTimeout(r, ms));
 
     async function waitFor(cb, timeout = 15000, interval = 100) {
         const start = Date.now();
@@ -43,7 +42,7 @@ describe("Weavero — tab-group chip resilience", function () {
             try { v = cb(); } catch (e) {}
             if (v) return v;
             if (Date.now() - start > timeout) return null;
-            await sleep(interval);
+            await wvT.sleep(interval);
         }
     }
 
@@ -129,7 +128,7 @@ describe("Weavero — tab-group chip resilience", function () {
             const t = it && tabForItem(it.id);
             if (t) { try { win.Zotero_Tabs.close(t.id); } catch (e) {} }
         }
-        await sleep(200);
+        await wvT.sleep(200);
         for (const it of [noteA, noteB]) {
             if (it) { try { await it.eraseTx(); } catch (e) {} }
         }

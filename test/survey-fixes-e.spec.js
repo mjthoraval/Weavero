@@ -12,7 +12,6 @@
 
 describe("Weavero — survey fixes, round E (per-window delegates)", () => {
     let wv, win;
-    const src = (name) => { assert.isFunction(wv[name], name); return String(wv[name]); };
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
@@ -88,7 +87,7 @@ describe("Weavero — survey fixes, round E (per-window delegates)", () => {
     });
 
     it("window load / unload / destroy address the window they are given", () => {
-        const load = src("onMainWindowLoad"), unload = src("onMainWindowUnload"), destroy = src("destroy");
+        const load = wvT.src("onMainWindowLoad"), unload = wvT.src("onMainWindowUnload"), destroy = wvT.src("destroy");
         assert.include(load, "_setupTreeClickDelegate(_window)");
         assert.include(load, "_setupPaneObserver(_window)");
         assert.include(load, "_teardownTreeClickDelegate(_window)");
@@ -103,9 +102,9 @@ describe("Weavero — survey fixes, round E (per-window delegates)", () => {
     });
 
     it("a window's mark observer and pane scan read THAT window's document", () => {
-        assert.include(src("_setupTreeClickDelegate"), "this._markCellLinks(doc)");
-        assert.include(src("_setupPaneObserver"), "this._scanPaneRows(doc)");
-        assert.include(src("_markCellLinks"), "docArg || Zotero.getMainWindow().document");
-        assert.include(src("_scanPaneRows"), "docArg || Zotero.getMainWindow().document");
+        assert.include(wvT.src("_setupTreeClickDelegate"), "this._markCellLinks(doc)");
+        assert.include(wvT.src("_setupPaneObserver"), "this._scanPaneRows(doc)");
+        assert.include(wvT.src("_markCellLinks"), "docArg || Zotero.getMainWindow().document");
+        assert.include(wvT.src("_scanPaneRows"), "docArg || Zotero.getMainWindow().document");
     });
 });

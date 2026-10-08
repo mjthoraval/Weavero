@@ -262,6 +262,10 @@
 		});
 		geomCheck(label, bm.geom, am.geom);
 		if (J(bm.collection) !== J(am.collection)) FAIL.push(label + ": collection " + J(bm.collection) + " -> " + J(am.collection));
+		// The anchor record's own fields (survey 2026-10-06 §2 #1: the quit
+		// flush once dropped both; the fixture sets them so this sees them).
+		if (J(bm.title || null) !== J(am.title || null)) FAIL.push(label + ": custom title " + J(bm.title) + " -> " + J(am.title));
+		if (J(bm.hidden || null) !== J(am.hidden || null)) FAIL.push(label + ": hidden collections " + J(bm.hidden) + " -> " + J(am.hidden));
 		if (J(bm.itemPane) !== J(am.itemPane)) WARN.push(label + ": item pane " + J(bm.itemPane) + " -> " + J(am.itemPane));
 		if (!missing.length && !added.length && J(bk) === J(ak)) OK.push(label + ": " + bk.length + " tabs, order kept");
 	});

@@ -283,7 +283,7 @@ describe("Weavero — plugin compat: Annotation Markdown (real XPI)", function (
         const c = cardOf(idoc, key);
         if (!c) return null;
         fireMouse(c.querySelector("header") || c);
-        await sleep(900);
+        await wvT.sleep(900);
         return c.classList.contains("selected") ? c : null;
     };
     // Preferences that shape a card (recolorAmLinks, link types) are read at
@@ -291,7 +291,7 @@ describe("Weavero — plugin compat: Annotation Markdown (real XPI)", function (
     // (the manual protocol's reload rule) and hand the new instance back.
     const reopenReader = async () => {
         try { if (reader && reader.tabID) win.Zotero_Tabs.close(reader.tabID); } catch (e) {}
-        await sleep(800);
+        await wvT.sleep(800);
         await Zotero.Reader.open(att.id, null, { allowDuplicate: false });
         reader = await waitFor(
             () => Zotero.Reader._readers.find(r => r.itemID === att.id
@@ -311,12 +311,11 @@ describe("Weavero — plugin compat: Annotation Markdown (real XPI)", function (
         try { return Services.env.get("WV_COMPAT_TIER") === "1"; }
         catch (e) { return false; }
     };
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     const waitFor = async (fn, ms, what) => {
         const t0 = Date.now();
         while (Date.now() - t0 < ms) {
             try { const v = fn(); if (v) return v; } catch (e) {}
-            await sleep(250);
+            await wvT.sleep(250);
         }
         throw new Error("timeout waiting for " + what);
     };
@@ -357,7 +356,7 @@ describe("Weavero — plugin compat: Annotation Markdown (real XPI)", function (
         }
         assert.isOk(addon, "companion installed");
         if (!addon.isActive) await addon.enable();
-        await sleep(2500);
+        await wvT.sleep(2500);
 
         const path = PathUtils.join(PathUtils.tempDir, "wv-am-" + Date.now() + ".pdf");
         await IOUtils.writeUTF8(path, minimalPDFBytes());
@@ -442,7 +441,7 @@ describe("Weavero — plugin compat: Annotation Markdown (real XPI)", function (
         const idoc = reader._iframeWindow.document;
         // settle both passes, then assert absence (the race is exactly
         // what this guards, so give it room to happen if it is going to)
-        await sleep(1500);
+        await wvT.sleep(1500);
         const card = idoc.querySelector(".annotation .annotation-markdown-rendered")
             .closest(".annotation");
         assert.isNull(card.querySelector(".wv-md-preview"),
@@ -515,7 +514,7 @@ describe("Weavero — plugin compat: Annotation Markdown (real XPI)", function (
         wv.handleZoteroURI = function () { calls++; return Promise.resolve(); };
         try {
             fireMouse(a);
-            await sleep(500);
+            await wvT.sleep(500);
         }
         finally {
             wv.handleZoteroURI = orig;
@@ -528,7 +527,7 @@ describe("Weavero — plugin compat: Annotation Markdown (real XPI)", function (
         const nav = () => idoc.querySelector("nav.annotation-markdown-outline");
         try { reader._internalReader.toggleSidebar(true); } catch (e) {}
         try { reader._internalReader.setSidebarView("annotations"); } catch (e) {}
-        await sleep(300);
+        await wvT.sleep(300);
         const card = await selectCard(idoc, annLong.key);
         assert.isOk(card, "long comment card selected");
         const outline = await waitFor(nav, 10000, "AM outline nav");
@@ -566,7 +565,7 @@ describe("Weavero — plugin compat: Annotation Markdown (real XPI)", function (
         // "undefined" — stringify whatever flies (2026-09-07).
         try {
             try { reader._internalReader.toggleSidebar(false); } catch (e) {}
-            await sleep(600);
+            await wvT.sleep(600);
             const Cu = Components.utils;
             const pv = Cu.waiveXrays(reader._internalReader._primaryView);
             const am = Cu.waiveXrays(reader._internalReader._annotationManager);
@@ -600,7 +599,7 @@ describe("Weavero — plugin compat: Annotation Markdown (real XPI)", function (
             // long-comment preview then never shows (flaked 1 in 3 runs,
             // 2026-09-17). A fresh popup is what a user gets anyway.
             pv._onSetAnnotationPopup();
-            await sleep(700);
+            await wvT.sleep(700);
             pv._onSetAnnotationPopup(Cu.cloneInto(
                 { rect: [50, 50, 200, 80], annotation: aLong },
                 reader._iframeWindow, { cloneFunctions: false }));
@@ -608,7 +607,7 @@ describe("Weavero — plugin compat: Annotation Markdown (real XPI)", function (
                 const el = idoc.querySelector(".annotation-popup .wv-md-preview");
                 return el && /Introduction/.test(el.textContent) ? el : null;
             }, 20000, "Weavero preview of the long comment in the popup");
-            await sleep(800);
+            await wvT.sleep(800);
             assert.isNull(idoc.querySelector("nav.annotation-markdown-outline"),
                 "no AM outline for the in-view popup");
         }
@@ -663,12 +662,11 @@ describe("Weavero — plugin compat: Better Notes (real XPI)", function () {
         try { return Services.env.get("WV_COMPAT_TIER") === "1"; }
         catch (e) { return false; }
     };
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     const waitFor = async (fn, ms, what) => {
         const t0 = Date.now();
         while (Date.now() - t0 < ms) {
             try { const v = fn(); if (v) return v; } catch (e) {}
-            await sleep(400);
+            await wvT.sleep(400);
         }
         throw new Error("timeout waiting for " + what);
     };

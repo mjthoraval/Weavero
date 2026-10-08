@@ -15,7 +15,9 @@
  *                           group RTF-A (2 PDFs + a note), group RTF-B
  *                           COLLAPSED, group RTF-E PARKED (saved), a PINNED
  *                           tab, a SAME-WINDOW DUPLICATE, the SELECTED tab is
- *                           a note (loaded → note-link wiring checked)
+ *                           a note (loaded → note-link wiring checked);
+ *                           a CUSTOM TITLE ("RTF anchor") and a HIDDEN
+ *                           collection ("RTF hidden")
  *   W2 managed main window: 3 PDFs + note (background) + a CROSS-WINDOW
  *                           DUPLICATE of an RTF-A member (ungrouped here);
  *                           group RTF-C; moved geometry
@@ -197,6 +199,20 @@
 	try { W2.moveTo(200, 120); W2.resizeTo(1100, 750); } catch (e) {}
 	await sleep(300);
 	say("W2 (managed): " + Z2._tabs.length + " tabs");
+
+	// --------------------------------- anchor title + hidden collection (W1)
+	// Both ride the quit flush's anchor record (anchorTitle / anchorHidden).
+	// The fixture set neither, so the flush that dropped them (survey
+	// 2026-10-06 §2 #1, fixed in 0.21.9-next.2) escaped this protocol.
+	try { lp._wvWindowSetCustomTitle(W1, O.prefix + " anchor"); say("W1 custom title: " + O.prefix + " anchor"); }
+	catch (e) { say("custom title failed: " + e); }
+	try {
+		let coll = Zotero.Collections.getByLibrary(lib).find(c => c.name === O.prefix + " hidden");
+		if (!coll) { coll = new Zotero.Collection(); coll.libraryID = lib; coll.name = O.prefix + " hidden"; await coll.saveTx(); }
+		await lp._wvHidHide([coll], W1);
+		say("collection hidden in W1: " + coll.name);
+	}
+	catch (e) { say("hidden collection failed: " + e); }
 
 	// ------------------------------------------------------ reader windows
 	const R1 = await openReaderWindow(P[9]);

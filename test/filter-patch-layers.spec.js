@@ -15,7 +15,6 @@
 
 describe("Weavero — filter translation as wrap layers", () => {
     let wv, lib, win, iv, rp, tag, stateSnap, item;
-    const src = (name) => { assert.isFunction(wv[name], name); return String(wv[name]); };
     // The apply's phases, in driver order (survey step 4, second slice).
     const WV_APPLY_PHASES = ["_wvFilterApplyBegin", "_wvFilterApplyInactive", "_wvFilterApplySkip", "_wvFilterApplyPrepare",
         "_wvFilterApplyCascade", "_wvFilterApplyKeep", "_wvFilterApplyMaterialise", "_wvFilterApplyPublish"];
@@ -139,7 +138,7 @@ describe("Weavero — filter translation as wrap layers", () => {
     });
 
     it("the apply is a driver over phases that hand one context on, in order", () => {
-        const d = src("_applyItemsListFilterInner");
+        const d = wvT.src("_applyItemsListFilterInner");
         let last = -1;
         for (const name of WV_APPLY_PHASES) {
             const at = d.indexOf("this." + name + "(");
@@ -150,33 +149,33 @@ describe("Weavero — filter translation as wrap layers", () => {
         assert.notInclude(d, "ZoteroPane");
         assert.notInclude(d, "getMainWindow");
         // The phases that read the tree bind to the target window's state, never a bare global.
-        for (const name of WV_APPLY_PHASES) assert.notInclude(src(name), "Zotero.getMainWindow()", name);
-        assert.include(src("_wvFilterApplyBegin"), "this._wvFilterTargetWin()");
+        for (const name of WV_APPLY_PHASES) assert.notInclude(wvT.src(name), "Zotero.getMainWindow()", name);
+        assert.include(wvT.src("_wvFilterApplyBegin"), "this._wvFilterTargetWin()");
         // A phase-published field is read by a later phase, never recomputed.
-        assert.include(src("_wvFilterApplyPublish"), "keepRowsLen");
-        assert.notInclude(src("_wvFilterApplyPublish"), "rp._rows.slice");
+        assert.include(wvT.src("_wvFilterApplyPublish"), "keepRowsLen");
+        assert.notInclude(wvT.src("_wvFilterApplyPublish"), "rp._rows.slice");
     });
 
     it("source contracts: one removal body, no per-apply own-property wrappers, tracker untouched by removal", () => {
         // The apply is phases over a context (step 4 split): scan them all.
-        const applyS = WV_APPLY_PHASES.map(src).join("\n");
+        const applyS = WV_APPLY_PHASES.map((n) => wvT.src(n)).join("\n");
         assert.notInclude(applyS, "rp.getRow = function");
         assert.notInclude(applyS, "restoreField(");
         assert.notInclude(applyS, "delete rp.getRow");
-        assert.include(src("_wvFilterApplyPrepare"), "this._wvFilterPatchInstall(rp, itemsView, isV9)");
-        assert.include(src("_wvFilterApplyPublish"), "rp._wvFilterView = { keep, keepRowsLen }");
-        const removeS = src("_wvFilterPatchRemove");
+        assert.include(wvT.src("_wvFilterApplyPrepare"), "this._wvFilterPatchInstall(rp, itemsView, isV9)");
+        assert.include(wvT.src("_wvFilterApplyPublish"), "rp._wvFilterView = { keep, keepRowsLen }");
+        const removeS = wvT.src("_wvFilterPatchRemove");
         assert.notInclude(removeS, "userOpenTracking");
         assert.notInclude(removeS, "_wvUserOpenTrackingPatched");
         for (const name of ["_pauseFilterPatches", "_teardownItemsListFilterIn"]) {
-            assert.include(src(name), "this._wvFilterPatchRemove(rp, itemsView)", name + " uses the shared removal");
-            assert.notInclude(src(name), "delete rp.getRow", name);
+            assert.include(wvT.src(name), "this._wvFilterPatchRemove(rp, itemsView)", name + " uses the shared removal");
+            assert.notInclude(wvT.src(name), "delete rp.getRow", name);
         }
-        const installS = src("_wvFilterPatchInstall");
+        const installS = wvT.src("_wvFilterPatchInstall");
         assert.include(installS, 'wvWrap(rp, "getRow", "filter", tag');
         assert.include(installS, "this._wvInstallUserOpenTracking(itemsView)", "the tracker goes in first (inner layer)");
         assert.notInclude(installS, "const self = this", "long-lived wrappers resolve the live plugin");
         assert.include(installS, "wvLivePlugin()");
-        assert.include(src("_wvInstallUserOpenTracking"), 'wvWrap(rp, "toggleOpenState", "userOpenTracking"');
+        assert.include(wvT.src("_wvInstallUserOpenTracking"), 'wvWrap(rp, "toggleOpenState", "userOpenTracking"');
     });
 });

@@ -8,7 +8,6 @@
 
 describe("Weavero — survey fixes, round D", () => {
     let wv, win;
-    const src = (name) => { assert.isFunction(wv[name], name); return String(wv[name]); };
     const withPref = async (key, value, fn) => {
         const had = Zotero.Prefs.get(key);
         try { Zotero.Prefs.set(key, value); return await fn(); }
@@ -40,11 +39,11 @@ describe("Weavero — survey fixes, round D", () => {
         assert.strictEqual(calls, 0, "the focused window's tree was touched for a target that has none");
         // The apply is phases over a context since step 4 (2026-10-07): the
         // window and the per-window library memory live in the begin phase.
-        const s = src("_wvFilterApplyBegin");
+        const s = wvT.src("_wvFilterApplyBegin");
         assert.notInclude(s, "const win = Zotero.getMainWindow()");
         assert.notInclude(s, "this._lastLibraryID", "the last-library memory is per window");
         assert.include(s, "win._wvLastLibraryID");
-        assert.include(src("_applyItemsListFilterInner"), "this._wvFilterApplyBegin(opts)");
+        assert.include(wvT.src("_applyItemsListFilterInner"), "this._wvFilterApplyBegin(opts)");
         // Every pipeline stage that restores the selection after an apply
         // resolves the same window as the state it reads.
         const stages = [];
@@ -60,7 +59,7 @@ describe("Weavero — survey fixes, round D", () => {
             o = Object.getPrototypeOf(o);
         }
         assert.isNotEmpty(stages, "the selection-restore stage exists");
-        for (const k of new Set(stages)) assert.include(src(k), "this._wvFilterTargetWin()", k);
+        for (const k of new Set(stages)) assert.include(wvT.src(k), "this._wvFilterTargetWin()", k);
     });
 
     it("#12 Rule 1: Item Type + Standalone Note passes a standalone note at the tree level", async () => {
@@ -122,7 +121,7 @@ describe("Weavero — survey fixes, round D", () => {
     });
 
     it("#23 the Reading-Mode select-text arm carries the per-reader generation guard", () => {
-        const s = src("_wvOutlineAddWithSelectionRm");
+        const s = wvT.src("_wvOutlineAddWithSelectionRm");
         assert.include(s, "reader._wvSelArmGen");
         assert.include(s, "armStale()");
         // Two arms on one reader: the second supersedes the first on the

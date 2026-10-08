@@ -6,7 +6,6 @@
 
 describe("Weavero — survey fixes, round B", () => {
     let wv;
-    const src = (name) => { assert.isFunction(wv[name], name); return String(wv[name]); };
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
@@ -60,13 +59,13 @@ describe("Weavero — survey fixes, round B", () => {
         assert.strictEqual(view.setAnnotations, origSet, "setAnnotations restored");
         assert.isNull(sdoc.getElementById("wv-hide-annotations"), "hide sheet removed");
         assert.isNotOk(wv._wvReaderHideAnnWM.get(fake), "the hidden flag is dropped");
-        assert.include(src("_wvReaderTeardownPanels"), "_wvReaderHideAnnotationsTeardown(reader)");
+        assert.include(wvT.src("_wvReaderTeardownPanels"), "_wvReaderHideAnnotationsTeardown(reader)");
     });
 
     it("the DOM-view sort-index backfill is a silent, derived write (no undo step)", () => {
         assert.isTrue(wv._wvBmUndoDerived("_wvDomSortTried"));
         assert.isTrue(wv._wvBmUndoDerived("_sortIndexTried"));
-        const s = src("_wvBackfillDomSortIndices");
+        const s = wvT.src("_wvBackfillDomSortIndices");
         assert.include(s, "_bmPersistSilent()");
         assert.notInclude(s, "await this._bmPersist()");
     });
@@ -84,7 +83,7 @@ describe("Weavero — survey fixes, round B", () => {
             try { wv._wvAnnPaneForget(fake); } catch (_) {}
             try { wv._wvAnnPaneProvisional.delete(fake); } catch (_) {}
         }
-        const loader = src("_wvAnnOrderEnsureLoaded");
+        const loader = wvT.src("_wvAnnOrderEnsureLoaded");
         assert.include(loader, "_wvAnnPaneProvisional");
         assert.include(loader, "_wvAnnPaneForget(r)");
         // Loaded: a fresh state is not provisional.
@@ -113,18 +112,18 @@ describe("Weavero — survey fixes, round B", () => {
         finally {
             K.forEach((k, i) => { try { if (saved[i] === undefined) Zotero.Prefs.clear(k); else Zotero.Prefs.set(k, saved[i]); } catch (_) {} });
         }
-        const s = src("_launchURL");
+        const s = wvT.src("_launchURL");
         assert.isBelow(s.indexOf("_wvAppSchemeEnabled(scheme)"), s.indexOf("launchWithURI"), "the gate decides before the launch");
     });
 
     it("the tabs-menu row filter reads the panel window's tabs, not a bare global", () => {
-        const s = src("_wvApplyTabsMenuRowFilters");
+        const s = wvT.src("_wvApplyTabsMenuRowFilters");
         assert.notInclude(s, "Zotero_Tabs._tabs.find");
         assert.include(s, "winOf(panel)");
     });
 
     it("restore retries put a tab back at its saved slot, in ascending order", () => {
-        const s = src("_wvWireRestoreTracing");
+        const s = wvT.src("_wvWireRestoreTracing");
         assert.include(s, "failed.sort(");
         assert.include(s, "Math.min(i, Z._tabs.length)");
         assert.notInclude(s, "runOne(tab, Z._tabs.length)");
@@ -135,9 +134,9 @@ describe("Weavero — survey fixes, round B", () => {
         // filter's translation; the clear removes the translation only.
         // The behavioural contract lives in test/filter-patch-layers.spec.js.
         // The clear branch is the apply's inactive phase (step 4 split).
-        const s = src("_wvFilterApplyInactive");
+        const s = wvT.src("_wvFilterApplyInactive");
         assert.include(s, "this._wvFilterPatchRemove(rp, itemsView)");
         assert.notInclude(s, "_wvUserOpenTrackingPatched");
-        assert.notInclude(src("_wvFilterPatchRemove"), "userOpenTracking");
+        assert.notInclude(wvT.src("_wvFilterPatchRemove"), "userOpenTracking");
     });
 });

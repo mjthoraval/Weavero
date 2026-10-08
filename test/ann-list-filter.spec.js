@@ -16,12 +16,11 @@
 describe("Weavero — annotations-pane funnel (issue #43)", function () {
     this.timeout(90000);
     let wv, win, att, hl, ink, reader;
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     const waitFor = async (fn, ms, what) => {
         const t0 = Date.now();
         while (Date.now() - t0 < ms) {
             try { const v = fn(); if (v) return v; } catch (e) {}
-            await sleep(250);
+            await wvT.sleep(250);
         }
         throw new Error("timeout waiting for " + what);
     };
@@ -209,10 +208,10 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
     it("a sort write keeps the departure", async function () {
         await setPane({ typesExcl: ["ink"] });
         wv._wvAnnSetSort("dateModified", "desc", reader);
-        await sleep(600);
+        await wvT.sleep(600);
         assert.deepEqual(wv._wvAnnListHidden(reader), ["ink"], "the list choice survived the sort write");
         wv._wvAnnSetSort("position", "asc", reader);
-        await sleep(600);
+        await wvT.sleep(600);
         assert.deepEqual(wv._wvAnnListHidden(reader), ["ink"]);
         await wv._wvAnnPaneClear(reader);
     });
@@ -301,11 +300,11 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         const idoc = reader._iframeWindow.document;
         // Continues from the previous case: the default lists only highlights.
         Zotero.Prefs.set(wv._wvAnnListPrefName("ink"), true);
-        await sleep(800);
+        await wvT.sleep(800);
         assert.notInclude(wv._wvAnnListHidden(reader), "ink", "the checkbox won over the include set");
         await waitFor(() => cards(idoc).length === 2, 15000, "ink listed again");
         await wv._wvAnnPaneClearDefault(reader, idoc);
-        await sleep(600);
+        await wvT.sleep(600);
         assert.deepEqual(wv._wvAnnPaneCanon(wv._wvAnnPaneDefaultState()), {}, "default gone");
         assert.deepEqual(wv._wvAnnListTypes().filter(t => !wv._getAnnListShow(t)), [],
             "every checkbox back on");
@@ -376,7 +375,7 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         };
         await wv._wvAnnPaneClearDefault(reader, idoc);
         await wv._wvAnnPaneBackToDefault(reader);
-        await sleep(600);
+        await wvT.sleep(600);
         assert.deepEqual(cues(), { dot: false, green: false, bowlGone: true }, "nothing set anywhere");
 
         await setPane({ typesExcl: ["ink"] });

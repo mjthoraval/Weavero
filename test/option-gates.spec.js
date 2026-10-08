@@ -112,7 +112,6 @@ describe("Weavero — option gates", () => {
 // names the shape the fix must keep, and fails on the pre-fix code.
 describe("Weavero — option contracts (source)", () => {
     let wv;
-    const src = (name) => { assert.isFunction(wv[name], name); return String(wv[name]); };
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
@@ -120,34 +119,34 @@ describe("Weavero — option contracts (source)", () => {
     });
 
     it("a failed title-bar apply never rewrites the user's master pref", () => {
-        assert.notInclude(src("_applyCompactTitleBar"), 'Prefs.set("weavero.compactTitleBar"');
+        assert.notInclude(wvT.src("_applyCompactTitleBar"), 'Prefs.set("weavero.compactTitleBar"');
     });
 
     it("the Plugins Manager chrome re-apply needs 'Plugins Manager extras' like a fresh open does", () => {
-        assert.include(src("_wvPMReapplyChrome"), "_getEnablePluginsSearch");
+        assert.include(wvT.src("_wvPMReapplyChrome"), "_getEnablePluginsSearch");
     });
 
     it("'Open in' offers groups and 'New Group' only while tab groups are on", () => {
-        const s = src("_appendOpenInToItemsMenu");
+        const s = wvT.src("_appendOpenInToItemsMenu");
         assert.include(s, "groupsOn");
         assert.isAbove(s.indexOf("groupsOn"), -1);
         assert.isBelow(s.indexOf("groupsOn"), s.indexOf('"New Group"'), "the gate is decided before the entry is built");
     });
 
     it("the reader undo wrap, history stamps and undo buttons are wired by the panels entry, not the outline takeover", () => {
-        const entry = src("_wvProcessReaderPanels");
+        const entry = wvT.src("_wvProcessReaderPanels");
         assert.include(entry, "_wvReaderWrapUndo(reader)");
         assert.include(entry, "_wvReaderEnsureUndoButtons(reader, idoc)");
-        assert.notInclude(src("_wvReaderEnsureOutlinePanel"), "_wvReaderWrapUndo(reader)");
+        assert.notInclude(wvT.src("_wvReaderEnsureOutlinePanel"), "_wvReaderWrapUndo(reader)");
     });
 
     it("the annotations-pane funnel re-applies on its Sort & Filters master; sort teardown re-arms it", () => {
-        assert.include(src("_wvWireAnnListPrefWatch"), '"weavero.enableFilters"');
-        assert.include(src("_wvAnnSortTeardown"), "__wvAnnListSig = null");
+        assert.include(wvT.src("_wvWireAnnListPrefWatch"), '"weavero.enableFilters"');
+        assert.include(wvT.src("_wvAnnSortTeardown"), "__wvAnnListSig = null");
     });
 
     it("the Links & Relations master strips notes; the window-identity prefs have a live branch", () => {
-        const s = src("init");
+        const s = wvT.src("init");
         const master = s.indexOf('weavero.enableLinksAndRelations") {');
         assert.isAbove(master, -1);
         assert.isAbove(s.indexOf("_stripNotes", master), -1);

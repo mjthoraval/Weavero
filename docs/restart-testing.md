@@ -213,6 +213,7 @@ rows a given run actually exercised.
 | Companion plugins present (Better BibTeX, Better Notes) | both installed on the dev profile | companion plugin active after restart |
 | Better Notes closes one of two copies of a note open twice at startup and Weavero's anchor repair judged tabs per ITEM, so the copy stayed lost (found with the companions installed 2026-09-16; fixed in 0.19.9: repair per copy) | N1 open twice in W1, Better Notes active | tab multiset per window |
 | Note deck restore took another item's window for its throwaway anchor while several reader windows opened at once: the note was mounted there, that window's own document closed, the real anchor window left as a stray (found 2026-09-16; fixed in 0.19.9: the anchor window is resolved by item) | note deck + four reader windows restored concurrently | reader windows missing; extra window fails |
+| Anchor window's custom title and hidden collections dropped by the quit flush (`anchorTitle` / `anchorHidden` left out of the record; survey 2026-10-06 §2 #1, fixed in 0.21.9-next.2; escaped this protocol because the fixture set neither) | W1 titled "RTF anchor"; collection "RTF hidden" hidden in W1 | custom title and hidden set per main window |
 
 ## How the restore works (as of 0.15.3)
 

@@ -12,12 +12,11 @@
 describe("Weavero — reader close leaves no dead-window observer errors", function () {
     this.timeout(60000);
     let win, att, reader;
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     const waitFor = async (fn, ms, what) => {
         const t0 = Date.now();
         while (Date.now() - t0 < ms) {
             try { const v = fn(); if (v) return v; } catch (e) {}
-            await sleep(250);
+            await wvT.sleep(250);
         }
         throw new Error("timeout waiting for " + what);
     };
@@ -60,10 +59,10 @@ describe("Weavero — reader close leaves no dead-window observer errors", funct
             reader = await waitFor(() => Zotero.Reader._readers.find(r => r.itemID === att.id
                 && r._internalReader && r._iframeWindow), 30000, "reader " + i);
             // Let the inner-reader observer wire up and run at least one scan.
-            await sleep(1500);
+            await wvT.sleep(1500);
             win.Zotero_Tabs.close(reader.tabID);
             reader = null;
-            await sleep(1200);
+            await wvT.sleep(1200);
             assert.equal(deadWindowErrors() - baseline, 0,
                 "close #" + (i + 1) + " must not throw from the inner observer");
         }

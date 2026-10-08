@@ -368,6 +368,27 @@ stroke, Annotations tab active.
       comes back. Re-checking restores the funnel and the document's own
       filter.
 
+## Annotation card dates (after touching the sort menu or the card rendering)
+
+Issue #49: the reader's annotation cards can show when an annotation was
+added / modified. Open a PDF with a few annotations made on different days,
+Annotations tab active, sort menu (the arrows icon) in view.
+
+- [ ] **Sort by Position, tick "Date Added"** in the sort menu -> every card
+      gains one "Added: <date>" line under its text; untick -> the line goes.
+- [ ] **Tick both "Date Added" and "Date Modified"** -> two lines, Added
+      first.
+- [ ] **Sort by Date Added (or Modified)** -> the cards reorder by that
+      date and BOTH lines show, the sorted one first, whatever the ticks say.
+- [ ] **Hover a date line** -> the tooltip carries both full dates ("Date
+      Added: …" / "Date Modified: …"); the card header's own tooltip
+      carries them too and keeps Zotero's "(user)" part.
+- [ ] **The sort menu rows** read "(default)" on the entries Settings
+      marks as the default; changing the default in Settings -> Reader
+      annotations pane updates the rows and the open documents without a
+      restart.
+- [ ] **Reopen the tab / restart** -> the ticks and the sort survive.
+
 ## Session list sort (after touching the Sessions section of the List-all-tabs panel)
 
 Open the List-all-tabs dropdown; the **Sessions** header carries the

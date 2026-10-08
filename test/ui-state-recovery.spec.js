@@ -34,25 +34,6 @@ describe("Weavero — UI-state recovery invariants", function () {
         }
     }
 
-    // Minimal one-page PDF with correct xref offsets (same fixture recipe as
-    // tearoff.spec.js — lifecycle only, no rendering needed).
-    function minimalPDFBytes() {
-        const objs = [
-            "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
-            "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
-            "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>\nendobj\n",
-        ];
-        const header = "%PDF-1.4\n";
-        let body = header;
-        const offsets = [];
-        for (const o of objs) { offsets.push(body.length); body += o; }
-        const xrefPos = body.length;
-        let xref = "xref\n0 4\n0000000000 65535 f \n";
-        for (const off of offsets) xref += String(off).padStart(10, "0") + " 00000 n \n";
-        const trailer = "trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n" + xrefPos + "\n%%EOF\n";
-        return body + xref + trailer;
-    }
-
     function readerFor(itemID) {
         return (Zotero.Reader._readers || []).find((r) => r && r.itemID === itemID) || null;
     }
@@ -62,7 +43,7 @@ describe("Weavero — UI-state recovery invariants", function () {
         p = await waitFor(() => Zotero.Weavero && Zotero.Weavero.plugin, 20000);
         expect(p, "Weavero plugin not initialized").to.exist;
         const path = PathUtils.join(PathUtils.tempDir, "wv-uistate-" + Date.now() + ".pdf");
-        await IOUtils.writeUTF8(path, minimalPDFBytes());
+        await IOUtils.writeUTF8(path, wvT.minimalPDFBytes());
         att = await Zotero.Attachments.importFromFile({ file: Zotero.File.pathToFile(path) });
         await Zotero.Reader.open(att.id, null, { allowDuplicate: false });
         const ready = await waitFor(() => {

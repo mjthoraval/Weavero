@@ -27,9 +27,14 @@ paths:
 - SHARED HELPERS: `wvT` (test/000-helpers.spec.js, a global of the runner
   page; typed in test/wvT.d.ts) — plugin/lib/win, sleep/waitFor, withPref
   (restores a user value, clears a defaulted pref, never writes a default
-  as a user value), minimalPDFBytes/createTestPDFItem (temp files removed
-  at the end of the run), createItem/erase, purgeDeadReaders. Prefer them
-  to a per-file copy; a targeted run always stages the 000- files.
+  as a user value), minimalPDFBytes/createTestPDFItem, createTestSnapshotItem,
+  createTestEPUBItem (temp files removed at the end of the run),
+  openReaderTab / domViewOf (the Xray-waived DOM view once its document
+  holds a text) / closeReaderTab, createItem/erase, purgeDeadReaders.
+  Prefer them to a per-file copy; a targeted run always stages the 000-
+  files. A chrome-side position/selector handed to a DOM view must be
+  `Cu.cloneInto(obj, pv._iframeWindow)` first or `toDisplayedRange`
+  returns null (test/dom-view-fixture.spec.js runs the real views).
 - Popup contracts are locked by `test/popups.spec.js` — run after touching
   popup code. `test/compat.spec.js` asserts the ownerGlobal/documentGlobal
   bundle invariants.

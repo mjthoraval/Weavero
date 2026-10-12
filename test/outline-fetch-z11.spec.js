@@ -65,6 +65,46 @@ describe("Weavero — outline fetch without getOutline2 (Zotero 11, issue #54)",
         assert.deepEqual(r.tree, []);
     });
 
+    // Zotero 11 publishes in steps: `[]` from a PDF without bookmarks, then the
+    // structured-text outline. The takeover must re-read a state-derived result
+    // when the (hidden) native view re-renders -- found live on 39R8QUAL, which
+    // settled on "No outline" while the reader then held 18 entries.
+    async function watchCase(cache) {
+        if (typeof wv._wvWatchNativeOutline !== "function") throw new Error("plugin._wvWatchNativeOutline absent");
+        const doc = /** @type {any} */ (globalThis).document;
+        const container = doc.createElement("div"); container.id = "sidebarContainer"; container.className = "wv-outline-tab-on";
+        const content = doc.createElement("div"); content.id = "sidebarContent"; container.appendChild(content);
+        doc.body.appendChild(container);
+        const reader = { _internalReader: { _state: { outline: [] } }, _wvOutlineCache: cache };
+        let renders = 0;
+        wv._wvReaderRenderOutline = () => { renders++; };   // instance spy over the prototype method
+        try {
+            wv._wvWatchNativeOutline(reader, doc);
+            reader._internalReader._state.outline = tree;      // the second publish
+            content.appendChild(doc.createElement("div"));     // ...re-renders the native view
+            await new Promise(r => setTimeout(r, 400));
+            return { renders, cache: reader._wvOutlineCache };
+        }
+        finally {
+            delete wv._wvReaderRenderOutline;
+            try { wv._wvUnwatchNativeOutline(reader); } catch (e) {}
+            container.remove();
+        }
+    }
+
+    it("Zotero 11: a later publish replaces a state-derived empty result", async () => {
+        const r = await watchCase({ source: "extracted", tree: [], fromState: true });
+        assert.strictEqual(r.renders, 1, "re-rendered once");
+        assert.isNull(r.cache, "the stale empty result was dropped");
+    });
+
+    it("a getOutline2 result is not re-read on native re-renders", async () => {
+        const kept = { source: "embedded", tree: [{ title: "x" }] };
+        const r = await watchCase(kept);
+        assert.strictEqual(r.renders, 0);
+        assert.strictEqual(r.cache, kept);
+    });
+
     it("Zotero 9/10: getOutline2 is still what the fetch reads", async () => {
         const r = await wv._wvReaderFetchOutline(pdfReader({ stateOutline: null, embedded: [{ title: "a" }], outline2: [node("From getOutline2", 0)] }));
         assert.isOk(r);

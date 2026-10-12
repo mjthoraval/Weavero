@@ -3052,6 +3052,7 @@ class _ReaderPanelsMixin {
      *  the panels.) Called from destroy() for every open reader. */
     _wvReaderTeardownPanels(reader: any, idoc: any) {
         try {
+            try { this._wvUnwatchNativeOutline(reader); } catch (_) {}
             this._wvReaderRewirePanels(reader, idoc);
             try { this._wvAnnSortTeardown(reader, idoc); } catch (_) {}
             try { (idoc as any)._wvRewireRestore = null; } catch (_) {}
@@ -3928,7 +3929,64 @@ class _ReaderPanelsMixin {
                 if (view) view.remove();
             } catch (_) {}
             try { if (reader && reader._wvSpyRangeCache) reader._wvSpyRangeCache.clear(); } catch (_) {}
+            try { this._wvUnwatchNativeOutline(reader); } catch (_) {}
         } catch (e) { Zotero.debug("[Weavero] _wvReaderDeactivateOutlineTakeover err: " + e); }
+    }
+
+    /** Zotero 11 publishes a PDF's outline in STEPS: the embedded bookmarks
+     *  (`[]` when there are none) as soon as they resolve, then the outline
+     *  of the structured document text once that document is ready -- so an
+     *  empty state.outline is not final there. Zotero 9/10's getOutline2
+     *  returned both at once. The native outline view (hidden by the
+     *  takeover, still rendered) re-renders on every publish: while the
+     *  takeover is active, watch it, and re-read a state-derived result
+     *  whose source changed (issue #54 follow-up, 2026-10-12: a PDF without
+     *  bookmarks settled on "No outline" while the reader then published 18
+     *  extracted entries). */
+    _wvWatchNativeOutline(reader: any, idoc: any) {
+        this._wvUnwatchNativeOutline(reader);
+        const host = idoc && idoc.getElementById("sidebarContent");
+        const win: any = idoc && idoc.defaultView;
+        if (!host || !win || !win.MutationObserver) return;
+        const sigOf = () => {
+            try {
+                const st = reader._internalReader && reader._internalReader._state;
+                const o = st ? st.outline : null;
+                if (!o) return "loading";
+                return o.length + "|" + ((o[0] && o[0].title) || "");
+            } catch (_) { return ""; }
+        };
+        reader._wvNativeOutlineSig = sigOf();
+        let timer: any = null;
+        const mo = new win.MutationObserver(() => {
+            if (timer) return;
+            timer = win.setTimeout(() => {
+                timer = null;
+                try {
+                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (!lp || lp._wvDestroyed) return;
+                    const c = idoc.getElementById("sidebarContainer");
+                    if (!c || !c.classList.contains(RP_OUTLINE_TAB_ON)) return;
+                    const sig = sigOf();
+                    if (sig === reader._wvNativeOutlineSig) return;
+                    reader._wvNativeOutlineSig = sig;
+                    const cache = reader._wvOutlineCache;
+                    // Only a result read from state.outline (or none yet) is
+                    // stale; getOutline2 / curated / Reading Mode are not.
+                    if (cache && !cache.fromState) return;
+                    reader._wvOutlineCache = null;
+                    reader._wvOutlineFetchTries = 0;
+                    lp._wvReaderRenderOutline(reader, idoc);
+                } catch (_) {}
+            }, 150);
+        });
+        mo.observe(host, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+        reader._wvNativeOutlineMO = mo;
+    }
+
+    _wvUnwatchNativeOutline(reader: any) {
+        try { if (reader && reader._wvNativeOutlineMO) reader._wvNativeOutlineMO.disconnect(); } catch (_) {}
+        try { if (reader) reader._wvNativeOutlineMO = null; } catch (_) {}
     }
 
     _wvReaderActivateOutlineTakeover(reader: any, idoc: any, on: boolean) {
@@ -3947,6 +4005,7 @@ class _ReaderPanelsMixin {
             container.classList.add(RP_OUTLINE_TAB_ON);
             reader._wvOutlineFetchTries = 0;   // restart extraction-retry budget
             this._wvReaderRenderOutline(reader, idoc);
+            try { this._wvWatchNativeOutline(reader, idoc); } catch (_) {}
             // Only the ACTIVE takeover view participates in the reader's
             // [data-tabstop] Tab walk -- an invisible stop is a dead stop.
             try {
@@ -3976,7 +4035,7 @@ class _ReaderPanelsMixin {
      *  (There is no API to force extraction when an embedded outline exists --
      *  verified in pdf.js: getOutline2's arg is ignored, module.getOutline is
      *  embedded-else-extract.) A Weavero-curated outline (Phase 3) overrides. */
-    async _wvReaderFetchOutline(reader: any): Promise<{ source: string, tree: any[] } | null> {
+    async _wvReaderFetchOutline(reader: any): Promise<{ source: string, tree: any[], fromState?: boolean } | null> {
         try {
             // Non-PDF (DOM) views -- EPUB and snapshot -- have no pdf.js
             // document, but Zotero DOES build an outline for them and hands it
@@ -4013,6 +4072,8 @@ class _ReaderPanelsMixin {
                 // 2026-10-12 this returned null, and the takeover showed "No
                 // outline for this document" over a working native outline
                 // (issue #54). Guard: test/outline-fetch-z11.spec.js.
+                // `fromState`: the reader may publish again (see
+                // _wvWatchNativeOutline), so this result is re-read then.
                 const st = reader._internalReader && reader._internalReader._state;
                 const tree = st ? st.outline : null;
                 if (!tree) return null;   // still loading: the render retries
@@ -4021,7 +4082,7 @@ class _ReaderPanelsMixin {
                     const emb = pdfDoc.getOutline ? await pdfDoc.getOutline() : null;
                     if (emb && emb.length) src = "embedded";
                 } catch (_) {}
-                return { source: src, tree: this._wvOutlineCopyTree(tree) };
+                return { source: src, tree: this._wvOutlineCopyTree(tree), fromState: true };
             }
             const raw = await pdfDoc.getOutline2();
             let source = "extracted";

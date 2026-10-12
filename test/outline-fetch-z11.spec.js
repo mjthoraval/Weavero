@@ -24,7 +24,8 @@ describe("Weavero — outline fetch without getOutline2 (Zotero 11, issue #54)",
     const node = (title, page, items) => ({ title, location: { position: { pageIndex: page, rects: [[10, 700, 10, 700]] } }, items: items || [] });
 
     /** A PDF reader as the fetch sees it: the pdf.js app on the iframe window
-     *  and the reader state, with or without getOutline2. */
+     *  and the reader state, with or without getOutline2.
+     *  @param {{ stateOutline: any, embedded: any, outline2?: any }} o */
     function pdfReader({ stateOutline, embedded, outline2 }) {
         const pdfDocument = { getOutline: async () => embedded };
         if (outline2) pdfDocument.getOutline2 = async () => outline2;

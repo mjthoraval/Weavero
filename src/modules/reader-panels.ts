@@ -4002,7 +4002,27 @@ class _ReaderPanelsMixin {
             if (!app) return null;
             if (app.initializedPromise) { try { await app.initializedPromise; } catch (_) {} }
             const pdfDoc = app.pdfDocument;
-            if (!pdfDoc || typeof pdfDoc.getOutline2 !== "function") return null;
+            if (!pdfDoc) return null;
+            if (typeof pdfDoc.getOutline2 !== "function") {
+                // Zotero 11's PDF.js has no getOutline2: the reader resolves
+                // the outline itself -- the embedded bookmarks through
+                // getOutline() + destination resolution, else an outline from
+                // the structured document text -- into state.outline (null
+                // while loading, [] when there is none), lazily while the
+                // Outline view is open. Read it like the DOM views do. Until
+                // 2026-10-12 this returned null, and the takeover showed "No
+                // outline for this document" over a working native outline
+                // (issue #54). Guard: test/outline-fetch-z11.spec.js.
+                const st = reader._internalReader && reader._internalReader._state;
+                const tree = st ? st.outline : null;
+                if (!tree) return null;   // still loading: the render retries
+                let src = "extracted";
+                try {
+                    const emb = pdfDoc.getOutline ? await pdfDoc.getOutline() : null;
+                    if (emb && emb.length) src = "embedded";
+                } catch (_) {}
+                return { source: src, tree: this._wvOutlineCopyTree(tree) };
+            }
             const raw = await pdfDoc.getOutline2();
             let source = "extracted";
             try {

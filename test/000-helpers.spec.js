@@ -341,6 +341,31 @@
             // gesture state, there only after an earlier spec used the menu.
             "_wvCollAfterglow",
         ]),
+        /** A wiring recording made platform- and theme-neutral, for the
+         *  characterizations recorded on Windows in dark mode: the 0.22.0
+         *  release CI (Linux, light) lacked exactly these and nothing else.
+         *  Off Windows, drop the Windows-only wiring (taskbar overlay badge,
+         *  per-window icons, the Ctrl+Y redo key -- each gated on
+         *  Zotero.isWin); everywhere, drop the theme class `wv-ui-dark` and
+         *  name the platform's Exit item (menu_fileQuitItemWin / -Unix) one
+         *  way. Applied to the recording AND the expectation; a Windows run
+         *  still checks the Windows-only keys. */
+        wiringNormalize(rec) {
+            const winOnly = /^(_wvOv|_wvPrevWinIcons|_wvWinIconName|_wvRedoKeyH)|^listen ovFollow:/;
+            const fixStr = (s) => typeof s === "string" ? s.replace(/menu_fileQuitItem(Win|Unix)/g, "menu_fileQuitItem") : s;
+            const keep = (s) => typeof s !== "string"
+                || !(/^wv-ui-dark( x\d+)?$/.test(s) || (!Zotero.isWin && winOnly.test(s)));
+            const walk = (v) => {
+                if (Array.isArray(v)) return v.filter(keep).map(fixStr).map(walk);
+                if (v && typeof v === "object") {
+                    const o = {};
+                    for (const k of Object.keys(v)) o[fixStr(k)] = walk(v[k]);
+                    return o;
+                }
+                return v;
+            };
+            return walk(rec);
+        },
         WIRING_ELEMENT_IDS: ["zotero-itemmenu", "zotero-collectionmenu", "zotero-tabs-menu-panel", "item-tree-main-default",
             "zotero-collections-tree", "tab-bar-container", "zotero-items-pane", "zotero-item-pane", "zotero-context-pane",
             "zotero-collections-pane", "zotero-tb-search", "zotero-items-toolbar", "zotero-collections-toolbar",

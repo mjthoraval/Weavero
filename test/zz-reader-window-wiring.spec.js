@@ -303,7 +303,8 @@ describe("Weavero — reader and note window wiring, characterized (reloads the 
             await IOUtils.writeUTF8(rec, JSON.stringify(got, null, 1));
             return;
         }
-        assert.deepEqual(got, WIRING2_EXPECTED);
+        // Platform- and theme-neutral (recorded on Windows, dark): wvT.wiringNormalize.
+        assert.deepEqual(wvT.wiringNormalize(got), wvT.wiringNormalize(WIRING2_EXPECTED));
     });
 });
 

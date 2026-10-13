@@ -19,7 +19,7 @@ describe("Weavero -- caption-button reservation", () => {
 
 	before(function () {
 		wv = Zotero.Weavero && Zotero.Weavero.plugin;
-		if (!wv || typeof wv._ensureCompactTitleBarStyles !== "function") this.skip();
+		if (!wv || typeof wv._ensureCompactTitleBarStyles !== "function") wvT.absent('!wv || typeof wv._ensureCompactTitleBarStyles !== "function"');
 	});
 
 	it("the tab strip reserves the measured button box, not a fixed 138px", () => {
@@ -60,7 +60,7 @@ describe("Weavero -- caption-button reservation", () => {
 	});
 
 	it("_wvTrackCaptionReserve sets the box's width + right margin and follows resizes", async function () {
-		if (typeof wv._wvTrackCaptionReserve !== "function") this.skip();
+		if (typeof wv._wvTrackCaptionReserve !== "function") wvT.absent('typeof wv._wvTrackCaptionReserve !== "function"');
 		const win = Zotero.getMainWindow(), doc = win.document;
 		const sleep = (ms) => new Promise(r => win.setTimeout(r, ms));
 		const H = "http://www.w3.org/1999/xhtml";

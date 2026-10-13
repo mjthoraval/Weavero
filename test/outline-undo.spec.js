@@ -17,7 +17,7 @@ describe("Weavero — outline undo: add and delete entries", () => {
 
     before(async function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvOutlineRecordAdd !== "function") this.skip();
+        if (!wv || typeof wv._wvOutlineRecordAdd !== "function") wvT.absent('!wv || typeof wv._wvOutlineRecordAdd !== "function"');
         att = { libraryID: 1, itemKey: "WVUNDO" + Date.now().toString(36).slice(-4).toUpperCase() };
         scope = wv._wvOutlineUndoScope(att);
         await wv._wvOutlineEnsureCurated(att.libraryID, att.itemKey, "extracted", []);

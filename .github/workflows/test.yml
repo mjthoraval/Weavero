@@ -68,3 +68,42 @@ jobs:
         # exit-on-finish. Also auto-installs xvfb + Zotero via
         # apt on the Ubuntu runner.
         run: npm test
+
+  # The Windows-only behaviour (taskbar icons and their handles, Ctrl+Y redo,
+  # the "(Windows)" specs) never ran in CI: the Ubuntu job skips it (survey
+  # 2026-10-06, §6). Same suite on a Windows runner. Typecheck and the Node
+  # unit tier are platform-independent and stay on Ubuntu.
+  test-windows:
+    name: Mocha + Chai (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Zotero (beta, portable ZIP)
+        # The scaffold's own CI setup is Linux-only (apt, xvfb,
+        # /etc/os-release) and would fail here; ZOTERO_SETUP_COMPLETE skips
+        # it, and ZOTERO_PLUGIN_ZOTERO_BIN_PATH points the runner at the
+        # unzipped binary. Beta channel, like the Linux setup.
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP "zotero.zip"
+          $dir = Join-Path $env:RUNNER_TEMP "zotero"
+          Invoke-WebRequest -Uri "https://www.zotero.org/download/client/dl?channel=beta&platform=win-x64-zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $dir
+          $exe = Get-ChildItem -Path $dir -Recurse -Filter zotero.exe | Select-Object -First 1
+          if (-not $exe) { throw "zotero.exe not found in the ZIP" }
+          "ZOTERO_PLUGIN_ZOTERO_BIN_PATH=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ZOTERO_SETUP_COMPLETE=1" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run tests
+        run: npm test

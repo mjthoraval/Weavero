@@ -17,6 +17,12 @@
 // defineProperties (see modules/annotation.ts for the pattern).
 
 import { winOf, wvSetBoolAttr } from "../lib/dom";
+import { wvLivePlugin } from "../lib/live";
+import { wvInjectStyle, wvRemoveStyle } from "../lib/style";
+import { wvWrap, wvUnwrap } from "../lib/wrap";
+import { wvListen, wvListener, wvUnlisten } from "../lib/listen";
+import { wvStoreWrite, wvStoreRead, wvStoreRemove } from "../lib/store";
+import { wvTimeout } from "../lib/timers";
 import { WV_FUNNEL_DATA_URI } from "./constants";
 
 // Zotero_Tabs is the per-window globals — it's declared as `any`
@@ -89,9 +95,16 @@ class _TabsMixin {
      *  reorder the DOM in-place. */
     _setupTabsMenuLibrarySort(win) {
         if (!win) return;
-        // Tab-bar decoration (group-library tints + tooltip suffix)
-        // is independent of the popup patch — set it up first so it
-        // works even before the user opens the popup once.
+        // Structural tab-bar wiring (pins, groups, drag/drop, multi-select,
+        // the mutation observer) first and UNGATED: it once lived inside the
+        // glyph decoration, so turning the cosmetic "Group-library glyph" off
+        // silently disabled pinned tabs, tab-bar drops, group DnD and
+        // Ctrl/Shift+click (survey 2026-10-06 #15). Guard: test/survey-fixes-d.spec.js.
+        try { this._setupTabBarWiring(win); }
+        catch (e) { Zotero.debug("[Weavero] tab-bar wiring err: " + e); }
+        // Tab-bar decoration (group-library tints + tooltip): the glyph
+        // pref's own surface, independent of the popup patch — set up
+        // before the user opens the popup once.
         // Pref gate (Visual extras → Group-library glyph).
         if (this._getEnableGroupLibraryGlyph()) {
             try { this._setupTabBarLibraryDecoration(win); }
@@ -185,15 +198,14 @@ class _TabsMixin {
         // Once the panel is positioned on screen, cap the list to the space that
         // actually remains below it so a long list scrolls instead of running off
         // the bottom of the screen (the static CSS cap can't know the anchor).
-        if (!panel._wvOverflowWired) {
-            panel._wvOverflowWired = true;
-            panel.addEventListener("popupshown", () => {
-                try {
-                    const lp = Zotero.Weavero && Zotero.Weavero.plugin;
-                    if (lp && lp._wvTabsMenuFitListHeight) lp._wvTabsMenuFitListHeight(panel);
-                } catch (e) {}
-            });
-        }
+        // Keyed (lib/listen.ts; wiring slice 3): a boolean stamp kept the
+        // first build's handler on the panel until a restart.
+        wvListen(panel, "tabsMenu:fitHeight", "popupshown", () => {
+            try {
+                const lp = Zotero.Weavero && Zotero.Weavero.plugin;
+                if (lp && lp._wvTabsMenuFitListHeight) lp._wvTabsMenuFitListHeight(panel);
+            } catch (e) {}
+        }, false, (this as any)._wvWireTag());
         // The panel may already have content from an earlier open
         // before the patch landed — refresh it now so the header
         // structure is in place even without a popupshowing event.
@@ -214,9 +226,10 @@ class _TabsMixin {
                 && doc.getElementById("wv-tab-bar-filter-style");
             if (tabBarStyle) tabBarStyle.remove();
         } catch (e) {}
-        // Tear down group-library tints and tooltip suffixes — also
-        // global to the window, also needs cleaning regardless of
-        // popup state.
+        // Tear down the structural wiring (observer, pins) and the
+        // group-library tints + tooltip — both global to the window, both
+        // need cleaning regardless of popup state.
+        try { this._teardownTabBarWiring(win); } catch (e) {}
         try { this._teardownTabBarLibraryDecoration(win); } catch (e) {}
         // Drop the file-type filter button + popup from the panel
         // and clear any open-popup outside-click listener.
@@ -669,12 +682,19 @@ class _TabsMixin {
             // session rows built by _wvTabsMenuTabRow carry `data-wv-library` +
             // `data-wv-itemtype` but no current-window tab id.
             const rows = [...tabsList.querySelectorAll(".row[data-tab-id], .row[data-wv-library]")] as any[];
+            // The PANEL's window's tabs: the bare `Zotero_Tabs` global does not
+            // exist in the plugin sandbox, so this threw (swallowed) on every
+            // native row, which was then never stamped and always passed the
+            // filter -- in Sort-by-library mode the post-pass un-hid the rows
+            // the grouping pass had just hidden (survey 2026-10-06).
+            const pw: any = winOf(panel);
+            const ZT: any = pw && pw.Zotero_Tabs;
             for (const row of rows) {
                 // Stamp native current-window rows so the per-row checks work
                 // uniformly (other-window rows are already stamped at build time).
                 if (!(row.getAttribute && row.getAttribute("data-wv-itemtype"))) {
                     try {
-                        const tab = Zotero_Tabs._tabs.find((t: any) => t.id === row.dataset.tabId);
+                        const tab = ZT && ZT._tabs.find((t: any) => t.id === row.dataset.tabId);
                         const iid = tab && tab.data && tab.data.itemID;
                         const it: any = iid && Zotero.Items.get(iid);
                         if (it) {
@@ -984,10 +1004,13 @@ class _TabsMixin {
                 || panel.querySelector("#wv-wtl-list");
             if (!list) return;
             const self = this;
-            const isStale = () => panel._wvRowDnDWiredBy !== self;   // a newer instance re-wired
+            // Stale when a newer instance re-wired the panel OR no live plugin
+            // remains -- the `|| self` fallback kept a dead instance's drag
+            // state answering after a disable (survey 2026-10-06 §3.2).
+            const isStale = () => panel._wvRowDnDWiredBy !== self || !wvLivePlugin();
             const doc = list.ownerDocument;
             const panelWin = winOf(panel);
-            const livePlugin = () => ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || self;
+            const livePlugin = (): any => wvLivePlugin();
             // Clear ONLY the drop-into outline classes — keep the ghost so
             // dragover can REUSE + reposition it (removing + recreating it every
             // dragover event was the flicker source).
@@ -1646,27 +1669,53 @@ class _TabsMixin {
     // Default name is "Window N" by the window's STABLE index in
     // Zotero.getMainWindows() (creation order, oldest-first) — so a window keeps the
     // same number no matter which window you view the tabs list from. A custom title
-    // overrides it; titles persist across restarts keyed by that stable index.
+    // overrides it. The custom title is part of the WINDOW'S OWN saved state
+    // (MJT 2026-10-05, after the hidden-collections sets moved there): field
+    // `title` of wvMainState / the session window record, `anchorTitle` in
+    // the window store for the first window -- so it follows the window
+    // through restarts, Save & Close / Reopen and tab sessions. It used to be
+    // persisted by POSITION (pref weavero.windowTitles, written 2026-06-27,
+    // the day before the stable window id existed): closing Window 2 handed
+    // its title to Window 3. That pref is now read only by the one-time
+    // migration (_wvMigrateIndexTitles).
 
     _wvWindowTitlesGet() {
         try { return JSON.parse(String(Zotero.Prefs.get("weavero.windowTitles", true) || "{}")) || {}; }
         catch (e) { return {}; }
     }
-    _wvWindowTitlesSet(map: any) {
-        try { Zotero.Prefs.set("weavero.windowTitles", JSON.stringify(map || {}), true); } catch (e) {}
-    }
     _wvWindowIndex(win: any) {
         try { return Zotero.getMainWindows().indexOf(win); } catch (e) { return -1; }
     }
-    /** A window's custom title (session cache → persisted-by-index), or null. */
+    /** A window's custom title, or null. Until the one-time migration has
+     *  run, a window without one still falls back to the legacy by-position
+     *  pref (so titles show from the first frame after the upgrade). */
     _wvWindowCustomTitle(win: any) {
         if (!win) return null;
         if (win._wvWindowTitle != null) return win._wvWindowTitle || null;   // "" = cleared
+        if (Zotero.Prefs.get("weavero.windowTitlesMigrated", true)) return null;
         const idx = this._wvWindowIndex(win);
         if (idx < 0) return null;
         const t = this._wvWindowTitlesGet()[String(idx)];
-        if (t) { win._wvWindowTitle = t; return t; }
-        return null;
+        return t || null;
+    }
+
+    /** One-time: copy the legacy by-position titles onto the open main
+     *  windows (by their position NOW -- the one the pref was written for,
+     *  once the startup restore has rebuilt the windows), save them into the
+     *  windows' state, clear the pref. */
+    _wvMigrateIndexTitles() {
+        try {
+            if (Zotero.Prefs.get("weavero.windowTitlesMigrated", true)) return;
+            const map = this._wvWindowTitlesGet();
+            const mains = Zotero.getMainWindows() || [];
+            for (let i = 0; i < mains.length; i++) {
+                const w: any = mains[i];
+                if (w._wvWindowTitle == null && map[String(i)]) w._wvWindowTitle = map[String(i)];
+            }
+            Zotero.Prefs.set("weavero.windowTitlesMigrated", true, true);
+            try { Zotero.Prefs.clear("weavero.windowTitles", true); } catch (e) {}
+            try { this._wvWindowStoreSaveDebounced(); } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvMigrateIndexTitles err: " + e); }
     }
     _wvWindowSetCustomTitle(win: any, title: any) {
         if (!win) return;
@@ -1687,11 +1736,9 @@ class _TabsMixin {
                 this._wvUpdateWindowBadgeDot(win, !!(this as any)._getTabsAndWindowsMaster(), true);
             }
         } catch (e) {}
-        const idx = this._wvWindowIndex(win);
-        if (idx < 0) return;
-        const map = this._wvWindowTitlesGet();
-        if (title) map[String(idx)] = title; else delete map[String(idx)];
-        this._wvWindowTitlesSet(map);
+        // Saved with the window's own state (the window store / sessions
+        // capture `title`), not by position.
+        try { this._wvWindowStoreSaveDebounced(); } catch (e) {}
         // Keep the title-bar mark's hover tooltip in sync with the new name.
         try { this._wvUpdateMainWindowIndicator(win); } catch (e) {}
     }
@@ -1757,7 +1804,7 @@ class _TabsMixin {
 
     _wvEnsureMvWinGlyphStyles(doc: any) {
         try {
-            if (doc.getElementById("wv-mvwin-glyph-styles")) return;
+            wvRemoveStyle(doc, "wv-mvwin-glyph-styles");   // always replaced (src-ts.md sheet replace)
             const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
             style.id = "wv-mvwin-glyph-styles";
             const anchorSvg = encodeURIComponent(
@@ -2562,6 +2609,7 @@ class _TabsMixin {
                     restored = (win as any)._wvNativeTitleBase;
                 }
                 delete (win as any)._wvComposedTitle;
+                delete (win as any)._wvNativeTitleBase;
             } catch (e) {}
             try { doc.title = restored; } catch (e) {}
         } catch (e) {}
@@ -2573,14 +2621,23 @@ class _TabsMixin {
      *  when either feature is active. */
     _wvRefreshTitleGlyphs(forceOff?: boolean) {
         try {
+            for (const w of (Zotero.getMainWindows() || [])) this._wvApplyTitleGlyph(w, forceOff);
+            const en = Services.wm.getEnumerator("zotero:reader");
+            while (en.hasMoreElements()) this._wvApplyTitleGlyph(en.getNext(), forceOff);
+        } catch (e) {}
+    }
+
+    /** One window's title shadow, by the rule above: wired while the glyphs
+     *  or a window-name mode need it, else removed. The window-open paths
+     *  (main-window wiring table, a reader window's identity) used to wire
+     *  it unconditionally -- a no-op shadow with both features off -- while
+     *  init skipped it, so a window's title wiring depended on how it had
+     *  been opened (wiring slice 2, 2026-10-12). */
+    _wvApplyTitleGlyph(win: any, forceOff?: boolean) {
+        try {
             const on = !forceOff && (this._getEnableWindowTitleGlyphs()
                 || this._getWindowTitleNameMode() !== "off");
-            const apply = (w: any) => {
-                try { if (on) this._wvWireTitleGlyph(w); else this._wvUnwireTitleGlyph(w); } catch (e) {}
-            };
-            for (const w of (Zotero.getMainWindows() || [])) apply(w);
-            const en = Services.wm.getEnumerator("zotero:reader");
-            while (en.hasMoreElements()) apply(en.getNext());
+            if (on) this._wvWireTitleGlyph(win); else this._wvUnwireTitleGlyph(win);
         } catch (e) {}
     }
 
@@ -2596,12 +2653,15 @@ class _TabsMixin {
 
     /** Extract one of the bundled per-window .ico files (icons/win/ in
      *  the XPI) to <data dir>/weavero/win-icons/ — LoadImageW needs a
-     *  real file path. Re-extracted per plugin version. */
+     *  real file path. Re-extracted per plugin version, stamped PER ICON:
+     *  one shared VERSION file, refreshed by whichever icon was extracted
+     *  first after an upgrade, left every other icon on its old artwork
+     *  (survey 2026-10-06). */
     async _wvWinIconFile(name: string): Promise<string | null> {
         try {
             const dir = PathUtils.join(Zotero.DataDirectory.dir, "weavero", "win-icons");
             const path = PathUtils.join(dir, name + ".ico");
-            const stampPath = PathUtils.join(dir, "VERSION");
+            const stampPath = PathUtils.join(dir, name + ".version");
             const ver = String((this as any)._version || "");
             let fresh = false;
             try {
@@ -2663,8 +2723,9 @@ class _TabsMixin {
     }
 
     /** Low-level Win32: load 16px + 32px frames from the .ico and set
-     *  them as the window's small/big icons. Keeps the previous HICONs
-     *  on the window for restore, and our loaded HICONs for cleanup. */
+     *  them as the window's small/big icons. Keeps the window's ORIGINAL
+     *  HICONs for restore; the ones we loaded earlier are destroyed when
+     *  replaced -- every recolour leaked two before (survey 2026-10-06). */
     _wvSetWindowIconFromFile(win: any, path: string): boolean {
         try {
             const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
@@ -2681,6 +2742,7 @@ class _TabsMixin {
                 const LoadImageW = user32.declare("LoadImageW", ctypes.winapi_abi,
                     HICON, ctypes.voidptr_t, ctypes.char16_t.ptr, ctypes.unsigned_int,
                     ctypes.int, ctypes.int, ctypes.unsigned_int);
+                const DestroyIcon = user32.declare("DestroyIcon", ctypes.winapi_abi, ctypes.int, HICON);
                 const IMAGE_ICON = 1, LR_LOADFROMFILE = 0x10;
                 const small = LoadImageW(null, path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE);
                 const big = LoadImageW(null, path, IMAGE_ICON, 32, 32, LR_LOADFROMFILE);
@@ -2692,8 +2754,15 @@ class _TabsMixin {
                 const prevBig = SendMessageW(hwnd, WM_SETICON, 1,
                     ctypes.cast(big, ctypes.intptr_t));
                 // First replacement: remember the ORIGINAL icons for restore.
+                // Later ones replaced icons WE loaded (LR_LOADFROMFILE, not
+                // shared): free them.
                 if (!win._wvPrevWinIcons) {
                     win._wvPrevWinIcons = { small: String(prevSmall), big: String(prevBig) };
+                } else {
+                    for (const h of [prevSmall, prevBig]) {
+                        const hs = String(h);
+                        if (hs !== "0") { try { DestroyIcon(HICON(ctypes.UInt64(hs))); } catch (e) {} }
+                    }
                 }
                 return true;
             } finally { user32.close(); }
@@ -2714,12 +2783,20 @@ class _TabsMixin {
                 .getInterface(Ci.nsIBaseWindow);
             const user32 = ctypes.open("user32.dll");
             try {
-                const HWND = ctypes.voidptr_t;
+                const HWND = ctypes.voidptr_t, HICON = ctypes.voidptr_t;
                 const SendMessageW = user32.declare("SendMessageW", ctypes.winapi_abi,
                     ctypes.intptr_t, HWND, ctypes.uint32_t, ctypes.uintptr_t, ctypes.intptr_t);
+                const DestroyIcon = user32.declare("DestroyIcon", ctypes.winapi_abi, ctypes.int, HICON);
                 const hwnd = HWND(ctypes.UInt64(bw.nativeHandle));
-                SendMessageW(hwnd, 0x0080, 0, ctypes.intptr_t(ctypes.UInt64(prev.small)));
-                SendMessageW(hwnd, 0x0080, 1, ctypes.intptr_t(ctypes.UInt64(prev.big)));
+                const ours = [
+                    SendMessageW(hwnd, 0x0080, 0, ctypes.intptr_t(ctypes.UInt64(prev.small))),
+                    SendMessageW(hwnd, 0x0080, 1, ctypes.intptr_t(ctypes.UInt64(prev.big))),
+                ];
+                // The icons the originals replaced are ours: free them.
+                for (const h of ours) {
+                    const hs = String(h);
+                    if (hs !== "0") { try { DestroyIcon(HICON(ctypes.UInt64(hs))); } catch (e) {} }
+                }
             } finally { user32.close(); }
             delete win._wvPrevWinIcons;
             delete win._wvWinIconName;
@@ -3516,10 +3593,11 @@ class _TabsMixin {
             } catch (e) {}
             (win as any)._wvOvPollId = win.setInterval(moveHandler, 1000);
             // Closing a window whose badge tops its monitor's button
-            // must hand the badge to the next window there.
-            if (!(win as any)._wvOvUnloadWired) {
-                (win as any)._wvOvUnloadWired = true;
-                win.addEventListener("unload", () => {
+            // must hand the badge to the next window there. Keyed (lib/
+            // listen.ts; wiring slice 3): a boolean stamp kept the first
+            // build's handler on every window until a restart.
+            {
+                wvListen(win, "ovFollow:unload", "unload", () => {
                     try {
                         const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                         if (!lp || lp._wvDestroyed) return;
@@ -3538,7 +3616,7 @@ class _TabsMixin {
                             } catch (e) {}
                         }, 700);
                     } catch (e) {}
-                });
+                }, false, (this as any)._wvWireTag());
             }
         } catch (e) {}
     }
@@ -3937,7 +4015,11 @@ class _TabsMixin {
             // (Re)build the header at the top of the scope. Label the current window
             // by its STABLE name (custom title, else "Window N" by creation order) —
             // consistent no matter which window the tabs list is opened from.
-            const count = wrap.querySelectorAll(".row[data-tab-id]").length;
+            // Real tabs only, like every other window's header: the Library row
+            // was counted here, so the current window read one higher than the
+            // same window seen from another one (survey 2026-10-06).
+            const count = [...wrap.querySelectorAll(".row[data-tab-id]")]
+                .filter((r: any) => !(r.dataset && r.dataset.tabId === "zotero-pane")).length;
             const w: any = doc.defaultView;
             // Anchor mark under the same rule as the taskbar / title and the
             // all-windows list (reader windows count too) -- one main window
@@ -4089,6 +4171,28 @@ class _TabsMixin {
         if (titleBar) {
             titleBar.setAttribute("tooltip", "wv-tab-library-tooltip");
         }
+        // Initial tint pass; the wiring's observer (_setupTabBarWiring)
+        // keeps it fresh while the glyph pref is on.
+        try { this._decorateTabBar(win); } catch (e) {}
+    }
+
+    /** Structural tab-bar wiring for one main window: pinned tabs, tab
+     *  groups, drops onto the strip, Ctrl/Shift+click multi-select, and the
+     *  mutation observer that re-applies pins/groups (and the glyph
+     *  decoration while that pref is on) after every React re-render.
+     *  Independent of the group-library glyph (survey 2026-10-06 #15; it
+     *  used to live inside _setupTabBarLibraryDecoration). Torn down by
+     *  _teardownTabBarWiring. */
+    _setupTabBarWiring(win) {
+        if (!win) return;
+        const doc = win.document;
+        if (!doc) return;
+        const container = doc.getElementById("tab-bar-container");
+        if (!container) {
+            // Tab bar mounts asynchronously — retry shortly.
+            win.setTimeout(() => this._setupTabBarWiring(win), 1000);
+            return;
+        }
 
         // Inject the static stylesheet for pinned tabs (icon-only width,
         // hidden title + close). Lives in the chrome window's head so it
@@ -4110,8 +4214,7 @@ class _TabsMixin {
         try { (this as any)._wvWireTabMultiSel(win); } catch (e) {}
 
         // Initial pass before we attach the observer so the user
-        // sees decoration + pin state immediately on plugin install / Zotero open.
-        try { this._decorateTabBar(win); } catch (e) {}
+        // sees pin state immediately on plugin install / Zotero open.
         try { this._applyPinnedTabs(win); } catch (e) {}
         try { this._applyTabGroups(win); } catch (e) {}
 
@@ -4132,13 +4235,15 @@ class _TabsMixin {
                     if (allOurs) return;
                 }
             } catch (e) {}
-            try { this._decorateTabBar(win); } catch (e) {}
+            // The glyph decoration rides the same observer, under its own pref.
+            try { if (this._getEnableGroupLibraryGlyph()) this._decorateTabBar(win); } catch (e) {}
             try { this._applyPinnedTabs(win); } catch (e) {}
             try { this._applyTabGroups(win); } catch (e) {}
             // Self-heal the Ctrl/Shift+click multi-select wiring: a session
             // switch / window rebuild can drop it (the listeners live on the
-            // tab-bar container). The WIRE_VERSION guard makes this a no-op once
-            // wired, so re-calling it on every tab-bar mutation is cheap.
+            // tab-bar container). Keyed listeners (lib/listen.ts) make this a
+            // no-op on a wired container, so re-calling it on every tab-bar
+            // mutation is cheap; a rebuilt container gets wired.
             try { (Zotero as any).Weavero.plugin._wvWireTabMultiSel(win); } catch (e) {}
             // Keep the active (tracked) session in sync on tab open/close/reorder/
             // select. Reliable + prompt (the 'tab' Notifier queues add/select, so
@@ -4640,37 +4745,41 @@ class _TabsMixin {
         } catch (e) {}
     }
 
-    /** Per-window, versioned, reload-proof wrap of `Zotero_Tabs.close`. */
+    /** Per-window, tag-stamped, reload-proof wrap of `Zotero_Tabs.close`:
+     *  the issue #29 last-view guard as its own LAYER ("lastView"). The
+     *  restore tracing is another layer on the same member; two independent
+     *  own-prop wraps once raced on wiring order and the guard fell out of
+     *  the chain (2026-08-09) -- the layered helper rebuilds the chain from
+     *  the native on every change, so order no longer matters. */
     _wvWireLastViewCloseGuard(win: any) {
         try {
             const Z: any = win && win.Zotero_Tabs;
             if (!Z || typeof Z.close !== "function") return;
-            if (Z._wvLastViewWired === 1) return;
-            if (Z._wvOrigTabsClose) Z.close = Z._wvOrigTabsClose;
-            const orig = Z.close;
-            Z._wvOrigTabsClose = orig;
-            Z.close = function (ids?: any) {
+            // Legacy constant-stamped wrap (builds before the helper): peel it.
+            if (Z._wvOrigTabsClose) {
+                try { Z.close = Z._wvOrigTabsClose; } catch (e) {}
+                delete Z._wvOrigTabsClose; delete Z._wvLastViewWired;
+            }
+            wvWrap(Z, "close", "lastView", (this as any)._wvWireTag(), (orig: any) => function (ids?: any) {
                 try {
-                    // Resolve the LIVE plugin — a closure would go stale
-                    // across reloads.
-                    const lp: any = (Zotero as any).Weavero
-                        && (Zotero as any).Weavero.plugin;
+                    const lp: any = wvLivePlugin();   // never a wire-time closure
                     if (lp) lp._wvBlindNonFinalCloses(win, ids);
                 }
                 catch (e) {}
                 return orig.apply(this, arguments);
-            };
-            Z._wvLastViewWired = 1;
+            });
         } catch (e) {}
     }
 
     _wvUnwireLastViewCloseGuard(win: any) {
         try {
             const Z: any = win && win.Zotero_Tabs;
-            if (!Z || !Z._wvOrigTabsClose) return;
-            Z.close = Z._wvOrigTabsClose;
-            delete Z._wvOrigTabsClose;
-            delete Z._wvLastViewWired;
+            if (!Z) return;
+            if (Z._wvOrigTabsClose) {
+                try { Z.close = Z._wvOrigTabsClose; } catch (e) {}
+                delete Z._wvOrigTabsClose; delete Z._wvLastViewWired;
+            }
+            wvUnwrap(Z, "close", "lastView");
         } catch (e) {}
     }
 
@@ -5601,9 +5710,14 @@ class _TabsMixin {
             try { this._wvWrapMoveToNewWindowHook(win); } catch (e) {}
             const doc = win.document;
             const container = doc.getElementById("tab-bar-container");
-            if (!container || (container as any)._wvPinDragWired) return;
+            if (!container) return;
             const self = this;
-            container.addEventListener("dragstart", (e: any) => {
+            // Keyed, instance-tagged listeners (lib/listen.ts): a reload replaces
+            // the previous instance's six handlers instead of keeping them (the
+            // boolean `_wvPinDragWired` stamp made the new instance skip, so the
+            // old build's drag code ran until a restart; wiring slice 3).
+            const on = wvListener((this as any)._wvWireTag());
+            on(container, "tabBarDrag:dragstart", "dragstart", (e: any) => {
                 try {
                     const tabNode = e.target && e.target.closest && e.target.closest(".tab[data-id]");
                     if (!tabNode) return;
@@ -5658,21 +5772,25 @@ class _TabsMixin {
                         // stale `self`, but every window reads the single live
                         // Zotero.Weavero.plugin — so the source-window ref and
                         // ghost info must live there to be seen cross-window.
-                        const lp: any = (Zotero as any).Weavero?.plugin || self;
-                        lp._wvMainTabDragSourceWin = win;
-                        // Mirror _wvTabDrag onto the LIVE plugin too: a reader
-                        // window's drop reads `Zotero.Weavero.plugin._wvTabDrag`
-                        // (mainTabDrag()), but after a hot-reload this dragstart's
-                        // `self` is the OLD instance, so a self-only write left the
-                        // live plugin's _wvTabDrag null → main→reader drops were
-                        // misrouted to the reader↔reader path (Base mount, source
-                        // not closed → tear-off into a new window).
-                        lp._wvTabDrag = self._wvTabDrag;
-                        lp._wvMergeDragInfo = {
-                            itemID: self._wvTabDrag.itemID,
-                            title: self._wvTabDrag.title || "",
-                            readerType: mergeRt,
-                        };
+                        // The LIVE plugin only (never a `|| self` fallback: a dead
+                        // instance's fields are read by nobody).
+                        const lp: any = wvLivePlugin();
+                        if (lp) {
+                            lp._wvMainTabDragSourceWin = win;
+                            // Mirror _wvTabDrag onto the LIVE plugin too: a reader
+                            // window's drop reads `Zotero.Weavero.plugin._wvTabDrag`
+                            // (mainTabDrag()), but after a hot-reload this dragstart's
+                            // `self` is the OLD instance, so a self-only write left the
+                            // live plugin's _wvTabDrag null → main→reader drops were
+                            // misrouted to the reader↔reader path (Base mount, source
+                            // not closed → tear-off into a new window).
+                            lp._wvTabDrag = self._wvTabDrag;
+                            lp._wvMergeDragInfo = {
+                                itemID: self._wvTabDrag.itemID,
+                                title: self._wvTabDrag.title || "",
+                                readerType: mergeRt,
+                            };
+                        }
                     } catch (er3) {}
                     // Multi-select: show ALL selected tabs as the drag ghost (a
                     // small stack), so dragging N tabs shows N ghosts — not just
@@ -5754,7 +5872,7 @@ class _TabsMixin {
             // toggle the data-wv-pin-preview attribute on its tab node.
             // CSS does the rest (icon-only collapse with accent outline /
             // full-width with dashed outline).
-            container.addEventListener("dragover", (e: any) => {
+            on(container, "tabBarDrag:dragover", "dragover", (e: any) => {
                 try {
                     // Cross-window merge: a drag carrying our reader-merge
                     // MIME (set on the .wv-window-tab in a standalone reader)
@@ -5807,9 +5925,9 @@ class _TabsMixin {
                             // Read mergeInfo from the LIVE plugin instance via
                             // Zotero.Weavero.plugin — not via the captured `self`
                             // closure. Plugin reload swaps the WeaveroPlugin
-                            // instance, but the dragover handler stays wired to
-                            // the container (idempotent guard `_wvPinDragWired`)
-                            // and so `self` would otherwise point at the OLD,
+                            // instance; until 2026-10-12 the dragover handler
+                            // stayed wired to the container (boolean guard, now
+                            // a keyed wvListen) and so `self` would point at the OLD,
                             // destroyed instance whose `_wvMergeDragInfo` is
                             // null. Symptom: every cross-window drag falls into
                             // the default `attachmentPDF` icon branch.
@@ -5912,7 +6030,7 @@ class _TabsMixin {
                     for (const g of doc.querySelectorAll(".wv-merge-ghost")) g.remove();
                 } catch (er) {}
             };
-            container.addEventListener("drop", (e: any) => {
+            on(container, "tabBarDrag:drop", "drop", (e: any) => {
                 try {
                     clearMergeMarkers();
                     const types = e.dataTransfer && e.dataTransfer.types;
@@ -6067,19 +6185,19 @@ class _TabsMixin {
             // Clear merge-drop markers whenever the drag leaves the container
             // or ends entirely (drop / cancel). dragleave fires on EVERY
             // child crossing, so guard with relatedTarget.
-            container.addEventListener("dragleave", (e: any) => {
+            on(container, "tabBarDrag:dragleave", "dragleave", (e: any) => {
                 try {
                     if (e.relatedTarget && container.contains(e.relatedTarget)) return;
                     clearMergeMarkers();
                 } catch (er) {}
             }, true);
-            container.addEventListener("dragend", () => {
+            on(container, "tabBarDrag:dragend", "dragend", () => {
                 clearMergeMarkers();
                 try { (self as any)._wvHideReaderDragOverlays(); } catch (er) {}
                 // Also clear any reader-window drop ghost a main→reader drag left.
                 try { (self as any)._wvWTHideAllDropIndicators(); } catch (er) {}
             }, true);
-            container.addEventListener("dragend", (e: any) => {
+            on(container, "tabBarDrag:dragend2", "dragend", (e: any) => {
                 try {
                     // Strip any preview attrs from every tab (defensive — only
                     // the dragged tab should have one, but in case of a stray).
@@ -6162,10 +6280,10 @@ class _TabsMixin {
                             // fall through to Zotero's native single-tab
                             // moveToNewWindow hook (preserves the tab's reader state).
                             try {
-                                const lp: any = (Zotero as any).Weavero?.plugin || self;
-                                const targets = lp._wvTabMultiSelTargets
+                                const lp: any = wvLivePlugin();
+                                const targets = (lp && lp._wvTabMultiSelTargets)
                                     ? lp._wvTabMultiSelTargets(win, tab.id) : [tab.id];
-                                if (targets && targets.length > 1) {
+                                if (lp && targets && targets.length > 1) {
                                     lp._wvMainTearOffTabs(win, targets);
                                     return;
                                 }
@@ -6177,13 +6295,13 @@ class _TabsMixin {
                             // notes / unloaded tabs / on failure (returns false only
                             // before any mutation, so the tab is intact to fall back).
                             try {
-                                const lp: any = (Zotero as any).Weavero?.plugin || self;
+                                const lp: any = wvLivePlugin();
                                 const Rdr: any = Zotero.Reader;
                                 let liveS: any = null;
                                 try { if (Rdr && Rdr.getByTabID) liveS = Rdr.getByTabID(tab.id); } catch (er) {}
                                 const iid = tab.data && tab.data.itemID;
                                 if (liveS && liveS._iframe && typeof liveS._iframe.swapDocShells === "function"
-                                        && liveS._internalReader && iid != null && lp._wvSwapTearOffToWindow) {
+                                        && liveS._internalReader && iid != null && lp && lp._wvSwapTearOffToWindow) {
                                     lp._wvSwapTearOffToWindow(win, liveS, iid).then((ok: any) => {
                                         if (ok) return;
                                         try {
@@ -6227,7 +6345,6 @@ class _TabsMixin {
                     // container dragend — wired reload-proof there.)
                 } catch (er) {}
             }, true);
-            (container as any)._wvPinDragWired = true;
         } catch (e) { Zotero.debug("[Weavero] _wireTabBarDrag err: " + e); }
     }
 
@@ -6309,7 +6426,7 @@ class _TabsMixin {
             const doc = win && win.document;
             if (!doc) return;
             const bar = doc.getElementById("tab-bar-container") || doc.getElementById("zotero-title-bar");
-            if (!bar || (bar as any)._wvItemDropWired) return;
+            if (!bar) return;
             const isItemDrag = (e: any) => {
                 try {
                     const t = e.dataTransfer && e.dataTransfer.types;
@@ -6348,16 +6465,14 @@ class _TabsMixin {
                 } catch (er) {}
                 if (ids.length) this._wvOpenItemsFromTabBarDrop(win, ids, e.clientX);
             };
-            bar.addEventListener("dragover", onDragOver, true);
-            bar.addEventListener("dragleave", onDragLeave, true);
-            bar.addEventListener("drop", onDrop, true);
-            (bar as any)._wvItemDropWired = true;
+            // Keyed, instance-tagged (lib/listen.ts; wiring slice 3).
+            const on = wvListener((this as any)._wvWireTag());
+            on(bar, "itemDrop:dragover", "dragover", onDragOver, true);
+            on(bar, "itemDrop:dragleave", "dragleave", onDragLeave, true);
+            on(bar, "itemDrop:drop", "drop", onDrop, true);
             (win as any)._wvItemDropOff = () => {
                 try {
-                    bar.removeEventListener("dragover", onDragOver, true);
-                    bar.removeEventListener("dragleave", onDragLeave, true);
-                    bar.removeEventListener("drop", onDrop, true);
-                    (bar as any)._wvItemDropWired = false;
+                    for (const k of ["itemDrop:dragover", "itemDrop:dragleave", "itemDrop:drop"]) wvUnlisten(bar, k);
                     const ind = (win as any)._wvTabDropInd;
                     if (ind && ind.remove) { try { ind.remove(); } catch (e2) {} }
                     (win as any)._wvTabDropInd = null;
@@ -6516,29 +6631,16 @@ class _TabsMixin {
         } catch (e) { Zotero.debug("[Weavero] _pinTabByCommand err: " + e); }
     }
 
-    /** Detect when a tab's underlying item is being deleted, and auto-unpin
-     *  it. Called from the notifier's `delete` event for items. */
-    _onItemDeletedForPin(libraryID, itemKey) {
-        try {
-            if (!this._pinnedTabsHas(libraryID, itemKey)) return;
-            this._pinnedTabsRemove(libraryID, itemKey);
-        } catch (e) {}
-    }
-
     /** One-time CSS for pinned tabs. Icon-only width matches Firefox's
      *  pinned-tab convention (~36 px); tab name + close button hide. */
     _ensurePinnedTabStyles(doc) {
         try {
             if (!doc) return;
-            const PIN_STYLE_VERSION = "3";
-            const prev = doc.getElementById("wv-pinned-tab-style");
-            if (prev) {
-                if (prev.getAttribute("data-wv-ver") === PIN_STYLE_VERSION) return;
-                prev.remove();
-            }
+            // Always replaced (src-ts.md sheet replace): a version constant
+            // only worked while someone remembered to bump it.
+            wvRemoveStyle(doc, "wv-pinned-tab-style");
             const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
             style.id = "wv-pinned-tab-style";
-            style.setAttribute("data-wv-ver", PIN_STYLE_VERSION);
             // Bump specificity above .tab.selected (which Zotero uses to
             // size the active tab) by chaining the pinned class with .tab
             // AND #tab-bar-container — the selected rule then loses on
@@ -7746,17 +7848,20 @@ class _TabsMixin {
     _wvPatchTabsGetState(win: any) {
         try {
             const Z = win && win.Zotero_Tabs;
-            if (!Z) return;
-            // Version-based re-wrap: a plugin reload must replace an older
-            // wrap (the flag-guard once left a pre-takeover wrap in place and
-            // the quit save recorded a full session). Always wrap from the
-            // stored ORIGINAL, never over a previous wrap.
-            if (Z._wvGetStatePatchVer === 3) return;
-            if (!Z._wvGetStateOrig) Z._wvGetStateOrig = Z.getState.bind(Z);
-            const orig = Z._wvGetStateOrig;
-            // Full, normalized capture — what Weavero's OWN store records.
-            Z._wvGetStateFull = function () {
-                const state = orig();
+            if (!Z || typeof Z.getState !== "function") return;
+            // Legacy constant-stamped wrap (builds before the layered helper):
+            // peel it through its stored original. The old flag-guard once
+            // left a pre-takeover wrap in place and the quit save recorded a
+            // full session; the constant that replaced it needed bumping.
+            if (Z._wvGetStateOrig) {
+                try { Z.getState = Z._wvGetStateOrig; } catch (e) {}
+                delete Z._wvGetStateOrig; delete Z._wvGetStatePatchVer; delete Z._wvGetStateFull;
+            }
+            // Tag-stamped layer "normalize" (lib/wrap.ts): a reload or upgrade
+            // re-wraps from the native. The public getState IS the full,
+            // normalized capture -- what Weavero's own store records too.
+            wvWrap(Z, "getState", "normalize", (this as any)._wvWireTag(), (orig: any) => function () {
+                const state = orig.apply(this, arguments);
                 try {
                     for (const t of (state || [])) {
                         if (t && typeof t.type === "string" && t.type.endsWith("-loading")) {
@@ -7778,16 +7883,26 @@ class _TabsMixin {
                     }
                 } catch (e) {}
                 return state;
-            };
+            });
             // The public getState stays FULL (normalized): the anchor's tabs
             // remain in Zotero's session so a Troubleshooting-Mode start (or a
             // Weavero-disabled boot) still restores the main workspace
             // natively. Only the READER-WINDOW half of the restore is taken
             // over (see _wvPatchReaderGetWindowStates) — those are
             // Weavero-only content already.
-            Z.getState = Z._wvGetStateFull;
-            Z._wvGetStatePatchVer = 3;
         } catch (e) { Zotero.debug("[Weavero] _wvPatchTabsGetState err: " + e); }
+    }
+
+    _wvUnpatchTabsGetState(win: any) {
+        try {
+            const Z = win && win.Zotero_Tabs;
+            if (!Z) return;
+            wvUnwrap(Z, "getState", "normalize");
+            if (Z._wvGetStateOrig) {
+                try { Z.getState = Z._wvGetStateOrig; } catch (e) {}
+                delete Z._wvGetStateOrig; delete Z._wvGetStatePatchVer; delete Z._wvGetStateFull;
+            }
+        } catch (e) {}
     }
 
     /** RESTORE TAKEOVER, reader-window half: at quit, Zotero's session save
@@ -7802,11 +7917,16 @@ class _TabsMixin {
         try {
             const R: any = (Zotero as any).Reader;
             if (!R || typeof R.getWindowStates !== "function") return;
-            // Version-based re-wrap from the stored ORIGINAL (a plain guard
-            // once left a stale pre-reload wrap installed).
-            if (R._wvGWSPatchVer === 3) return;
-            if (!R._wvGWSOrig) R._wvGWSOrig = R.getWindowStates;
-            const orig = R._wvGWSOrig;
+            // Tag-stamped re-wrap from the native (a plain guard once left a
+            // stale pre-reload wrap installed; the hand-bumped constant that
+            // replaced it kept a dead inner wrapper live after destroy, which
+            // restored only the outer layer -- survey 2026-10-06). A foreign
+            // stamp or saved original is a dead chain: peel both layers.
+            const tag = (this as any)._wvWireTag();
+            if (R._wvGWSPatchVer === tag) return;
+            if (R._wvGWSPatchVer !== undefined || R._wvGWSOrig || R._wvOrigGetWindowStates) this._wvReaderGWSPeel(R);
+            const orig = R.getWindowStates;
+            R._wvGWSOrig = orig;
             R.getWindowStates = function () {
                 try {
                     // Gecko's own shutdown flag — no dependence on observer
@@ -7821,7 +7941,7 @@ class _TabsMixin {
                 } catch (e) {}
                 return orig.apply(this, arguments);
             };
-            R._wvGWSPatchVer = 3;
+            R._wvGWSPatchVer = tag;
         } catch (e) { Zotero.debug("[Weavero] _wvPatchReaderGetWindowStates err: " + e); }
     }
 
@@ -7858,7 +7978,7 @@ class _TabsMixin {
                 let tabs = null;
                 try {
                     const Z = w.Zotero_Tabs;
-                    tabs = Z && (Z._wvGetStateFull ? Z._wvGetStateFull() : Z.getState());
+                    tabs = Z && Z.getState();   // full, normalized (the "normalize" layer)
                     tabs = this._wvApplyDeferredSelectionToState(w, tabs);
                 } catch (e) {}
                 if (!tabs || tabs.length < 2) continue;   // library tab only → nothing to restore
@@ -7871,7 +7991,7 @@ class _TabsMixin {
                 try {
                     const ms = (this as any)._wvTabSessionCaptureMainState
                         ? (this as any)._wvTabSessionCaptureMainState(w) : null;
-                    if (ms && (ms.collection || ms.columnPrefs)) wvMainState = ms;
+                    if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl || ms.title)) wvMainState = ms;
                 } catch (e) {}
                 groups.push({ kind: "main-dev", tabs, wvWinId: (w._wvWindowId != null ? w._wvWindowId : null),
                     geom: (this as any)._wvWindowGeom(w), wvMainState });
@@ -7880,17 +8000,11 @@ class _TabsMixin {
         return groups;
     }
 
-    /** Issue an atomic write of the store doc (chained so writes serialise). */
+    /** Issue an atomic write of the store doc (lib/store.ts: snapshot now,
+     *  serialised on the path's chain, which survives a reload). */
     _wvWindowStoreWrite(doc) {
         try {
-            const dir = PathUtils.join(Zotero.DataDirectory.dir, "weavero");
-            const path = this._wvWindowStorePath();
-            this._wvWindowStoreWriteChain = (this._wvWindowStoreWriteChain || Promise.resolve())
-                .then(async () => {
-                    await IOUtils.makeDirectory(dir, { ignoreExisting: true });
-                    await IOUtils.writeUTF8(path, JSON.stringify(doc, null, 2), { tmpPath: path + ".tmp" });
-                })
-                .catch((e: any) => Zotero.debug("[Weavero] _wvWindowStoreWrite err: " + e));
+            this._wvWindowStoreWriteChain = wvStoreWrite(this._wvWindowStorePath(), doc);
             return this._wvWindowStoreWriteChain;
         } catch (e) { Zotero.debug("[Weavero] _wvWindowStoreWrite err: " + e); }
     }
@@ -7939,16 +8053,31 @@ class _TabsMixin {
             const w: any = (Zotero.getMainWindows() || [])[0];
             if (!w || !w.Zotero_Tabs) return null;
             const Z = w.Zotero_Tabs;
-            const tabs = this._wvApplyDeferredSelectionToState(w, Z._wvGetStateFull ? Z._wvGetStateFull() : Z.getState());
+            const tabs = this._wvApplyDeferredSelectionToState(w, Z.getState());
             if (!tabs || tabs.length < 2) return null;
             let wvMainState: any;
             try {
                 const ms = (this as any)._wvTabSessionCaptureMainState
                     ? (this as any)._wvTabSessionCaptureMainState(w) : null;
-                if (ms && (ms.collection || ms.columnPrefs)) wvMainState = ms;
+                if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl || ms.title)) wvMainState = ms;
             } catch (e) {}
             return { kind: "main-anchor", tabs, geom: (this as any)._wvWindowGeom(w), wvMainState };
         } catch (e) { return null; }
+    }
+
+    /** The store document for a list of window entries: THE ONE builder for
+     *  every write (the debounced save and the quit flush). The anchor's
+     *  hidden collections and custom title ride fields of their own,
+     *  OUTSIDE its entry: that entry is skipped when the anchor holds only
+     *  the library tab (the common case), and its presence steers the
+     *  anchor tab restore (pane.ts, "Hidden collections"). The quit flush
+     *  used to build its document by hand without these two fields, so a
+     *  clean quit lost both while a crash kept them (survey 2026-10-06). */
+    _wvWindowStoreBuildDoc(windows: any[]) {
+        let anchorHidden: any, anchorTitle: any;
+        try { const a0: any = (Zotero.getMainWindows() || [])[0]; anchorHidden = a0 && (this as any)._wvHidCapture ? (this as any)._wvHidCapture(a0) : undefined; } catch (e) {}
+        try { const a0: any = (Zotero.getMainWindows() || [])[0]; anchorTitle = (a0 && a0._wvWindowTitle) || undefined; } catch (e) {}
+        return { version: 4, windows, focused: this._wvWindowStoreFocusDescriptor(), anchorHidden, anchorTitle };
     }
 
     _wvWindowStoreSaveSync() {
@@ -7959,19 +8088,19 @@ class _TabsMixin {
         // Unified doc: anchor + dev main windows + reader windows in one file,
         // captured together on every save so nothing clobbers anything.
         const anchor = this._wvWindowStoreCaptureAnchor();
-        this._wvWindowStoreWrite({ version: 4, windows: [
+        this._wvWindowStoreWrite(this._wvWindowStoreBuildDoc([
             ...(anchor ? [anchor] : []),
             ...this._wvWindowStoreCaptureDevWindows(),
             ...this._wvWindowStoreCaptureReaderWindows(),
-        ], focused: this._wvWindowStoreFocusDescriptor() });
+        ]));
     }
 
     /** Debounced save — coalesces churn (e.g. closing a dev window). */
     _wvWindowStoreSaveDebounced() {
         if (this._wvWindowStoreFrozen || (this as any)._wvQuitting) return;
         try {
-            const win = Zotero.getMainWindow();
-            const setT = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+            const win: any = Zotero.getMainWindow();
+            const setT = wvTimeout;
             const clearT = (win && win.clearTimeout) ? win.clearTimeout.bind(win) : clearTimeout;
             if (this._wvWindowStoreSaveTimer) { try { clearT(this._wvWindowStoreSaveTimer); } catch (e) {} }
             this._wvWindowStoreSaveTimer = setT(() => {
@@ -7991,26 +8120,18 @@ class _TabsMixin {
         return PathUtils.join(Zotero.DataDirectory.dir, "weavero", "saved-windows.json");
     }
 
-    /** Load saved-windows.json once (cached promise); unreadable → backed
-     *  up and started clean — same contract as tab-sessions.json. */
+    /** Load saved-windows.json once (cached promise); corrupt → backed up
+     *  and started clean; unreadable → kept, store read-only this session
+     *  (lib/store.ts) — same contract as tab-sessions.json. */
     _wvSavedWindowsInit() {
         const p: any = this as any;
         if (p._wvSavedWinInitPromise) return p._wvSavedWinInitPromise;
         p._wvSavedWinInitPromise = (async () => {
-            const path = this._wvSavedWindowsPath();
-            try {
-                const text: any = await Zotero.File.getContentsAsync(path);
-                const doc = JSON.parse(text);
-                p._wvSavedWinDoc = (doc && Array.isArray(doc.windows))
-                    ? { version: 1, windows: doc.windows } : { version: 1, windows: [] };
-            } catch (e) {
-                let exists = false;
-                try { exists = await IOUtils.exists(path); } catch (_) {}
-                if (exists) {
-                    try { await IOUtils.move(path, path + ".corrupt-" + Date.now()); } catch (_) {}
-                }
-                p._wvSavedWinDoc = { version: 1, windows: [] };
-            }
+            const r = await wvStoreRead(this._wvSavedWindowsPath());
+            const doc = r.doc;
+            if (r.status === "io-error") p._wvSavedWinReadOnly = true;
+            p._wvSavedWinDoc = (r.status === "ok" && doc && Array.isArray(doc.windows))
+                ? { version: 1, windows: doc.windows } : { version: 1, windows: [] };
             return p._wvSavedWinDoc;
         })();
         return p._wvSavedWinInitPromise;
@@ -8024,14 +8145,8 @@ class _TabsMixin {
     _wvSavedWindowsPersist() {
         const p: any = this as any;
         if (!p._wvSavedWinDoc) return Promise.resolve();
-        const snapshot = JSON.stringify(p._wvSavedWinDoc, null, 2);
-        const path = this._wvSavedWindowsPath();
-        p._wvSavedWinWriteChain = (p._wvSavedWinWriteChain || Promise.resolve())
-            .then(async () => {
-                await IOUtils.makeDirectory(PathUtils.parent(path), { ignoreExisting: true });
-                await IOUtils.writeUTF8(path, snapshot, { tmpPath: path + ".tmp" });
-            })
-            .catch((e: any) => Zotero.debug("[Weavero] saved-windows persist failed: " + e));
+        if (p._wvSavedWinReadOnly) { Zotero.debug("[Weavero] saved-windows persist skipped: store is read-only (unreadable at load)"); return Promise.resolve(); }
+        p._wvSavedWinWriteChain = wvStoreWrite(this._wvSavedWindowsPath(), p._wvSavedWinDoc);
         return p._wvSavedWinWriteChain;
     }
 
@@ -8059,7 +8174,7 @@ class _TabsMixin {
                     return;
                 }
                 const Z: any = win.Zotero_Tabs;
-                tabs = (Z && (Z._wvGetStateFull ? Z._wvGetStateFull() : Z.getState())) || [];
+                tabs = (Z && Z.getState()) || [];
                 count = tabs.filter((t: any) => t && t.type !== "library").length;
                 if (!count) { Services.prompt.alert(win, "Weavero", "This window has no document tabs to save."); return; }
             }
@@ -8073,7 +8188,7 @@ class _TabsMixin {
                 try {
                     const ms = (this as any)._wvTabSessionCaptureMainState
                         ? (this as any)._wvTabSessionCaptureMainState(win) : null;
-                    if (ms && (ms.collection || ms.columnPrefs)) wvMainState = ms;
+                    if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl || ms.title)) wvMainState = ms;
                 } catch (e) {}
             }
             const entry = {
@@ -8128,8 +8243,14 @@ class _TabsMixin {
             const p: any = this as any;
             const entry = this._wvSavedWindowsList().find((x: any) => x && x.id === id);
             if (!entry) return;
-            p._wvSavedWinDoc.windows = this._wvSavedWindowsList().filter((x: any) => x.id !== id);
-            this._wvSavedWindowsPersist();
+            // The parked entry goes ONLY once a window exists for it: deleted
+            // up front, a notes-only entry or a failed open destroyed the
+            // saved window while the alert implied it was still there (survey
+            // 2026-10-06).
+            const forget = () => {
+                p._wvSavedWinDoc.windows = this._wvSavedWindowsList().filter((x: any) => x.id !== id);
+                this._wvSavedWindowsPersist();
+            };
             const sleep = (ms: number) => (Zotero as any).Promise.delay(ms);
             if (entry.kind === "main") {
                 const before = new Set(Zotero.getMainWindows() || []);
@@ -8138,7 +8259,8 @@ class _TabsMixin {
                     geom: entry.geom, wvMainState: entry.wvMainState, wvWinId: null });
                 p._wvPendingDevWindow = true;
                 try { (Zotero as any).openMainWindow(); }
-                catch (e) { p._wvPendingDevWindow = false; return; }
+                catch (e) { p._wvPendingDevWindow = false; try { p._wvDevSpawnQueue.pop(); } catch (e2) {} return; }
+                forget();
                 if (entry.glyph == null && !entry.named) return;
                 const t0 = Date.now();
                 let newMain: any = null;
@@ -8175,6 +8297,7 @@ class _TabsMixin {
                 && !(rd._window && rd._iframe && rd._iframe.contentWindow)) { await sleep(120); }
             const newWin: any = rd && rd._window;
             if (!newWin) return;
+            forget();
             if (entry.glyph != null) { try { this._wvStampGlyphIdx(newWin, entry.glyph); } catch (e) {} }   // skip on colour collision
             const t2 = Date.now();
             while (!(newWin as any)._wvWT && Date.now() - t2 < 4000) { await sleep(80); }
@@ -8187,11 +8310,15 @@ class _TabsMixin {
             }
             try {
                 const g = entry.geom;
-                if (g && g.st === 1) { newWin.moveTo(g.x + 40, g.y + 40); await sleep(150); newWin.maximize(); }
-                else if (g) {
+                // No coordinates = captured while minimized (_wvWindowGeom):
+                // leave placement to the window manager, and never resize to
+                // an iconic size -- the same floor as _wvApplyWindowGeom.
+                if (g && g.st === 1 && g.x != null) { newWin.moveTo(g.x + 40, g.y + 40); await sleep(150); newWin.maximize(); }
+                else if (g && g.st === 1) { newWin.maximize(); }
+                else if (g && g.x != null) {
                     if (newWin.windowState === 1 && newWin.restore) { newWin.restore(); await sleep(200); }
                     newWin.moveTo(g.x, g.y);
-                    newWin.resizeTo(g.w, g.h);
+                    if (g.w > 200 && g.h > 150) newWin.resizeTo(g.w, g.h);
                 }
             } catch (e) {}
             if (entry.glyph != null) { try { (this as any)._wvCarryGlyphRefresh(newWin, true); } catch (e) {} }
@@ -8413,7 +8540,7 @@ class _TabsMixin {
 
     _wvEnsureSavedWindowStyles(doc: any) {
         try {
-            if (doc.getElementById("wv-savedwin-styles")) return;
+            wvRemoveStyle(doc, "wv-savedwin-styles");   // always replaced (src-ts.md sheet replace)
             const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
             style.id = "wv-savedwin-styles";
             style.textContent = [
@@ -8705,8 +8832,7 @@ class _TabsMixin {
             // windows "appearing very late"). So wait a beat and only close if
             // the plugin did NOT come back — a reload re-attaches
             // Zotero.Weavero.plugin within milliseconds.
-            const mainWin: any = Zotero.getMainWindow();
-            const setT = (mainWin && mainWin.setTimeout) ? mainWin.setTimeout.bind(mainWin) : setTimeout;
+            const setT = wvTimeout;
             const markerPath = this._wvDisableCloseMarkerPath();
             setT(() => {
                 try {
@@ -8726,7 +8852,7 @@ class _TabsMixin {
                         }
                     } catch (e) {}
                     try {
-                        IOUtils.writeUTF8(markerPath, JSON.stringify({ version: 1, closedReaders, closedMains, unpark: liveGroups }), { tmpPath: markerPath + ".tmp" });
+                        wvStoreWrite(markerPath, { version: 1, closedReaders, closedMains, unpark: liveGroups }, { pretty: null });
                     } catch (e) {}
                     Zotero.debug("[Weavero] disable-close: " + closedReaders + " reader + " + closedMains + " managed main window(s) saved+closed");
                 } catch (e) { Zotero.debug("[Weavero] disable-close deferred err: " + e); }
@@ -8741,9 +8867,11 @@ class _TabsMixin {
     async _wvEnableRestoreClosedWindows() {
         try {
             const path = this._wvDisableCloseMarkerPath();
-            let marker: any = null;
-            try { marker = JSON.parse(await IOUtils.readUTF8(path)); } catch (e) { return; }   // no marker → nothing to do
-            try { await IOUtils.remove(path); } catch (e) {}
+            // Consume-once marker: read, then remove whatever its state.
+            const r = await wvStoreRead(path, { onParseError: "keep", retries: 0 });
+            if (r.status === "missing" || r.status === "io-error") return;   // no marker → nothing to do
+            await wvStoreRemove(path);
+            const marker: any = r.doc;
             if (!marker) return;
             // Un-park the groups that the reader-window closes parked at
             // disable-time — their windows are about to come back.
@@ -8796,10 +8924,9 @@ class _TabsMixin {
     /** Temporarily drop the saved 'pane' (main-window) entries from
      *  `Zotero.Session.state` so a window we're about to open doesn't restore —
      *  and briefly flash — the original window's tabs before Weavero clears them.
-     *  Restored once the spawn run finishes (`_wvRestoreSessionPaneState`, from
-     *  onMainWindowLoad), with a safety timeout in case that never fires. The
-     *  global state self-heals on the next `Session.save` regardless. Idempotent;
-     *  'reader' entries are left intact. */
+     *  NOT put back afterwards: restoring re-populated the state before the new
+     *  window read it (the tab flash again); it self-heals on the next
+     *  `Session.save`. Idempotent; 'reader' entries are left intact. */
     _wvClearSessionPaneState() {
         try {
             const full: any = Zotero.Session.state.windows;
@@ -8812,11 +8939,6 @@ class _TabsMixin {
             }
         } catch (e) { Zotero.debug("[Weavero] _wvClearSessionPaneState err: " + e); }
     }
-
-    /** Retained as a no-op: we no longer restore the cleared pane state (doing
-     *  so re-populated it before the new window read it → the tab flash). The
-     *  in-memory state self-heals on the next `Session.save`. */
-    _wvRestoreSessionPaneState() {}
 
     /** Restore/quit breadcrumbs. Every entry goes to Zotero.debug (visible in
      *  Debug Output) AND an in-memory ring buffer; `_wvTraceFlush` persists the
@@ -8838,15 +8960,8 @@ class _TabsMixin {
     _wvTraceFlush(tag: string) {
         try {
             if (!this._wvTraceLog || !this._wvTraceLog.length) return;
-            const dir = PathUtils.join(Zotero.DataDirectory.dir, "weavero");
-            const path = PathUtils.join(dir, "trace-" + tag + ".json");
-            const body = JSON.stringify({ t0: this._wvTraceT0, entries: this._wvTraceLog }, null, 1);
-            (async () => {
-                try {
-                    await IOUtils.makeDirectory(dir, { ignoreExisting: true });
-                    await IOUtils.writeUTF8(path, body, { tmpPath: path + ".tmp" });
-                } catch (e) {}
-            })();
+            const path = PathUtils.join(Zotero.DataDirectory.dir, "weavero", "trace-" + tag + ".json");
+            wvStoreWrite(path, { t0: this._wvTraceT0, entries: this._wvTraceLog }, { pretty: 1 });
         } catch (e) {}
     }
 
@@ -8931,7 +9046,7 @@ class _TabsMixin {
             if ((this as any)._wvBootSelGuardOn) return;
             (this as any)._wvBootSelGuardOn = true;
             const w0: any = Zotero.getMainWindow();
-            const setT = (w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout;
+            const setT = wvTimeout;
             const anchor: any = (Zotero.getMainWindows() || []).find((w: any) => !w._wvManagedWindow) || w0;
             const EVS = ["mousedown", "keydown", "wheel"];
             const onUser = () => {
@@ -9196,6 +9311,13 @@ class _TabsMixin {
             this._wvAnchorTabsRestored = true;
             const doc = (this as any)._wvBootWindowStoreDoc;
             const entry = ((doc && doc.windows) || []).find((g: any) => g && g.kind === "main-anchor" && Array.isArray(g.tabs));
+            // The anchor's hidden collections (their own store field, saved
+            // even when the anchor had only the library tab).
+            try {
+                const hw: any = (Zotero.getMainWindows() || []).find((w: any) => !w._wvManagedWindow);
+                if (hw && doc && doc.anchorHidden) (this as any)._wvHidRestore(hw, doc.anchorHidden);
+                if (hw && doc && doc.anchorTitle && hw._wvWindowTitle == null) this._wvWindowSetCustomTitle(hw, doc.anchorTitle);
+            } catch (e) {}
             if (!entry) return;   // pre-takeover store → Zotero restored natively
             const win: any = (Zotero.getMainWindows() || []).find((w: any) => !w._wvManagedWindow);
             if (!win || !win.Zotero_Tabs) return;
@@ -9335,20 +9457,38 @@ class _TabsMixin {
         try {
             if (this._wvEarlyRestoreListener) return;
             const self = this;
+            // MAIN windows only: a reader window with the item pane carries a
+            // minimal `Zotero_Tabs` shim (_ensureReaderWindowItemPane), and
+            // the init sweep below wrapped its close/select -- wraps no
+            // teardown removes, on a window only init reached (wiring slice
+            // 2, 2026-10-12).
+            const isMain = (w: any) => { try { return String(w.location && w.location.href).indexOf("zoteroPane.xhtml") !== -1; } catch (e) { return false; } };
             const tryWire = (w: any) => {
-                try { if (w && w.Zotero_Tabs) self._wvWireRestoreTracing(w); return !!(w && w.Zotero_Tabs); } catch (e) { return false; }
+                try { if (w && w.Zotero_Tabs && isMain(w)) self._wvWireRestoreTracing(w); return !!(w && w.Zotero_Tabs); } catch (e) { return false; }
             };
+            // Keyed (lib/listen.ts) and self-removing: on a window that is
+            // already loaded and has no Zotero_Tabs (the hidden window, a
+            // dialog), DOMContentLoaded never fires again, and the plain
+            // listener stayed there for the session -- one more per plugin
+            // instance (reload audit, wiring slice 3). destroy() now drops it.
+            const tag = (self as any)._wvWireTag();
             const wireWhenReady = (w: any) => {
                 try { self._wvEarlyHideTitleBar(w); } catch (e) {}
                 if (tryWire(w)) return;
+                // Loaded already (and not the initial about:blank a new window
+                // arrives holding on FF153): nothing left to wait for.
+                try {
+                    const d = w.document;
+                    if (d && d.readyState !== "loading" && String(d.URL) !== "about:blank") return;
+                } catch (e) {}
                 const onDCL = () => {
-                    try { w.removeEventListener("DOMContentLoaded", onDCL); } catch (e) {}
+                    wvUnlisten(w, "earlyRestore:DOMContentLoaded");
                     try { self._wvEarlyHideTitleBar(w); } catch (e) {}
                     try {
                         if (String(w.location && w.location.href).indexOf("zoteroPane.xhtml") !== -1) tryWire(w);
                     } catch (e) {}
                 };
-                try { w.addEventListener("DOMContentLoaded", onDCL); } catch (e) {}
+                try { wvListen(w, "earlyRestore:DOMContentLoaded", "DOMContentLoaded", onDCL, false, tag); } catch (e) {}
             };
             const en = Services.wm.getEnumerator(null);
             while (en.hasMoreElements()) wireWhenReady(en.getNext());
@@ -9380,31 +9520,36 @@ class _TabsMixin {
         try {
             const Z = win && win.Zotero_Tabs;
             if (!Z) return;
-            // REWIRE on every call: a plugin reload must REPLACE the previous
-            // wrappers, not skip ("already wired") — a skipped rewire leaves
-            // wrappers whose closures capture a DEAD instance, and their side
-            // effects (note re-process, watchdog, title heal) kept firing
+            // Layered, tag-stamped wraps (lib/wrap.ts, layer "trace"): a plugin
+            // reload REPLACES the previous instance's layer from the native
+            // instead of skipping ("already wired") — a skipped rewire once
+            // left wrappers whose closures captured a DEAD instance, and their
+            // side effects (note re-process, watchdog, title heal) kept firing
             // after plugin disable (observed: note editors re-wired from dead
-            // code when a note tab loaded post-disable, 2026-07-03). Peel the
-            // previous wrappers via their stored originals first. Legacy
-            // wrappers (no stored originals) can't be peeled — we wrap over
-            // them; a restart flushes them.
+            // code when a note tab loaded post-disable, 2026-07-03). Wrappers
+            // from builds before the helper are peeled through their stored
+            // originals first.
             try {
-                if (Z._wvOrigRestoreState) { Z.restoreState = Z._wvOrigRestoreState; }
-                if (Z._wvOrigClose) { Z.close = Z._wvOrigClose; }
-                if (Z._wvOrigMarkAsLoaded) { Z.markAsLoaded = Z._wvOrigMarkAsLoaded; }
-                if (Z._wvOrigSelect) { Z.select = Z._wvOrigSelect; }
+                if (Z._wvOrigRestoreState) { Z.restoreState = Z._wvOrigRestoreState; delete Z._wvOrigRestoreState; }
+                if (Z._wvOrigClose) { Z.close = Z._wvOrigClose; delete Z._wvOrigClose; }
+                if (Z._wvOrigMarkAsLoaded) { Z.markAsLoaded = Z._wvOrigMarkAsLoaded; delete Z._wvOrigMarkAsLoaded; }
+                if (Z._wvOrigSelect) { Z.select = Z._wvOrigSelect; delete Z._wvOrigSelect; }
+                delete Z._wvRestoreTraceWired;
             } catch (e) {}
-            Z._wvRestoreTraceWired = true;
+            const tag = (this as any)._wvWireTag();
             // Resolve the LIVE plugin at CALL time — never the wiring-time
             // `this` (stale after every reload; still runs after disable).
-            const LP = (): any => { try { const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; return (p && !p._wvDestroyed) ? p : null; } catch (e) { return null; } };
+            const LP = wvLivePlugin;
             const name = () => { try { const p = LP(); return p ? p._wvWindowName(win) : "?"; } catch (e) { return "?"; } };
             const trace = (m: string) => { try { const p = LP(); if (p) p._wvTrace(m); } catch (e) {} };
-            Z._wvOrigRestoreState = Z.restoreState;
-            const origRestore = Z.restoreState.bind(Z);
-            Z.restoreState = async function (tabs: any) {
-                if (!LP()) return origRestore(tabs);   // plugin gone — pure native
+            wvWrap(Z, "restoreState", "trace", tag, (orig: any) => {
+            const origRestore = orig.bind(Z);
+            // Every wrapper here forwards ALL arguments (`...rest`): Zotero 11
+            // added `close(ids, { skipHistory })`, and a fixed `origClose(ids)`
+            // dropped it -- unload() then left an undo-close entry for a tab
+            // that stays open (2026-10-12). Guard: tabs-wrap-args.spec.js.
+            return async function (tabs: any, ...rest: any[]) {
+                if (!LP()) return origRestore(tabs, ...rest);   // plugin gone — pure native
                 try { trace("restoreState[" + name() + "] IN: " + (tabs || []).map((t: any) => t.type + (t.selected ? "*" : "")).join(",")); } catch (e) {}
                 // HARDENED per-tab restore. Upstream's loop awaits each type
                 // hook in sequence and a single throw aborts the WHOLE list —
@@ -9416,7 +9561,7 @@ class _TabsMixin {
                 // the hook API isn't there (older Zotero).
                 if (Z.tabHooks && Z.parseTabType && Z._getHook) {
                     const itemIDs: any[] = [];
-                    const failed: any[] = [];
+                    const failed: Array<{ tab: any; i: number }> = [];
                     const runOne = async (tab: any, i: number) => {
                         const { tabContentType } = Z.parseTabType(tab.type);
                         const hook = Z._getHook(tabContentType, "restoreState");
@@ -9432,17 +9577,23 @@ class _TabsMixin {
                     };
                     for (let i = 0; i < (tabs || []).length; i++) {
                         try { await runOne(tabs[i], i); }
-                        catch (e) { failed.push(tabs[i]); trace("restoreState[" + name() + "] tab " + i + " (" + (tabs[i] && tabs[i].type) + ") failed: " + e); }
+                        catch (e) { failed.push({ tab: tabs[i], i }); trace("restoreState[" + name() + "] tab " + i + " (" + (tabs[i] && tabs[i].type) + ") failed: " + e); }
                     }
                     if (failed.length) {
                         await new Promise((res) => { try { win.setTimeout(res, 1500); } catch (e) { res(null); } });
-                        for (const tab of failed) {
+                        // Retried tabs go back to their SAVED slot, in ascending
+                        // order: the index is what the hook adds the tab at, and
+                        // `Z._tabs.length` appended every retried tab at the end
+                        // of the strip -- exactly the tabs that missed the item
+                        // cache lost their position (survey 2026-10-06).
+                        failed.sort((a, b) => a.i - b.i);
+                        for (const { tab, i } of failed) {
                             try {
                                 // Force-load the item into the cache first — the usual
                                 // failure is a too-early Zotero.Items.exists() miss.
                                 try { if (tab.data && tab.data.itemID) await Zotero.Items.getAsync(tab.data.itemID); } catch (e2) {}
-                                await runOne(tab, Z._tabs.length);
-                                trace("restoreState[" + name() + "] retry OK: " + tab.type);
+                                await runOne(tab, Math.min(i, Z._tabs.length));
+                                trace("restoreState[" + name() + "] retry OK: " + tab.type + " at " + Math.min(i, Z._tabs.length));
                             }
                             catch (e) { trace("restoreState[" + name() + "] retry FAILED (" + tab.type + "): " + e); }
                         }
@@ -9456,48 +9607,39 @@ class _TabsMixin {
                     return;
                 }
                 let r;
-                try { r = await origRestore(tabs); }
+                try { r = await origRestore(tabs, ...rest); }
                 catch (e) { trace("restoreState[" + name() + "] THREW: " + e); throw e; }
                 try { trace("restoreState[" + name() + "] OUT: " + Z._tabs.map((t: any) => t.type).join(",")); } catch (e) {}
                 return r;
-            };
+            }; });
             const wiredAt = Date.now();
-            Z._wvOrigClose = Z.close;
-            const origClose = Z.close.bind(Z);
-            Z.close = function (ids: any) {
+            // Log-only. The issue #29 last-view guard is its own layer on
+            // `close` (_wvWireLastViewCloseGuard): two independent own-prop
+            // wraps once raced on wiring order and the guard fell OUT of the
+            // chain (diagnosed 9 Aug 2026 against the real Actions & Tags), so
+            // the guard was folded in here; the layered helper rebuilds the
+            // chain from the native on every change, so each feature owns its
+            // layer again.
+            wvWrap(Z, "close", "trace", tag, (orig: any) => {
+            const origClose = orig.bind(Z);
+            return function (ids: any, ...rest: any[]) {
                 try {
                     if (LP() && Date.now() - wiredAt < 90000) {
                         const stack = String(new Error().stack || "").split("\n").slice(1, 4).join(" <- ");
                         trace("close[" + name() + "]: " + JSON.stringify(ids) + " via " + stack);
                     }
                 } catch (e) {}
-                // Issue #29 last-view guard runs HERE, not in a second
-                // wrapper of its own. Two independent wraps of
-                // `Zotero_Tabs.close` (this tracer, keyed `_wvOrigClose`,
-                // and the guard, keyed `_wvOrigTabsClose`) raced on wiring
-                // order and the guard fell OUT of the chain entirely: it
-                // never executed on a real close, while a synthetic test
-                // that called it directly passed and made it look wired.
-                // Diagnosed 9 Aug 2026 against the real Actions & Tags.
-                // One wrapper, both jobs, no ordering hazard. Idempotent —
-                // blinding an id A&T never tracked is a no-op.
-                try {
-                    const lp: any = LP();
-                    if (lp && typeof lp._wvBlindNonFinalCloses === "function") {
-                        lp._wvBlindNonFinalCloses(win, ids);
-                    }
-                } catch (e) {}
-                return origClose(ids);
-            };
+                return origClose(ids, ...rest);
+            }; });
             // Tab CONTENT loads (the slow phase, distinct from structure
             // restore): markAsLoaded fires when a lazy tab's load hook
             // resolves — trace each so the timeline separates "windows +
             // groups present" from "tab content loaded".
             if (typeof Z.markAsLoaded === "function") {
-                Z._wvOrigMarkAsLoaded = Z.markAsLoaded;
-                const origMark = Z.markAsLoaded.bind(Z);
-                Z.markAsLoaded = function (id: any) {
-                    const r = origMark(id);
+                wvWrap(Z, "markAsLoaded", "trace", tag, (orig: any) => {
+                const origMark = orig.bind(Z);
+                return function (id: any, ...rest: any[]) {
+                    const r = origMark(id, ...rest);
                     if (!LP()) return r;   // plugin gone — no side effects
                     try {
                         const t = Z._tabs.find((x: any) => x.id === id);
@@ -9534,16 +9676,16 @@ class _TabsMixin {
                         }
                     } catch (e) {}
                     return r;
-                };
+                }; });
             }
             // Stuck-loading WATCHDOG: if a selected tab still shows `-loading`
             // 6 s after its select, the load hook died silently (e.g. the
             // Notes.open wrong-window bug, patched separately, or any future
             // wedge) — reset to `-unloaded` and re-drive the select once.
-            Z._wvOrigSelect = Z.select;
-            const origSelect = Z.select.bind(Z);
-            Z.select = function (id: any, reopening?: any, opts?: any) {
-                const r = origSelect(id, reopening, opts);
+            wvWrap(Z, "select", "trace", tag, (orig: any) => {
+            const origSelect = orig.bind(Z);
+            return function (id: any, reopening?: any, opts?: any, ...rest: any[]) {
+                const r = origSelect(id, reopening, opts, ...rest);
                 if (!LP()) return r;   // plugin gone — pass through only
                 try {
                     win.setTimeout(() => {
@@ -9574,7 +9716,7 @@ class _TabsMixin {
                     }, 6000);
                 } catch (e) {}
                 return r;
-            };
+            }; });
         } catch (e) {}
     }
 
@@ -9585,6 +9727,8 @@ class _TabsMixin {
         try {
             const Z = win && win.Zotero_Tabs;
             if (!Z) return;
+            for (const m of ["restoreState", "close", "markAsLoaded", "select"]) wvUnwrap(Z, m, "trace");
+            // Legacy keys from builds before the layered helper.
             if (Z._wvOrigRestoreState) { Z.restoreState = Z._wvOrigRestoreState; delete Z._wvOrigRestoreState; }
             if (Z._wvOrigClose) { Z.close = Z._wvOrigClose; delete Z._wvOrigClose; }
             if (Z._wvOrigMarkAsLoaded) { Z.markAsLoaded = Z._wvOrigMarkAsLoaded; delete Z._wvOrigMarkAsLoaded; }
@@ -9600,18 +9744,92 @@ class _TabsMixin {
      *  at "note-loading" forever (upstream zotero/xpcom/data/notes.js:49; hit
      *  repeatedly in the restart protocol). Wrap: resolve the tab's OWNING
      *  window and point getMainWindow at it for the duration of the call. */
+    /** Run `fn` with `Zotero.getMainWindow()` answering `owner` -- the
+     *  multi-window patch for Notes.open / Reader.open, whose upstream code
+     *  hard-codes the focused window. RE-ENTRANT: the real function is kept
+     *  ONCE on the Zotero global and restored only when the outermost call
+     *  ends. Each wrapper used to save "the current getMainWindow" and
+     *  restore it in its own finally, so two overlapping loads (A then B)
+     *  left A's lambda installed for good once A finished first --
+     *  Zotero-wide getMainWindow() then returned window A for the session,
+     *  even after A closed (survey 2026-10-06). */
+    async _wvWithMainWindow(owner: any, fn: () => any) {
+        const Z: any = Zotero as any;
+        if (!Z._wvGMWStack) { Z._wvGMWStack = []; Z._wvGMWOrig = Z.getMainWindow; }
+        const stack: any[] = Z._wvGMWStack;
+        const token = { owner };
+        stack.push(token);
+        // The most recently entered owner answers; when it leaves, the one
+        // still loading underneath takes over again.
+        Z.getMainWindow = () => (stack.length ? stack[stack.length - 1].owner : Z._wvGMWOrig.call(Z));
+        try { return await fn(); }
+        finally {
+            const i = stack.indexOf(token);
+            if (i !== -1) stack.splice(i, 1);
+            if (!stack.length) {
+                Z.getMainWindow = Z._wvGMWOrig;
+                delete Z._wvGMWOrig;
+                delete Z._wvGMWStack;
+            }
+        }
+    }
+
+    /** Peel one Weavero-wrapped member of a long-lived Zotero singleton
+     *  (Zotero.Notes / Zotero.Reader) back to the native function and drop
+     *  every stamp on it. Those members are OWN properties of the singletons
+     *  (no prototype fallback), so the peel is a restore from the saved
+     *  original, not a `delete`. Several layers may be stacked (each saves the
+     *  function it wrapped under its own key); the native is the INNERMOST
+     *  saved original, so `origKeys` lists keys innermost first. A layer that
+     *  keeps its original only in a closure (the startup hold on Reader.open)
+     *  comes off with the rest. Used by destroy() and by every foreign-stamp
+     *  re-wire. Guard: test/wire-stamps.spec.js. */
+    _wvSingletonPeel(host: any, member: string, origKeys: string[], stampKeys: string[]) {
+        if (!host) return;
+        let native: any = null;
+        for (const k of origKeys) { if (typeof host[k] === "function") { native = host[k]; break; } }
+        if (native) host[member] = native;
+        for (const k of origKeys.concat(stampKeys)) { try { delete host[k]; } catch (_) {} }
+    }
+
+    /** Notes.open / Reader.open: multi-window wrapper (`_wvMwOrigOpen`, below,
+     *  applied first), the startup hold (closure, Reader only), and the
+     *  deck-window / hosted-tab wrapper (`_wvOrigOpen`, index.ts init, on top). */
+    _wvOpenPatchPeel(host: any) {
+        this._wvSingletonPeel(host, "open", ["_wvMwOrigOpen", "_wvOrigOpen"],
+            ["_wvOpenPatched", "_wvOpenPatchedV", "_wvOpenWired", "_wvHoldWrapped"]);
+    }
+
+    /** Reader.getWindowStates: quit-time takeover (`_wvGWSOrig`, applied
+     *  first) and the dead-reader purge (`_wvOrigGetWindowStates`, index.ts). */
+    _wvReaderGWSPeel(R: any) {
+        this._wvSingletonPeel(R, "getWindowStates", ["_wvGWSOrig", "_wvOrigGetWindowStates"],
+            ["_wvGWSPatchVer", "_wvGWSWired"]);
+    }
+
+    /** Reader.getByTabID: the own-prop tabID fallback (reader.ts). */
+    _wvReaderLookupPeel(R: any) {
+        this._wvSingletonPeel(R, "getByTabID", ["_wvOrigGetByTabID"], ["_wvLookupVer"]);
+    }
+
     _wvPatchNotesOpenForMultiWindow() {
-        // Versioned re-wiring (NOT a boolean guard): the old `_wvOpenPatched`
-        // boolean survived destroy() while the wrapper itself was unpeeled, so
-        // after a plugin reload the patch refused to re-install and every
-        // wrapper change shipped between reloads silently never activated
-        // (the dev.32 stale-instance guard was invisible until this fix,
-        // 2026-07-28). A version stamp re-patches whenever the code changed;
-        // destroy() unpeels via _wvMwOrigOpen and clears the stamps.
-        const WV_OPEN_PATCH_V = 2;
+        // Stamped with _wvWireTag() (build + instance), never a boolean and
+        // never a hand-bumped constant (src-ts.md wire-stamp rule): the old
+        // `_wvOpenPatched` boolean survived destroy() while the wrapper itself
+        // was unpeeled, so after a plugin reload the patch refused to
+        // re-install and every wrapper change shipped between reloads silently
+        // never activated (2026-07-28); the `WV_OPEN_PATCH_V = 2` constant that
+        // replaced it needed remembering on every change (survey 2026-10-06).
+        // A foreign stamp is a dead instance's wrapper chain: peel it to the
+        // native (both layers) and re-wrap. destroy() peels the same way.
+        // Guard: test/wire-stamps.spec.js.
+        const tag = (this as any)._wvWireTag();
+        // The two hosts are independent: a Notes block already stamped must
+        // not skip the Reader block (the guard spec re-runs this per host).
         try {
             const N: any = (Zotero as any).Notes;
-            if (!N || typeof N.open !== "function" || N._wvOpenPatchedV === WV_OPEN_PATCH_V) return;
+            if (!N || typeof N.open !== "function" || N._wvOpenPatchedV === tag) throw null;
+            if (N._wvOpenPatchedV !== undefined || N._wvMwOrigOpen || N._wvOrigOpen) this._wvOpenPatchPeel(N);
             const orig = N.open;
             N._wvMwOrigOpen = orig;
             N.open = async function (_itemID: any, _location: any, opts: any) {
@@ -9654,16 +9872,17 @@ class _TabsMixin {
                 } catch (e) {}
                 const zAny: any = Zotero;
                 if (!owner || owner === zAny.getMainWindow()) return orig.apply(this, arguments);
-                // Temporary, restored in finally; other getMainWindow callers in
-                // this narrow window get the owning window — harmless for the
-                // rare mid-load overlap, and strictly better than a wedged tab.
-                const origGMW = zAny.getMainWindow;
-                zAny.getMainWindow = () => owner;
-                try { return await orig.apply(this, arguments); }
-                finally { zAny.getMainWindow = origGMW; }
+                // Temporary, restored when the outermost overlapping load ends
+                // (_wvWithMainWindow); other getMainWindow callers in this
+                // narrow window get the owning window — harmless for the rare
+                // mid-load overlap, and strictly better than a wedged tab.
+                const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                const args = arguments;
+                if (!lp || !lp._wvWithMainWindow) return orig.apply(this, args);
+                return lp._wvWithMainWindow(owner, () => orig.apply(this, args));
             };
-            N._wvOpenPatchedV = WV_OPEN_PATCH_V;
-        } catch (e) { Zotero.debug("[Weavero] _wvPatchNotesOpenForMultiWindow err: " + e); }
+            N._wvOpenPatchedV = tag;
+        } catch (e) { if (e) Zotero.debug("[Weavero] _wvPatchNotesOpenForMultiWindow err: " + e); }
         // Zotero.Reader.open has the IDENTICAL hardcoded-getMainWindow flaw
         // (xpcom/reader.js): loading a reader tab that lives in a background
         // main window resolves the tab container in the focused window → the
@@ -9671,7 +9890,8 @@ class _TabsMixin {
         // (validated live via the deferred-load idle warmer). Same fix.
         try {
             const R: any = (Zotero as any).Reader;
-            if (!R || typeof R.open !== "function" || R._wvOpenPatchedV === WV_OPEN_PATCH_V) return;
+            if (!R || typeof R.open !== "function" || R._wvOpenPatchedV === tag) return;
+            if (R._wvOpenPatchedV !== undefined || R._wvMwOrigOpen || R._wvOrigOpen) this._wvOpenPatchPeel(R);
             const origR = R.open;
             R._wvMwOrigOpen = origR;
             R.open = async function (_itemID: any, _location: any, opts: any) {
@@ -9687,12 +9907,12 @@ class _TabsMixin {
                 } catch (e) {}
                 const zAny: any = Zotero;
                 if (!owner || owner === zAny.getMainWindow()) return origR.apply(this, arguments);
-                const origGMW = zAny.getMainWindow;
-                zAny.getMainWindow = () => owner;
-                try { return await origR.apply(this, arguments); }
-                finally { zAny.getMainWindow = origGMW; }
+                const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                const args = arguments;
+                if (!lp || !lp._wvWithMainWindow) return origR.apply(this, args);
+                return lp._wvWithMainWindow(owner, () => origR.apply(this, args));
             };
-            R._wvOpenPatchedV = WV_OPEN_PATCH_V;
+            R._wvOpenPatchedV = tag;
         } catch (e) { Zotero.debug("[Weavero] Reader.open multi-window patch err: " + e); }
     }
 
@@ -9707,15 +9927,26 @@ class _TabsMixin {
     _wvHoldReaderWindowOpens() {
         try {
             const R: any = (Zotero as any).Reader;
-            if (!R || typeof R.open !== "function" || R._wvHoldWrapped) return;
+            const tag = (this as any)._wvWireTag();
+            if (!R || typeof R.open !== "function" || R._wvHoldWrapped === tag) return;
+            // BOOT-ONLY: the hold gives the focused tab a head start over the
+            // reader windows Zotero reopens at startup. A hot reload / enable /
+            // upgrade restores nothing, and a re-installed hold would queue
+            // the user's own "open in new window" for up to 10 s -- which the
+            // boolean stamp that survived destroy() used to prevent by
+            // accident (survey 2026-10-06; same APP_STARTUP=1 convention as
+            // the session repair; undefined = old bootstrap shim). The open
+            // peel (_wvOpenPatchPeel) drops the wrapper with the other layers.
+            const rsn = (this as any)._wvStartupReason;
+            if (rsn !== undefined && rsn !== 1) return;
             this._wvReaderOpenQueue = [];
             this._wvReaderOpenHold = true;
             const self = this;
             const orig = R.open;
             R.open = function (itemID: any, _location: any, opts: any) {
                 try {
-                    const lp: any = ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || self;
-                    if (lp._wvReaderOpenHold && opts && opts.openInWindow) {
+                    const lp: any = wvLivePlugin();   // gone -> pure native below
+                    if (lp && lp._wvReaderOpenHold && opts && opts.openInWindow) {
                         const f = lp._wvBootFocusedEntry;
                         const isFocusedReader = !!(f && f.kind === "reader" && f.itemID === itemID);
                         if (!isFocusedReader) {
@@ -9729,8 +9960,7 @@ class _TabsMixin {
                             if (!lp._wvReaderOpenCapArmed) {
                                 lp._wvReaderOpenCapArmed = true;
                                 try {
-                                    const w1: any = Zotero.getMainWindow();
-                                    ((w1 && w1.setTimeout) ? w1.setTimeout.bind(w1) : setTimeout)(
+                                    wvTimeout(
                                         () => { try { lp._wvReleaseReaderOpens("1.5s cap"); } catch (e) {} }, 1500);
                                 } catch (e) {}
                             }
@@ -9740,11 +9970,10 @@ class _TabsMixin {
                 } catch (e) {}
                 return orig.apply(this, arguments);
             };
-            R._wvHoldWrapped = true;
+            R._wvHoldWrapped = tag;
             // Hard backstop from install — the hold must never outlive startup
             // (the 1.5 s cap arms on the first queued open; see the wrap).
-            const w0: any = Zotero.getMainWindow();
-            ((w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout)(
+            wvTimeout(
                 () => { try { this._wvReleaseReaderOpens("timeout backstop"); } catch (e) {} }, 10000);
         } catch (e) { Zotero.debug("[Weavero] _wvHoldReaderWindowOpens err: " + e); }
     }
@@ -9820,8 +10049,7 @@ class _TabsMixin {
             } catch (e) {}
             if (!targets.length) return;
             this._wvTrace("idle loader: warming " + targets.length + " deferred reader-window tab(s) in the background");
-            const w0: any = Zotero.getMainWindow();
-            const setT = (w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout;
+            const setT = wvTimeout;
             let i = 0;
             const next = () => {
                 // Each background load can make its reader window steal focus
@@ -10181,18 +10409,24 @@ class _TabsMixin {
             // (via hook) AND on every pre-existing window (below): the anchor
             // was never hooked, so switching TO it registered no claim and
             // the final asserts snapped focus away again (2026-07-13).
+            // Keyed, instance-tagged, BOOT-ONLY (the "boot:" prefix: a reload
+            // does not re-wire them) and removed when the hold ends (tick
+            // below) -- until 2026-10-12 they stayed for the whole session and
+            // every click on these windows still ran reveal + focus, after a
+            // reload through the dead instance's closures (wiring slice 3).
+            const claimWins = new Set<any>();
+            const tag = (self as any)._wvWireTag();
             const wireClaim = (w: any) => {
                 try {
-                    if ((w as any)._wvBgClaimWired) return;
-                    (w as any)._wvBgClaimWired = true;
+                    claimWins.add(w);
                     // The user clicking the window overrides everything —
                     // PERMANENTLY for this window (the claim flag disarms the
                     // activate hook below; the old {once} listener revealed the
                     // window but the hook then fought the very focus it granted,
                     // so windows were unclickable during the restore, 2026-07-04).
-                    w.addEventListener("mousedown", () => {
+                    wvListen(w, "boot:bgClaim:mousedown", "mousedown", () => {
                         try {
-                            // Set on the LIVE instance — closures survive reloads.
+                            // Set on the LIVE instance (an event in dispatch can outlive us).
                             const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                             if (lp && lp._wvBgRestoreOn) {
                                 (w as any)._wvBgUserClaimed = true;
@@ -10201,8 +10435,8 @@ class _TabsMixin {
                             }
                             reveal(w); w.focus();
                         } catch (e2) {}
-                    }, { capture: true });
-                    w.addEventListener("activate", () => {
+                    }, { capture: true }, tag);
+                    wvListen(w, "boot:bgClaim:activate", "activate", () => {
                         try {
                             // Stale-closure guard: hooks survive plugin reloads
                             // (they're anonymous listeners), and a stuck flag on
@@ -10254,7 +10488,7 @@ class _TabsMixin {
                                 } catch (e2) {}
                             }
                         } catch (e) {}
-                    });
+                    }, false, tag);
                 } catch (e) {}
             };
             const settle = (w: any) => {
@@ -10316,6 +10550,11 @@ class _TabsMixin {
                 try { for (const w of [...noActivated]) clearNoActivate(w); } catch (e) {}
                 (this as any)._wvBgClearNoActivate = null;
                 try { Services.ww.unregisterNotification(obs); } catch (e) {}
+                for (const w of claimWins) {
+                    wvUnlisten(w, "boot:bgClaim:mousedown");
+                    wvUnlisten(w, "boot:bgClaim:activate");
+                }
+                claimWins.clear();
                 try { if (dwmapi) dwmapi.close(); } catch (e) {}
                 try { if (user32) user32.close(); } catch (e) {}
             };
@@ -10330,8 +10569,7 @@ class _TabsMixin {
             const self = this;
             const findTarget = () => self._wvRestoreFindTargetWin();
             let ticks = 0;
-            const w0: any = Zotero.getMainWindow();
-            const setT = (w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout;
+            const setT = wvTimeout;
             const tick = () => {
                 ticks++;
                 const done = !(this as any)._wvTabGroupRestoreGuard || ticks > 45;
@@ -10562,7 +10800,7 @@ class _TabsMixin {
                     this._wvTrace && this._wvTrace("quit-flush: un-parked " + unparkIds.join(","));
                 } catch (e) {}
             }
-            this._wvWindowStoreWrite({ version: 4, windows: live, focused: this._wvWindowStoreFocusDescriptor() });
+            this._wvWindowStoreWrite(this._wvWindowStoreBuildDoc(live));
             this._wvWindowStoreFrozen = true;
             // Namespace copy (stale-closure-proof): with the capture frozen,
             // the getState / getWindowStates wraps now hand Zotero's own
@@ -10588,8 +10826,8 @@ class _TabsMixin {
                         (self as any)._wvQuitting = true;
                         try { if ((Zotero as any).Weavero) (Zotero as any).Weavero._quitting = true; } catch (e) {}
                         self._wvTrace && self._wvTrace("quit-application-requested");
-                        const w = Zotero.getMainWindow();
-                        const setT = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+                        const w: any = Zotero.getMainWindow();
+                        const setT = wvTimeout;
                         if (self._wvQuitResetTimer) { try { ((w && w.clearTimeout) ? w.clearTimeout.bind(w) : clearTimeout)(self._wvQuitResetTimer); } catch (e) {} }
                         self._wvQuitResetTimer = setT(() => {
                             // No grant arrived → the quit was vetoed; resume normal life.
@@ -10767,18 +11005,17 @@ class _TabsMixin {
      *  empty stack lets the event fall through to Zotero's native tab-undo (main
      *  window). WINDOW-level CAPTURE runs before Zotero's document-level
      *  captureKeyDown (zoteroPane.js), so suppressing it stops the double-handle.
-     *  Idempotent per window. */
+     *  Keyed, instance-tagged (lib/listen.ts): a reload replaces the previous
+     *  instance's handler, destroy() removes it (wiring slice 3: a boolean stamp
+     *  kept the first build's handler on every window until a restart). */
     _wvWireReopenClosedShortcut(win: any) {
         try {
-            if (!win || win._wvReopenShortcutWired) return;
-            win._wvReopenShortcutWired = true;
+            if (!win) return;
             const suppress = (e: any) => { e.preventDefault(); try { e.stopImmediatePropagation(); } catch (er) { try { e.stopPropagation(); } catch (er2) {} } };
             const handler = (e: any) => {
                 try {
-                    // Resolve the LIVE plugin at keydown time — this listener is
-                    // wired once per window and survives plugin reloads; a
-                    // captured `this` would run the DEAD instance's (empty)
-                    // closed stack forever after a reload.
+                    // Resolve the LIVE plugin at keydown time (an event already
+                    // in dispatch can outlive this instance).
                     const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                     if (!lp || lp._wvDestroyed) return;   // plugin off → native behavior
                     const accel = (Zotero as any).isMac ? e.metaKey : e.ctrlKey;
@@ -10799,8 +11036,7 @@ class _TabsMixin {
                     //    native captureKeyDown (reopen closed tab). Do nothing here.
                 } catch (er) {}
             };
-            win.addEventListener("keydown", handler, true);
-            win._wvReopenShortcutHandler = handler;
+            wvListen(win, "reopenClosedKey", "keydown", handler, true, (this as any)._wvWireTag());
         } catch (e) { Zotero.debug("[Weavero] _wvWireReopenClosedShortcut err: " + e); }
     }
 
@@ -10839,6 +11075,43 @@ class _TabsMixin {
         try { win.setTimeout(tick, 300); } catch (e) {}
     }
 
+    /** The per-window column store (`weavero/colstore.json`): one cached
+     *  document, read once per instance AFTER any write still queued by a
+     *  previous instance (the chain lives on the Zotero global so a hot
+     *  reload cannot split it), and one atomic serialized writer. */
+    _wvColStorePath() {
+        return PathUtils.join((Zotero as any).DataDirectory.dir, "weavero", "colstore.json");
+    }
+
+    _wvColStoreLoad(): Promise<any> {
+        const self: any = this;
+        if (self._wvColStoreDocPromise) return self._wvColStoreDocPromise;
+        self._wvColStoreDocPromise = (async () => {
+            // lib/store.ts: the read waits for the path's pending writes (a
+            // previous instance's queued write after a reload), so a fresh
+            // instance sees them.
+            const r = await wvStoreRead(this._wvColStorePath());
+            let doc: any = {};
+            if (r.status === "ok" && r.doc && typeof r.doc === "object" && !Array.isArray(r.doc)) doc = r.doc;
+            if (r.status === "io-error") self._wvColStoreReadOnly = true;
+            self._wvColStoreDoc = doc;
+            return doc;
+        })();
+        return self._wvColStoreDocPromise;
+    }
+
+    async _wvColStoreGet(key: string) {
+        const doc = await this._wvColStoreLoad();
+        return doc ? doc[key] : undefined;
+    }
+
+    async _wvColStoreSet(key: string, prefs: any) {
+        const doc = await this._wvColStoreLoad();
+        doc[key] = prefs;
+        if ((this as any)._wvColStoreReadOnly) { Zotero.debug("[Weavero] colstore persist skipped: store is read-only (unreadable at load)"); return; }
+        return wvStoreWrite(this._wvColStorePath(), doc);
+    }
+
     async _wvApplyPerWindowColumns(win) {
         try {
             if (!win || !win._wvManagedWindow) return;
@@ -10866,14 +11139,18 @@ class _TabsMixin {
             // A separate file is immune. (All views of a window share one entry —
             // per-view columns within a managed window are not preserved; the
             // default library view is what matters here.)
-            const colDir = PathUtils.join((Zotero as any).DataDirectory.dir, "weavero");
-            const colPath = PathUtils.join(colDir, "colstore.json");
             const colKey = "win-" + win._wvWindowId;
             iv._wvColKey = colKey;
+            // ONE in-memory document and ONE serialized atomic writer for the
+            // whole store (_wvColStore*): each window used to read-modify-write
+            // the file on its own 60 s timer (and force-write at close), so two
+            // managed windows closing at quit read the same old file and the
+            // last writer dropped the other window's layout; no tmpPath either
+            // (survey 2026-10-06).
             iv._loadColumnPrefsFromFile = async function () {
                 try {
-                    const store = JSON.parse((await Zotero.File.getContentsAsync(colPath)) as string);
-                    const prefs = store[colKey];
+                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    const prefs = lp ? await lp._wvColStoreGet(colKey) : null;
                     if (prefs && Object.keys(prefs).length) { this._columnPrefs = prefs; return; }
                 } catch (e) {}
                 // No saved layout yet → keep what native just loaded (the shared
@@ -10881,12 +11158,9 @@ class _TabsMixin {
             };
             iv._writeColumnPrefsToFile = async function (force) {
                 const self = this;
-                const writeToFile = async () => {
-                    let store: any;
-                    try { store = JSON.parse((await Zotero.File.getContentsAsync(colPath)) as string); } catch (e) { store = {}; }
-                    store[colKey] = self._columnPrefs;            // only our window's entry
-                    try { await IOUtils.makeDirectory(colDir, { ignoreExisting: true }); } catch (e) {}
-                    return Zotero.File.putContentsAsync(colPath, JSON.stringify(store, null, 2));
+                const writeToFile = () => {
+                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    return lp ? lp._wvColStoreSet(colKey, self._columnPrefs) : Promise.resolve();
                 };
                 if (this._wvColWriteTimer) { try { clearTimeout(this._wvColWriteTimer); } catch (e) {} }
                 if (force) return writeToFile();
@@ -10898,8 +11172,8 @@ class _TabsMixin {
             // (persist the current shared layout under our key) the first time only.
             let hadSaved = false;
             try {
-                const store = JSON.parse((await Zotero.File.getContentsAsync(colPath)) as string);
-                hadSaved = !!(store[colKey] && Object.keys(store[colKey]).length);
+                const saved: any = await this._wvColStoreGet(colKey);
+                hadSaved = !!(saved && Object.keys(saved).length);
             } catch (e) {}
             if (hadSaved) {
                 try { await iv._loadColumnPrefsFromFile(); } catch (e) {}   // _columnPrefs ← our store
@@ -11219,13 +11493,7 @@ class _TabsMixin {
                     // use a bright sky blue instead.
                     + `.wv-ui-dark.wv-anchor-window #tab-bar-container .tab[data-id="zotero-pane"]::after{`
                     + `background-color:#9dbcff;}`);
-            let st: any = d.getElementById("wv-anchor-indicator-style");
-            if (!st) {
-                st = d.createElementNS("http://www.w3.org/1999/xhtml", "style");
-                st.id = "wv-anchor-indicator-style";
-                (d.head || d.documentElement).appendChild(st);
-            }
-            if (st.textContent !== css) st.textContent = css;   // refresh if rule changed
+            wvInjectStyle(d, "wv-anchor-indicator-style", css);   // refreshed when the rule changed
             // Show the mark only when MORE THAN ONE window exists (mains and
             // reader windows both counted — user rule 2026-07-15): a lone
             // window has no "which is the main one?" ambiguity.
@@ -11444,7 +11712,10 @@ class _TabsMixin {
         } catch (e) {}
     }
 
-    _teardownTabBarLibraryDecoration(win) {
+    /** Undo _setupTabBarWiring: the observer and the pinned-tab visuals.
+     *  Separate from the glyph teardown so that turning the glyph off (or
+     *  starting with it off) leaves pins/groups/DnD wired (#15). */
+    _teardownTabBarWiring(win) {
         if (!win) return;
         const doc = win.document;
         try {
@@ -11475,6 +11746,13 @@ class _TabsMixin {
                 if (pinStyle) pinStyle.remove();
             }
         } catch (e) {}
+    }
+
+    /** Undo _setupTabBarLibraryDecoration only: the tint stylesheet and the
+     *  library tooltip. The structural wiring stays (see _teardownTabBarWiring). */
+    _teardownTabBarLibraryDecoration(win) {
+        if (!win) return;
+        const doc = win.document;
         try {
             const tintStyle = doc
                 && doc.getElementById("wv-tab-bar-tint-style");

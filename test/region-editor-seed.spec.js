@@ -13,7 +13,7 @@ describe("Weavero — PDF region editor seeds point entries from the title", () 
 
 	before(function () {
 		wv = Zotero.Weavero && Zotero.Weavero.plugin;
-		if (!wv || typeof wv._wvRegionEditorSeedRange !== "function") this.skip();
+		if (!wv || typeof wv._wvRegionEditorSeedRange !== "function") wvT.absent('!wv || typeof wv._wvRegionEditorSeedRange !== "function"');
 	});
 
 	after(() => { try { delete wv._wvOutlineRecoverRect; } catch (e) {} });

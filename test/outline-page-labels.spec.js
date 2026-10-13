@@ -10,7 +10,7 @@ describe("Weavero — outline page numbers per reader type", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
     });
 
     it("an EPUB entry is labelled from the reader's page map, and cached", () => {

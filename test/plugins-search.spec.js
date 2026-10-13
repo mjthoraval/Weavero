@@ -11,7 +11,7 @@ describe("Weavero — Plugins Manager search box", () => {
 
 	before(function () {
 		wv = Zotero.Weavero && Zotero.Weavero.plugin;
-		if (!wv || typeof wv._wvPMInject !== "function") this.skip();
+		if (!wv || typeof wv._wvPMInject !== "function") wvT.absent('!wv || typeof wv._wvPMInject !== "function"');
 	});
 
 	// A stand-in about:addons document (#main > addon-list > addon-card…) and
@@ -127,6 +127,15 @@ describe("Weavero — Plugins Manager search box", () => {
 		assert.lengthOf(sheets, 1, "one sheet, not two");
 		assert.notInclude(sheets[0].textContent, "color: red", "the stale rules are gone");
 		assert.include(sheets[0].textContent, "min-width: 0", "the current rules are in");
+	});
+
+	// Firefox 153 (Zotero 11) gives <input type="search"> a NATIVE clear button
+	// in chrome documents (forms.css ::-moz-search-clear-button): with ours,
+	// two × in the box (audit against "Zotero 11 for Developers", 2026-10-13).
+	it("hides the native search clear button, so only Weavero's × shows (Zotero 11)", () => {
+		const { d } = fixture();
+		const css = d.getElementById("wv-pm-search-styles").textContent;
+		assert.match(css, /#wv-pm-field input::-moz-search-clear-button\s*\{[^}]*display:\s*none/);
 	});
 
 	it("resets about:addons' button min-size so the × stays 20px, not a 6.3em slab", () => {

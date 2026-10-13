@@ -33,9 +33,14 @@ name to a Zotero object, window, or document.
   `Zotero.debug("[Weavero] …")`, never `console`.
 - Persistent listeners resolve the live plugin AT EVENT TIME
   (`Zotero.Weavero && Zotero.Weavero.plugin`) — closures over `this`/`self`
-  go stale across reloads. Async-setup continuations: liveness-check after
-  every await; callbacks self-neutralize; long-lived per-window wiring uses a
-  numeric `_wv*Wired` version stamp + stored handler refs.
+  go stale across reloads. Async-setup continuations: liveness-check
+  (`this._wvDestroyed`) after every await -- `init()` itself included, and
+  every retry on a WINDOW timer (it outlives destroy()): an install then an
+  immediate reload let a half-initialized instance wire the windows after
+  its destroy(), its plain listeners stayed for the session (2026-10-13,
+  guard `test/destroyed-instance-wiring.spec.js`); callbacks
+  self-neutralize; long-lived listeners go through `wvListen` (see below),
+  not hand-bumped `_wv*Wired` stamps.
 - OBJECTS HANDED TO THE READER ARE BUILT IN THE READER'S WINDOW. The
   reader (`reader._internalReader`, its views) refuses an object made in
   the plugin's sandbox: "Permission denied to pass object to privileged
@@ -55,11 +60,18 @@ name to a Zotero object, window, or document.
   Weavero popup/menu whose "click outside closes it" must cover such an
   area sets the area to `no-drag` while open and restores it on close
   (`_wvTabShowHistoryMenu` / `_wvCloseReaderBmContextMenu`). Before
-  wiring a dismiss or a click handler near a strip or toolbar, check
-  `getComputedStyle(el).getPropertyValue("-moz-window-dragging")`; a "real
-  click does nothing" report there is THIS until proven otherwise. Hit
-  three times (tab-group chips 2026-06; outline header-strip History menu
-  2026-09-30; toolbar History menu 2026-10-01).
+  wiring a dismiss or a click handler near a strip or toolbar, check the
+  element's drag value; a "real click does nothing" report there is THIS
+  until proven otherwise. Hit three times (tab-group chips 2026-06; outline
+  header-strip History menu 2026-09-30; toolbar History menu 2026-10-01).
+  FIREFOX 153 (Zotero 11) keeps the property OUT OF CSSOM: CSS.supports()
+  is false, `getComputedStyle(...)` reads "" and an inline
+  `style.setProperty(...)` / `style.MozWindowDragging = ...` is DROPPED in
+  every document. Set it with a SHEET rule (keyed on a class or attribute):
+  sheets still apply in chrome:// and resource:// documents (main window,
+  reader iframe), not in about:blank ones. Read it with
+  `InspectorUtils.getMatchingCSSRules(el)`. Found 2026-10-12 (the undo
+  menu's toolbar no-drag was dead on 11); guard compat.spec.js.
 - XUL `popupshowing`/`popuphidden` BUBBLE: every handler on a menu that can
   contain a submenu (native Move To / Copy To, Weavero's own Copy As / Add
   Bookmark) early-returns unless `ev.target === menu`, and a cleanup
@@ -73,6 +85,33 @@ name to a Zotero object, window, or document.
   sticks forever (bg-restore teardown, 2026-09-01 — every later window
   open got fought). Long-lived tick loops re-resolve a live window per
   schedule (global setTimeout fallback), never bind the host once.
+- `onMainWindowLoad` fires at the window's `load` event (xpcom/plugins.js),
+  BEFORE ZoteroPane.init has created `itemsView` / `collectionsView` (it
+  awaits initItemsTree, then initCollectionsTree). A wire that needs a pane
+  view and returns when it is absent silently skips every window opened
+  mid-session; the first window never shows it, because init wires that one
+  after its views exist. Mark such a wiring-table entry `views: true` (it
+  then runs through `_wvWhenPaneViewsReady`). Found 2026-10-09: a second
+  window had no collection-select guard, no collections-tree aids and no
+  setFilter / changeCollectionTreeRow / selectItems wraps. Guard:
+  `test/window-wiring.spec.js` (the parity test).
+- PER-MAIN-WINDOW wiring is ONE ordered table, `WV_MAIN_WIRES` in
+  `src/modules/window-wiring.ts`: onMainWindowLoad runs every entry, init
+  runs the `on: "both"` ones for the window already open. A new step goes
+  in the table (`both` unless it is a plugin-wide re-assert, a timer for a
+  restoring window, or something init already does for every window) --
+  never into onMainWindowLoad or an init loop of its own. Until 2026-10-09
+  init repeated the steps by hand in ~15 "onMainWindowLoad only fires for
+  new windows" loops, and the lists drifted. Guard:
+  `test/window-wiring-table.spec.js`.
+  STANDALONE READER windows have their own table, `WV_READER_WIRES`, with
+  three paths: `render` (the reader's renderToolbar event), `init`, and
+  `pref` (the reader "Hide title bar" toggle). A new reader-window step
+  goes in it, on every path whose trigger can leave the window without it.
+  Until 2026-10-12 each path called its own subset: with the title bar
+  kept, a reload dropped Edit > Undo, Ctrl+Y and Move to Tab, and a window
+  opened that way had no taskbar identity. Guard:
+  `test/zz-reader-window-wiring.spec.js`.
 - Wraps installed on LONG-LIVED Zotero objects (itemsView, rowProvider,
   windows) stamp themselves with `this._wvWireTag()` — build version PLUS a
   per-instance nonce — never a boolean and never a hand-bumped constant. A
@@ -86,6 +125,73 @@ name to a Zotero object, window, or document.
   kept running on the dead instance — clearing a quick search dropped the
   chip; every bridge verification after a reload had run on a half-dead
   filter). Guard: `test/wire-stamps.spec.js`.
+  Members of the `Zotero.Notes` / `Zotero.Reader` singletons (`open`,
+  `getWindowStates`, `getByTabID`) are OWN properties with no prototype
+  fallback and carry several Weavero layers: the peel there is a restore
+  of the INNERMOST saved original with every stamp deleted
+  (`_wvSingletonPeel`, used by destroy() and by each foreign-stamp
+  re-wire). A hand-bumped `WV_OPEN_PATCH_V` guarded them until 2026-10-07,
+  and destroy() restored only the outer `getWindowStates` layer, leaving a
+  dead inner wrapper live after every disable.
+- SHARED HELPERS in `src/lib/` are the canonical spellings (survey
+  2026-10-06 step 3; guard `test/lib-helpers.spec.js`):
+  `wvLivePlugin()` — the live instance or null; never `|| self` / `|| this`
+  (a captured instance kept acting after disable at eleven sites).
+  `wvWrap(host, member, layer, tag, make)` / `wvUnwrap(host, member, layer?)`
+  — layered, tag-stamped method wraps on long-lived objects: the chain is
+  rebuilt from the native on every change, foreign-instance layers drop,
+  a prototype original is deleted and an own-property one restored
+  (`Zotero_Tabs` getState/close/restoreState/markAsLoaded/select,
+  itemsView.selectItems; the filter's row-provider translation is the
+  "filter" layer set reading `rp._wvFilterView` — an apply publishes a
+  view, it never re-wraps; the manual-expand tracker is the
+  "userOpenTracking" layer under it). A wrapper forwards EVERY argument
+  (`orig.apply(this, arguments)` or `(a, ...rest) => orig(a, ...rest)`),
+  never a fixed list: Zotero 11 added `Zotero_Tabs.close(ids,
+  { skipHistory })` and the tracing layer's `origClose(ids)` dropped it
+  (2026-10-12; guard tabs-wrap-args.spec.js). `wvInjectStyle(doc, id, css)` / `wvRemoveStyle`
+  — a sheet is always replaced, never skip-if-exists or version-stamped.
+  It finds its sheet with `doc.getElementById`, which cannot see into a
+  shadow root: a sheet that must live in one is looked up there
+  (`sr.getElementById`), or it is appended again on every pass.
+  `wvWhenWindowLoaded(w, fn)` — the only way a window-mediator listener
+  (onOpenWindow) waits for a new window: on Firefox 153 the window arrives
+  holding its initial about:blank, already "complete", and a
+  `readyState === "complete"` check there never saw the real document
+  (Software Update version line, pop-out note windows; 2026-10-12, guard
+  window-load-timing.spec.js).
+  `wvTimeout` / `wvSleep` / `wvClearTimeout` — the sandbox clock for
+  plugin-level work. Published as `Zotero.Weavero.lib` for the suite.
+  `wvListen(target, key, type, fn, opts, tag)` / `wvListener(tag)` /
+  `wvUnlisten(target, key)` — every listener on a LONG-LIVED target (a
+  window, a document, a native element, a reader or note-editor frame,
+  an element cached by id across instances): keyed per target, replaced
+  when another instance wires the key, removed by destroy()
+  (`wvUnlistenAll`), and refused once the instance is destroyed (its
+  retry timers still fire). Never a boolean or version stamp next to an
+  `addEventListener` (a reload skipped wiring and the old code kept
+  running), and never a plain `addEventListener` on such a target (it
+  doubled per reload). Key prefixes the reload audit understands:
+  `boot:` (app startup only), `lazy:` (wired on first use). An element
+  Weavero builds once and caches by id (a menupopup, a tooltip, an
+  overlay) carries `data-wv-tag` and is rebuilt when the tag is another
+  instance's. Guard: `test/zz-reload-listeners.spec.js` (records every
+  listener whose function belongs to the previous instance after a
+  reload; 95 kinds on 2026-10-12 before the migration).
+  destroy() reaches reader pages only through `Zotero.Reader._readers`
+  (`_wvReaderPageTeardown` per reader): code that takes a reader OUT of
+  `_readers` while its page stays loaded (a reader window dropping its
+  native tab, as a deck window does) runs `_wvReaderPageTeardown(reader)`
+  itself first -- else that page keeps the instance's listeners for good
+  (2026-10-13).
+  An OPTIONS OBJECT (`{ capture, passive, once }`) passed to a CONTENT
+  target (a reader or pdf.js frame, a note editor's document) is a
+  chrome object the content side cannot read: the listener silently goes
+  on with the defaults -- bubble, not passive, not once -- and a
+  capture-phase removal never matches. `wvListen` hands the target its own
+  copy; a plain `addEventListener` there passes a boolean or
+  `wvEventOpts(target, opts)` (the URL tip's listeners survived every
+  reload this way until 2026-10-12).
 - Inside a wrapper installed ON a host object (`rp._refresh = async
   function (...) {…}`, `iv.setFilter = …`), `this` is the HOST, not the
   plugin: never call `this._wv…` there — resolve the live plugin
@@ -160,11 +266,33 @@ name to a Zotero object, window, or document.
 - Boolean XUL attributes (`hidden`, `collapsed`, `disabled`, `checked`,
   `selected`): write them with `wvSetBoolAttr(el, name, on)` from
   `src/lib/dom.ts` (the literal `"true"` or the attribute removed) and read
-  them with `wvIsHiddenOrCollapsed()`. `toggleAttribute(name, true)` writes
+  them with `wvIsHiddenOrCollapsed()` (hidden/collapsed) or
+  `wvBoolAttrOn(el, name)` (any of them, platform-exact: presence on 11,
+  the literal "true" on 10). `toggleAttribute(name, true)` writes
   `""`, which Zotero 10 (FF140) does NOT honour — measured 2026-09-23: the
   vbox stays visible, the menuitem stays enabled — while Zotero 11 (FF153)
   matches presence, where `setAttribute(name, String(cond))` is the trap
-  ("false" = true). `compat.spec.js` forbids both wrong forms.
+  ("false" = true). `compat.spec.js` forbids both wrong forms. Never read
+  them with `=== "true"` / `!== "true"`, nor COPY them by value (an empty
+  string is "on" on 11): the Edit-menu Undo takeover and the reader-window
+  menu mirror both did (audit 2026-10-13; guards edit-menu-undo.spec.js,
+  menu-mirror.spec.js).
+- Reader plugin-menu items (`append(...)` in createViewContextMenu,
+  createAnnotationContextMenu, createThumbnailContextMenu) carry an
+  EXPLICIT boolean `disabled`: Zotero 11 renders each with
+  `toggleAttribute('disabled', item.disabled)`, and a missing key toggles
+  it ON -- every Weavero entry came out greyed (issue #57). A new handler
+  goes through `wvReaderMenuEvent` (src/lib/dom.ts) at its entry. Guard:
+  `test/reader-menu-disabled.spec.js`; upstream register #18.
+- Menu icons on Zotero 11 (FF153) come only from `--menuitem-icon` (menu.css
+  resets `list-style-image` to none on every menu/menuitem; the `image`
+  attribute still works -- menu.js maps it onto the icon). A CSS-drawn menu
+  icon sets BOTH (`list-style-image` for Zotero 10 and macOS native menus);
+  a `<menu>` shows its icon only with `.menu-iconic`. A copied icon copies
+  both. Guards: hidden-collections.spec.js, menu-mirror.spec.js.
+- `<input type="search">` in a chrome document gets a NATIVE clear button on
+  Zotero 11 (forms.css `::-moz-search-clear-button`): a box that draws its
+  own × hides the native one (plugins-search.spec.js).
 - Zotero 9 compatibility: plural-first selection APIs with singular fallback
   guarded on the plural's ABSENCE (the singular getters THROW on v10 — an
   `existence-check && call()` passes the check then throws inside).
@@ -200,6 +328,14 @@ name to a Zotero object, window, or document.
   document, as upstream's titlebar.js does at script time): set ~270ms
   after the show, GTK re-maps the window and it visibly opens, closes and
   reopens (2026-10-01). Guard: `test/plugins-chrome-platform.spec.js`.
+- A pass that PERSISTS what it derives (a load-time migration or repair, a
+  label sync) decides only from state that is there: "cannot tell" keeps
+  the stored value, never takes a default. A group library's items are not
+  loaded at Zotero startup (`Zotero.Items.get` THROWS for them until then),
+  and a reader's page labels arrive after its document -- a catch that
+  answered "global", or a fallback to the capture-time label, rewrote the
+  bookmark store on every start and back on the next load (2026-10-13).
+  Guard: `test/bookmark-store-flipflop.spec.js`.
 
 ## fix: commits name their guard
 
@@ -248,3 +384,14 @@ there — dev.37 turned "Open in New Window" into "Sync" and renamed Zotero's
 separators (2026-09-22). Plugin entries live after them, MenuManager's group
 separator marks the boundary, and MenuManager refuses a whole registration
 that carries a top-level separator for those targets.
+
+The menubar stays Zotero's own: never hide a native menubar item because a
+Weavero surface (the hamburger) also offers it. Where the two would show
+together -- the hamburger's cascades ARE the live native popups -- hide
+only while the popup is open from there (`anchorNode` inside
+`#wv-hamburger-popup`), marked, and restore on `popuphidden`. Hiding
+Settings / Plugins / Exit for good left Edit ending on a bare separator
+(MJT 2026-10-13). Guard: test/menubar-window-entries.spec.js. ADDING
+entries is fine and decided: File's New Tab / New Reader Window / New
+Main Window and Edit's Advanced Search in New Window stay in the menubar
+(MJT 2026-10-13, "It is good as it is") -- do not re-raise.

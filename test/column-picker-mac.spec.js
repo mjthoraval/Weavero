@@ -13,7 +13,7 @@ describe("Weavero — column picker on macOS opens as a non-context popup (#48)"
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvWireColumnPickerNativeFix !== "function") this.skip();
+        if (!wv || typeof wv._wvWireColumnPickerNativeFix !== "function") wvT.absent('!wv || typeof wv._wvWireColumnPickerNativeFix !== "function"');
         prevForce = wv._wvForceMacPickerFix;
     });
 

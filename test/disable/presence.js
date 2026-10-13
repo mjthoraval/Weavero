@@ -24,11 +24,18 @@ for (const w of mains) {
 	// Stylesheet present exactly once.
 	const styles = doc.querySelectorAll("style#weavero-styles").length;
 	if (styles !== 1) F(label + ": weavero-styles count = " + styles + " (want 1)");
-	// Tab-lifecycle wrappers installed WITH stored originals (unwire-able).
+	// Tab-lifecycle wrappers: the restore-tracing layer (lib/wrap.ts, which
+	// keeps the native for the unwire) on each member, EXACTLY ONCE. The
+	// pre-wvWrap `_wvOrig<Member>` copies are gone since the step-3 migration.
 	const Z = w.Zotero_Tabs;
 	if (Z) {
-		for (const m of ["Select", "Close", "RestoreState", "MarkAsLoaded"]) {
-			if (!Z["_wvOrig" + m]) F(label + ": Zotero_Tabs._wvOrig" + m + " missing (wrapper not installed or legacy layer)");
+		const lib = Zotero.Weavero && Zotero.Weavero.lib;
+		for (const m of ["select", "close", "restoreState", "markAsLoaded"]) {
+			let layers = [];
+			try { layers = lib.wvWrapLayers(Z, m).map(l => l.layer); } catch (e) {}
+			const n = layers.filter(l => l === "trace").length;
+			if (n !== 1) F(label + ": Zotero_Tabs." + m + " has " + n + " trace layer(s) (want 1; layers: " + (layers.join("+") || "none") + ")");
+			if (new Set(layers).size !== layers.length) F(label + ": Zotero_Tabs." + m + " has a duplicated layer (" + layers.join("+") + ")");
 		}
 	}
 	if (!w._wvTabBarDecoMo) F(label + ": tab-bar decoration observer not connected");
@@ -82,7 +89,7 @@ if (neTotal && neWired !== neTotal) F("note editors wired: " + neWired + "/" + n
 // 3. Global patches installed exactly once (marker + stored original).
 try {
 	const N = Zotero.Notes;
-	if (N && !N._wvOrigOpen && !N._wvOpenPatched) W("Zotero.Notes.open not patched (multi-window note fix inactive)");
+	if (N && !N._wvOrigOpen && !N._wvOpenPatchedV) W("Zotero.Notes.open not patched (multi-window note fix inactive)");
 } catch (e) {}
 
 // 4. Pref pane registered exactly once (duplicate = reinstall bug).

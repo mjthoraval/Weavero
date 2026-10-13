@@ -29,7 +29,7 @@ describe("Weavero — tab-level undo choice", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvTabUndoChoice !== "function") this.skip();
+        if (!wv || typeof wv._wvTabUndoChoice !== "function") wvT.absent('!wv || typeof wv._wvTabUndoChoice !== "function"');
         origAtt = wv._wvReaderAtt; origScope = wv._wvReaderBmScope; origRun = wv._wvUndoRun;
         origActivate = wv._wvReaderActivateOutlineTakeover; origSetBm = wv._wvReaderSetBmActive;
         wv._wvReaderAtt = () => att;
@@ -331,9 +331,19 @@ describe("Weavero — tab-level undo choice", () => {
             // The toolbar's empty space is a window drag area that swallows
             // clicks; while the menu is open it is no-drag, so a click there
             // dismisses the menu (MJT 2026-10-01).
-            assert.strictEqual(tb.style.getPropertyValue("-moz-window-dragging"), "no-drag", "toolbar not draggable while the menu is open");
+            // Through a sheet rule on the attribute: Firefox 153 drops an
+            // inline style.setProperty("-moz-window-dragging") in every
+            // document (getComputedStyle reads "" as well), while a sheet
+            // declaration still applies in the real reader document
+            // (resource://) -- verified live on Zotero 11.0-beta.1,
+            // 2026-10-12. This spec's document is about:blank, where the
+            // declaration is dropped at PARSE, so the rule's TEXT is checked.
+            assert.strictEqual(tb.getAttribute("data-wv-nodrag"), "1", "toolbar marked no-drag while the menu is open");
+            const nd = idoc.getElementById("wv-tab-history-nodrag");
+            assert.match(nd ? nd.textContent : "", /\.toolbar\[data-wv-nodrag\]\s*\{[^}]*-moz-window-dragging:\s*no-drag/, "a sheet rule makes the marked toolbar no-drag");
             wv._wvCloseReaderBmContextMenu(idoc);
-            assert.strictEqual(tb.style.getPropertyValue("-moz-window-dragging"), "", "dragging back after the close");
+            assert.isNull(tb.getAttribute("data-wv-nodrag"), "dragging back after the close");
+            assert.isNull(idoc.getElementById("wv-tab-history-nodrag"), "the rule leaves with the menu");
             assert.ok(ub.title.startsWith(wv._wvUndoPlainWord("undo") + " ("), "plain word");
             // A push fans out to the registered readers' toolbars through
             // _wvUndoAfterChange; this fake reader is not registered, so the

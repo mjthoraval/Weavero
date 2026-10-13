@@ -14,7 +14,7 @@ describe("Weavero — DOM text search (_wvDomFindTextRange)", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvDomFindTextRange !== "function") this.skip();
+        if (!wv || typeof wv._wvDomFindTextRange !== "function") wvT.absent('!wv || typeof wv._wvDomFindTextRange !== "function"');
         const doc = Zotero.getMainWindow().document.implementation
             .createHTMLDocument("wv-findtext");
         doc.body.innerHTML =
@@ -56,7 +56,7 @@ describe("Weavero — native-outline flash matching declines ambiguity (DOM arm)
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvDomNativeOutlineFlash !== "function") this.skip();
+        if (!wv || typeof wv._wvDomNativeOutlineFlash !== "function") wvT.absent('!wv || typeof wv._wvDomNativeOutlineFlash !== "function"');
     });
 
     // A fake DOM view: seq stamp observable, timers swallowed (the flash's

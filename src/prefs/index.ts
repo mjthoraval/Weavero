@@ -89,28 +89,6 @@ import { wvSetBoolAttr } from "../lib/dom";
         bindCharRadio(rg, "weavero.ctrlClickSplit", ["horizontal", "vertical"], "horizontal");
     }
 
-    /** Dual-write: a `.wv-mirror` checkbox is natively bound to its primary
-     *  pref; we also mirror its state into the `data-wv-also` alias pref (the
-     *  icon-mode counterpart) so one toggle governs both display modes. */
-    function bindMirrors(doc) {
-        const boxes = Array.from(doc.querySelectorAll("checkbox.wv-mirror")) as any[];
-        for (const cb of boxes) {
-            const alias = cb.getAttribute("data-wv-also");
-            if (!alias || cb._wvMirrorBound) continue;
-            cb._wvMirrorBound = true;
-            // Heal any drift between the primary and alias at mount.
-            try {
-                if (Zotero.Prefs.get("weavero." + alias) !== cb.checked) {
-                    Zotero.Prefs.set("weavero." + alias, cb.checked);
-                }
-            } catch (e) {}
-            cb.addEventListener("command", () => {
-                try { Zotero.Prefs.set("weavero." + alias, cb.checked); }
-                catch (e) { dbg("mirror write err: " + e); }
-            });
-        }
-    }
-
     /** Settings that only exist on Windows (per-window taskbar icons /
      *  buttons go through Win32 calls and are gated on Zotero.isWin in
      *  tabs.ts) stayed clickable on Linux and did nothing (2026-10-01).
@@ -583,7 +561,6 @@ import { wvSetBoolAttr } from "../lib/dom";
         try { bindOutlineTextSize(doc); } catch (e) { dbg("bindOutlineTextSize err: " + e); }
         try { bindOutlineKeys(doc); } catch (e) { dbg("bindOutlineKeys err: " + e); }
         try { bindIntInput(doc.getElementById("wv-coll-sticky-max"), "weavero.collectionsStickyMax", 1, 10, 7); } catch (e) { dbg("bindCollStickyMax err: " + e); }
-        try { bindMirrors(doc); } catch (e) { dbg("bindMirrors err: " + e); }
         try { bindMasterDisable(doc); } catch (e) { dbg("bindMasterDisable err: " + e); }
         try { bindPlatformOnly(doc); } catch (e) { dbg("bindPlatformOnly err: " + e); }
         try { bindSectionNav(doc); } catch (e) { dbg("bindSectionNav err: " + e); }

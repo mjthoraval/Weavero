@@ -55,7 +55,7 @@ describe("Weavero — snapshot position bookmarks anchor to the click", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvSnapshotPointToSelector !== "function") this.skip();
+        if (!wv || typeof wv._wvSnapshotPointToSelector !== "function") wvT.absent('!wv || typeof wv._wvSnapshotPointToSelector !== "function"');
     });
 
     it("resolves a snapshot click to a stored-position selector", () => {

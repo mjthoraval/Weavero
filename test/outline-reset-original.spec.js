@@ -12,7 +12,7 @@ describe("Weavero — Reset to Original restores the original region", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
     });
 
     it("the name search prefers the match at or after the entry, not the first in the book", () => {

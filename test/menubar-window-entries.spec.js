@@ -53,7 +53,7 @@ describe("Weavero — File / Edit menubar entries for the window commands", () =
 
 	before(function () {
 		wv = Zotero.Weavero && Zotero.Weavero.plugin;
-		if (!wv) this.skip();
+		if (!wv) wvT.absent('!wv');
 		if (!(Zotero.MenuManager && typeof Zotero.MenuManager.registerMenu === "function")) this.skip();
 		win = Zotero.getMainWindow();
 		doc = win.document;
@@ -227,6 +227,44 @@ describe("Weavero — File / Edit menubar entries for the window commands", () =
 		open(filePopup);
 		try { assert.deepEqual(visible(filePopup), ["newtab", "newreaderwin", "newmainwin", "sep"]); }
 		finally { close(filePopup); }
+	});
+
+	// MJT 2026-10-13: "The top menu should be the same as the native one".
+	// The hamburger lists Plugins / Settings / Exit at its top level and used
+	// to HIDE the originals for good, so the menubar had no Edit > Settings
+	// (Edit ended on a bare separator), Tools > Plugins or File > Exit. They
+	// stay now, and hide only in a cascade opened from the hamburger -- the
+	// same anchorNode test as the File entries above.
+	it("the menubar keeps Settings, Plugins and Exit; only a cascade opened from the hamburger hides them", async function () {
+		const hp = doc.getElementById("wv-hamburger-popup");
+		if (!hp) this.skip();
+		const ids = ["menu_EditPreferencesItem", "menu_addons", Zotero.isWin ? "menu_fileQuitItemWin" : "menu_fileQuitItemUnix"];
+		const els = ids.map(id => doc.getElementById(id));
+		assert.ok(els.every(Boolean), "the native items exist");
+		for (const el of els) assert.isFalse(el.hidden, el.id + " shown in the menubar");
+		const settings = els[0];
+		const sep = doc.getElementById("menu_EditPreferencesSeparator");
+		const anchor = doc.createXULElement("menu");
+		anchor.setAttribute("label", "wv-spec-anchor");
+		hp.appendChild(anchor);
+		const shown = new Promise(r => editPopup.addEventListener("popupshowing", r, { once: true }));
+		try {
+			editPopup.openPopup(anchor, "after_start", 0, 0, false, false);
+			const ok = await Promise.race([shown.then(() => true), new Promise(r => win.setTimeout(() => r(false), 3000))]);
+			if (!ok) this.skip();   // popups do not open in this runner window
+			assert.isTrue(settings.hidden, "Settings hidden in the hamburger's Edit (its top level has it)");
+			if (sep) assert.isTrue(sep.hidden, "with the separator it would leave dangling");
+		}
+		finally {
+			try { editPopup.hidePopup(); } catch (e) {}
+			anchor.remove();
+			await new Promise(r => win.setTimeout(r, 100));
+		}
+		assert.isFalse(settings.hidden, "back once the cascade closed");
+		if (sep) assert.isFalse(sep.hidden);
+		open(editPopup);
+		try { assert.isFalse(settings.hidden, "and shown when opened from the menubar"); }
+		finally { close(editPopup); }
 	});
 
 	// Settings → "Ctrl+Shift+F / ⇧⌘F opens Advanced Search in a new window":

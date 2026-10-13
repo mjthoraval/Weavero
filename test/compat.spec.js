@@ -22,7 +22,7 @@ describe("Weavero — Firefox 153 compatibility", () => {
     let bundle;
 
     before(async function () {
-        if (!(Zotero.Weavero && Zotero.Weavero.plugin)) this.skip();
+        if (!(Zotero.Weavero && Zotero.Weavero.plugin)) wvT.absent('!(Zotero.Weavero && Zotero.Weavero.plugin)');
         // Zotero.Plugins.getRootURI resolves the installed XPI's jar: URI.
         // Deliberately NOT wrapped in a try/skip: a guard that quietly skips
         // itself when it cannot read the bundle is worse than no guard, since
@@ -48,6 +48,18 @@ describe("Weavero — Firefox 153 compatibility", () => {
         const hits = (bundle.match(rule) || []).length;
         expect(hits, "part-background rule present in main + reader sheets")
             .to.be.at.least(2);
+    });
+
+    // FF153 keeps -moz-window-dragging out of CSSOM: CSS.supports() is false,
+    // getComputedStyle reads "", and an inline `style.setProperty(...)` or
+    // `style.MozWindowDragging = ...` is silently dropped -- while stylesheet
+    // declarations still parse and apply (verified on Zotero 11.0-beta.1,
+    // 2026-10-12: the undo menu's toolbar no-drag had died that way). Window
+    // drag regions go through sheet rules only.
+    it("never writes -moz-window-dragging through CSSOM", () => {
+        const inline = bundle.match(/setProperty\(\s*["']-moz-window-dragging["']|\.MozWindowDragging\s*=/g) || [];
+        expect(inline, "inline -moz-window-dragging writes are dropped on Firefox 153 -- use a sheet rule (e.g. on an attribute)")
+            .to.have.length(0);
     });
 
     // Exactly ONE occurrence is expected: the deliberate fallback inside
@@ -106,9 +118,13 @@ describe("Weavero — Firefox 153 compatibility", () => {
     // returns "" and `=== "true"` is FALSE while the element IS hidden. The
     // reverse also bites -- measured, toggleAttribute("collapsed", true) sets
     // .collapsed on Zotero 11 but NOT on Zotero 10, which honours only the
-    // literal "true". wvIsHiddenOrCollapsed() covers every form.
-    it("reads hidden/collapsed through wvIsHiddenOrCollapsed, not === \"true\"", () => {
-        const re = /getAttribute\(\s*["'](hidden|collapsed|selected|disabled|checked)["']\s*\)\s*===\s*["']true["']/g;
+    // literal "true". wvIsHiddenOrCollapsed() / wvBoolAttrOn() cover every
+    // form. `!==` is the same trap (the Edit-menu Undo takeover read
+    // `getAttribute("disabled") !== "true"`, so a Zotero 11 `disabled=""`
+    // counted as enabled -- audit against "Zotero 11 for Developers",
+    // 2026-10-13).
+    it("reads boolean attributes through wvIsHiddenOrCollapsed / wvBoolAttrOn, never ===/!== \"true\"", () => {
+        const re = /getAttribute\(\s*["'](hidden|collapsed|selected|disabled|checked)["']\s*\)\s*[!=]==\s*["']true["']/g;
         const hits = bundle.match(re) || [];
         expect(hits, `boolean attr reads must not compare to "true": ${hits.join(", ")}`)
             .to.have.lengthOf(0);

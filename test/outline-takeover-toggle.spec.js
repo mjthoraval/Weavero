@@ -20,7 +20,7 @@ describe("Weavero — outline takeover deactivation strips completely", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvReaderDeactivateOutlineTakeover !== "function") this.skip();
+        if (!wv || typeof wv._wvReaderDeactivateOutlineTakeover !== "function") wvT.absent('!wv || typeof wv._wvReaderDeactivateOutlineTakeover !== "function"');
         doc = Zotero.getMainWindow().document;
     });
 
@@ -86,7 +86,7 @@ describe("Weavero — outline takeover deactivation strips completely", () => {
     });
 
     it("the pref watcher is registered, build-versioned", () => {
-        if (typeof wv._wvWireOutlineTakeoverPrefWatch !== "function") this.skip();
+        if (typeof wv._wvWireOutlineTakeoverPrefWatch !== "function") wvT.absent('typeof wv._wvWireOutlineTakeoverPrefWatch !== "function"');
         const g = /** @type {any} */ (Zotero);
         wv._wvWireOutlineTakeoverPrefWatch();
         assert.ok(g._wvOutlineTakeoverPrefObs, "observer handle must exist");

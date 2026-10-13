@@ -13,6 +13,16 @@ description: Review a new Zotero beta or upstream change for Weavero impact. Use
 - `git log` the mirror (or `gh api repos/zotero/zotero/compare/...`) between
   the previous and new commit. Reader changes: also diff the reader submodule
   pointer and list its commits.
+- **A stale or shallow mirror answers "not there" for things that are.**
+  Before concluding that upstream has NOT changed, fixed or added something,
+  check both the refresh stamp and that the clone has history
+  (`git rev-parse --is-shallow-repository`): a shallow mirror's
+  `git log --since` returns nothing whatever happened. File contents at HEAD
+  are still evidence; history from a shallow clone is not. When the answer
+  matters, ask the source of truth
+  (`gh api "repos/zotero/zotero/commits?path=<file>&since=<date>"`).
+  (2026-09-08: a shallow mirror's `git log` showed no commits on the search
+  files since August; the API listed a dozen.)
 
 ## 2. Triage each commit for Weavero collisions
 
@@ -22,6 +32,21 @@ Walk the high-risk surfaces (each has bitten before):
 - row provider / filter interaction (#5658 advanced-search-in-main, #5954),
 - reader internals (annotation manager, view setAnnotations, sidebar),
 - tabs/session machinery, item pane rendering.
+- A PDF.js or reader bump: list every pdf.js / reader API Weavero calls
+  (`grep -o "pdfDoc\.\w\+\|pdfDocument\.\w\+\|_internalReader\.\w\+" src/`)
+  and check each still exists on the new build (one bridge eval on an open
+  PDF). A summary line like "two PDF.js updates" is not a check: the
+  2026-10-12 scan wrote one while `getOutline2` was gone, and the Outline
+  tab broke for everyone on Zotero 11 (issue #54).
+- A PLATFORM jump (a new Firefox ESR under Zotero): walk Zotero's maintained
+  "Zotero N for Developers" page item by item
+  (https://www.zotero.org/support/dev/zotero_11_for_developers/), grep the
+  source AND the built bundle for each listed API / attribute / CSS
+  property, and settle anything Zotero says it "handled" that Weavero also
+  touches. Diffing commits misses platform changes no Zotero commit names:
+  the 2026-10-13 audit against that page found the menu-icon property
+  (`--menuitem-icon`), native search clear buttons and boolean-attribute
+  reads the 11.0-beta.1 commit scan had passed.
 
 ## 3. Check the registers
 

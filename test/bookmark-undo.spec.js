@@ -20,7 +20,7 @@ describe("Weavero — bookmark undo steps", () => {
 
     before(async function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvBmUndoCapture !== "function") this.skip();
+        if (!wv || typeof wv._wvBmUndoCapture !== "function") wvT.absent('!wv || typeof wv._wvBmUndoCapture !== "function"');
         await wv._bmInit();
         scopeD = wv._wvBmUndoScope(key); scopeL = wv._wvBmUndoScope("lib");
         for (const id of wv._bmReaderList(att.libraryID, att.itemKey).map(b => b.id)) await wv._bmReaderRemove(att.libraryID, att.itemKey, id);

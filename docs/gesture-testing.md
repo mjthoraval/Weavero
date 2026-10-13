@@ -368,6 +368,27 @@ stroke, Annotations tab active.
       comes back. Re-checking restores the funnel and the document's own
       filter.
 
+## Annotation card dates (after touching the sort menu or the card rendering)
+
+Issue #49: the reader's annotation cards can show when an annotation was
+added / modified. Open a PDF with a few annotations made on different days,
+Annotations tab active, sort menu (the arrows icon) in view.
+
+- [ ] **Sort by Position, tick "Date Added"** in the sort menu -> every card
+      gains one "Added: <date>" line under its text; untick -> the line goes.
+- [ ] **Tick both "Date Added" and "Date Modified"** -> two lines, Added
+      first.
+- [ ] **Sort by Date Added (or Modified)** -> the cards reorder by that
+      date and BOTH lines show, the sorted one first, whatever the ticks say.
+- [ ] **Hover a date line** -> the tooltip carries both full dates ("Date
+      Added: …" / "Date Modified: …"); the card header's own tooltip
+      carries them too and keeps Zotero's "(user)" part.
+- [ ] **The sort menu rows** read "(default)" on the entries Settings
+      marks as the default; changing the default in Settings -> Reader
+      annotations pane updates the rows and the open documents without a
+      restart.
+- [ ] **Reopen the tab / restart** -> the ticks and the sort survive.
+
 ## Session list sort (after touching the Sessions section of the List-all-tabs panel)
 
 Open the List-all-tabs dropdown; the **Sessions** header carries the
@@ -440,6 +461,31 @@ Synthetic drags do not move Gecko splitters, so these are hands-only. Setting:
       behaves as the new build (it is rebuilt in place, collapsed state kept).
 - [ ] **Collections-pane button on, pane collapsed** → the band at the left
       edge is 1 px; button off → Zotero's 8/10 px band is back.
+
+## Hidden collections (after touching the collections menu or tree filter)
+
+Real right-click menus; the spec builds them without opening.
+
+- [ ] Right-click a collection → **Hide**, with Zotero's crossed-eye icon
+      as on Unfiled Items (at the end of the menu); it
+      and its sub-collections vanish, a **blue dot** appears at the end of
+      the My Library line (hover: "In this window: 1 hidden …").
+- [ ] Ctrl+click two collections and a saved search, right-click inside the
+      selection → **Hide 3 Collections and Saved Searches**.
+- [ ] Right-click **My Library** → **Show Hidden Collections ▸** (after
+      Zotero's own Show items) → **Show All (n)**, then each by path; pick
+      one → it is back, the dot goes when none are left.
+- [ ] Right-click a group library → **Hide**; dots on the
+      **Group Libraries** line and My Library. Right-click the Group
+      Libraries line → **Show Hidden Group Libraries ▸**. Hide every group →
+      the line goes; My Library's Show menu lists them under "Group
+      Libraries".
+- [ ] A second main window (Ctrl+N) shows everything: the set is per
+      window. Restart → each window gets its own set back, the first window
+      included even with only its library tab open.
+- [ ] Save & Close a window with something hidden → reopen it from the
+      tabs menu → the same set. Switch tab sessions and back → each
+      session's windows have their own sets.
 
 ## Popups (after touching popup code)
 

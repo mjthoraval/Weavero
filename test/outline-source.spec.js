@@ -46,7 +46,7 @@ describe("Weavero — outline source (non-PDF views)", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvReaderFetchOutline !== "function") this.skip();
+        if (!wv || typeof wv._wvReaderFetchOutline !== "function") wvT.absent('!wv || typeof wv._wvReaderFetchOutline !== "function"');
     });
 
     describe("snapshot", () => {
@@ -102,7 +102,7 @@ describe("Weavero — outline source (non-PDF views)", () => {
 
     describe("the copy step", () => {
         it("carries position AND href, since the producers differ", () => {
-            if (typeof wv._wvOutlineCopyTree !== "function") this.skip();
+            if (typeof wv._wvOutlineCopyTree !== "function") wvT.absent('typeof wv._wvOutlineCopyTree !== "function"');
             const out = wv._wvOutlineCopyTree([
                 { title: "A", location: { position: { value: "p" } }, items: [] },
                 { title: "B", location: { href: "h.xhtml" }, items: [] },
@@ -114,7 +114,7 @@ describe("Weavero — outline source (non-PDF views)", () => {
         });
 
         it("returns plain JS — no Xray refs leak into the store", () => {
-            if (typeof wv._wvOutlineCopyTree !== "function") this.skip();
+            if (typeof wv._wvOutlineCopyTree !== "function") wvT.absent('typeof wv._wvOutlineCopyTree !== "function"');
             const out = wv._wvOutlineCopyTree(SNAPSHOT_TREE);
             assert.doesNotThrow(() => JSON.stringify(out));
         });

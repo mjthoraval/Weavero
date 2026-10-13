@@ -18,7 +18,13 @@ describe("Weavero — cross-window drop records its effect the 10.0.4 way", () =
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
         win = Zotero.getMainWindow(); doc = win.document;
         cv = win.ZoteroPane && win.ZoteroPane.collectionsView;
-        if (!wv || !cv || !win._wvXWinDropHandlers) this.skip();
+        if (!wv || !cv) this.skip();
+        // The wiring is a keyed listener since wiring slice 3 (lib/listen.ts);
+        // its absence is a regression, not a reason to skip.
+        const lib = wvT.lib();
+        const keyed = lib && typeof lib.wvListenKeys === "function"
+            && lib.wvListenKeys(win).some(k => k.key === "xwinDrop:dragover");
+        if (!keyed) wvT.absent("the cross-window drop wiring (wvListen key xwinDrop:dragover on the main window)");
         if (!DD() || !("currentDropEffect" in DD())) this.skip();   // older Zotero: nothing to record
         if (typeof win.DataTransfer !== "function") this.skip();
         origCanDrop = cv.canDropCheck; origSrcWin = wv._wvDragSourceWin; origEffect = DD().currentDropEffect;

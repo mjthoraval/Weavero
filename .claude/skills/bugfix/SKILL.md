@@ -19,7 +19,13 @@ when they ask (or when the report clearly requests one).
   on anything. Two wrong guesses = stop and go to ground truth.
 - Check the tracking registers first (the maintainer's private `work/`
   notes when present; otherwise open issues and `docs/` test protocols) —
-  the answer may be known.
+  the answer may be known. Grep them for the failure's exact words.
+- Track the bug on Weavero ALONE: disable every other plugin the bug does
+  not need (Better Notes, Better BibTeX, …) before the first repro, and
+  re-enable them afterwards. Keep a companion only when the bug is about
+  Weavero's interaction with it. (2026-10-12: a five-run restart series
+  chased a tab-order failure that was Better Notes' own note-tab rebuild;
+  with it disabled the protocol passed at once.)
 
 ## Step 2: Instrument correctly
 

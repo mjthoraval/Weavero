@@ -82,6 +82,54 @@ export function wvSetBoolAttr(el: any, name: string, on: boolean): void {
     catch (e) {}
 }
 
+/** Read a boolean XUL attribute (disabled / checked / selected ...) the way
+ *  the RUNNING platform applies it -- the read side of wvSetBoolAttr.
+ *  Firefox 153 (Zotero 11) matches presence alone: `disabled=""` (what
+ *  `.disabled = true` and toggleAttribute write) is disabled, and so is
+ *  `disabled="false"`. Firefox 140 (Zotero 10) honours only the literal
+ *  "true". An `=== "true"` read is therefore wrong on 11 and a presence
+ *  read wrong on 10; a copy or save/restore of menu state must reproduce
+ *  what the platform shows (audit against "Zotero 11 for Developers",
+ *  2026-10-13: the reader-window menu mirror dropped Zotero 11's
+ *  `disabled=""`/`checked=""`). */
+export function wvBoolAttrOn(el: any, name: string): boolean {
+    try {
+        if (!el || !el.hasAttribute || !el.hasAttribute(name)) return false;
+        if (((Zotero as any).platformMajorVersion || 0) >= 153) return true;
+        return el.getAttribute(name) === "true";
+    }
+    catch (e) {
+        return false;
+    }
+}
+
+/** A reader plugin-menu event (createViewContextMenu,
+ *  createAnnotationContextMenu, createThumbnailContextMenu) whose `append`
+ *  gives every item an EXPLICIT boolean `disabled`. Zotero 11's reader
+ *  builds each appended item with `menuitem.toggleAttribute('disabled',
+ *  item.disabled)` (xpcom/reader.js `_openContextMenu`): an item WITHOUT the
+ *  key passes `undefined`, which counts as no `force` -- the call TOGGLES
+ *  the absent attribute on, and every plugin entry came out greyed (issue
+ *  #57, 11.0-beta.1, verified live 2026-10-13). Zotero 10 is unaffected
+ *  either way. Submenu items (`groups`) are fixed too. */
+export function wvReaderMenuEvent(event: any): any {
+    try {
+        if (!event || typeof event.append !== "function") return event;
+        const fix = (it: any): any => {
+            if (!it || typeof it !== "object") return it;
+            if (Array.isArray(it.groups)) {
+                return Object.assign({}, it, { groups: it.groups.map((g: any) => (Array.isArray(g) ? g.map(fix) : g)) });
+            }
+            return Object.assign({}, it, { disabled: !!it.disabled });
+        };
+        const append0 = event.append;
+        return Object.assign({}, event, { append: (...items: any[]) => append0.apply(event, items.map(fix)) });
+    }
+    catch (e) {
+        return event;
+    }
+}
+
 /** True if a XUL element is hidden or collapsed, on every Zotero we support.
  *
  *  Firefox 153 made `hidden`/`collapsed` (and `selected`/`disabled`/`checked`)
@@ -109,4 +157,33 @@ export function wvIsHiddenOrCollapsed(el: any): boolean {
     catch (e) {
         return false;
     }
+}
+
+/** Run `fn(w)` once window `w` holds its REAL document, loaded. A window-
+ *  mediator listener (onOpenWindow) gets a new window while it still holds
+ *  its initial about:blank, which on Firefox 153 already reads "complete"
+ *  (measured 2026-10-12): a `readyState === "complete"` check there looked
+ *  at the blank page, found no windowtype, and never waited for the real
+ *  one -- the Software Update version line and the pop-out note-window
+ *  wiring went dead on Zotero 11. A load listener added at that moment
+ *  still fires for the real document; a load that arrives while the window
+ *  is still blank re-arms. Guard: test/window-load-timing.spec.js. */
+export function wvWhenWindowLoaded(w: any, fn: (w: any) => void): void {
+    const isBlank = () => {
+        try { return !w.document || String(w.location && w.location.href) === "about:blank"; }
+        catch (e) { return true; }
+    };
+    const arm = () => {
+        try {
+            w.addEventListener("load", () => {
+                if (isBlank()) { arm(); return; }
+                try { fn(w); } catch (e) {}
+            }, { once: true });
+        } catch (e) {}
+    };
+    try {
+        if (!w) return;
+        if (!isBlank() && w.document.readyState === "complete") { fn(w); return; }
+        arm();
+    } catch (e) {}
 }

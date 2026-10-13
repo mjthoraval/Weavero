@@ -18,6 +18,7 @@
  *  then slash `name://`). Keep in sync with the SCHEMES list in
  *  prefs.js and the grid in prefs.html. */
 import { schemeAltPart, joinSchemeAlt, buildUrlRegex, urlLinkClass } from "../lib/links";
+import { wvTimeout } from "../lib/timers";
 
 export const URL_SCHEMES = [
     // ---- Tier 1: bare-colon schemes (name:) -------------------------------
@@ -85,10 +86,9 @@ export const urlMethods = {
         if (this._urlSchemeAltCache) return this._urlSchemeAltCache;
         const parts: string[] = [];
         // URLs toggle (v0.8.2) — when off, http/https are excluded from
-        // the regex so plain web URLs render as text. The shared
-        // Display Mode "URLs" checkbox dual-writes to enableInlineUrls
-        // AND enableIconUrls; reading either is fine since they're
-        // always synced. Default ON.
+        // the regex so plain web URLs render as text. One pref for both
+        // display modes (enableInlineUrls; the icon mode's copy is gone,
+        // 2026-10-13). Default ON.
         let httpUrlsOn = true;
         try {
             const v = Zotero.Prefs.get("weavero.enableInlineUrls");
@@ -129,6 +129,18 @@ export const urlMethods = {
         // Empty-parts sentinel and join rules live in src/lib/links.ts.
         this._urlSchemeAltCache = joinSchemeAlt(parts);
         return this._urlSchemeAltCache;
+    },
+
+    /** Is `scheme` one of the App-link schemes the user has enabled (its
+     *  own tick AND the App links master)? The same rule as the URL regex
+     *  above; the no-prompt launch path must never be wider than it. */
+    _wvAppSchemeEnabled(scheme: string): boolean {
+        try {
+            if (!scheme) return false;
+            if (!Zotero.Prefs.get("weavero.enableAppLinks")) return false;
+            const s = String(scheme).toLowerCase();
+            return URL_SCHEMES.some((def: any) => def.name === s && !!Zotero.Prefs.get("weavero." + def.pref));
+        } catch (e) { return false; }
     },
 
     /** Single-match regex for a URL in plain text. The body class
@@ -667,8 +679,7 @@ export const urlMethods = {
             seq = (pv as any)._wvLinkPinSeq;
         }
         const live = () => (pv as any)._wvLinkPinSeq === seq;
-        const w: any = Zotero.getMainWindow();
-        const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+        const st = wvTimeout;
         try {
             const app = pv && pv._iframeWindow
                 && (pv._iframeWindow.PDFViewerApplication
@@ -815,8 +826,7 @@ export const urlMethods = {
                     // still opening) -- keep polling, same budget as the base
                     // path.
                     if (n < 120) {
-                        const w0: any = Zotero.getMainWindow();
-                        const st0: any = (w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout;
+                        const st0 = wvTimeout;
                         st0(() => this._wvHighlightAfterOpen(itemID, position, n + 1, kind), 150);
                     } else {
                         this._wvLinkRing("highlightAfterOpen: RM view never became ready");
@@ -893,8 +903,7 @@ export const urlMethods = {
         } catch (e) {}
         if (n >= 60) this._wvLinkRing("highlightAfterOpen: GAVE UP after 60 tries");
         if (n < 60) {
-            const w: any = Zotero.getMainWindow();
-            const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            const st = wvTimeout;
             st(() => this._wvHighlightAfterOpen(itemID, position, n + 1, kind), 150);
         }
     },
@@ -1003,12 +1012,6 @@ export const urlMethods = {
             }
         } catch (e) {}
         return null;
-    },
-
-    /** True when at least one of `items` has an open link. */
-    _anyHasOpenLink(items) {
-        const arr = (Array.isArray(items) ? items : [items]).filter(Boolean);
-        return arr.some((it) => !!this._buildOpenLink(it));
     },
 
     /** Whether `item`'s open link (if any) opens in an *external* app
@@ -1314,7 +1317,14 @@ export const urlMethods = {
                 if (skip) {
                     const m = /^([a-z][a-z0-9+.-]+):/i.exec(url);
                     const scheme = m && m[1].toLowerCase();
-                    if (scheme) {
+                    // ONLY a scheme the user enabled in Settings (and the App
+                    // links master) takes the no-prompt path: `wv-link-app`
+                    // is every non-web scheme, so "open without confirmation"
+                    // for one scheme used to hand ANY scheme in a shared note
+                    // (ms-msdt:, search-ms:, ...) straight to the OS handler
+                    // (survey 2026-10-06). Everything else falls through to
+                    // Zotero.launchURL and its prompt.
+                    if (scheme && this._wvAppSchemeEnabled(scheme)) {
                         const svc = Components.classes[
                             "@mozilla.org/uriloader/external-protocol-service;1"]
                             .getService(Components.interfaces.nsIExternalProtocolService);

@@ -10,6 +10,39 @@ paths:
   monitor with bounded checks — the runner can stall silently at 0 bytes on a
   Zotero binary/profile lock. Kill orphaned temp-profile `zotero.exe`
   afterwards (the `--profile …/.scaffold/test/profile` one), never the user's.
+- SKIP DISCIPLINE (survey 2026-10-06 §6, step 5): a missing plugin, method
+  or constant is a FAILURE — `wvT.absent("plugin.x")` (or `wvT.method`,
+  `wvT.src`), never `this.skip()`: 141 guards used to skip exactly when the
+  regression happened. `this.skip()` is for platform / version / runner
+  reasons only, with the reason in a trailing comment, and every pending
+  test must match an entry of `wvT.PENDING_ALLOWLIST` in
+  test/000-helpers.spec.js (reason per entry) — the root `after` hook
+  there fails the run on any other. The run starts once
+  `Zotero._weaveroReady` is raised (init settled) AND a root `before`
+  barrier has awaited Zotero's own readiness (schemaUpdatePromise — the
+  bundled-files install on a fresh profile holds the DB for many seconds —
+  uiReadyPromise, the items tree's load, a free DB): without it the first
+  spec's `saveTx` timed out at 20 s. The readiness spec in the same file
+  is the first of every run.
+- SHARED HELPERS: `wvT` (test/000-helpers.spec.js, a global of the runner
+  page; typed in test/wvT.d.ts) — plugin/lib/win, sleep/waitFor, withPref
+  (restores a user value, clears a defaulted pref, never writes a default
+  as a user value), minimalPDFBytes/createTestPDFItem, createTestSnapshotItem,
+  createTestEPUBItem (temp files removed at the end of the run),
+  openReaderTab / domViewOf (the Xray-waived DOM view once its document
+  holds a text) / closeReaderTab, createItem/erase, purgeDeadReaders.
+  Prefer them to a per-file copy; a targeted run always stages the 000-
+  files. A chrome-side position/selector handed to a DOM view must be
+  `Cu.cloneInto(obj, pv._iframeWindow)` first or `toDisplayedRange`
+  returns null (test/dom-view-fixture.spec.js runs the real views). The
+  same for an EVENT built with a content window's constructor: its init
+  dictionary must be cloned in (`new view.KeyboardEvent("keydown",
+  Cu.cloneInto({ key: "Escape", bubbles: true }, view))`), or the event
+  arrives with key "" and listeners ignore it (test/bm-menu-dismiss.spec.js,
+  2026-10-09).
+- The library filter panel re-renders its sections after it opens: a spec
+  that captured a section's input/list right away holds a DETACHED render.
+  Re-query the live section at every step (test/filter-search-mode.spec.js).
 - Popup contracts are locked by `test/popups.spec.js` — run after touching
   popup code. `test/compat.spec.js` asserts the ownerGlobal/documentGlobal
   bundle invariants.
@@ -37,9 +70,12 @@ paths:
 - Instrumentation masks races: verify timing-family fixes with plain loops
   only.
 - Menu entries: a synthetic `command` (untrusted) is not delivered to chrome
-  `addEventListener` listeners, and `menuitem.doCommand()` reaches no JS
-  listener either (measured 2026-09-22) -- so a spec cannot "click" a
-  MenuManager entry. Drive the popup with a synthetic `popupshowing` on the
+  `addEventListener` listeners, and `menuitem.doCommand()` showed no effect
+  when checked right after the call (measured 2026-09-22). On an item of an
+  OPEN menupopup it IS delivered, trusted, but ASYNCHRONOUSLY (the popup
+  manager closes the menu first): wait for the effect, never read it on the
+  next line (test/filter-search-mode.spec.js, 2026-10-09). For MenuManager
+  entries keep the route below. Drive the popup with a synthetic `popupshowing` on the
   popup element (inline `onpopupshowing` handlers do run) and call the
   plugin's own stored `onCommand(null, { menuElem })`
   (`test/menubar-window-entries.spec.js`, via `_wvMenubarMenus`). And when
@@ -87,3 +123,17 @@ paths:
   file once; never poll status through the bridge or stream large JSON
   into the conversation. The user can also launch these themselves via
   Run JavaScript and just hand over the report path.
+- A spec that OPENS a main window: take timers from a window captured
+  BEFORE it opens. `Zotero.getMainWindow()` returns the newest window, and
+  its `setTimeout` does not fire until that window has loaded -- a
+  `sleep()` built on `getMainWindow()` hung the whole spec past its timeout
+  (hidden-collections.spec.js, 2026-10-05). And Weavero's onMainWindowLoad
+  runs before a new window has its collections tree: wiring that needs
+  `ZoteroPane.collectionsView` must retry until it exists (now: a
+  `views: true` entry of the wiring table).
+  Then SET FOCUS explicitly (`win.focus()` on the window that should have
+  it): whether the new window takes focus differs between a targeted run
+  (it does) and the full suite (it does not), so code that reads the
+  focused window passed alone and failed in the suite
+  (window-wiring.spec.js, 2026-10-09: the filter's patch installers used
+  `Zotero.getMainWindow()`; the spec now keeps focus on the first window).

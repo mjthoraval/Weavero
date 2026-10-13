@@ -16,6 +16,8 @@
 // defineProperties.
 
 import { URL_SCHEMES } from "./url";
+import { wvWhenWindowLoaded } from "../lib/dom";
+import { wvListen, wvUnlisten } from "../lib/listen";
 
 class _NoteEditorMixin {
     [k: string]: any;
@@ -404,18 +406,14 @@ class _NoteEditorMixin {
         // styles/listeners but leaves stale flags on surviving documents and
         // iframes — a boolean guard then blocks the NEW instance from ever
         // re-wiring (observed live: every editor unwired after a reload).
-        // NO early return when already claimed: BN can replace the iframe's
+        // NO early return when already wired: BN can replace the iframe's
         // DOCUMENT through paths that never fire the iframe `load` event, so
         // every sweep must re-attempt the CURRENT document (wireUp is
-        // idempotent per document). Only the load-listener attach is once.
-        const alreadyClaimed = iframe._wvLoadWired === this;
-        iframe._wvLoadWired = this;
+        // idempotent per document). Only the load listener is keyed (below).
         const wireUp = () => {
             try {
-                // Torn-down instance (plugin disabled/reloaded) — the
-                // persistent load listener below can't be removed (it isn't
-                // recorded anywhere), so it MUST self-disable here or every
-                // editor reload re-wires Weavero rendering from dead code.
+                // Torn-down instance: destroy() removes the load listener,
+                // but one already being dispatched still lands here.
                 if ((this as any)._wvDestroyed) return;
                 const idoc = iframe.contentDocument;
                 if (!idoc) return;
@@ -706,7 +704,9 @@ class _NoteEditorMixin {
             // PERSISTENT load listener (not {once}) — every reload of the
             // editor iframe (initial real load, note switch, DOM re-mount)
             // gets a fresh wire-up; wireUp itself is idempotent per document.
-            if (!alreadyClaimed) iframe.addEventListener("load", wireUp);
+            // Keyed: a reload's instance replaces the previous one's listener
+            // (it used to stay, bailing on _wvDestroyed, for the session).
+            wvListen(iframe, "noteEditor:load", "load", wireUp, false, (this as any)._wvWireTag());
             if (iframe.contentDocument && iframe.contentDocument.readyState === "complete") {
                 wireUp();
             }
@@ -1631,13 +1631,7 @@ class _NoteEditorMixin {
                 try {
                     const w = xulWindow.docShell && xulWindow.docShell.domWindow;
                     if (!w) return;
-                    if (w.document
-                            && w.document.readyState === "complete") {
-                        onLoad(w);
-                    } else {
-                        w.addEventListener("load",
-                            () => onLoad(w), { once: true });
-                    }
+                    wvWhenWindowLoaded(w, onLoad);   // not a readyState check: see lib/dom.ts
                 } catch (e) {
                     Zotero.debug("[Weavero] onOpenWindow err: " + e);
                 }
@@ -1713,11 +1707,10 @@ class _NoteEditorMixin {
                         if (!idoc) continue;
                         const s = idoc.getElementById("weavero-note-editor-styles");
                         if (s) s.remove();
-                        // Clear the claim tokens: the persistent iframe load
-                        // listener survives (it isn't recorded), but with the
-                        // tokens gone + the _wvDestroyed bail in wireUp it can
-                        // no longer re-wire, and a future instance re-claims
-                        // cleanly.
+                        // Remove the iframe load listener and clear the
+                        // per-document token, so a future instance re-wires
+                        // cleanly. (`_wvLoadWired`: older builds' iframe claim.)
+                        wvUnlisten(iframe, "noteEditor:load");
                         try { (iframe as any)._wvLoadWired = null; } catch (e) {}
                         try { (idoc as any)._wvNoteLinksWired = null; } catch (e) {}
                         // Detach our listeners if we have them recorded.

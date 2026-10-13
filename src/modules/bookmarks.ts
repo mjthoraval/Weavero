@@ -36,6 +36,9 @@
 import { BOOKMARK_PATH, BOOKMARK_PATH_20, URL_GLOBE_SVG, URL_EXTERNAL_SVG, WV_FUNNEL_PATH, WV_FUNNEL_STEM_COLOR } from "./constants";
 import { BM_HOVERCARD_CSS, WV_PIN_ICON_URI } from "./reader-panels";
 import { wvPopupHost, wvDismissTooltip, wvSetBoolAttr } from "../lib/dom";
+import { wvLivePlugin } from "../lib/live";
+import { wvStoreWrite, wvStoreRead } from "../lib/store";
+import { wvTimeout } from "../lib/timers";
 
 // Gecko globals — not in the project's TS lib set (cf. tabs.ts).
 declare const IOUtils: any;
@@ -518,18 +521,19 @@ class _BookmarksMixin {
         if (this._wvOutlineInitPromise) return this._wvOutlineInitPromise;
         this._wvOutlineInitPromise = (async () => {
             let root: any = null;
-            try {
-                const text: any = await Zotero.File.getContentsAsync(this._wvOutlineFilePath());
-                const j = JSON.parse(text);
-                if (j && typeof j === "object" && j.outlines && typeof j.outlines === "object") {
-                    root = { producer: "weavero", schemaVersion: j.schemaVersion || 1, outlines: j.outlines };
-                    // Per-document DISPLAY settings (issue #42: page numbers)
-                    // ride in the same file under their own key, so a view
-                    // preference never creates a curated doc and survives
-                    // "Reset to Original", which deletes the doc.
-                    if (j.settings && typeof j.settings === "object") root.settings = j.settings;
-                }
-            } catch (_) {}
+            // lib/store.ts: corrupt -> moved aside, fresh; unreadable -> kept,
+            // store read-only this session (a persist must never replace it).
+            const r = await wvStoreRead(this._wvOutlineFilePath());
+            if (r.status === "io-error") this._wvOutlineReadOnly = true;
+            const j = r.doc;
+            if (r.status === "ok" && j && typeof j === "object" && j.outlines && typeof j.outlines === "object") {
+                root = { producer: "weavero", schemaVersion: j.schemaVersion || 1, outlines: j.outlines };
+                // Per-document DISPLAY settings (issue #42: page numbers)
+                // ride in the same file under their own key, so a view
+                // preference never creates a curated doc and survives
+                // "Reset to Original", which deletes the doc.
+                if (j.settings && typeof j.settings === "object") root.settings = j.settings;
+            }
             if (!root) root = { producer: "weavero", schemaVersion: 1, outlines: {} };
             this._wvOutlineRoot = root;
             try { await this._wvOutlineMigrateFromBookmarks(); } catch (_) {}
@@ -561,18 +565,12 @@ class _BookmarksMixin {
         } catch (_) {}
     }
 
-    /** Atomic, serialized write of the outline root to outlines.json. */
+    /** Atomic, serialized write of the outline root to outlines.json
+     *  (lib/store.ts: per-path chain on the Zotero global). */
     _wvOutlinePersist() {
         if (!this._wvOutlineRoot) return Promise.resolve();
-        const snapshot = JSON.stringify(this._wvOutlineRoot, null, 2);
-        const dir = this._bmDir();
-        const path = this._wvOutlineFilePath();
-        this._wvOutlineWriteChain = (this._wvOutlineWriteChain || Promise.resolve())
-            .then(async () => {
-                await IOUtils.makeDirectory(dir, { ignoreExisting: true });
-                await IOUtils.writeUTF8(path, snapshot, { tmpPath: path + ".tmp" });
-            })
-            .catch((e: any) => Zotero.debug("[Weavero] outlines persist failed: " + e));
+        if (this._wvOutlineReadOnly) { Zotero.debug("[Weavero] outlines persist skipped: store is read-only (unreadable at load)"); return Promise.resolve(); }
+        this._wvOutlineWriteChain = wvStoreWrite(this._wvOutlineFilePath(), this._wvOutlineRoot);
         return this._wvOutlineWriteChain;
     }
 
@@ -754,7 +752,6 @@ class _BookmarksMixin {
         }
     }
 
-    /** Discard the curated outline -- revert to embedded/extracted. */
     /** Reset: discard the curated outline for this attachment (fall back to
      *  embedded/extracted). A plain delete -- resetting IS deleting the Weavero
      *  outline. Gated behind a right-click on the Weavero source option + a
@@ -768,6 +765,18 @@ class _BookmarksMixin {
     /** Which section a record belongs to, by type/identity (no reader needed —
      *  mirrors _wvReaderBookmarkIsLocal but keyed off the attachment). */
     _bmReaderEntrySection(attLibraryID: number, attItemKey: string, rec: any): "local" | "global" {
+        return this._bmReaderEntrySectionOrNull(attLibraryID, attItemKey, rec) || "global";
+    }
+
+    /** The same, or null when the record's identity cannot be decided: an
+     *  item bookmark whose target or attachment does not resolve. A group
+     *  library's items are not loaded at Zotero startup (zotero.js: "Load all
+     *  library data except for items"), and a lookup then THROWS -- which the
+     *  section repair read as "global": at every startup it moved each
+     *  annotation bookmark of a group-library PDF out of This Document and
+     *  out of its folders, and the next load moved it back to the root
+     *  (dev profile, 2026-10-13). Unknown is not elsewhere. */
+    _bmReaderEntrySectionOrNull(attLibraryID: number, attItemKey: string, rec: any): "local" | "global" | null {
         try {
             if (!rec) return "global";
             // URL / app-link bookmarks never point INTO the document —
@@ -792,12 +801,17 @@ class _BookmarksMixin {
             }
             if (rec.type === "item") {
                 if (rec.libraryID === attLibraryID && rec.itemKey === attItemKey) return "local";
-                const it: any = Zotero.Items.getByLibraryAndKey(rec.libraryID, rec.itemKey);
-                const att: any = Zotero.Items.getByLibraryAndKey(attLibraryID, attItemKey);
-                if (it && att && typeof it.isAnnotation === "function" && it.isAnnotation()
+                let it: any = null, att: any = null;
+                try {
+                    it = Zotero.Items.getByLibraryAndKey(rec.libraryID, rec.itemKey);
+                    att = Zotero.Items.getByLibraryAndKey(attLibraryID, attItemKey);
+                } catch (_) { return null; }   // not loaded yet
+                if (!it || !att) return null;   // gone, or not known here
+                if (typeof it.isAnnotation === "function" && it.isAnnotation()
                     && it.parentItemID === att.id) return "local";
+                return "global";
             }
-        } catch (_) {}
+        } catch (_) { return null; }
         return "global";
     }
 
@@ -820,12 +834,6 @@ class _BookmarksMixin {
             if (!Array.isArray(v.global)) v.global = [];
         }
         return v;
-    }
-
-    /** The tree array for one section. */
-    _bmReaderSection(libraryID: number, itemKey: string, section: "local" | "global"): any[] {
-        const doc = this._bmReaderDoc(libraryID, itemKey);
-        return section === "global" ? doc.global : doc.local;
     }
 
     /** Flattened bookmark records (folders excluded) across BOTH sections —
@@ -921,18 +929,6 @@ class _BookmarksMixin {
         await this._bmPersist();
     }
 
-    /** Set a PAGE bookmark's page anchor ("top" clears the field -- top is the
-     *  default). Same choice as at creation; navigation honours it. */
-    async _bmReaderSetPageAnchor(libraryID: number, itemKey: string, id: string, anchor: string) {
-        await this._bmInit();
-        const doc = this._bmReaderDoc(libraryID, itemKey);
-        const loc = this._bmLocate(id, doc.local) || this._bmLocate(id, doc.global);
-        if (!loc || loc.entry.type !== "page") return;
-        if (anchor === "bottom") loc.entry.anchor = "bottom";
-        else delete loc.entry.anchor;
-        await this._bmPersist();
-    }
-
     /** Full page-bookmark position edit (Edit Position… dialog): page number,
      *  top/bottom anchor, and comment in one write. The auto label ("Page N",
      *  "Page N (bottom)") refreshes only while the user never renamed it. */
@@ -967,7 +963,7 @@ class _BookmarksMixin {
      *  item title, collection/library name, or page. Returns null for targets
      *  with no derivable live source (text selections; deleted items). READ-ONLY:
      *  never writes to the item. */
-    _bmReaderDeriveSourceLabel(bm: any): string | null {
+    _bmReaderDeriveSourceLabel(bm: any, opts?: { liveOnly?: boolean }): string | null {
         try {
             if (!bm) return null;
             switch (bm.type) {
@@ -995,7 +991,7 @@ class _BookmarksMixin {
                     // stale `bm.pageLabel` captured at create / last-move
                     // time. The resolver falls back to bm.pageLabel when no
                     // open reader matches.
-                    const live = this._bmReaderPageLabel(bm);
+                    const live = this._bmReaderPageLabel(bm, opts);
                     return live ? ("Page " + live) : null;
                 }
                 case "page": {
@@ -1006,7 +1002,7 @@ class _BookmarksMixin {
                     // "572" (2026-08-04). `_bmReaderSetPageDetails` keeps
                     // maintaining originalLabel on explicit position edits;
                     // this covers every render in between.
-                    const live = this._bmReaderPageLabel(bm);
+                    const live = this._bmReaderPageLabel(bm, opts);
                     return live
                         ? ("Page " + live + (bm.anchor === "bottom" ? " (bottom)" : ""))
                         : null;
@@ -1069,7 +1065,7 @@ class _BookmarksMixin {
      *  text bookmarks capture it at creation), else — for an annotation item
      *  bookmark — the annotation's live page. Empty string when there's no page.
      *  READ-ONLY. */
-    _bmReaderPageLabel(bm: any): string {
+    _bmReaderPageLabel(bm: any, opts?: { liveOnly?: boolean }): string {
         try {
             if (!bm) return "";
             // ANNOTATION bookmark → `annotationPageLabel` directly (same as
@@ -1154,7 +1150,13 @@ class _BookmarksMixin {
                     }
                 } catch (_) {}
                 // Step 3 — with the stored capture-time label preferred over a
-                // raw recount when no reader is open to consult.
+                // raw recount when no reader is open to consult. Not for
+                // `liveOnly` (the label SYNC, which persists what it derives):
+                // without a reader -- or before its page labels arrive -- this
+                // fallback wrote the stale capture-time label ("Page 12" over
+                // the printed "Page 568"), and the next render with the
+                // reader ready wrote it back (dev profile, 2026-10-13).
+                if (opts && opts.liveOnly) return "";
                 if (bm.pageLabel) return String(bm.pageLabel);
                 return String(pageIndex + 1);
             }
@@ -1197,7 +1199,7 @@ class _BookmarksMixin {
                     if (n.type === "folder") { walk(n.children || []); continue; }
                     const renamed = this._bmReaderIsRenamed(n);
                     if (n.renamed == null) { n.renamed = renamed; changed = true; }   // migrate old records
-                    const derived = this._bmReaderDeriveSourceLabel(n);
+                    const derived = this._bmReaderDeriveSourceLabel(n, { liveOnly: true });
                     if (derived == null) continue;                                    // no live source — keep stored
                     if (n.originalLabel !== derived) { n.originalLabel = derived; changed = true; }
                     if (!renamed && n.label !== derived) { n.label = derived; changed = true; }
@@ -1415,7 +1417,7 @@ class _BookmarksMixin {
      *  showed up as a second step, "Edit Bookmark". */
     _wvBmUndoDerived(k: string): boolean {
         return k === "sortIndex" || k === "sortIndexPos" || k === "sortIndexAlgo" || k === "_sortIndexTried"
-            || k === "sortIndexAnn" || k === "sortIndexAnnAlgo";
+            || k === "_wvDomSortTried" || k === "sortIndexAnn" || k === "sortIndexAnnAlgo";
     }
 
     /** id -> {rec, pos} for every node of a tree; `rec` = own fields without
@@ -1636,19 +1638,38 @@ class _BookmarksMixin {
         if (this._bmInitPromise) return this._bmInitPromise;
         this._bmInitPromise = (async () => {
             const path = this._bmFilePath();
-            try {
-                const text: any = await Zotero.File.getContentsAsync(path);
-                this._bmDoc = this._bmNormalize(JSON.parse(text));
-            } catch (e) {
-                let exists = false;
-                try { exists = await IOUtils.exists(path); } catch (_) {}
-                if (exists) {
+            // Two different failures, two different answers (survey
+            // 2026-10-06): a file that READS but does not PARSE is corrupt --
+            // back it up and start clean; a file that cannot be READ (a
+            // transient lock, antivirus, sync) is intact -- one catch used to
+            // move it aside and the next persist overwrote it with an empty
+            // store. Retry the read once; still failing, run READ-ONLY: an
+            // empty in-memory store that no persist is allowed to write.
+            // (lib/store.ts answers the three cases; a document that parses
+            // but does not normalize is treated as corrupt the same way.)
+            const r = await wvStoreRead(path);
+            if (r.status === "missing") {
+                this._bmDoc = { version: 2, bookmarks: [] };
+            }
+            else if (r.status === "io-error") {
+                Zotero.debug("[Weavero] bookmarks.json could not be read (kept; store is READ-ONLY this session): " + r.error);
+                this._bmReadOnly = true;
+                this._bmDoc = { version: 2, bookmarks: [] };
+            }
+            else if (r.status === "parse-error") {
+                Zotero.debug("[Weavero] bookmarks.json unreadable, backed up to " + r.movedTo + ": " + r.error);
+                this._bmDoc = { version: 2, bookmarks: [] };
+            }
+            else {
+                try {
+                    this._bmDoc = this._bmNormalize(r.doc);
+                } catch (e) {
                     const bak = path + ".corrupt-" + Date.now();
                     try { await IOUtils.move(path, bak); } catch (_) {}
                     Zotero.debug("[Weavero] bookmarks.json unreadable, backed up to "
                         + bak + ": " + e);
+                    this._bmDoc = { version: 2, bookmarks: [] };
                 }
-                this._bmDoc = { version: 2, bookmarks: [] };
             }
             try { this._bmMigratePageTypes(); } catch (e) {
                 Zotero.debug("[Weavero] _bmMigratePageTypes err: " + e);
@@ -1826,8 +1847,9 @@ class _BookmarksMixin {
                         kept.push(n);
                         continue;
                     }
-                    const actual = this._bmReaderEntrySection(libraryID, itemKey, n);
-                    if (actual !== wantSection) moved[actual].push(n);
+                    // Undecidable (target not loaded, or gone): stays put.
+                    const actual = this._bmReaderEntrySectionOrNull(libraryID, itemKey, n);
+                    if (actual && actual !== wantSection) moved[actual].push(n);
                     else kept.push(n);
                 }
                 return kept;
@@ -2245,11 +2267,6 @@ class _BookmarksMixin {
         }
     }
 
-    _bmHasItem(libraryID: number, itemKey: string) {
-        return this._bmFlatten().some((b: any) =>
-            b.type === "item" && b.libraryID === libraryID && b.itemKey === itemKey);
-    }
-
     _bmHasCollection(libraryID: number, collectionKey: string) {
         return this._bmFlatten().some((b: any) =>
             b.type === "collection" && b.libraryID === libraryID
@@ -2289,20 +2306,15 @@ class _BookmarksMixin {
     /** Atomic, serialized write of the current document to disk. */
     _bmPersist() {
         if (!this._bmDoc) return Promise.resolve();
+        // The file could not be read at load: never overwrite it with the
+        // empty stand-in (see _bmInit).
+        if (this._bmReadOnly) { Zotero.debug("[Weavero] bookmarks persist skipped: store is read-only (unreadable at load)"); return Promise.resolve(); }
         this._bmAttBmSet = null;   // bookmark set changed → drop the "has bookmarks" cache
         // Undo: every user write lands here -- record the step before the
         // file is written (silent writes update the baseline only).
         try { this._wvBmUndoCapture(); } catch (_) {}
-        const snapshot = JSON.stringify(this._bmDoc, null, 2);
-        const dir = this._bmDir();
-        const path = this._bmFilePath();
-        this._bmWriteChain = (this._bmWriteChain || Promise.resolve())
-            .then(async () => {
-                await IOUtils.makeDirectory(dir, { ignoreExisting: true });
-                await IOUtils.writeUTF8(path, snapshot, { tmpPath: path + ".tmp" });
-            })
-            .catch((e: any) =>
-                Zotero.debug("[Weavero] bookmarks persist failed: " + e));
+        // lib/store.ts: snapshot now, atomic write on the per-path chain.
+        this._bmWriteChain = wvStoreWrite(this._bmFilePath(), this._bmDoc);
         // If auto-hide-when-empty is on, the library bookmarks count
         // transitioning from 0→1 (or 1→0) must toggle the toolbar
         // button's visibility in every Zotero main window. Cheap call —
@@ -2326,8 +2338,7 @@ class _BookmarksMixin {
         const itemKey = item.key;
         // Firefox-style list semantics: duplicates are explicitly allowed.
         // The same item can be bookmarked into multiple folders, or simply
-        // bookmarked twice — `_bmHasItem` is no longer consulted at add
-        // time. (Callers that need set-semantics can check it themselves.)
+        // bookmarked twice — there is no duplicate check at add time.
         if (!itemKey) return false;
         let label = "";
         try {
@@ -3135,8 +3146,8 @@ class _BookmarksMixin {
                 if (idx === false || idx == null || idx < 0) return false;
                 const jw = cv.tree && cv.tree._jsWindow;
                 if (!jw || typeof jw.scrollTo !== "function") return false;
-                const rowTop = typeof jw._getItemPosition === "function"
-                    ? jw._getItemPosition(idx) : idx * ((cv.tree && cv.tree._rowHeight) || 0);
+                const rowTop = (typeof jw.getRowPosition === "function" || typeof jw._getItemPosition === "function")
+                    ? (this as any)._wvRowPos(jw, idx) : idx * ((cv.tree && cv.tree._rowHeight) || 0);
                 // Pinned parents (collections-tree aid) cover the top edge:
                 // the row goes just under them, never beneath.
                 const pinned = typeof (this as any)._wvCollPinnedPx === "function"
@@ -3355,7 +3366,7 @@ class _BookmarksMixin {
             if (bm && bm.type === "position" && bm.position) {
                 const itemID = t.attachment && t.attachment.id;
                 const win: any = Zotero.getMainWindow();
-                const st: any = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+                const st = wvTimeout;
                 const tryShow = (tries: number) => {
                     let r: any = opened;
                     if (!r) {
@@ -3592,8 +3603,10 @@ class _BookmarksMixin {
             btn.style.setProperty("margin-inline-start", "8px");
             btn.addEventListener("command", () => {
                 // Live-resolve (reload-proof wiring trap #2): wire-time
-                // `this` would open the popup from a dead instance's store.
-                const P: any = ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || this;
+                // `this` would open the popup from a dead instance's store --
+                // and so would a `|| this` fallback; no plugin, no popup.
+                const P: any = wvLivePlugin();
+                if (!P) return;
                 try { P._openBookmarksPopup(btn); }
                 catch (e) { Zotero.debug("[Weavero] open bookmarks popup err: " + e); }
             });

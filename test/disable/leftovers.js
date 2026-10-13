@@ -67,8 +67,26 @@ for (const w of mains) {
 			if (Z["_wvOrig" + m.charAt(0).toUpperCase() + m.slice(1)]) F(label + ": Zotero_Tabs._wvOrig" + m + " still stored");
 		}
 		if (Z._wvRestoreTraceWired) W(label + ": _wvRestoreTraceWired flag still set");
+		// Layered wraps (lib/wrap.ts) leave a table on the host while any layer is on.
+		if (Z._wvWraps) F(label + ": Zotero_Tabs still carries a wrap table (" + Object.keys(Z._wvWraps).join(",") + ")");
+		if (looksOurs(Z.getState)) F(label + ": Zotero_Tabs.getState still wrapped by Weavero");
 	}
+	try {
+		const iv = w.ZoteroPane && w.ZoteroPane.itemsView;
+		if (iv && iv._wvWraps) F(label + ": itemsView still carries a wrap table (" + Object.keys(iv._wvWraps).join(",") + ")");
+	} catch (e) {}
 	if (w._wvTabBarDecoMo) F(label + ": tab-bar decoration MutationObserver still connected");
+	// Orphan UI glyphs: a wv- element unwrapped instead of removed leaves its
+	// text (the scope button's "▾", the tabs-menu twisties) in native containers
+	// (2026-10-07: thirteen chevrons in the quick-search box).
+	try {
+		for (const id of ["search-wrapper", "zotero-tabs-menu-list"]) {
+			const host = w.document.getElementById(id);
+			if (!host) continue;
+			const stray = [...host.childNodes].filter(n => n.nodeType === 3 && /^[▾▸▴\s]+$/.test(n.nodeValue) && n.nodeValue.trim());
+			if (stray.length) F(label + ": " + stray.length + " orphan glyph text node(s) in #" + id);
+		}
+	} catch (e) {}
 	// Note editors: Weavero stylesheet + claim tokens must be gone.
 	for (const ne of w.document.querySelectorAll("note-editor")) {
 		try {
@@ -97,13 +115,23 @@ for (const wtype of ["zotero:reader", "zotero:note", "zotero:pref", "zotero:basi
 // 3. Global monkey-patches restored.
 try {
 	const N = Zotero.Notes;
-	if (N && N._wvOrigOpen) F("Zotero.Notes.open still patched (orig stored)");
+	if (N && (N._wvOrigOpen || N._wvMwOrigOpen)) F("Zotero.Notes.open still patched (orig stored)");
 	if (N && looksOurs(N.open)) F("Zotero.Notes.open source still looks Weavero-wrapped");
+	for (const k of ["_wvOpenPatchedV", "_wvOpenWired", "_wvOpenPatched"]) if (N && N[k] !== undefined) F("Zotero.Notes." + k + " stamp survived");
 } catch (e) {}
 try {
 	const R = Zotero.Reader;
-	if (R && R._wvOrigOpen) F("Zotero.Reader.open still patched");
-	if (R && R._wvOrigGetWindowStates) F("Zotero.Reader.getWindowStates still patched");
+	if (R && (R._wvOrigOpen || R._wvMwOrigOpen)) F("Zotero.Reader.open still patched");
+	if (R && looksOurs(R.open)) F("Zotero.Reader.open source still looks Weavero-wrapped");
+	// Both getWindowStates layers (the inner one once stayed live: destroy
+	// restored only the outer saved ref, 2026-10-07).
+	if (R && (R._wvOrigGetWindowStates || R._wvGWSOrig)) F("Zotero.Reader.getWindowStates still patched");
+	if (R && looksOurs(R.getWindowStates)) F("Zotero.Reader.getWindowStates source still looks Weavero-wrapped");
+	if (R && R._wvOrigGetByTabID) F("Zotero.Reader.getByTabID still patched");
+	if (R && looksOurs(R.getByTabID)) F("Zotero.Reader.getByTabID source still looks Weavero-wrapped");
+	for (const k of ["_wvOpenPatchedV", "_wvOpenWired", "_wvOpenPatched", "_wvHoldWrapped", "_wvGWSPatchVer", "_wvGWSWired", "_wvLookupVer"]) {
+		if (R && R[k] !== undefined) F("Zotero.Reader." + k + " stamp survived");
+	}
 } catch (e) {}
 try {
 	if (Zotero.Utilities.Internal._wvOrigOpenPreferences) F("openPreferences still patched");
@@ -197,6 +225,29 @@ try {
 		if (!wasOpen) { try { panel.hidePopup(); } catch (e) {} }
 	}
 } catch (e) { W("tabs-menu popup check error: " + e); }
+
+// 8a. Keyed listeners (src/lib/listen.ts): destroy() removes every one and
+//     deletes the target's `_wvListen` table, so any table left means a
+//     listener still attached -- windows, documents, every element, and the
+//     reader frames (outer reader.html + each view's pdf.js/EPUB iframe).
+try {
+	const keyed = (t) => { try { const T = t && t._wvListen; return T ? Object.keys(T) : []; } catch (e) { return []; } };
+	const scanTargets = (w, label) => {
+		const hits = [];
+		for (const t of [w, w.document]) hits.push(...keyed(t));
+		for (const el of w.document.querySelectorAll("*")) hits.push(...keyed(el));
+		if (hits.length) F(label + ": " + hits.length + " keyed listener(s) left: " + [...new Set(hits)].slice(0, 6).join(", "));
+	};
+	let k = 0;
+	for (const w of Services.wm.getEnumerator(null)) {
+		if (w && w.document) scanTargets(w, "window[" + (k++) + "] " + (w.document.documentElement.getAttribute("windowtype") || w.location.href));
+	}
+	for (const r of (Zotero.Reader._readers || [])) {
+		const frames = [r._iframeWindow];
+		try { const ir = r._internalReader; frames.push(ir._primaryView && ir._primaryView._iframeWindow, ir._secondaryView && ir._secondaryView._iframeWindow); } catch (e) {}
+		for (const fw of frames.filter(Boolean)) scanTargets(fw, "reader " + r.itemID + " frame");
+	}
+} catch (e) { W("keyed-listener scan error: " + e); }
 
 // 8. OPTIONAL late-load leg (the nastiest regression): pass {loadNote:true}
 //    conceptually — here, just report whether any unloaded note tab exists so

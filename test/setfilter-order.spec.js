@@ -25,7 +25,7 @@ describe("Weavero — setFilter wrapper mutates rows before re-applying", () => 
     let bundle;
 
     before(async function () {
-        if (!(Zotero.Weavero && Zotero.Weavero.plugin)) this.skip();
+        if (!(Zotero.Weavero && Zotero.Weavero.plugin)) wvT.absent('!(Zotero.Weavero && Zotero.Weavero.plugin)');
         const rootURI = await Zotero.Plugins.getRootURI("weavero@mjthoraval");
         const res = await fetch(rootURI + "index.js");
         bundle = await res.text();

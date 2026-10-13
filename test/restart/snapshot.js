@@ -51,6 +51,11 @@ for (const w of Zotero.getMainWindows()) {
 		geom: lp._wvWindowGeom(w),             // incl. dpr + windowState (st: 1 = maximized)
 		collection: libState,
 		itemPane,
+		// The anchor record's own fields (quit flush): a custom window title
+		// and the hidden-collections set. Dropped once by the flush (survey
+		// 2026-10-06 §2 #1) -- the fixture now sets both so this diff sees them.
+		title: w._wvWindowTitle || null,
+		hidden: (() => { try { return lp._wvHidCapture(w) || null; } catch (e) { return null; } })(),
 		tabs: w.Zotero_Tabs._tabs.map(t => {
 			// Reader page index for LOADED reader tabs (scroll comes back via
 			// Zotero's per-item view state; this asserts it end-to-end).

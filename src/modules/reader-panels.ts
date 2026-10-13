@@ -24,7 +24,12 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
 import { BOOKMARK_PATH, BOOKMARK_PATH_14, BOOKMARK_PATH_20, SCHEME_SVG_TEMPLATE, URL_GLOBE_SVG, URL_EXTERNAL_SVG, WV_FUNNEL_DATA_URI, WV_FUNNEL_PATH, WV_FUNNEL_STEM_COLOR } from "./constants";
-import { wvPopupHost, wvDismissTooltip, wvSetBoolAttr } from "../lib/dom";
+import { wvPopupHost, wvDismissTooltip, wvSetBoolAttr, wvBoolAttrOn, wvReaderMenuEvent } from "../lib/dom";
+import { wvLivePlugin } from "../lib/live";
+import { wvStoreWrite, wvStoreRead } from "../lib/store";
+import { wvTimeout, wvClearTimeout } from "../lib/timers";
+import { wvInjectStyle, wvRemoveStyle } from "../lib/style";
+import { wvListen, wvUnlisten, wvListenKeys } from "../lib/listen";
 
 declare const Components: any;
 declare const Services: any;
@@ -576,7 +581,9 @@ function wvEditUndoMenuRestore(popup: any) {
             mi.removeAttribute("data-wv-undo");
             if (s.command) mi.setAttribute("command", s.command);
             // Back to what Zotero had; its next update recomputes anyway.
-            if (s.disabled === "true") mi.setAttribute("disabled", "true"); else mi.removeAttribute("disabled");
+            // `disabled` is saved as what the platform showed (wvBoolAttrOn);
+            // "true" is an older build's saved string.
+            wvSetBoolAttr(mi, "disabled", s.disabled === true || s.disabled === "true");
             // The saved label first: Fluent re-translates from the id
             // asynchronously (or not at all when the id is unchanged), and the
             // popup may reopen before that -- measured 2026-09-30, "Undo
@@ -1440,9 +1447,9 @@ const RP_BM_CSS = [
     ".wv-bm-chip-popup .wv-rf-colsep{flex:1 0 auto;min-width:16px;display:flex;justify-content:center;align-self:stretch;}",
     ".wv-bm-chip-popup .wv-rf-colsep .wv-filter-vertical-separator{margin:2px 0;}",
     ".wv-bm-chip-popup-empty{padding:4px 2px;opacity:.6;font-style:italic;}",
-    // The old docked chip-bar + its resizer are now superseded by the
-    // popover above. Hard-hide them so any cached DOM from a previous
-    // build doesn't reserve space at the bottom of the pane.
+    // The old docked chip-bar + its resizer are superseded by the popover
+    // above and no longer built. Hard-hide them so DOM a previous build left
+    // in an open reader doesn't reserve space at the bottom of the pane.
     ".wv-bm-chip-bar{display:none!important;}",
     ".wv-bm-chip-resizer{display:none!important;}",
     ".wv-bm-search-row{display:flex;padding:0 8px 6px;position:relative;}",
@@ -1490,23 +1497,6 @@ const RP_BM_CSS = [
     // Filter chips at the bottom (selector strip) — mirrors the annotations
     // pane's color/tag/author rows. Persists across scopes and dimensions
     // AND together (a node must satisfy every active row).
-    // Bottom chip-bar starts at ~140 px (same default cap as the reader's
-    // own annotations Selector, _annotations-view.scss line 47). The height
-    // is user-resizable via a drag handle above it (mirrors the library
-    // tag-selector splitter); the chosen value is stored in the
-    // `weavero.readerBmChipBarHeight` pref. Internally `flex:0 0 <px>` so
-    // the bar carves out fixed space; `overflow:auto` lets crowded rows
-    // scroll within it.
-    ".wv-bm-chip-bar{flex:0 0 140px;padding:6px 8px;display:none;flex-direction:column;gap:5px;overflow:auto;}",
-    ".wv-bm-chip-bar.wv-bm-chip-bar-on{display:flex;}",
-    // Drag handle above the chip bar — same idiom as upstream's XUL splitter
-    // (see scss/components/_splitter.scss): the bar is 5 px tall for a
-    // comfortable hit zone, but a -4 px bottom margin overlaps it into the
-    // chip bar so only a 1-px border line is visible. Result: a hair-thin
-    // separator that's still easy to grab. position:relative + z-index keeps
-    // the overlapping portion on top of the chip bar's edge.
-    ".wv-bm-chip-resizer{flex:0 0 auto;height:5px;margin-bottom:-4px;border-top:1px solid rgba(127,127,127,.35);cursor:ns-resize;background:transparent;position:relative;z-index:2;display:none;}",
-    ".wv-bm-chip-resizer.wv-bm-chip-bar-on{display:block;}",
     ".wv-bm-chip-row{display:flex;flex-wrap:wrap;gap:4px;}",
     // Pin toggle — same 20×20 box as the color filters (16px SVG +
     // 2px padding on every side). Sits at the right end of the FIRST
@@ -1970,6 +1960,16 @@ class _ReaderPanelsMixin {
             this._wvReaderEnsureFilterButton(reader, idoc);
             this._wvReaderEnsureBookmarksTab(reader, idoc);
             this._wvReaderEnsureOutlinePanel(reader, idoc);
+            // The merged undo (reader undo / redo take Weavero's newer steps,
+            // MJT 2026-10-01), the history stamps and the toolbar Undo / Redo
+            // buttons belong to the TAB, not to the outline takeover: wired
+            // from inside the takeover ensure, they vanished with
+            // `readerOutlineTakeover` off (survey 2026-10-06). The wrap
+            // carries its own instance tag and is re-laid by every new
+            // instance; the buttons gate themselves on their own pref.
+            try { this._wvReaderWrapUndo(reader); } catch (_) {}
+            try { this._wvReaderStampHistory(reader); } catch (_) {}
+            try { this._wvReaderEnsureUndoButtons(reader, idoc); } catch (_) {}
             this._wvEnsureSpringDragEnd(reader, idoc);
             this._wvAnnSortEnsure(reader, idoc);
             this._wvAnnListEnsure(reader, idoc);
@@ -2465,11 +2465,11 @@ class _ReaderPanelsMixin {
         this._wvAnnOrderLoading = true;
         (async () => {
             let doc: any = { version: 1, orders: {} };
-            try {
-                const raw = await IOUtils.readUTF8(this._wvAnnOrderPath());
-                const parsed = JSON.parse(raw);
-                if (parsed && typeof parsed === "object" && parsed.orders) doc = parsed;
-            } catch (_) { /* missing file = empty store */ }
+            // lib/store.ts: missing = empty store; corrupt = moved aside;
+            // unreadable = kept, and no write may replace it this session.
+            const rd = await wvStoreRead(this._wvAnnOrderPath());
+            if (rd.status === "ok" && rd.doc && typeof rd.doc === "object" && rd.doc.orders) doc = rd.doc;
+            if (rd.status === "io-error") this._wvAnnOrderReadOnly = true;
             if (!this._wvLive || this._wvLive()) {
                 this._wvAnnOrderDoc = doc;
                 this._wvAnnOrderLoading = false;
@@ -2486,6 +2486,13 @@ class _ReaderPanelsMixin {
                         try {
                             const idoc2 = r._iframeWindow && r._iframeWindow.document;
                             if (idoc2) this._wvAnnSortEnsure(r, idoc2);
+                            // A pane-filter state cached before the load is the
+                            // default, not the document's: forget it and re-apply.
+                            if (this._wvAnnPaneProvisional && this._wvAnnPaneProvisional.has(r)) {
+                                this._wvAnnPaneProvisional.delete(r);
+                                try { this._wvAnnPaneForget(r); } catch (_) {}
+                                if (idoc2) { try { this._wvAnnListEnsure(r, idoc2); } catch (_) {} }
+                            }
                         } catch (_) {}
                     }
                 } catch (_) {}
@@ -2591,10 +2598,10 @@ class _ReaderPanelsMixin {
             if (entry.dates && typeof entry.dates === "object") next.dates = Object.assign({}, entry.dates);
             else if (entry.dates !== null && prev && typeof prev === "object" && prev.dates && typeof prev.dates === "object") next.dates = Object.assign({}, prev.dates);
             this._wvAnnOrderDoc.orders[libraryID + ":" + itemKey] = next;
-            const path = this._wvAnnOrderPath();
-            try { await IOUtils.makeDirectory(PathUtils.parent(path), { ignoreExisting: true }); } catch (_) {}
-            await IOUtils.writeUTF8(path, JSON.stringify(this._wvAnnOrderDoc),
-                { tmpPath: path + ".tmp" });
+            // lib/store.ts: chained (two edits in flight used to race on an
+            // unchained write) and skipped when the file was unreadable at load.
+            if (this._wvAnnOrderReadOnly) Zotero.debug("[Weavero] ann-order persist skipped: store is read-only (unreadable at load)");
+            else await wvStoreWrite(this._wvAnnOrderPath(), this._wvAnnOrderDoc, { pretty: null });
             // Refresh every open reader -- per-document resolution means only
             // readers of this attachment actually change.
             try {
@@ -3009,6 +3016,11 @@ class _ReaderPanelsMixin {
                     + " m.render();})()");
             }
         } catch (e) {}
+        // The pane funnel's hiding rides the render wrapper just restored:
+        // drop the funnel's apply signature so the next scan re-wires it
+        // instead of finding "already applied" (survey 2026-10-06: sort off
+        // silently stopped the funnel from hiding).
+        try { (reader as any).__wvAnnListSig = null; } catch (e) {}
     }
 
     /** Tear down this reader doc's injected panel surfaces so the ensure calls
@@ -3052,6 +3064,7 @@ class _ReaderPanelsMixin {
      *  the panels.) Called from destroy() for every open reader. */
     _wvReaderTeardownPanels(reader: any, idoc: any) {
         try {
+            try { this._wvUnwatchNativeOutline(reader); } catch (_) {}
             this._wvReaderRewirePanels(reader, idoc);
             try { this._wvAnnSortTeardown(reader, idoc); } catch (_) {}
             try { (idoc as any)._wvRewireRestore = null; } catch (_) {}
@@ -3111,7 +3124,7 @@ class _ReaderPanelsMixin {
                 // native-view handback is already covered by _wvReaderRewirePanels
                 // above (the 2026-07-22 outline-takeover disable fix).
                 const ROOTS = ".wv-reader-filter-btn, ." + RP_BM_TAB_CLASS + ", ." + RP_BM_VIEW_CLASS
-                    + ", ." + RP_OUTLINE_VIEW_CLASS + ", .wv-bm-chip-popup, .wv-bm-hover-card"
+                    + ", ." + RP_OUTLINE_VIEW_CLASS + ", .wv-bm-chip-popup, .wv-bm-hovercard"
                     + ", [id^='wv-'], [id^='weavero'], .toolbar [data-wv-undo]";
                 for (const el of [...idoc.querySelectorAll(ROOTS)]) { try { el.remove(); } catch (_) {} }
                 for (const el of [...idoc.querySelectorAll("[class*='wv-']")]) {
@@ -3140,6 +3153,12 @@ class _ReaderPanelsMixin {
                     try { w[ref] = null; w[stamp] = null; } catch (_) {}
                 }
             }
+            // "Hide Annotations in the Reader": the blocked setAnnotations,
+            // the per-view hide stylesheet and the DOM views' showAnnotations
+            // live on the READER and were never undone -- a disable or reload
+            // left the annotations invisible with the new checkbox unchecked
+            // (survey 2026-10-06).
+            try { this._wvReaderHideAnnotationsTeardown(reader); } catch (_) {}
             // The reader instance's undo / redo wrappers (most-recent-wins)
             // and the history-point stamping callback.
             try { this._wvReaderUnwrapUndo(reader); } catch (_) {}
@@ -3311,13 +3330,9 @@ class _ReaderPanelsMixin {
             // every hot reload would stack another copy; a stacked dblclick
             // handler toggle-alls TWICE = visibly nothing). Live-plugin
             // resolution keeps a surviving listener inert after disable.
-            // The reader's undo / redo take Weavero's newer steps (MJT
-            // 2026-10-01). Outside the tab-wiring stamp below: that stamp
-            // survives a plugin reload, this wrap carries its own instance
-            // tag and must be re-laid by every new instance.
-            try { this._wvReaderWrapUndo(reader); } catch (_) {}
-            try { this._wvReaderStampHistory(reader); } catch (_) {}
-            try { this._wvReaderEnsureUndoButtons(reader, idoc); } catch (_) {}
+            // (The reader undo wrap, the history stamps and the toolbar undo
+            // buttons are wired from _wvProcessReaderPanels, independent of
+            // the takeover gate above -- survey 2026-10-06.)
             if ((idoc as any)._wvOutlineTabWired !== RP_BM_CTX_WIRE_V) {
                 try { if ((idoc as any)._wvOutlineTabClickH) idoc.removeEventListener("click", (idoc as any)._wvOutlineTabClickH, true); } catch (_) {}
                 try { if ((idoc as any)._wvOutlineTabDblH) idoc.removeEventListener("dblclick", (idoc as any)._wvOutlineTabDblH, true); } catch (_) {}
@@ -3347,8 +3362,7 @@ class _ReaderPanelsMixin {
                         // to 45 s because the FIRST RM activation converts the
                         // document (readingModeLoading can run tens of seconds).
                         if (t.closest(".toolbar, .appearance-popup, [class*='appearance']")) {
-                            const w4: any = Zotero.getMainWindow();
-                            const st4 = (w4 && w4.setTimeout) ? w4.setTimeout.bind(w4) : setTimeout;
+                            const st4 = wvTimeout;
                             for (const ms of [500, 1500, 3000, 6000, 12000, 24000, 45000]) {
                                 st4(() => {
                                     try {
@@ -3448,7 +3462,7 @@ class _ReaderPanelsMixin {
                 // zero renders). Same trap the flash timing hit.
                 const schedOutlineRender = (thenFocusOutline?: boolean) => {
                     const w: any = Zotero.getMainWindow();
-                    const st2 = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+                    const st2 = wvTimeout;
                     const ct2 = (w && w.clearTimeout) ? w.clearTimeout.bind(w) : clearTimeout;
                     if ((idoc as any)._wvOutlineSearchT) ct2((idoc as any)._wvOutlineSearchT);
                     (idoc as any)._wvOutlineSearchT = st2(() => {
@@ -3541,8 +3555,7 @@ class _ReaderPanelsMixin {
                                 if (t0 && t0.closest
                                         && t0.closest("." + RP_OUTLINE_VIEW_CLASS + ", ." + RP_BM_VIEW_CLASS)) {
                                     tlog("STAB keydown", { target: desc(t0) });
-                                    const wS: any = Zotero.getMainWindow();
-                                    ((wS && wS.setTimeout) ? wS.setTimeout.bind(wS) : setTimeout)(() => {
+                                    wvTimeout(() => {
                                         try {
                                             const aeS = idoc.activeElement;
                                             const stuckS = (aeS === t0) || !aeS
@@ -3571,8 +3584,7 @@ class _ReaderPanelsMixin {
                                 const bmOn = cont0 && cont0.classList.contains(RP_BM_TAB_ON);
                                 tlog("TAB branch", { outlineOn: !!outlineOn, bmOn: !!bmOn });
                                 if (outlineOn || bmOn) {
-                                    const w3: any = Zotero.getMainWindow();
-                                    ((w3 && w3.setTimeout) ? w3.setTimeout.bind(w3) : setTimeout)(() => {
+                                    wvTimeout(() => {
                                         try {
                                             // "Stuck" isn't only focus-still-in-the-input:
                                             // the manager's focus() on the hidden native
@@ -3630,8 +3642,7 @@ class _ReaderPanelsMixin {
                             schedOutlineRender(true);
                             return;
                         }
-                        const w2: any = Zotero.getMainWindow();
-                        ((w2 && w2.setTimeout) ? w2.setTimeout.bind(w2) : setTimeout)(() => {
+                        wvTimeout(() => {
                             try {
                                 const sc = idoc.getElementById("sidebarContainer");
                                 if (!sc) return;
@@ -3754,8 +3765,15 @@ class _ReaderPanelsMixin {
                     while (enR.hasMoreElements()) { const rw: any = enR.getNext(); if (rw && !rw.closed) mains.push(rw); }
                 } catch (_) {}
                 for (const mw of mains) {
-                    if (!mw || mw._wvOutlineClickFocusWired === RP_BM_CTX_WIRE_V) continue;
-                    if (mw._wvOutlineClickFocusH) { try { mw.removeEventListener("mousedown", mw._wvOutlineClickFocusH, true); } catch (_) {} }
+                    if (!mw) continue;
+                    // Keyed (wvListen): the hand-bumped stamp made a same-build
+                    // reload SKIP this window, so the previous instance's
+                    // handler stayed on (full-suite reload audit 2026-10-13).
+                    // Peel the stamped handler builds before this one left.
+                    if (mw._wvOutlineClickFocusH) {
+                        try { mw.removeEventListener("mousedown", mw._wvOutlineClickFocusH, true); } catch (_) {}
+                        try { mw._wvOutlineClickFocusH = null; mw._wvOutlineClickFocusWired = null; } catch (_) {}
+                    }
                     const h = (ev: any) => {
                         try {
                             const tg = ev.target;
@@ -3802,9 +3820,7 @@ class _ReaderPanelsMixin {
                             try { sc.focus(); } catch (_) {}
                         } catch (_) {}
                     };
-                    mw._wvOutlineClickFocusH = h;
-                    mw._wvOutlineClickFocusWired = RP_BM_CTX_WIRE_V;
-                    mw.addEventListener("mousedown", h, true);
+                    wvListen(mw, "outlineClickFocus:mousedown", "mousedown", h, true, this._wvWireTag());
                 }
             } catch (_) {}
             // If the native outline is ALREADY the active view (restored on open,
@@ -3928,7 +3944,64 @@ class _ReaderPanelsMixin {
                 if (view) view.remove();
             } catch (_) {}
             try { if (reader && reader._wvSpyRangeCache) reader._wvSpyRangeCache.clear(); } catch (_) {}
+            try { this._wvUnwatchNativeOutline(reader); } catch (_) {}
         } catch (e) { Zotero.debug("[Weavero] _wvReaderDeactivateOutlineTakeover err: " + e); }
+    }
+
+    /** Zotero 11 publishes a PDF's outline in STEPS: the embedded bookmarks
+     *  (`[]` when there are none) as soon as they resolve, then the outline
+     *  of the structured document text once that document is ready -- so an
+     *  empty state.outline is not final there. Zotero 9/10's getOutline2
+     *  returned both at once. The native outline view (hidden by the
+     *  takeover, still rendered) re-renders on every publish: while the
+     *  takeover is active, watch it, and re-read a state-derived result
+     *  whose source changed (issue #54 follow-up, 2026-10-12: a PDF without
+     *  bookmarks settled on "No outline" while the reader then published 18
+     *  extracted entries). */
+    _wvWatchNativeOutline(reader: any, idoc: any) {
+        this._wvUnwatchNativeOutline(reader);
+        const host = idoc && idoc.getElementById("sidebarContent");
+        const win: any = idoc && idoc.defaultView;
+        if (!host || !win || !win.MutationObserver) return;
+        const sigOf = () => {
+            try {
+                const st = reader._internalReader && reader._internalReader._state;
+                const o = st ? st.outline : null;
+                if (!o) return "loading";
+                return o.length + "|" + ((o[0] && o[0].title) || "");
+            } catch (_) { return ""; }
+        };
+        reader._wvNativeOutlineSig = sigOf();
+        let timer: any = null;
+        const mo = new win.MutationObserver(() => {
+            if (timer) return;
+            timer = win.setTimeout(() => {
+                timer = null;
+                try {
+                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (!lp || lp._wvDestroyed) return;
+                    const c = idoc.getElementById("sidebarContainer");
+                    if (!c || !c.classList.contains(RP_OUTLINE_TAB_ON)) return;
+                    const sig = sigOf();
+                    if (sig === reader._wvNativeOutlineSig) return;
+                    reader._wvNativeOutlineSig = sig;
+                    const cache = reader._wvOutlineCache;
+                    // Only a result read from state.outline (or none yet) is
+                    // stale; getOutline2 / curated / Reading Mode are not.
+                    if (cache && !cache.fromState) return;
+                    reader._wvOutlineCache = null;
+                    reader._wvOutlineFetchTries = 0;
+                    lp._wvReaderRenderOutline(reader, idoc);
+                } catch (_) {}
+            }, 150);
+        });
+        mo.observe(host, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+        reader._wvNativeOutlineMO = mo;
+    }
+
+    _wvUnwatchNativeOutline(reader: any) {
+        try { if (reader && reader._wvNativeOutlineMO) reader._wvNativeOutlineMO.disconnect(); } catch (_) {}
+        try { if (reader) reader._wvNativeOutlineMO = null; } catch (_) {}
     }
 
     _wvReaderActivateOutlineTakeover(reader: any, idoc: any, on: boolean) {
@@ -3947,6 +4020,7 @@ class _ReaderPanelsMixin {
             container.classList.add(RP_OUTLINE_TAB_ON);
             reader._wvOutlineFetchTries = 0;   // restart extraction-retry budget
             this._wvReaderRenderOutline(reader, idoc);
+            try { this._wvWatchNativeOutline(reader, idoc); } catch (_) {}
             // Only the ACTIVE takeover view participates in the reader's
             // [data-tabstop] Tab walk -- an invisible stop is a dead stop.
             try {
@@ -3976,7 +4050,7 @@ class _ReaderPanelsMixin {
      *  (There is no API to force extraction when an embedded outline exists --
      *  verified in pdf.js: getOutline2's arg is ignored, module.getOutline is
      *  embedded-else-extract.) A Weavero-curated outline (Phase 3) overrides. */
-    async _wvReaderFetchOutline(reader: any): Promise<{ source: string, tree: any[] } | null> {
+    async _wvReaderFetchOutline(reader: any): Promise<{ source: string, tree: any[], fromState?: boolean } | null> {
         try {
             // Non-PDF (DOM) views -- EPUB and snapshot -- have no pdf.js
             // document, but Zotero DOES build an outline for them and hands it
@@ -4002,7 +4076,29 @@ class _ReaderPanelsMixin {
             if (!app) return null;
             if (app.initializedPromise) { try { await app.initializedPromise; } catch (_) {} }
             const pdfDoc = app.pdfDocument;
-            if (!pdfDoc || typeof pdfDoc.getOutline2 !== "function") return null;
+            if (!pdfDoc) return null;
+            if (typeof pdfDoc.getOutline2 !== "function") {
+                // Zotero 11's PDF.js has no getOutline2: the reader resolves
+                // the outline itself -- the embedded bookmarks through
+                // getOutline() + destination resolution, else an outline from
+                // the structured document text -- into state.outline (null
+                // while loading, [] when there is none), lazily while the
+                // Outline view is open. Read it like the DOM views do. Until
+                // 2026-10-12 this returned null, and the takeover showed "No
+                // outline for this document" over a working native outline
+                // (issue #54). Guard: test/outline-fetch-z11.spec.js.
+                // `fromState`: the reader may publish again (see
+                // _wvWatchNativeOutline), so this result is re-read then.
+                const st = reader._internalReader && reader._internalReader._state;
+                const tree = st ? st.outline : null;
+                if (!tree) return null;   // still loading: the render retries
+                let src = "extracted";
+                try {
+                    const emb = pdfDoc.getOutline ? await pdfDoc.getOutline() : null;
+                    if (emb && emb.length) src = "embedded";
+                } catch (_) {}
+                return { source: src, tree: this._wvOutlineCopyTree(tree), fromState: true };
+            }
             const raw = await pdfDoc.getOutline2();
             let source = "extracted";
             try {
@@ -4393,7 +4489,7 @@ class _ReaderPanelsMixin {
             // Track layout changes for as long as the pin is up (zoom, width
             // drag, font change): cheap re-measure on the chrome clock.
             const w: any = Zotero.getMainWindow();
-            const st = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            const st = wvTimeout;
             const iv = (w && w.setInterval) ? w.setInterval.bind(w) : setInterval;
             const ci = (w && w.clearInterval) ? w.clearInterval.bind(w) : clearInterval;
             const timer = iv(() => { if (!place()) { try { ci(timer); } catch (_) {} } }, 250);
@@ -4495,8 +4591,7 @@ class _ReaderPanelsMixin {
                     const target = Math.max(0, from + rectTop - iwin.innerHeight * 0.25);
                     try { se.scrollTo(Cu.cloneInto({ top: target, behavior: "smooth" }, iwin)); }
                     catch (_) { iwin.scrollTo(iwin.scrollX || 0, target); }
-                    const w5: any = Zotero.getMainWindow();
-                    ((w5 && w5.setTimeout) ? w5.setTimeout.bind(w5) : setTimeout)(() => {
+                    wvTimeout(() => {
                         try {
                             if (Math.abs(se.scrollTop - from) < 5 && Math.abs(target - from) > 20) {
                                 iwin.scrollTo(iwin.scrollX || 0, target);
@@ -5340,8 +5435,8 @@ class _ReaderPanelsMixin {
             // list element persists across reloads and re-renders, so a handler
             // bound to the instance at wire-time would call a stale copy after any
             // reload. Drag state is read from `reader` (see the row dragstart).
-            const P = (): any => ((typeof Zotero !== "undefined" && (Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || this);
-            const isOutlineDrag = () => reader._wvOutlineDragSrc != null;
+            const P = (): any => wvLivePlugin();   // null: the native drag only
+            const isOutlineDrag = () => reader._wvOutlineDragSrc != null && !!P();
             list.addEventListener("dragover", (e: any) => {
                 if (!isOutlineDrag()) return;
                 e.preventDefault();
@@ -5365,7 +5460,7 @@ class _ReaderPanelsMixin {
             }, true);
             list.addEventListener("dragleave", (e: any) => {
                 // Only hide when the pointer actually leaves the list bounds.
-                try { const r = list.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) P()._wvOutlineHideDropInd(idoc); } catch (_) {}
+                try { const r = list.getBoundingClientRect(); const p = P(); if (p && (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom)) p._wvOutlineHideDropInd(idoc); } catch (_) {}
             }, true);
         } catch (_) {}
     }
@@ -7365,7 +7460,10 @@ class _ReaderPanelsMixin {
                 if (!mi) return;
                 // Zotero enabled the item by a focused text control (its typing
                 // undo): leave it. Enabled by its own UndoHistory: ours wins here.
-                const zoteroEnabled = mi.getAttribute("disabled") !== "true";
+                // Read as the platform applies it: Zotero 11 matches presence
+                // (`disabled=""` is disabled), an `!== "true"` test read that
+                // as enabled (audit 2026-10-13, lib/dom wvBoolAttrOn).
+                const zoteroEnabled = !wvBoolAttrOn(mi, "disabled");
                 const uhCan = !!(UH && (dir === "undo" ? UH.canUndo && UH.canUndo() : UH.canRedo && UH.canRedo()));
                 // A focused text control owns the item even when UndoHistory
                 // can also undo: its typing undo comes first (review 2026-10-05).
@@ -7382,7 +7480,7 @@ class _ReaderPanelsMixin {
                 })();
                 if (zoteroEnabled && (textFocused || !uhCan)) { dbg(id + " enabled by a text control, left alone"); return; }
                 dbg(id + " taken over (label=" + label + ", disabled=" + mi.getAttribute("disabled") + ", UndoHistory=" + uhCan + ")");
-                mi._wvUndoSaved = { command: mi.getAttribute("command"), l10n: mi.getAttribute("data-l10n-id"), label: mi.getAttribute("label"), disabled: mi.getAttribute("disabled") };
+                mi._wvUndoSaved = { command: mi.getAttribute("command"), l10n: mi.getAttribute("data-l10n-id"), label: mi.getAttribute("label"), disabled: wvBoolAttrOn(mi, "disabled") };
                 mi.removeAttribute("data-l10n-id");
                 mi.removeAttribute("command");
                 mi.setAttribute("data-wv-undo", dir);
@@ -7836,16 +7934,23 @@ class _ReaderPanelsMixin {
                 let url = "";
                 try { url = String(w.document.URL || ""); } catch (_) {}
                 if (!w || !url || url.startsWith("chrome://")) continue;
-                if (w._wvOlKeysWired === RP_BM_CTX_WIRE_V && w._wvOlKeysReader === reader) continue;
-                try { if (w._wvOlKeysH) w.removeEventListener("keydown", w._wvOlKeysH, true); } catch (_) {}
+                // Keyed (wvListen) like the click-focus capture: the stamp
+                // skipped a same-build reload and nothing tore it down.
+                // Peel the stamped handler of earlier builds; a frame that
+                // now hosts another reader is re-wired.
+                if (w._wvOlKeysH) {
+                    try { w.removeEventListener("keydown", w._wvOlKeysH, true); } catch (_) {}
+                    try { w._wvOlKeysH = null; w._wvOlKeysWired = null; } catch (_) {}
+                }
+                if (w._wvOlKeysReader !== reader) wvUnlisten(w, "olKeys:keydown");
                 const h = (e: any) => {
                     try {
                         const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                         if (P && !P._wvDestroyed) P._wvOutlineShortcutKey(reader, e);
                     } catch (_) {}
                 };
-                w._wvOlKeysH = h; w._wvOlKeysWired = RP_BM_CTX_WIRE_V; w._wvOlKeysReader = reader;
-                w.addEventListener("keydown", h, true);
+                w._wvOlKeysReader = reader;
+                wvListen(w, "olKeys:keydown", "keydown", h, true, this._wvWireTag());
             }
         } catch (_) {}
     }
@@ -8073,8 +8178,7 @@ class _ReaderPanelsMixin {
         try { shown = !!this._wvOutlineShowDomEntryPin(reader, node, target); } catch (_) {}
         if (shown) return;
         if ((reader && reader._type) === "epub" && n < 14) {   // 4 x 15 ms + 10 x 150 ms: the same ~1.5 s window
-            const w: any = Zotero.getMainWindow();
-            const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            const st = wvTimeout;
             // Fast first retries: in PAGINATED mode a jump into another
             // chapter mounts it a moment after the click, and a flat 150 ms
             // retry showed the pin a visible beat late (158 ms measured, MJT
@@ -8582,20 +8686,26 @@ class _ReaderPanelsMixin {
                 // User input on the view ends the post-jump suppression (see
                 // _wvOutlineSpyUpdate). Listened on the view's WINDOW: keys go
                 // to the focused document, not to #viewerContainer.
+                // Keyed (lib/listen.ts), which also hands the frame its own
+                // options object: a chrome-side `{ capture, passive }` was
+                // unreadable there, so these went on as bubble listeners and
+                // the capture-phase removal below never matched (2026-10-12).
                 const iKey = "_wvOlSpyInput_" + ent.k;
                 const inWin: any = t.document ? t : (t.ownerDocument && t.ownerDocument.defaultView);
-                if (tt[iKey] && tt[iKey].win) {
+                if (tt[iKey] && tt[iKey].win) {   // an older build's (both phases)
                     for (const ty of ["wheel", "keydown", "pointerdown", "touchstart"]) {
-                        try { tt[iKey].win.removeEventListener(ty, tt[iKey].fn, true); } catch (_) {}
+                        for (const c of [true, false]) {
+                            try { tt[iKey].win.removeEventListener(ty, tt[iKey].fn, c); } catch (_) {}
+                        }
                     }
+                    try { delete tt[iKey]; } catch (_) {}
                 }
                 if (inWin) {
                     const readerIn = reader;
                     const onInput = () => { readerIn._wvSpyUserInputAt = Date.now(); };
                     for (const ty of ["wheel", "keydown", "pointerdown", "touchstart"]) {
-                        try { inWin.addEventListener(ty, onInput, { capture: true, passive: true }); } catch (_) {}
+                        try { wvListen(inWin, "outlineSpyInput:" + ent.k + ":" + ty, ty, onInput, { capture: true, passive: true }, this._wvWireTag()); } catch (_) {}
                     }
-                    tt[iKey] = { win: inWin, fn: onInput };
                 }
                 const readerRef = reader;
                 let tick: any = null;
@@ -8752,35 +8862,6 @@ class _ReaderPanelsMixin {
             { label: "Top of page " + page + chk("top"), icon: WV_PAGE_TOP_SVG, fn: () => onPick("top") },
             { label: "Bottom of page " + page + chk("bottom"), icon: WV_PAGE_BOTTOM_SVG, fn: () => onPick("bottom") },
         ];
-    }
-
-    /** Small standalone chooser menu built from `_wvPageAnchorChoices` --
-     *  used at page-bookmark creation (the native reader menu can't nest a
-     *  dropdown, so the menu item opens this at the click point). */
-    _wvShowPageAnchorMenu(reader: any, idoc: any, x: number, y: number, page: any, onPick: (a: "top" | "bottom") => void) {
-        try {
-            this._wvCloseReaderBmContextMenu(idoc);
-            const menu = idoc.createElementNS(NS_HTML_RP, "div");
-            menu.id = RP_BM_CTX_ID;
-            const close = () => this._wvCloseReaderBmContextMenu(idoc);
-            for (const c of this._wvPageAnchorChoices(page, null, onPick)) {
-                const it = idoc.createElementNS(NS_HTML_RP, "div");
-                it.className = "wv-ctx-item";
-                const ic = idoc.createElementNS(NS_HTML_RP, "span");
-                ic.className = "wv-ctx-ic"; ic.innerHTML = c.icon;
-                const lb = idoc.createElementNS(NS_HTML_RP, "span");
-                lb.textContent = c.label;
-                it.appendChild(ic); it.appendChild(lb);
-                it.addEventListener("click", () => { close(); c.fn(); });
-                menu.appendChild(it);
-            }
-            (idoc.body || idoc.documentElement).appendChild(menu);
-            const vw = (idoc.defaultView && idoc.defaultView.innerWidth) || 800;
-            const vh = (idoc.defaultView && idoc.defaultView.innerHeight) || 600;
-            menu.style.left = Math.max(6, Math.min(vw - 190, x)) + "px";
-            menu.style.top = Math.max(6, Math.min(vh - 90, y)) + "px";
-            this._wvOutlineWireMenuDismiss(reader, idoc, menu, null, close);
-        } catch (_) {}
     }
 
     _wvOutlineShowAddMenu(reader: any, idoc: any, anchor: any) {
@@ -8945,16 +9026,33 @@ class _ReaderPanelsMixin {
             const doc = iwin && iwin.document;
             if (!doc) { this._wvReaderPanelNote(idoc, "Reading Mode view not ready."); return; }
             this._wvReaderPanelNote(idoc, "Select text in the document (Esc to cancel).");
+            // Same zombie-arm guard as _wvOutlineArmSelectRegion (shared
+            // per-reader generation): without it two arms stacked and one
+            // selection created two entries, and an arm from a dead instance
+            // kept consuming selections after a reload (survey 2026-10-06 #23).
+            const armGen = (reader._wvSelArmGen = (reader._wvSelArmGen || 0) + 1);
+            const lp = this;
+            const armStale = () => {
+                try {
+                    if (reader._wvSelArmGen !== armGen) return true;
+                    const cur: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    return cur !== lp;
+                } catch (_) { return true; }
+            };
             let onUp: any, onKey: any;
             const cleanup = () => {
                 try { doc.removeEventListener("pointerup", onUp, true); } catch (_) {}
                 try { doc.removeEventListener("keydown", onKey, true); } catch (_) {}
             };
-            onKey = (e: any) => { if (e.key === "Escape") { cleanup(); this._wvReaderPanelNote(idoc, "Cancelled."); } };
+            onKey = (e: any) => {
+                if (armStale()) { cleanup(); return; }
+                if (e.key === "Escape") { cleanup(); this._wvReaderPanelNote(idoc, "Cancelled."); }
+            };
             onUp = () => {
-                const w: any = Zotero.getMainWindow();
-                ((w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout)(() => {
+                if (armStale()) { cleanup(); return; }
+                wvTimeout(() => {
                     try {
+                        if (armStale()) { cleanup(); return; }
                         const selObj = iwin.getSelection();
                         if (!selObj || selObj.isCollapsed || !selObj.rangeCount) return;   // keep waiting
                         const rg = selObj.getRangeAt(0);
@@ -11036,7 +11134,6 @@ class _ReaderPanelsMixin {
         } catch (err) { Zotero.debug("[Weavero] _wvRegionEditorOpen err: " + err); }
     }
 
-    /** Reset a (curated) entry's name to its frozen original. */
     /** The entry's ORIGINAL region when it was stored exactly, else null:
      *  a DOM selector (or pin) on snapshot/EPUB, a real-area rect set (or
      *  pin) on PDF. A PDF outline's page-top point is NOT exact -- that is
@@ -11099,6 +11196,8 @@ class _ReaderPanelsMixin {
         }
     }
 
+    /** Reset a (curated) entry's name to its frozen original -- and its
+     *  region, see below. */
     _wvOutlineDoResetName(reader: any, idoc: any, id: string) {
         try {
             const att = this._wvReaderAtt(reader);
@@ -11283,8 +11382,7 @@ class _ReaderPanelsMixin {
         // tick spacing well past 200ms. The loop is passive until stability,
         // so a long cap costs nothing.
         if (done || n > 150) return;
-        const w0: any = Zotero.getMainWindow();
-        ((w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout)(
+        wvTimeout(
             () => this._wvOutlinePrepareNewDomWindow(attId, entry, gen, n + 1, top, h), 200);
     }
 
@@ -11328,8 +11426,7 @@ class _ReaderPanelsMixin {
             }
         } catch (_) {}
         if (!done && n < 200) {
-            const w: any = Zotero.getMainWindow();
-            const sc: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            const sc = wvTimeout;
             sc(() => this._wvOutlinePrepareNewWindow(attId, position, gen, n + 1, held, didRaise), 55);
         }
     }
@@ -12305,10 +12402,18 @@ class _ReaderPanelsMixin {
             // the page gets no event, so the menu could not be dismissed by
             // clicking the toolbar (MJT 2026-10-01, traced: no pointerdown
             // anywhere). While the menu is open the toolbar is no-drag; the
-            // close puts it back.
+            // close puts it back. A RULE keyed on the attribute, never an
+            // inline style: Firefox 153 (Zotero 11) keeps -moz-window-dragging
+            // out of CSSOM, so `style.setProperty()` was silently dropped and
+            // the toolbar stayed a drag area (2026-10-12). Guard:
+            // tab-undo-choice.spec.js.
             try {
                 const tb: any = idoc.querySelector(".toolbar");
-                if (tb) { tb.style.setProperty("-moz-window-dragging", "no-drag"); tb.setAttribute("data-wv-nodrag", "1"); }
+                if (tb) {
+                    wvInjectStyle(idoc, "wv-tab-history-nodrag",
+                        ".toolbar[data-wv-nodrag] { -moz-window-dragging: no-drag !important; }");
+                    tb.setAttribute("data-wv-nodrag", "1");
+                }
             } catch (_) {}
         } catch (e) { Zotero.debug("[Weavero] _wvTabShowHistoryMenu err: " + e); }
     }
@@ -13103,6 +13208,10 @@ class _ReaderPanelsMixin {
                     const pvH = irH && (irH._primaryView || irH._lastView);
                     // A TOC jump supersedes a showing pin or flash, as in the PDF path.
                     if (pvH) { this._wvClearStalePin(pvH); this._wvDomClearHighlight(pvH); }
+                    // Back-button point (issue #28): the in-place landing below
+                    // bypasses navigate()'s history, and this branch returns
+                    // before the general push further down (survey 2026-10-06).
+                    if (pvH) this._wvReaderPushHistoryPoint(pvH);
                     const rngH = pvH && this._wvDomQuarterPlace(pvH, { href: node.href });
                     if (rngH) {
                         if (this._getEnableOutlineTextHighlight()) this._wvDomHighlightRange(pvH, rngH);
@@ -13306,33 +13415,6 @@ class _ReaderPanelsMixin {
         } catch (_) {}
     }
 
-    /** A PERSISTENT panel note carrying an action button (does NOT auto-dismiss).
-     *  Returns a `dismiss()` that removes it. Used by the pin "Edit Position"
-     *  mode for its Done button. 2026-07-23. */
-    _wvReaderPanelNoteAction(idoc: any, text: string, buttonLabel: string, onClick: () => void): () => void {
-        try {
-            if (!idoc) return () => {};
-            const NS = NS_HTML_RP;
-            idoc.querySelectorAll(".wv-readingmode-note").forEach((n: any) => n.remove());
-            const host = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS)
-                || idoc.querySelector("." + RP_BM_VIEW_CLASS)
-                || idoc.getElementById("sidebarContent");
-            if (!host) return () => {};
-            const note = idoc.createElementNS(NS, "div");
-            note.className = "wv-readingmode-note";
-            const span = idoc.createElementNS(NS, "span");
-            span.textContent = text + " ";
-            const btn = idoc.createElementNS(NS, "button");
-            btn.textContent = buttonLabel;
-            btn.setAttribute("style", "margin-left:6px;padding:1px 8px;border-radius:4px;border:1px solid rgba(127,127,127,.5);background:var(--color-accent,#5e6ad2);color:#fff;cursor:pointer;font:inherit;");
-            const dismiss = () => { try { note.remove(); } catch (_) {} };
-            btn.addEventListener("click", (e: any) => { e.stopPropagation(); dismiss(); try { onClick(); } catch (_) {} });
-            note.appendChild(span); note.appendChild(btn);
-            host.appendChild(note);
-            return dismiss;
-        } catch (_) { return () => {}; }
-    }
-
     /** Fallback navigation to a raw position via the reader's own navigate
      *  (`internalReader.navigate`, which loads the page). The location must be
      *  cloned into the iframe compartment. */
@@ -13420,8 +13502,7 @@ class _ReaderPanelsMixin {
     _wvOutlineNavPageTop(reader: any, pv: any, pageIndex: number) {
         try {
             if (pageIndex == null || pageIndex < 0) return;
-            const w0: any = Zotero.getMainWindow();
-            ((w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout)(() => {
+            wvTimeout(() => {
                 try { this._wvShowPageAnchorMarker(reader, pv, pageIndex, false); } catch (_) {}
             }, 260);
             const win = pv && pv._iframeWindow;
@@ -13453,8 +13534,7 @@ class _ReaderPanelsMixin {
     _wvOutlineNavPageBottom(reader: any, pv: any, pageIndex: number) {
         try {
             if (pageIndex == null || pageIndex < 0) return;
-            const w0: any = Zotero.getMainWindow();
-            ((w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout)(() => {
+            wvTimeout(() => {
                 try { this._wvShowPageAnchorMarker(reader, pv, pageIndex, true); } catch (_) {}
             }, 260);
             const win = pv && pv._iframeWindow;
@@ -13473,21 +13553,22 @@ class _ReaderPanelsMixin {
         } catch (_) {}
     }
 
-    /** Wire a `dragend` on the PDF view's iframe document (once). An annotation
-     *  dragged from the document originates THERE, so its dragend never reaches
-     *  the reader-app doc — without this, a spring-opened folder wouldn't
-     *  re-collapse when the drag is cancelled or dropped back in the document. */
+    /** Wire a `dragend` on the PDF view's iframe document (once per
+     *  instance). An annotation dragged from the document originates THERE, so
+     *  its dragend never reaches the reader-app doc — without this, a
+     *  spring-opened folder wouldn't re-collapse when the drag is cancelled or
+     *  dropped back in the document. Keyed (lib/listen.ts): the boolean stamp
+     *  it replaced kept a reloaded instance from wiring at all. */
     _wvEnsureSpringDragEnd(reader: any, idoc: any) {
         try {
             const ir = reader._internalReader;
             const pv = ir && (ir._primaryView || ir._lastView);
             const pdoc = pv && pv._iframeWindow && pv._iframeWindow.document;
-            if (!pdoc || pdoc._wvBmSpringDragEndWired) return;
-            pdoc._wvBmSpringDragEndWired = true;
-            pdoc.addEventListener("dragend", () => {
+            if (!pdoc) return;
+            wvListen(pdoc, "bmSpring:dragend", "dragend", () => {
                 this._wvCancelBmSpring();
                 try { const a = this._wvReaderAtt(reader); if (a) this._wvRecollapseAllSprings(reader, idoc, a); } catch (_) {}
-            }, true);
+            }, true, this._wvWireTag());
         } catch (_) {}
     }
 
@@ -14223,6 +14304,16 @@ class _ReaderPanelsMixin {
         let st = this._wvAnnPaneWM.get(reader);
         if (st) return st;
         st = this._wvAnnPaneDefaultState();
+        // PROVISIONAL while ann-order.json has not loaded: the document's
+        // stored departure is unreadable yet, so this state is the default,
+        // and the load completion must forget it (it used to be cached for
+        // good: the first readers of a session ignored their per-document
+        // filter while the button and footer said "This Document Only" --
+        // survey 2026-10-06).
+        if (!this._wvAnnOrderDoc) {
+            if (!this._wvAnnPaneProvisional) this._wvAnnPaneProvisional = new WeakSet();
+            this._wvAnnPaneProvisional.add(reader);
+        }
         try {
             const att = this._wvReaderAtt(reader);
             const e = att && att.libraryID != null && att.itemKey
@@ -14515,6 +14606,9 @@ class _ReaderPanelsMixin {
      *  reader funnel. */
     _wvAnnListEnsure(reader: any, idoc: any) {
         try {
+            // A scan scheduled before the reader was uninit'd (a deck window
+            // drops its anchor) must not wire its hidden page afterwards.
+            if (reader && reader._isUninitialized) return;
             this._wvWireAnnListPrefWatch();
             if (!this._wvAnnPaneEnabled()) { this._wvAnnListTeardown(reader, idoc); return; }
             this._wvAnnOrderEnsureLoaded(reader);
@@ -14553,15 +14647,8 @@ class _ReaderPanelsMixin {
     _wvAnnListRemoveButton(reader: any, idoc: any) {
         try { for (const el of idoc.querySelectorAll(".wv-al-actions")) el.remove(); } catch (_) {}
         try { if (idoc.getElementById(RP_FILTER_POPUP_ID)) this._wvCloseReaderFilterPopup(idoc); } catch (_) {}
-        try {
-            const h = (idoc as any).__wvAlSearchToggleH;
-            if (h) {
-                idoc.removeEventListener("pointerdown", h, true);
-                idoc.removeEventListener("click", h, true);
-                delete (idoc as any).__wvAlSearchToggleH;
-                delete (idoc as any).__wvAlSearchToggleV;
-            }
-        } catch (_) {}
+        wvUnlisten(idoc, "annListSearch:pointerdown");
+        wvUnlisten(idoc, "annListSearch:click");
     }
 
     /** Zotero's own selector at the foot of the pane: hidden by default (it
@@ -14589,12 +14676,19 @@ class _ReaderPanelsMixin {
     _wvAnnListWireSearchToggle(idoc: any) {
         try {
             const tag = this._wvWireTag();
-            if ((idoc as any).__wvAlSearchToggleV === tag) return;
+            // Keyed (lib/listen.ts): destroy() and _wvReaderPageTeardown remove
+            // it. The stamp + stored-handler pair it replaced was peeled only by
+            // the next instance's re-wire, so a page nothing re-wires (a deck
+            // window's anchor) kept it (wiring slice 3, 2026-10-13). An older
+            // build's pair is peeled here.
             const prev = (idoc as any).__wvAlSearchToggleH;
             if (prev) {
                 try { idoc.removeEventListener("pointerdown", prev, true); } catch (_) {}
                 try { idoc.removeEventListener("click", prev, true); } catch (_) {}
+                try { delete (idoc as any).__wvAlSearchToggleH; delete (idoc as any).__wvAlSearchToggleV; } catch (_) {}
             }
+            const keys = wvListenKeys(idoc);
+            if (keys.some((k: any) => k.key === "annListSearch:pointerdown" && k.tag === tag)) return;
             const h = (e: any) => {
                 try {
                     if (!((Zotero as any).Weavero && (Zotero as any).Weavero.plugin)) return;
@@ -14631,10 +14725,8 @@ class _ReaderPanelsMixin {
                     }
                 } catch (_) {}
             };
-            idoc.addEventListener("pointerdown", h, true);
-            idoc.addEventListener("click", h, true);
-            (idoc as any).__wvAlSearchToggleH = h;
-            (idoc as any).__wvAlSearchToggleV = tag;
+            wvListen(idoc, "annListSearch:pointerdown", "pointerdown", h, true, tag);
+            wvListen(idoc, "annListSearch:click", "click", h, true, tag);
         } catch (e) { Zotero.debug("[Weavero] _wvAnnListWireSearchToggle err: " + e); }
     }
 
@@ -14644,15 +14736,8 @@ class _ReaderPanelsMixin {
             const sc = idoc.getElementById("sidebarContainer");
             if (sc) sc.classList.remove("wv-al-nonative");
         } catch (_) {}
-        try {
-            const h = (idoc as any).__wvAlSearchToggleH;
-            if (h) {
-                idoc.removeEventListener("pointerdown", h, true);
-                idoc.removeEventListener("click", h, true);
-                delete (idoc as any).__wvAlSearchToggleH;
-                delete (idoc as any).__wvAlSearchToggleV;
-            }
-        } catch (_) {}
+        wvUnlisten(idoc, "annListSearch:pointerdown");
+        wvUnlisten(idoc, "annListSearch:click");
         try {
             if ((reader as any).__wvAnnListSig) {
                 (reader as any).__wvAnnListSig = null;
@@ -14862,8 +14947,11 @@ class _ReaderPanelsMixin {
             }
             g._wvAnnListPrefObsVer = tag;
             const typePrefs = this._wvAnnListTypes().map(t => this._wvAnnListPrefName(t));
+            // `enableFilters` is the pane funnel's MASTER (_wvAnnPaneEnabled):
+            // the root observer only re-ran the sort on it, so the funnel
+            // stayed applied or absent until the next scan (survey 2026-10-06).
             const watched = typePrefs.concat(["weavero.annPaneDefault",
-                "weavero.enableAnnPaneFilter", "weavero.hideNativeAnnSelector"]);
+                "weavero.enableAnnPaneFilter", "weavero.hideNativeAnnSelector", "weavero.enableFilters"]);
             g._wvAnnListPrefObs = watched.map(name => Zotero.Prefs.registerObserver(
                 name,
                 () => {
@@ -15422,12 +15510,16 @@ class _ReaderPanelsMixin {
         }
 
         // An icon-only `.wv-filter-opt` chip with include/exclude state.
-        const mkOpt = (incl: string[], excl: string[], value: string, title2: string,
-                       fillIcon: (b: any) => void, onChange: (next: any) => void, active?: Set<string>,
+        // On `st[field]` / `st[field + "Excl"]`. The click reads the state AS
+        // IT IS THEN: computing from the arrays this render saw made a second
+        // quick click (before the re-render) undo the first (2026-10-09).
+        const mkOpt = (field: string, value: string, title2: string,
+                       fillIcon: (b: any) => void, active?: Set<string>,
                        defOn?: boolean) => {
             const btn = mk("button", "wv-filter-opt wv-filter-opt-icon");
             btn.type = "button";
             btn.title = title2;
+            const incl: string[] = st[field] || [], excl: string[] = st[field + "Excl"] || [];
             const sel = incl.indexOf(value) >= 0, exc = excl.indexOf(value) >= 0;
             if (sel) btn.dataset.selected = "true";
             if (exc) btn.dataset.excluded = "true";
@@ -15436,8 +15528,10 @@ class _ReaderPanelsMixin {
             fillIcon(btn);
             btn.addEventListener("click", async (e: any) => {
                 e.stopPropagation();
-                const next = this._toggleIncludeExclude(value, incl.slice(), excl.slice(), e.altKey);
-                onChange.call(null, next);
+                const cur: any = pane ? this._wvAnnPaneState(reader) : this._wvReaderFilterState(reader);
+                const next = this._toggleIncludeExclude(value, (cur[field] || []).slice(), (cur[field + "Excl"] || []).slice(), e.altKey);
+                cur[field] = next.include;
+                cur[field + "Excl"] = next.exclude;
                 await applyF();   // settle before re-render (see clearState)
                 this._wvRenderReaderFilterPopup(reader, idoc, popup);
                 refreshBtn();
@@ -15585,10 +15679,9 @@ class _ReaderPanelsMixin {
             for (const def of this._ANNOTATION_TYPES) {
                 if (!typesPresent.has(def.value)) continue;
                 any = true;
-                const btn = mkOpt(st.types, st.typesExcl, def.value,
+                const btn = mkOpt("types", def.value,
                     def.label + " — Alt+click to exclude",
                     (b: any) => { const img = mk("img"); img.className = "wv-filter-svg"; img.src = this._wvReaderIconUri(def.icon) || def.icon; b.appendChild(img); },
-                    (next: any) => { st.types = next.include; st.typesExcl = next.exclude; },
                     actTypes, defHas("types", def.value));
                 grp.appendChild(btn);
             }
@@ -15695,10 +15788,9 @@ class _ReaderPanelsMixin {
             addHead("Modified by");
             addRow((opts: any) => {
                 for (const name of names) {
-                    opts.appendChild(mkOpt(st.modifiedBy, st.modifiedByExcl, name,
+                    opts.appendChild(mkOpt("modifiedBy", name,
                         "Modified by " + name + " — Alt+click to exclude",
                         (b: any) => { const ic = mk("span", "wv-rf-user-svg"); ic.innerHTML = RP_USER_SVG; b.appendChild(ic); const sp = mk("span"); sp.textContent = name; b.appendChild(sp); },
-                        (next: any) => { st.modifiedBy = next.include; st.modifiedByExcl = next.exclude; },
                         actModifiedBy, defHas("modifiedBy", name)));
                 }
             }, true, undefined, "wv-rf-people-row");
@@ -16243,6 +16335,27 @@ class _ReaderPanelsMixin {
         }
     }
 
+    /** Undo everything "Hide Annotations in the Reader" put on a reader:
+     *  unblock the views, drop the hide stylesheet, and show the DOM views'
+     *  annotations again. Teardown-safe: no-op when nothing is hidden. */
+    _wvReaderHideAnnotationsTeardown(reader: any) {
+        try {
+            const ir = reader && reader._internalReader;
+            if (!ir) return;
+            const views = [ir._primaryView, ir._secondaryView, ir._lastView].filter(Boolean);
+            const blocked = views.some((v: any) => v && v._wvOrigSetAnnotations);
+            const styled = views.some((v: any) => { try { return !!(v._iframeWindow && v._iframeWindow.document.getElementById("wv-hide-annotations")); } catch (_) { return false; } });
+            const flagged = !!(this._wvReaderHideAnnWM && this._wvReaderHideAnnWM.get(reader));
+            if (!blocked && !styled && !flagged) return;
+            if (blocked) this._wvReaderSetViewAnnotationsBlocked(reader, false);
+            this._wvReaderSetOverlayHideCss(reader, false);
+            try { if (typeof ir.showAnnotations === "function") ir.showAnnotations(true); } catch (_) {}
+            try { if (this._wvReaderHideAnnWM) this._wvReaderHideAnnWM.delete(reader); } catch (_) {}
+            // Repaint the real (filtered) set in the unblocked views.
+            try { if (blocked) this._wvApplyReaderFilter(reader, this._wvReaderNativeIncludes(reader)); } catch (_) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvReaderHideAnnotationsTeardown err: " + e); }
+    }
+
     /** Inject/remove a CSS rule in each view's inner doc that hides the DOM
      *  overlays Zotero's annotation hiding doesn't touch: the PDF
      *  `.customAnnotationLayer` (text-annotation textareas + Weavero badges),
@@ -16373,7 +16486,10 @@ class _ReaderPanelsMixin {
                 const m1 = /^(\d{4})-(\d{2})-(\d{2})$/.exec(fromIso || "");
                 if (m1) from = new Date(+m1[1], +m1[2] - 1, +m1[3]).getTime();
                 const m2 = /^(\d{4})-(\d{2})-(\d{2})$/.exec(toIso || "");
-                if (m2) to = new Date(+m2[1], +m2[2] - 1, +m2[3]).getTime() + 86400000 - 1;
+                // End of day = the NEXT local midnight - 1 ms, never "+24 h":
+                // a DST day lasts 23 or 25 hours, so +24 h ran an hour into
+                // the next day or dropped the day's last hour (2026-10-09).
+                if (m2) to = new Date(+m2[1], +m2[2] - 1, +m2[3] + 1).getTime() - 1;
                 return { from, to };
             }
         } catch (_) {}
@@ -16669,8 +16785,7 @@ class _ReaderPanelsMixin {
             // classification catches most, these idempotent passes are the
             // insurance that no row stays bare longer than ~120ms. Cheap: the
             // painters' data-source caches make a no-op pass trivial.
-            const w: any = Zotero.getMainWindow();
-            const t = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            const t = wvTimeout;
             for (const d of [60, 150, 300, 600, 1000]) t(repaint, d);
         } catch (_) {}
     }
@@ -16785,8 +16900,7 @@ class _ReaderPanelsMixin {
             let pos: any = null;
             try { pos = typeof a.annotationPosition === "string" ? JSON.parse(a.annotationPosition) : a.annotationPosition; } catch (_) {}
             const pageIndex = (pos && Number.isInteger(pos.pageIndex)) ? pos.pageIndex : 0;
-            const w: any = Zotero.getMainWindow();
-            const t = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            const t = wvTimeout;
             // Guard against a newer flash superseding this one (rapid clicks).
             const gen = (pv._wvFlashSeq = (pv._wvFlashSeq || 0) + 1);
             // Wait until the target's page is FULLY rendered (renderingState 3)
@@ -16924,10 +17038,10 @@ class _ReaderPanelsMixin {
         } catch (_) {}
         if (!hit.length) return;
         try {
-            const win = Zotero.getMainWindow();
-            if (this._wvReaderFilterNotifyTimer && win) win.clearTimeout(this._wvReaderFilterNotifyTimer);
-            const st = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
-            this._wvReaderFilterNotifyTimer = st(() => {
+            // Sandbox clock: a debounce hosted on the focused main window
+            // died with it (and its handle could not be cleared from another).
+            wvClearTimeout(this._wvReaderFilterNotifyTimer);
+            this._wvReaderFilterNotifyTimer = wvTimeout(() => {
                 this._wvReaderFilterNotifyTimer = null;
                 const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                 if (!P) return;
@@ -16968,10 +17082,8 @@ class _ReaderPanelsMixin {
         if (!hit) return;
         // Debounce: coalesce a burst of edits into one re-render of visible panes.
         try {
-            const win = Zotero.getMainWindow();
-            if (this._wvReaderBmNotifyTimer && win) win.clearTimeout(this._wvReaderBmNotifyTimer);
-            const st = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
-            this._wvReaderBmNotifyTimer = st(() => {
+            wvClearTimeout(this._wvReaderBmNotifyTimer);
+            this._wvReaderBmNotifyTimer = wvTimeout(() => {
                 this._wvReaderBmNotifyTimer = null;
                 for (const p of this._wvReaderVisibleBmReaders()) {
                     try { this._wvReaderRenderBmList(p.reader, p.idoc); } catch (_) {}
@@ -17135,8 +17247,8 @@ class _ReaderPanelsMixin {
                 tab.innerHTML = RP_BM_RIBBON_TAB;
                 tab.addEventListener("click", (e: any) => {
                     try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
-                    const P: any = ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || this;
-                    P._wvReaderSetBmActive(reader, idoc, true);
+                    const P: any = wvLivePlugin();   // never a captured instance
+                    if (P) P._wvReaderSetBmActive(reader, idoc, true);
                 });
                 // Drop an annotation/selection (from the sidebar OR the center
                 // pane) onto the tab to bookmark it (activates the tab).
@@ -17519,8 +17631,8 @@ class _ReaderPanelsMixin {
                     // Resolve the LIVE plugin at click time, not the captured
                     // `this` -- so a hot plugin update runs the CURRENT toggle/
                     // render code even before the panel is rebuilt.
-                    const P: any = ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || this;
-                    P._wvReaderToggleBmChipPopup(reader, idoc, filterBtn);
+                    const P: any = wvLivePlugin();
+                    if (P) P._wvReaderToggleBmChipPopup(reader, idoc, filterBtn);
                 });
                 // Only show the scope group when there's a real choice
                 // to make. With `showLibraryBookmarksInReader` off, the
@@ -17745,8 +17857,7 @@ class _ReaderPanelsMixin {
                         // with no annotations, 2026-07-29). Our takeover CSS
                         // doesn't depend on that state, so showing the outline
                         // pane beats showing nothing.
-                        const w6: any = Zotero.getMainWindow();
-                        ((w6 && w6.setTimeout) ? w6.setTimeout.bind(w6) : setTimeout)(() => {
+                        wvTimeout(() => {
                             try {
                                 const st6 = ir._state || {};
                                 if (st6.sidebarView !== undefined || !st6.sidebarOpen) return;
@@ -18219,11 +18330,6 @@ class _ReaderPanelsMixin {
             Zotero.Prefs.set("weavero.readerBmSort." + section, f === "manual" ? "manual" : (f + ":" + d));
         } catch (_) {}
     }
-    /** Back-compat shim: old single-arg setter still used by a couple of paths. */
-    _wvReaderSetBmSortMode(section: WvBmSortSection, mode: string) {
-        this._wvReaderSetBmSort(section, mode);
-    }
-
     /** Section-header sort button (issue #18). Active (non-manual) state gets a
      *  highlight class + a descriptive tooltip so the current sort is
      *  discoverable without opening the menu.
@@ -18746,7 +18852,10 @@ class _ReaderPanelsMixin {
                 } catch (_) {}
             }
             if (!changed) return;
-            await this._bmPersist();
+            // SILENT, like the PDF twin: a derived key is never an undo step
+            // (the 2026-10-05 "Add gives Add + Edit" bug, on DOM views -- the
+            // flag and the key are both in _wvBmUndoDerived).
+            await this._bmPersistSilent();
             try {
                 const idoc = reader._iframeWindow && reader._iframeWindow.document;
                 if (idoc && this._wvReaderBmSortMode("local", reader) === "location") {
@@ -19016,38 +19125,6 @@ class _ReaderPanelsMixin {
         } catch (_) { return ""; }
     }
 
-    /** Compute, for a search query, the set of visible node ids (each match,
-     *  plus every ancestor folder of any match — so the path stays visible)
-     *  AND the set of "dimmed" ids: folders that are visible only because of
-     *  a matching descendant, not their own name. Items only appear in
-     *  `visible` when they match directly, so they're never dimmed. */
-    _wvBmFilterVisible(nodes: any[], q: string): { visible: Set<string>, dimmed: Set<string> } {
-        const visible = new Set<string>();
-        const dimmed = new Set<string>();
-        const walk = (arr: any[]) => {
-            let anyMatch = false;
-            for (const n of (arr || [])) {
-                if (!n) continue;
-                if (n.type === "folder") {
-                    const childAny = walk(n.children || []);
-                    const name = String(n.name || "").toLowerCase();
-                    const folderMatch = name.indexOf(q) >= 0;
-                    if (childAny || folderMatch) {
-                        visible.add(n.id);
-                        if (!folderMatch) dimmed.add(n.id);   // visible only via descendants
-                        anyMatch = true;
-                    }
-                } else {
-                    const t = String(n.label || "").toLowerCase();
-                    if (t.indexOf(q) >= 0) { visible.add(n.id); anyMatch = true; }
-                }
-            }
-            return anyMatch;
-        };
-        walk(nodes);
-        return { visible, dimmed };
-    }
-
     /** Open/close the chip-filter popover anchored to the funnel button.
      *  Lazily creates `.wv-bm-chip-popup` inside the bookmark view's
      *  popup-host on first open and tears it down on close so the
@@ -19205,66 +19282,6 @@ class _ReaderPanelsMixin {
                 if (btn) btn.classList.remove("wv-bm-filter-open");
             } catch (_) {}
         } catch (_) {}
-    }
-
-    /** Rebuild the chip popover contents (colors / tags / authors / types).
-     *  Hidden when no facets exist across the visible bookmark universe. */
-    /** Wire ns-resize drag on the chip-bar handle. Drag-up grows the bar,
-     *  drag-down shrinks it. Clamped to [40, view.height − 80] so the bar
-     *  never swallows the list nor disappears. Persists to a pref.
-     *  Retained for back-compat with cached resizer DOM nodes from prior
-     *  builds; the popover doesn't need vertical resizing.  */
-    _wvWireChipResizer(reader: any, idoc: any, handle: any) {
-        const win: any = idoc.defaultView;
-        // The reader's focus-manager has a window-level pointerdown handler
-        // that calls preventDefault() for everything outside its whitelist
-        // (.annotation, .thumbnails-view, ...). preventDefault on pointerdown
-        // suppresses the subsequent mousedown too, so the drag never starts.
-        // Same fix the bookmark rows use: stopPropagation on pointerdown to
-        // keep the event from reaching the window-level guard.
-        handle.addEventListener("pointerdown", (e: any) => {
-            try { e.stopPropagation(); } catch (_) {}
-        });
-        // Use pointer events end-to-end (capture on the handle itself) so the
-        // drag tracking works even when the cursor leaves the handle's bounds.
-        handle.addEventListener("pointerdown", (ev: any) => {
-            try {
-                ev.preventDefault();
-                const view = handle.closest("." + RP_BM_VIEW_CLASS);
-                const bar = view && view.querySelector(".wv-bm-chip-bar");
-                if (!bar) return;
-                handle.classList.add("wv-bm-resizing");
-                try { handle.setPointerCapture(ev.pointerId); } catch (_) {}
-                const startY = ev.clientY;
-                const startH = bar.getBoundingClientRect().height || 140;
-                const viewH = view.getBoundingClientRect().height || 600;
-                const pointerId = ev.pointerId;
-                const onMove = (e: any) => {
-                    // Drag-up (negative dy) → bigger bar; clamp to keep list visible.
-                    const dy = e.clientY - startY;
-                    let h = startH - dy;
-                    const max = Math.max(60, viewH - 80);
-                    if (h < 40) h = 40;
-                    if (h > max) h = max;
-                    bar.style.flex = "0 0 " + Math.round(h) + "px";
-                };
-                const onUp = () => {
-                    handle.classList.remove("wv-bm-resizing");
-                    try { handle.releasePointerCapture(pointerId); } catch (_) {}
-                    handle.removeEventListener("pointermove", onMove);
-                    handle.removeEventListener("pointerup", onUp);
-                    handle.removeEventListener("pointercancel", onUp);
-                    // Persist the final height for next session / re-render.
-                    try {
-                        const h = Math.round(bar.getBoundingClientRect().height || 140);
-                        Zotero.Prefs.set("weavero.readerBmChipBarHeight", String(h));
-                    } catch (_) {}
-                };
-                handle.addEventListener("pointermove", onMove);
-                handle.addEventListener("pointerup", onUp);
-                handle.addEventListener("pointercancel", onUp);
-            } catch (_) {}
-        });
     }
 
     _wvReaderRenderBmChipBar(reader: any, idoc: any) {
@@ -19930,8 +19947,8 @@ class _ReaderPanelsMixin {
             for (const en of entries) {
                 if (!en.itemKey) continue;
                 // Firefox-style list semantics: same item may be bookmarked
-                // multiple times (e.g. filed into several folders), so the
-                // `_bmHasItem` dedup check that used to live here is gone.
+                // multiple times (e.g. filed into several folders): no
+                // duplicate check here.
                 let label = en.label;
                 if (!label) { try { const it: any = Zotero.Items.getByLibraryAndKey(en.libraryID, en.itemKey); label = it ? String(it.annotationText || it.annotationComment || "").trim() : ""; } catch (_) {} }
                 label = (label || "Annotation").slice(0, 100);
@@ -22377,16 +22394,11 @@ class _ReaderPanelsMixin {
             const onKey = (ev: any) => { if (ev.key === "Escape") close(); };
             // Dismiss across all reachable docs, incl. the nested PDF view iframe
             // (a page-region click otherwise wouldn't close the menu).
-            const docs: any[] = [idoc]; const wins: any[] = [];
-            try { const w = idoc.defaultView; if (w) wins.push(w); } catch (_) {}
-            try { const top = idoc.defaultView && idoc.defaultView.top; if (top && top.document && docs.indexOf(top.document) < 0) { docs.push(top.document); wins.push(top); } } catch (_) {}
-            try {
-                const ir = reader._internalReader;
-                for (const v of [ir && ir._primaryView, ir && ir._secondaryView, ir && ir._lastView]) {
-                    const vd = v && v._iframeWindow && v._iframeWindow.document;
-                    if (vd && docs.indexOf(vd) < 0) docs.push(vd);
-                }
-            } catch (_) {}
+            // The shared collector: every view incl. Reading Mode, and each
+            // view's WINDOW for Escape. The inline copy that sat here missed
+            // both, so Escape with focus in the page, or a click in Reading
+            // Mode, left the menu open (survey 2026-10-06).
+            const { docs, wins } = this._wvReaderReachableDocs(reader, idoc);
             for (const d of docs) { try { d.addEventListener("pointerdown", onDown, true); } catch (_) {} }
             for (const w of wins) { try { w.addEventListener("keydown", onKey, true); } catch (_) {} }
             this._wvSetBmCtxDismiss(idoc, { docs, wins, onDown, onKey });
@@ -22474,17 +22486,12 @@ class _ReaderPanelsMixin {
             // Dismiss across ALL reachable docs -- including the nested PDF view
             // iframe, whose pointerdown never reaches `idoc` across the frame
             // boundary. Without it a click in the page region wouldn't close the
-            // menu. (Mirrors the row context menu's dismiss collection.)
-            const docs: any[] = [idoc]; const wins: any[] = [];
-            try { const w = idoc.defaultView; if (w) wins.push(w); } catch (_) {}
-            try { const top = idoc.defaultView && idoc.defaultView.top; if (top && top.document && docs.indexOf(top.document) < 0) { docs.push(top.document); wins.push(top); } } catch (_) {}
-            try {
-                const ir = reader._internalReader;
-                for (const v of [ir && ir._primaryView, ir && ir._secondaryView, ir && ir._lastView]) {
-                    const vd = v && v._iframeWindow && v._iframeWindow.document;
-                    if (vd && docs.indexOf(vd) < 0) docs.push(vd);
-                }
-            } catch (_) {}
+            // menu.
+            // The shared collector: every view incl. Reading Mode, and each
+            // view's WINDOW for Escape. The inline copy that sat here missed
+            // both, so Escape with focus in the page, or a click in Reading
+            // Mode, left the menu open (survey 2026-10-06).
+            const { docs, wins } = this._wvReaderReachableDocs(reader, idoc);
             for (const d of docs) { try { d.addEventListener("pointerdown", onDown, true); } catch (_) {} }
             for (const w of wins) { try { w.addEventListener("keydown", onKey, true); } catch (_) {} }
             this._wvSetBmCtxDismiss(idoc, { docs, wins, onDown, onKey });
@@ -23331,7 +23338,11 @@ class _ReaderPanelsMixin {
         try { const m = idoc.getElementById(RP_BM_CTX_ID); if (m) m.remove(); } catch (_) {}
         try { for (const r of Array.from(idoc.querySelectorAll(".wv-outline-ctx")) as any[]) r.classList.remove("wv-outline-ctx"); } catch (_) {}
         // The toolbar is a window drag area again (see _wvTabShowHistoryMenu).
-        try { const tb: any = idoc.querySelector(".toolbar[data-wv-nodrag]"); if (tb) { tb.style.removeProperty("-moz-window-dragging"); tb.removeAttribute("data-wv-nodrag"); } } catch (_) {}
+        try {
+            const tb: any = idoc.querySelector(".toolbar[data-wv-nodrag]");
+            if (tb) tb.removeAttribute("data-wv-nodrag");
+            wvRemoveStyle(idoc, "wv-tab-history-nodrag");
+        } catch (_) {}
         if (this._wvReaderBmCtxDismiss && (!this._wvReaderBmCtxDismiss.idoc || this._wvReaderBmCtxDismiss.idoc === idoc)) {
             try {
                 const { docs, wins, onDown, onKey } = this._wvReaderBmCtxDismiss;
@@ -23358,7 +23369,9 @@ class _ReaderPanelsMixin {
                 out = await r.text();
             }
         } catch (e) { Zotero.debug("[Weavero] _wvChromeIconSvg err: " + e); }
-        this._wvChromeIconCache[src] = out;
+        // Only a success is cached: a failure (no main window yet, a fetch
+        // error) used to stick as "" for the whole session (survey 2026-10-06).
+        if (out) this._wvChromeIconCache[src] = out;
         return out;
     }
 
@@ -24377,7 +24390,7 @@ class _ReaderPanelsMixin {
             ready = !!(pView && pView.viewport && pView.div && pView.renderingState === 3);
         } catch (_) {}
         const w: any = Zotero.getMainWindow();
-        const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+        const st = wvTimeout;
         if (ready) {
             try {
                 // Cancel the prior clear timer and clear a highlight still
@@ -24513,8 +24526,7 @@ class _ReaderPanelsMixin {
                 // (found on a fresh tab reload, 2026-08-26). Same retry shape
                 // as _wvOutlineInstallRecovery.
                 if (n < 40) {
-                    const w0: any = Zotero.getMainWindow();
-                    ((w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout)(
+                    wvTimeout(
                         () => { try { this._wvWireDomSelTracker(reader, n + 1); } catch (_) {} }, 250);
                 }
                 return;
@@ -24685,8 +24697,7 @@ class _ReaderPanelsMixin {
             return;
         }
         if (n < 40) {
-            const w: any = Zotero.getMainWindow();
-            const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            const st = wvTimeout;
             st(() => this._wvOutlineInstallRecovery(reader, n + 1), 150);
         }
     }
@@ -24711,8 +24722,7 @@ class _ReaderPanelsMixin {
             }
         } catch (_) {}
         if (n < 40) {
-            const w: any = Zotero.getMainWindow();
-            const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            const st = wvTimeout;
             st(() => this._wvShowPinWhenReady(reader, position, bmId, n + 1, opts), 150);
         }
     }
@@ -25736,12 +25746,30 @@ class _ReaderPanelsMixin {
                 pin.style.left = (baseX + dx) + "px";
                 pin.style.top = (baseY + dy) + "px";
             };
+            // A cancelled pointer (capture lost, a popup took it, a pen or touch
+            // cancel) ends the drag where it STARTED. There was no handler: the
+            // drag stayed armed, the pin followed later mouse moves and the next
+            // release anywhere committed it (survey 2026-10-06).
+            const onCancel = () => {
+                if (!dragging) return;
+                dragging = false;
+                pin._wvDragging = false;
+                try { doc.removeEventListener("pointermove", onMove, true); } catch (_) {}
+                try { doc.removeEventListener("pointerup", onUp, true); } catch (_) {}
+                try { doc.removeEventListener("pointercancel", onCancel, true); } catch (_) {}
+                try { pin.style.cursor = "grab"; } catch (_) {}
+                pin.style.left = baseX + "px";
+                pin.style.top = baseY + "px";
+                tr("cancel");
+                arm();
+            };
             const onUp = async (ev: any) => {
                 if (!dragging) return;
                 dragging = false;
                 pin._wvDragging = false;
                 try { doc.removeEventListener("pointermove", onMove, true); } catch (_) {}
                 try { doc.removeEventListener("pointerup", onUp, true); } catch (_) {}
+                try { doc.removeEventListener("pointercancel", onCancel, true); } catch (_) {}
                 try { pin.style.cursor = "grab"; } catch (_) {}
                 if (!lifted) { tr("drop-not-lifted"); arm(); return; }   // a click, not a drag — nothing moves
                 const dx = ev.clientX - startX, dy = ev.clientY - startY;
@@ -25872,6 +25900,7 @@ class _ReaderPanelsMixin {
                     try { pin.setPointerCapture(ev.pointerId); } catch (_) {}
                     doc.addEventListener("pointermove", onMove, true);
                     doc.addEventListener("pointerup", onUp, true);
+                    doc.addEventListener("pointercancel", onCancel, true);
                 } catch (_) {}
             }, true);
         } catch (e) { Zotero.debug("[Weavero] _wvWireDomPinDrag err: " + e); }
@@ -27042,8 +27071,11 @@ class _ReaderPanelsMixin {
             if (!Zotero.Reader || typeof Zotero.Reader.registerEventListener !== "function") return;
             if (this._thumbnailMenuHandler) return; // idempotent
             const plugin: any = this;
-            const handler = (event: any) => {
+            const handler = (event0: any) => {
                 try {
+                    // Explicit `disabled` on every item, or Zotero 11 greys
+                    // it out (wvReaderMenuEvent; issue #57).
+                    const event = wvReaderMenuEvent(event0);
                     const { reader, params, append } = event || {};
                     if (!reader || !params || !append) return;
                     if (reader._type && reader._type !== "pdf") return;

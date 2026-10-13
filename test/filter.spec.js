@@ -23,7 +23,7 @@ describe("Weavero — items-tree filter", () => {
     let wv;
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
     });
 
     // ---- _rowKindOf: kind classification --------------------------
@@ -203,17 +203,21 @@ describe("Weavero — items-tree filter", () => {
     // ---- Zotero 9 compatibility contracts ------------------------
 
     describe("Zotero 9 compatibility", () => {
+        // The translation moved from per-apply closures in the apply to a
+        // once-per-instance install (survey step 4, 2026-10-07).
         it("getRow patch clamps to a valid row (never undefined)", () => {
-            expect(wv._applyItemsListFilterInner.toString())
+            expect(wv._wvFilterPatchInstall.toString())
                 .to.include("safeRaw");
         });
         it("installs null-safe container probes on v9", () => {
-            const src = wv._applyItemsListFilterInner.toString();
+            const src = wv._wvFilterPatchInstall.toString();
             expect(src).to.include("isV9");
             expect(src).to.include("isContainerOpen");
+            expect(src).to.include('"v9safe"');
         });
         it("opens cascade containers highest-index-first on the v9 fallback", () => {
-            expect(wv._applyItemsListFilterInner.toString())
+            // Pass 1 is the apply's cascade phase (step 4 split).
+            expect(wv._wvFilterApplyCascade.toString())
                 .to.include("toOpen.length - 1");
         });
         it("re-applies after Zotero's refresh and peels the wrap on reload", () => {
@@ -811,7 +815,7 @@ describe("Weavero — items-tree filter", () => {
         let group, groupLibID, junk;
         before(async function () {
             this.timeout(30000);
-            if (typeof wv._wvCollectLinkedLibraries !== "function") this.skip();
+            if (typeof wv._wvCollectLinkedLibraries !== "function") wvT.absent('typeof wv._wvCollectLinkedLibraries !== "function"');
             // A local group library (upstream's own createGroup pattern —
             // needs a current user in the users table).
             let uid = Zotero.Users.getCurrentUserID();
@@ -924,12 +928,16 @@ describe("Weavero — items-tree filter", () => {
             wv._cachedLinkedLibraries = { libraryID: uid, map };
             try {
                 expect(wv._wvLinkedLibCacheWarm()).to.equal(true);
-                expect(wv._wvItemInAnyLinkedLib(mine, [String(groupLibID)]))
-                    .to.equal(true);
-                expect(wv._wvItemInAnyLinkedLib(mine, ["999999"])).to.equal(false);
+                // Per-library membership, read off the cache map (the
+                // per-library predicate had no caller outside this spec).
+                const inLib = (it, lid) => {
+                    const set = map.get(String(lid));
+                    return !!(set && set.has(it.id));
+                };
+                expect(inLib(mine, groupLibID)).to.equal(true);
+                expect(inLib(mine, 999999)).to.equal(false);
                 const other = await mkItem(uid, "WV-TEST unlinked");
-                expect(wv._wvItemInAnyLinkedLib(other, [String(groupLibID)]))
-                    .to.equal(false);
+                expect(inLib(other, groupLibID)).to.equal(false);
                 // The any-library form — what the In Multiple Libraries
                 // tile's predicate actually asks.
                 expect(wv._wvItemInAnyOtherLib(mine)).to.equal(true);

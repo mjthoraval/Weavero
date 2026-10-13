@@ -14,7 +14,7 @@ describe("Weavero — pin-placement arm routes DOM clicks", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvOutlineArmPinPlacement !== "function") this.skip();
+        if (!wv || typeof wv._wvOutlineArmPinPlacement !== "function") wvT.absent('!wv || typeof wv._wvOutlineArmPinPlacement !== "function"');
         win = Zotero.getMainWindow();
     });
 
@@ -99,7 +99,7 @@ describe("Weavero — media pin fractional placement", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvDomPinDocPoint !== "function") this.skip();
+        if (!wv || typeof wv._wvDomPinDocPoint !== "function") wvT.absent('!wv || typeof wv._wvDomPinDocPoint !== "function"');
     });
 
     const rect = { left: 100, top: 200, width: 400, height: 300 };
@@ -134,7 +134,7 @@ describe("Weavero — only the newest pin arm consumes", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvOutlineArmPinPlacement !== "function") this.skip();
+        if (!wv || typeof wv._wvOutlineArmPinPlacement !== "function") wvT.absent('!wv || typeof wv._wvOutlineArmPinPlacement !== "function"');
         win = Zotero.getMainWindow();
     });
 
@@ -166,7 +166,7 @@ describe("Weavero — flash painter paints each line exactly once", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvDomHighlightRange !== "function") this.skip();
+        if (!wv || typeof wv._wvDomHighlightRange !== "function") wvT.absent('!wv || typeof wv._wvDomHighlightRange !== "function"');
         win = Zotero.getMainWindow();
     });
 

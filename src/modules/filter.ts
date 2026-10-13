@@ -15,24 +15,14 @@
 //   _applyItemsListFilter / _applyItemsListFilterInner,
 //   _reapplyFilterSync, _partialCollapseOnFilterClear).
 // - Filter bar + popup UI (_renderFilterBar, _clearAllFilters,
-//   _buildFilterChip, _buildColorChip, _buildTypeChip,
-//   _buildHasCommentChip, _buildHasRelatedChip, _buildHasLinkChip,
-//   _buildHasTagChip, _buildItemNoteChip, _buildStandaloneNoteChip,
-//   _buildHasFieldChip, _buildPublicationChip, _buildTagChip,
-//   _buildAuthorChip, _buildItemTypeChip,
-//   _buildAttachmentFileTypeChip, _buildAddedByChip,
-//   _toggleIncludeExclude, _wireFilterBoxFocus,
+//   _buildFilterChip, _buildDimChip -- every chip, from the dimension
+//   table and WV_CHIPS --, _toggleIncludeExclude,
 //   _renderFilterPanelContents, _openFilterPanel,
 //   _renderUnifiedSearchSection, _renderItemTypeRow,
 //   _renderColorSection, _renderTypeSection,
 //   _renderCrossLevelSection, _openCrossLevelScopePopup,
-//   _renderBoolKindIconSection, _renderItemNoteSection,
-//   _renderStandaloneNoteSection, _renderParentHasFieldsSection,
-//   _renderHasAnnotationsSection, _renderHasCommentSection,
-//   _makeHasCommentSvg, _renderTagSection, _renderAuthorSection,
-//   _renderAttachmentFileTypeSection, _renderCollectionSection,
-//   _renderSavedSearchSection, _renderAddedBySection,
-//   _hasMatchingAnnotation).
+//   _renderParentHasFieldsSection, _renderHasAnnotationsSection,
+//   _makeHasCommentSvg, _renderAttachmentFileTypeSection).
 // - Per-user added-by helpers (_getAnnotationAuthor,
 //   _getItemAddedBy, _appendAddedByBadge*, _colorForUser,
 //   _withAlpha, _ensureAnnotationRowPatched,
@@ -45,6 +35,12 @@
 // defineProperties.
 
 import { winOf, wvPopupHost, wvDismissTooltip, wvSetBoolAttr } from "../lib/dom";
+import { wvLivePlugin } from "../lib/live";
+import { wvWrap, wvUnwrap } from "../lib/wrap";
+import { wvTimeout } from "../lib/timers";
+import { wvListen, wvUnlisten } from "../lib/listen";
+import { WV_FILTER_DIMS, wvDimSet, wvDimDefaults, wvDimLevels, wvDimChildFields } from "./filter-facets";
+import type { WvDim } from "./filter-facets";
 import { URL_SCHEMES } from "./url";
 import {
     BTN_CLASS, BTN_TREE_CLASS, BTN_PANE_CLASS, BTN_POPUP_CLASS,
@@ -71,6 +67,42 @@ import {
 function dbg(...args: any[]) {
     try { if (Zotero.Prefs.get("weavero.debug")) (Zotero.debug as any)(...args); } catch (_) {}
 }
+
+// One items-list filter apply's working context, handed from phase to phase
+// (survey 2026-10-06 step 4): fixed inputs first, then what each phase
+// publishes for the next. `_applyItemsListFilterInner` is the driver.
+interface WvFilterApplyCtx {
+    win: any; itemsView: any; rp: any; isV9: boolean; cascade: boolean;
+    state: any; active: boolean;
+    perf: any; perfNow: () => number; perfT0: number; mark: (k: string) => void;
+    // phase 2
+    sig: any; wasPatchedAtEntry: boolean;
+    // phase 3
+    origGetRow: any; origGetRowCount: any;
+    isPrimary: any; hasMatch: any; hasPrimaryDescendant: any;
+    // phase 5
+    total: number; keepSet: Set<any> | null; primaryIDs: Set<number> | null;
+    // phase 6
+    keep: number[] | null; keepHash: number; keepRowsLen: number;
+}
+
+// The row-provider members the items-list filter translates, with the
+// key the saved native is published under (`rp._wvOrigGetRow` is read by
+// the cascade, the stale-keep retry and the live suites). One list for
+// the install and every removal path (survey 2026-10-06 step 4).
+const WV_FILTER_RP_MEMBERS: Array<[string, string]> = [
+    ["getRow", "_wvOrigGetRow"],
+    ["getRowCount", "_wvOrigGetRowCount"],
+    ["getLevel", "_wvOrigGetLevel"],
+    ["isContainer", "_wvOrigIsContainer"],
+    ["isContainerOpen", "_wvOrigIsContainerOpen"],
+    ["isContainerEmpty", "_wvOrigIsContainerEmpty"],
+    ["toggleOpenState", "_wvOrigToggleOpenState"],
+    ["expandRows", "_wvOrigExpandRows"],
+    ["collapseRows", "_wvOrigCollapseRows"],
+    ["expandAllRows", "_wvOrigExpandAllRows"],
+    ["collapseAllRows", "_wvOrigCollapseAllRows"],
+];
 
 // PubMed identifiers live in the Extra field by Zotero convention
 // ("PMID: 123456" / "PMCID: PMC123456" — the PubMed translator's
@@ -199,6 +231,301 @@ function wvItemHasPubmedId(item: any, field: string, re: RegExp): boolean {
         return out;
     } catch (e) { return false; }
 }
+
+// ---- Per-dimension row tests (survey step 7, facets slice 2) ----
+// How each dimension with `rows` in the table (filter-facets.ts) reads an
+// item: `has` for a tri-state, `val` (one value) or `vals` (several, e.g. an
+// item's creators) for a list, or custom `inc` / `exc` for a list matched as
+// a whole (file types, outline tokens). `ready` gates a dimension whose data
+// may not be loaded yet (a cold cache passes rows through). The five row
+// checks (_rowPassesFilters, _rowHasOwnKindMatch, _kindOK, the tree join and
+// its root checks) loop over these instead of a ladder each.
+// Guard: test/filter-facets.spec.js (tests <-> table) and
+// test/filter-facets-match.spec.js (a characterization of all five checks).
+interface WvDimTest {
+    has?: (p: any, it: any, g: any) => boolean;
+    val?: (p: any, it: any) => any;
+    vals?: (p: any, it: any) => any[];
+    inc?: (p: any, it: any, list: any[]) => boolean;
+    exc?: (p: any, it: any, list: any[]) => boolean;
+    ready?: (p: any) => boolean;
+}
+const WV_DIM_TESTS: Record<string, WvDimTest> = {
+    annotationColor: { val: (p, it) => it.annotationColor },
+    annotationType: { val: (p, it) => it.annotationType },
+    annotationHasComment: {
+        has: (p, it) => { const t = it.annotationComment; return !!(t && String(t).trim().length); },
+    },
+    // Embedded in the PDF (`annotationIsExternal`) vs made in Zotero Reader.
+    annotationSource: { has: (p, it) => !!it.annotationIsExternal },
+    // ALL picked authors (creators are multi-valued; an annotation has one
+    // author, so only a single pick can match it). Excludes: any of them.
+    annotationAuthor: { vals: (p, it) => p._getItemAuthors(it) },
+    itemType: { val: (p, it) => it.itemType },
+    attachmentFileType: {
+        inc: (p, it, l) => p._attachmentMatchesFileTypeList(it, l),
+        exc: (p, it, l) => !p._attachmentMatchesFileTypeList(it, l),
+    },
+    // DEV outline-eval: Source + Verdict any-of; Flags all-of (an item can
+    // carry several flags); excludes are always has-any -> reject.
+    outlineClass: {
+        inc: (p, it, l) => p._outlineMatchesList(it, l),
+        exc: (p, it, l) => !p._outlineMatchesList(it, l),
+    },
+    outlineFlags: {
+        inc: (p, it, l) => p._outlineMatchesAll(it, l),
+        exc: (p, it, l) => !p._outlineMatchesList(it, l),
+    },
+    outlineVerdict: {
+        inc: (p, it, l) => p._outlineMatchesList(it, l),
+        exc: (p, it, l) => !p._outlineMatchesList(it, l),
+    },
+    hasAbstract: {
+        has: (p, it) => !!(it.getField && String(it.getField("abstractNote") || "").trim().length),
+    },
+    hasDOI: { has: (p, it) => wvItemFieldNonEmpty(it, "DOI", "doi") },
+    hasPMID: { has: (p, it) => wvItemHasPubmedId(it, "PMID", WV_PMID_RE) },
+    hasPMCID: { has: (p, it) => wvItemHasPubmedId(it, "PMCID", WV_PMCID_RE) },
+    retracted: { has: (p, it) => wvItemIsRetracted(it) },
+    hasURL: { has: (p, it) => wvItemFieldNonEmpty(it, "url", "url") },
+    hasAttachment: { has: (p, it) => wvItemHasFileAttachment(it) },
+    // Source-aware: while the Source chip is set, only annotations of that
+    // source count -- Source=Zotero + Has Annotations=No means "no
+    // annotations I made in Zotero" even when embedded ones exist.
+    hasAnnotations: {
+        has: (p, it, g) => (it.getAnnotations() || []).some((a: any) => p._annSourceMatches(a, g.annotationSource)),
+    },
+    // Attachment-level only: deliberately NOT source-scoped.
+    hasEmbeddedAnnotations: {
+        has: (p, it) => (it.getAnnotations() || []).some((a: any) => !!a.annotationIsExternal),
+    },
+    hasOutline: { has: (p, it) => p._wvHasCuratedOutline(it) },
+    // Publication: case-sensitive by design (CLAUDE.md invariant).
+    publication: { val: (p, it) => (it.getField && it.getField("publicationTitle")) || "" },
+    readStatus: { val: (p, it) => p._wvReadStatusOf(it) },
+    // Via the precomputed linked-relations cache; a COLD cache passes rows
+    // through (degraded, never wrong-way filtering).
+    inOtherLibrary: { has: (p, it) => p._wvItemInAnyOtherLib(it), ready: (p) => p._wvLinkedLibCacheWarm() },
+};
+
+// Row kinds as bits, so a check classifies its row ONCE: each Zotero kind
+// test is an ItemTypes.getName lookup (isRegularItem makes three), and the
+// first table version re-ran one per set dimension -- part of a measured
+// 1.75x slowdown of the row checks, 2026-10-08.
+const WV_K_ANN = 1, WV_K_ATT = 2, WV_K_FILE = 4, WV_K_REG = 8, WV_K_OTHER = 16;
+const WV_K_ALL = 31;
+const WV_ROWS_BIT: Record<string, number> = {
+    annotation: WV_K_ANN, attachment: WV_K_ATT, fileAttachment: WV_K_FILE,
+    regular: WV_K_REG, any: WV_K_ALL,
+};
+/** The row's kind bits (never 0, so `0` can mean "not computed yet"). */
+function wvRowKind(item: any): number {
+    const isAnn = !!(item.isAnnotation && item.isAnnotation());
+    const isAtt = !isAnn && !!(item.isAttachment && item.isAttachment());
+    const isNote = !isAnn && !isAtt && !!(item.isNote && item.isNote());
+    return wvRowKindFrom(item, isAnn, isAtt, isNote);
+}
+/** The same from flags a check already has. Regular by elimination: Zotero's
+ *  isRegularItem() is exactly "not a note, attachment or annotation"
+ *  (xpcom/data/item.js), and calling it would redo those three lookups. */
+function wvRowKindFrom(item: any, isAnn: boolean, isAtt: boolean, isNote: boolean): number {
+    if (isAnn) return WV_K_ANN;
+    if (isAtt) return (item.isFileAttachment && item.isFileAttachment()) ? WV_K_ATT | WV_K_FILE : WV_K_ATT;
+    if (isNote) return WV_K_OTHER;
+    return item.isRegularItem ? WV_K_REG : WV_K_OTHER;
+}
+for (const f of WV_FILTER_DIMS) {
+    if (!f.rows) continue;
+    f.test = WV_DIM_TESTS[f.id];
+    f.rowsBit = WV_ROWS_BIT[f.rows];
+}
+
+const WV_DIMS_ROWS = WV_FILTER_DIMS.filter(f => f.rows);
+const WV_DIMS_KIND: Record<string, WvDim[]> = {
+    annotation: WV_FILTER_DIMS.filter(f => f.kindCheck && f.rows === "annotation"),
+    attachment: WV_FILTER_DIMS.filter(f => f.kindCheck && f.rows === "attachment"),
+    regular: WV_FILTER_DIMS.filter(f => f.kindCheck && f.rows === "regular"),
+};
+const WV_DIMS_ROOT = WV_FILTER_DIMS.filter(f => f.root);
+const WV_DIMS_PARENT = WV_FILTER_DIMS.filter(f => f.level === "parent");
+
+/** Is `item` a row of the kind `rows` names? */
+function wvDimRowIs(item: any, rows: string): boolean {
+    switch (rows) {
+        case "annotation": return !!(item.isAnnotation && item.isAnnotation());
+        case "attachment": return !!(item.isAttachment && item.isAttachment());
+        case "fileAttachment": return !!(item.isFileAttachment && item.isFileAttachment());
+        case "regular": return !!(item.isRegularItem && item.isRegularItem());
+        default: return true;
+    }
+}
+
+/** Does `item` satisfy the include (`which` "inc"), the exclude ("exc") or
+ *  the tri-state ("tri") of dimension `f` in `g`? */
+function wvDimSat(p: any, f: WvDim, item: any, g: any, which: "inc" | "exc" | "tri"): boolean {
+    const t = f.test as WvDimTest;
+    if (which === "tri") return !!t.has(p, item, g) === g[f.id];
+    const list = which === "inc" ? g[f.id] : g[f.idX];
+    if (t[which]) return t[which](p, item, list);
+    if (t.vals) {
+        const vs = t.vals(p, item) || [];
+        return which === "inc" ? list.every((v: any) => vs.includes(v)) : !list.some((v: any) => vs.includes(v));
+    }
+    const v = t.val(p, item);
+    return which === "inc" ? list.includes(v) : !list.includes(v);
+}
+
+/** Which parts of dimension `f` are set in `g`: 0 = none; for a list,
+ *  1 = include, 2 = exclude (3 = both); 4 = the tri-state. */
+function wvDimSetBits(f: WvDim, g: any): number {
+    let s: number;
+    if (f.shape === "tri") s = g[f.id] == null ? 0 : 4;
+    else {
+        const a = g[f.id], x = g[f.idX];
+        s = (a && a.length ? 1 : 0) | (x && x.length ? 2 : 0);
+    }
+    // A dormant dimension (filter-facets.ts `dormant`) counts as unset.
+    return s && f.dormant && f.dormant() ? 0 : s;
+}
+
+/** Per-row pass of one SET dimension (`s` its set bits, `k` the row's kind
+ *  bits): rows of other kinds relax through. */
+function wvDimRowPasses(p: any, f: WvDim, item: any, g: any, s: number, k: number): boolean {
+    const t = f.test as WvDimTest;
+    if (t.ready && !t.ready(p)) return true;
+    if (!(k & (f.rowsBit as number))) return true;
+    if (s & 4) return wvDimSat(p, f, item, g, "tri");
+    if ((s & 1) && !wvDimSat(p, f, item, g, "inc")) return false;
+    if ((s & 2) && !wvDimSat(p, f, item, g, "exc")) return false;
+    return true;
+}
+
+/** Own-kind match of one SET dimension: the row is of its kind and satisfies
+ *  it -- an include, a pure exclude ("exclude yellow" alone makes every
+ *  non-yellow annotation primary) or the tri-state. */
+function wvDimOwnMatch(p: any, f: WvDim, item: any, g: any, s: number, k: number): boolean {
+    const t = f.test as WvDimTest;
+    if (t.ready && !t.ready(p)) return false;
+    if (!(k & (f.rowsBit as number))) return false;
+    if (s & 4) return wvDimSat(p, f, item, g, "tri");
+    return (!!(s & 1) && wvDimSat(p, f, item, g, "inc"))
+        || (!!(s & 2) && wvDimSat(p, f, item, g, "exc"));
+}
+
+/** Is any of `dims` set in `g` (optionally ignoring one id)? A plain loop:
+ *  these run per row per apply, where closures and per-call arrays cost
+ *  (the first table version measured 2.7x slower than the hand-written
+ *  ladders, 2026-10-08). */
+function wvAnyDimSet(dims: WvDim[], g: any, skipId?: string): boolean {
+    for (let i = 0; i < dims.length; i++) {
+        const f = dims[i];
+        if (f.id !== skipId && wvDimSetBits(f, g)) return true;
+    }
+    return false;
+}
+
+/** A ROOT dimension checked on the tree's root (`isReg` false: a standalone
+ *  note / attachment root reads as "no value" -- false, or "" for a list). */
+function wvDimRootOK(p: any, f: WvDim, root: any, isReg: boolean, g: any): boolean {
+    const s = wvDimSetBits(f, g);
+    if (!s) return true;
+    const t = f.test as WvDimTest;
+    if (t.ready && !t.ready(p)) return true;
+    if (s & 4) return (isReg && !!t.has!(p, root, g)) === g[f.id];
+    const v = isReg ? t.val!(p, root) : "";
+    if ((s & 1) && !g[f.id].includes(v)) return false;
+    if ((s & 2) && g[f.idX as string].includes(v)) return false;
+    return true;
+}
+
+// ---- Chip bar (survey step 7, facets slice 3) ----
+// How a dimension's chip reads, where it differs from the default: a list
+// says "is" / "is not" with its values joined by ", "; a tri-state says
+// "is" / "is not" with no value. `op` gets the chip's list (null for a
+// tri-state), whether it is the exclude chip, and the tri-state value.
+// Guard: test/filter-chipbar.spec.js (a characterization of the bar recorded
+// before the chips came from the table).
+const WV_NS_HTML = "http://www.w3.org/1999/xhtml";
+interface WvChipSpec {
+    op?: (list: any[] | null, exclude: boolean, value: any) => string;
+    fill?: (p: any, doc: any, seg: any, list: any[] | null, exclude: boolean, value: any) => void;
+}
+const wvChipLabels = (list: any[], defs: { value: string; label: string }[]) =>
+    list.map((v) => { const d = defs.find(x => x.value === v); return d ? d.label : v; });
+// Several picks of a multi-valued field must ALL match; exclusions: any.
+const wvChipOpAll = (list: any, x: boolean) => (x ? "excludes any" : (list.length > 1 ? "includes all" : "includes"));
+const wvChipOpAny = (_list: any, x: boolean) => (x ? "excludes any" : "includes any");
+const WV_CHIPS: Record<string, WvChipSpec> = {
+    annotationColor: {
+        fill: (p, doc, seg, l) => {
+            // Native rounded-square swatch, chip-sized (12px), then the names.
+            for (const c of l!) seg.appendChild(p._wvNativeColorSwatch(doc, c, 12));
+            const label = doc.createElementNS(WV_NS_HTML, "span");
+            label.textContent = wvChipLabels(l!, p._ANNOTATION_COLORS).join(", ");
+            seg.appendChild(label);
+        },
+    },
+    annotationType: { fill: (p, doc, seg, l) => { seg.textContent = wvChipLabels(l!, p._ANNOTATION_TYPES).join(", "); } },
+    annotationSource: {
+        op: () => "is",
+        fill: (p, doc, seg, l, x, v) => { seg.textContent = v ? "Embedded in PDF" : "Made in Zotero"; },
+    },
+    annotationTag: { op: wvChipOpAll },
+    annotationAuthor: { op: wvChipOpAll },
+    // Item-type icons, no names: the icon conveys the type and saves width.
+    itemType: {
+        fill: (p, doc, seg, l) => {
+            for (const t of l!) {
+                const icon = doc.createElementNS(WV_NS_HTML, "span");
+                icon.className = "icon icon-css icon-item-type";
+                icon.dataset.itemType = t;
+                let label = t;
+                try { label = Zotero.ItemTypes.getLocalizedString(t); } catch (e) {}
+                icon.title = label;
+                seg.appendChild(icon);
+            }
+        },
+    },
+    attachmentFileType: { fill: (p, doc, seg, l) => { seg.textContent = wvChipLabels(l!, p._ATTACHMENT_FILE_TYPES).join(", "); } },
+    outlineClass: { fill: (p, doc, seg, l) => { seg.textContent = wvChipLabels(l!, p._wvOutlineClassCatalogue()).join(", "); } },
+    // Include is AND ("has all"); exclude is has-any -> hide.
+    outlineFlags: {
+        op: (l, x) => (x ? "has none of" : "has"),
+        fill: (p, doc, seg, l, x) => { seg.textContent = wvChipLabels(l!, p._wvOutlineClassCatalogue()).join(x ? ", " : " + "); },
+    },
+    outlineVerdict: { fill: (p, doc, seg, l) => { seg.textContent = wvChipLabels(l!, p._wvOutlineVerdictCatalogue()).join(", "); } },
+    // Per-user coloured pills -- the palette of the annotation badge and the
+    // Added By column -- unless Added By colours are off.
+    addedBy: {
+        fill: (p, doc, seg, l) => {
+            if (!p._getEnableAddedByColors()) { seg.textContent = l!.join(", "); return; }
+            l!.forEach((u, k) => {
+                if (k > 0) {
+                    const sep = doc.createElementNS(WV_NS_HTML, "span");
+                    sep.className = "wv-chip-value-sep";
+                    sep.textContent = ", ";
+                    seg.appendChild(sep);
+                }
+                const pill = doc.createElementNS(WV_NS_HTML, "span");
+                pill.className = "wv-chip-value-user";
+                pill.textContent = u;
+                const colour = p._colorForUser(u);
+                pill.style.color = colour;
+                pill.style.backgroundColor = p._withAlpha(colour, 0.18);
+                seg.appendChild(pill);
+            });
+        },
+    },
+    publication: { op: wvChipOpAny },
+    readStatus: {
+        op: wvChipOpAny,
+        fill: (p, doc, seg, l) => {
+            const icons: Record<string, string> = {};
+            try { for (const st of p._wvReadStatuses()) icons[st.name] = st.icon; } catch (e) {}
+            seg.textContent = l!.map((n: string) => (icons[n] ? icons[n] + " " : "") + (n || "No Status")).join(", ");
+        },
+    },
+};
 
 const _ANNOTATION_COLORS_DATA = [
     { value: "#ffd400", label: "Yellow" },
@@ -430,67 +757,475 @@ class _FilterMixin {
      *  branch of `_applyItemsListFilterInner` (line ~11934). The
      *  next `_applyItemsListFilter()` call re-installs the patches
      *  with a fresh `keep` array. */
-    _pauseFilterPatches() {
+    /** Take the filter's row-provider translation OFF this window's
+     *  provider (a collection swap or quick-search rebuild: Zotero's load
+     *  must read raw rows). One body for every unpatch path -- survey
+     *  2026-10-06 step 4: this sequence used to exist in three copies
+     *  (here, the inactive apply branch, the teardown). */
+    _pauseFilterPatches(win?: any) {
         try {
-            const win = Zotero.getMainWindow();
-            const itemsView = win && win.ZoteroPane && win.ZoteroPane.itemsView;
+            const w = win || this._wvFilterTargetWin();
+            const itemsView = w && w.ZoteroPane && w.ZoteroPane.itemsView;
             const rp = itemsView && itemsView.rowProvider;
             if (!rp || !rp._wvOrigGetRow) return;
-            // Same reasoning as the deactivation branch: the watermark
-            // only means something while the translation is installed.
-            delete rp._wvKeepRowsLen;
-            delete rp.getRow;
-            delete rp.getRowCount;
-            delete rp._wvOrigGetRow;
-            delete rp._wvOrigGetRowCount;
-            // Restore the item pane's count getter (own property on the
-            // itemsView; deleting it re-exposes the prototype getter).
-            // The host is stored on `rp` because these teardown sites
-            // only have `rp` in scope.
-            if (rp._wvObjRowCountHost) {
-                try { delete rp._wvObjRowCountHost.objectRowCount; }
-                catch (e) {}
-                delete rp._wvObjRowCountHost;
-            }
-            if (rp._wvOrigGetLevel) {
-                delete rp.getLevel;
-                delete rp._wvOrigGetLevel;
-            }
-            if (rp._wvOrigIsContainer) {
-                delete rp.isContainer;
-                delete rp._wvOrigIsContainer;
-            }
-            if (rp._wvOrigIsContainerOpen) {
-                delete rp.isContainerOpen;
-                delete rp._wvOrigIsContainerOpen;
-            }
-            if (rp._wvOrigIsContainerEmpty) {
-                delete rp.isContainerEmpty;
-                delete rp._wvOrigIsContainerEmpty;
-            }
-            if (rp._wvOrigToggleOpenState) {
-                delete rp.toggleOpenState;
-                delete rp._wvOrigToggleOpenState;
-            }
-            if (rp._wvOrigExpandRows) {
-                delete rp.expandRows;
-                delete rp._wvOrigExpandRows;
-            }
-            if (rp._wvOrigCollapseRows) {
-                delete rp.collapseRows;
-                delete rp._wvOrigCollapseRows;
-            }
-            if (rp._wvOrigExpandAllRows) {
-                delete rp.expandAllRows;
-                delete rp._wvOrigExpandAllRows;
-            }
-            if (rp._wvOrigCollapseAllRows) {
-                delete rp.collapseAllRows;
-                delete rp._wvOrigCollapseAllRows;
-            }
-            delete rp._wvFilterSelfCall;
+            this._wvFilterPatchRemove(rp, itemsView);
         } catch (e) {
             dbg("[Weavero][filter] _pauseFilterPatches err: " + e);
+        }
+    }
+
+    /** Install the filter's row-provider translation ONCE per instance
+     *  (lib/wrap.ts layers: "filter"; Zotero 9's null-safe probes as
+     *  "v9safe"). The wrappers read the per-apply VIEW `rp._wvFilterView`
+     *  ({keep, keepRowsLen}; absent = pass through) on every call instead
+     *  of closing over one apply's `keep` -- so an apply publishes a new
+     *  view object and installs nothing, and the item-pane count getter
+     *  can never be left on a stale closure (the 2026-08-08 "20,508 items
+     *  in this view" bug). The natives are captured as bound `rp._wvOrig*`
+     *  (the cascade, the stale-keep retry and the live suites read them).
+     *  Idempotent per instance; another instance's layers are replaced.
+     *
+     *  SELF flag: rp's own internals (e.g. _toggleOpenState) call
+     *  `this.getRow(idx)` / `this.getLevel(idx)` with REAL indices into
+     *  `_rows`. Without a bypass the translating wrappers double-translate
+     *  (keep[realIdx]) and the toggle operates on the wrong row. The flag is
+     *  set during calls into the original toggleOpenState / expandRows /
+     *  collapseRows, so any nested data access falls through raw. */
+    _wvFilterPatchInstall(rp: any, itemsView: any, isV9: boolean) {
+        const tag = this._wvWireTag();
+        if (rp._wvFilterPatchTag === tag) return;
+        const SELF = "_wvFilterSelfCall";
+        // Another instance's install (a reload, an upgrade), or a build from
+        // before the layered helper (own-prop wrappers, no layer table):
+        // take it off whole, so the natives captured below are Zotero's.
+        if (rp._wvOrigGetRow) this._wvFilterPatchRemove(rp, itemsView);
+        // The manual-expand tracker is the layer UNDER the translation (it
+        // reads real indices); make sure it is in place before "filter"
+        // goes on top -- layers chain in install order.
+        this._wvInstallUserOpenTracking(itemsView);
+        // Save the natives on first activation. Cover `getLevel` too:
+        // virtualized-table.jsx's `_getDepth(index)` (used for indent and
+        // parent twisty arrows) walks the shared `_rows` array through
+        // `getLevel(idx)` / `getParentIndex(idx)`, so without mapping `idx`
+        // back to the original space the visual depth is computed for the
+        // wrong row. Always walk to the PROTOTYPE-defined method, not
+        // whatever's currently on the instance (a stale own-prop wrapper
+        // would otherwise be saved as "the original").
+        // V9-COMPAT: Zotero 9 defines `isContainer` / `getRow` / etc. as
+        // arrow-function class fields (OWN properties); accept those when no
+        // prototype method exists so v9 has originals to wrap.
+        const findProtoMethod = (obj, name) => {
+            let p = Object.getPrototypeOf(obj);
+            while (p) {
+                if (Object.prototype.hasOwnProperty.call(p, name)
+                    && typeof p[name] === "function") {
+                    return p[name];
+                }
+                p = Object.getPrototypeOf(p);
+            }
+            if (Object.prototype.hasOwnProperty.call(obj, name)
+                && typeof obj[name] === "function") {
+                return obj[name];
+            }
+            return null;
+        };
+        // Patch the rowProvider only. `itemsView.getLevel` etc. are
+        // arrow-function fields on the LibraryTree base that simply
+        // delegate to `this.rowProvider.<same>(idx)` — so patching at the
+        // rp level is reached by every public consumer. Patching itemsView
+        // in addition would double-stack mapping (keep[keep[idx]]).
+        if (!rp._wvOrigGetRow) {
+            const rpGetRow = findProtoMethod(rp, "getRow");
+            const rpGetRowCount = findProtoMethod(rp, "getRowCount");
+            const rpGetLevel = findProtoMethod(rp, "getLevel");
+            const rpIsContainer = findProtoMethod(rp, "isContainer");
+            const rpIsContainerOpen = findProtoMethod(rp, "isContainerOpen");
+            const rpIsContainerEmpty = findProtoMethod(rp, "isContainerEmpty");
+            const rpToggle = findProtoMethod(rp, "toggleOpenState");
+            const rpExpand = findProtoMethod(rp, "expandRows");
+            const rpCollapse = findProtoMethod(rp, "collapseRows");
+            const rpExpandAll = findProtoMethod(rp, "expandAllRows");
+            const rpCollapseAll = findProtoMethod(rp, "collapseAllRows");
+            rp._wvOrigGetRow = (rpGetRow || rp.getRow).bind(rp);
+            // Zotero 9 has no `getRowCount` method — the count comes from
+            // `_rows.length`. Synthesise one so the rest is uniform.
+            if (rpGetRowCount) {
+                rp._wvOrigGetRowCount = rpGetRowCount.bind(rp);
+            } else if (typeof rp.getRowCount === "function") {
+                rp._wvOrigGetRowCount = rp.getRowCount.bind(rp);
+            } else {
+                rp._wvOrigGetRowCount = function () {
+                    return (rp._rows && rp._rows.length) || 0;
+                };
+            }
+            if (rpGetLevel) rp._wvOrigGetLevel = rpGetLevel.bind(rp);
+            if (rpIsContainer) rp._wvOrigIsContainer = rpIsContainer.bind(rp);
+            if (rpIsContainerOpen) rp._wvOrigIsContainerOpen = rpIsContainerOpen.bind(rp);
+            if (rpIsContainerEmpty) rp._wvOrigIsContainerEmpty = rpIsContainerEmpty.bind(rp);
+            if (rpToggle) rp._wvOrigToggleOpenState = rpToggle.bind(rp);
+            if (rpExpand) rp._wvOrigExpandRows = rpExpand.bind(rp);
+            if (rpCollapse) rp._wvOrigCollapseRows = rpCollapse.bind(rp);
+            if (rpExpandAll) rp._wvOrigExpandAllRows = rpExpandAll.bind(rp);
+            if (rpCollapseAll) rp._wvOrigCollapseAllRows = rpCollapseAll.bind(rp);
+        }
+
+        // V9-COMPAT: Zotero 9's `isContainer` / `isContainerOpen` are
+        // instance-field arrow functions that do `getRow(i).ref` /
+        // `getRow(i).isOpen` UNCONDITIONALLY. The cascade opens containers
+        // (on v9, single `toggleOpenState` calls), each of which mutates
+        // `_rows` and fires a re-render that calls these probes while the
+        // view is not published yet -- a transient out-of-range index hands
+        // back `undefined` and `.ref`/`.isOpen` crashes the whole window
+        // via `Zotero.crash()` (itemTree.js:2290 / :2295). Null-safe
+        // probes (inner layer; the "filter" layer above calls the saved
+        // native directly) make a bad index return false instead.
+        if (isV9) {
+            wvWrap(rp, "isContainer", "v9safe", tag, () => function (index) {
+                const r = rp.getRow(index);
+                if (!r || !r.ref) return false;
+                try {
+                    return !!(r.ref.isRegularItem
+                        && (r.ref.isRegularItem() || r.ref.isFileAttachment()));
+                } catch (e) { return false; }
+            });
+            if (typeof rp.isContainerOpen === "function") {
+                wvWrap(rp, "isContainerOpen", "v9safe", tag, () => function (index) {
+                    const r = rp.getRow(index);
+                    return !!(r && r.isOpen);
+                });
+            }
+            // Re-apply after Zotero's own refreshes (e.g. the
+            // hideContextAnnotationRows pref observer) so the toggle's
+            // expanded view isn't left collapsed. v10 gets this from the
+            // rowProvider._refresh wrap; v9 needs it on the itemsView.
+            try { this._patchV9RefreshReapply(itemsView); } catch (e) {}
+        }
+
+        // ---- the translation, reading the view ----
+        // keep is stale whenever `_rows.length` no longer matches what was
+        // measured when the view was built (a quick-search refresh empties
+        // + re-fills `_rows`): translating through a stale keep is what
+        // produced the search-clear crash AND the duplicate-row glitch. Fall
+        // through to the unfiltered original until the observer-driven
+        // reapply publishes a fresh view.
+        const stale = () => {
+            const v = rp._wvFilterView;
+            return !v || rp._rows.length !== v.keepRowsLen;
+        };
+        // Bounds-checked translation: between an original toggle's
+        // `runListeners('update', ..., {restoreSelection: true})` and our
+        // reapply, `_rows` may have shrunk while `keep` still holds an index
+        // past the new tail.
+        const safeReal = function (idx): number {
+            const v = rp._wvFilterView;
+            const r = v ? (v.keep[idx] as number) : undefined;
+            if (r === undefined) return -1;
+            if (r >= rp._rows.length) return -1;
+            return r;
+        };
+        // V9-COMPAT: Zotero 9 calls `getRow(index).ref` / `.isOpen`
+        // UNCONDITIONALLY in several places, so the patched getRow must
+        // NEVER return undefined there -- clamp every lookup to a valid row.
+        const safeRaw = function (i) {
+            const len = rp._rows.length;
+            if (!len) return rp._wvOrigGetRow(0);
+            let j = i;
+            if (j == null || j < 0 || j >= len) j = 0;
+            const row = rp._wvOrigGetRow(j);
+            return row === undefined ? rp._wvOrigGetRow(0) : row;
+        };
+        // The virtualized table reads the data layer through the
+        // rowProvider directly (itemTree.jsx:1362); patching
+        // `itemsView.getRow` alone would miss it.
+        wvWrap(rp, "getRow", "filter", tag, () => function (idx) {
+            // The SELF / stale branches differ between versions ONLY for
+            // out-of-range indices: v9 must never see `undefined` (its
+            // probes deref it and crash the window), v10 tolerated it and
+            // is left as it was to avoid any phantom-row flash.
+            if (this[SELF]) return isV9 ? safeRaw(idx) : rp._wvOrigGetRow(idx);
+            if (stale()) return isV9 ? safeRaw(idx) : rp._wvOrigGetRow(idx);
+            const r = safeReal(idx);
+            if (r < 0) return safeRaw(idx);
+            return safeRaw(r);
+        });
+        const countWrapper = function () {
+            if (this[SELF] || stale()) return rp._wvOrigGetRowCount();
+            return rp._wvFilterView.keep.length;
+        };
+        if (typeof rp.getRowCount === "function") {
+            wvWrap(rp, "getRowCount", "filter", tag, () => countWrapper);
+        } else {
+            // V9: no such method -- a plain own function, removed with the rest.
+            rp.getRowCount = countWrapper;
+            rp._wvFilterSynthGetRowCount = true;
+        }
+        // The item pane's "N items in this view" message reads
+        // `itemsView.objectRowCount` (itemPane.js), which reduces over
+        // `this._rows` DIRECTLY -- it never goes through getRow /
+        // getRowCount, so the translation does not reach it and the pane
+        // reported the UNFILTERED library count while a chip was active
+        // (measured 2026-08-08: "17,928 items in this view" over 15,329
+        // rows). Patched on the itemsView INSTANCE (the getter lives on the
+        // prototype), so teardown is a plain `delete`; the host is
+        // remembered on `rp`. Reads the live view, so it can never serve an
+        // earlier apply's count. The related upstream bug (expanding a row
+        // does not refresh the message, zotero/zotero#5913) is NOT patched.
+        try {
+            const findProtoGetter = (obj, name) => {
+                let o = obj;
+                while (o) {
+                    const d = Object.getOwnPropertyDescriptor(o, name);
+                    if (d && typeof d.get === "function") return d.get;
+                    o = Object.getPrototypeOf(o);
+                }
+                return null;
+            };
+            const host: any = itemsView;
+            if (!host._wvOrigObjCountGetter) {
+                const g = findProtoGetter(Object.getPrototypeOf(itemsView), "objectRowCount");
+                if (g) host._wvOrigObjCountGetter = g;
+            }
+            const origObjCount = host._wvOrigObjCountGetter;
+            if (origObjCount) {
+                Object.defineProperty(itemsView, "objectRowCount", {
+                    configurable: true,
+                    get: function () {
+                        try {
+                            if (stale()) return origObjCount.call(this);
+                            const keep = rp._wvFilterView.keep;
+                            let n = 0;
+                            for (let i = 0; i < keep.length; i++) {
+                                const row = rp._wvOrigGetRow(keep[i] as number);
+                                if (row && row.isObjectRow) n++;
+                            }
+                            return n;
+                        }
+                        catch (e) {
+                            try { return origObjCount.call(this); }
+                            catch (e2) { return 0; }
+                        }
+                    },
+                });
+                rp._wvObjRowCountHost = itemsView;
+            }
+        } catch (e) {}
+        if (rp._wvOrigGetLevel) {
+            wvWrap(rp, "getLevel", "filter", tag, () => function (idx) {
+                if (this[SELF] || stale()) return rp._wvOrigGetLevel(idx);
+                const r = safeReal(idx);
+                if (r < 0) return 0;
+                return rp._wvOrigGetLevel(r);
+            });
+        }
+        // The container probes call `this.getRow(idx)` internally --
+        // method-dispatch on `rp.getRow` (the translating wrapper). Set SELF
+        // for the duration of the original call so the inner getRow sees
+        // the raw real index instead of translating a second time.
+        const wrapProbe = function (origFn, fallback) {
+            return function (idx) {
+                if (this[SELF] || stale()) return origFn.call(this, idx);
+                const realIdx = safeReal(idx);
+                if (realIdx < 0) return fallback;
+                const wasFlag = this[SELF];
+                this[SELF] = true;
+                try { return origFn.call(this, realIdx); }
+                finally { this[SELF] = wasFlag; }
+            };
+        };
+        // `orig` is the layer below: the native on v10, the null-safe probe
+        // on v9 (which reads through the translating getRow with SELF set,
+        // so it clamps instead of dereferencing undefined).
+        if (rp._wvOrigIsContainer) wvWrap(rp, "isContainer", "filter", tag, (orig: any) => wrapProbe(orig, false));
+        if (rp._wvOrigIsContainerOpen) wvWrap(rp, "isContainerOpen", "filter", tag, (orig: any) => wrapProbe(orig, false));
+        if (rp._wvOrigIsContainerEmpty) wvWrap(rp, "isContainerEmpty", "filter", tag, (orig: any) => wrapProbe(orig, true));
+
+        // Twisty clicks (toggleOpenState) and `+`/`-` (expandRows /
+        // collapseRows) hand FILTERED indices to the rowProvider. Translate
+        // through `keep`, set SELF so internal `this.getRow`/`this.getLevel`
+        // calls inside the original see raw indices. The original then
+        // mutates `_rows` AND fires `runListeners('update', ...,
+        // {restoreSelection: true})`, which restores the selection from
+        // `rowMap[id]` (REAL idx) via `selection.select(realIdx)` -- but
+        // `selection` is in FILTERED space, so the table would look up
+        // `getRow(realIdx)` past the end of `keep` and crash. Defer the
+        // listeners until AFTER keep is rebuilt: swap `runListeners` for a
+        // queue while the original runs, rebuild synchronously, then flush.
+        // Manual opens / closes are recorded so the next rebuild force-keeps
+        // the children of containers the user just expanded (without it a
+        // non-matching container's children showed for one frame). Recorded
+        // BEFORE the original runs: the direction is inferred from the row's
+        // CURRENT state, which the original is about to flip; upstream
+        // `_expandRows` only toggles closed rows and `collapseRows` only
+        // open ones, so "was open" == "this call is a collapse" everywhere.
+        const noteUserToggle = function (realIdx) {
+            try {
+                const lp: any = wvLivePlugin();
+                if (!lp) return;
+                const row = rp._rows[realIdx as number];
+                const wasOpen = row && row.isOpen;
+                const id = row && row.ref && row.ref.id;
+                if (id == null) return;
+                if (!lp._userOpenedIDs) lp._userOpenedIDs = new Set();
+                if (!lp._userClosedIDs) lp._userClosedIDs = new Set();
+                if (wasOpen) {
+                    lp._userOpenedIDs.delete(id);
+                    lp._userClosedIDs.add(id);
+                } else {
+                    lp._userOpenedIDs.add(id);
+                    lp._userClosedIDs.delete(id);
+                }
+            } catch (e) {}
+        };
+        const runQueued = function (origFn, callArgs, realIdxs) {
+            for (const r of realIdxs) noteUserToggle(r);
+            const wasFlag = this[SELF];
+            this[SELF] = true;
+            const queued = [];
+            const origListeners = rp.runListeners;
+            rp.runListeners = function (...args) { queued.push(args); };
+            try {
+                return origFn.apply(this, callArgs);
+            } finally {
+                rp.runListeners = origListeners;
+                this[SELF] = wasFlag;
+                const lp: any = wvLivePlugin();
+                if (lp) lp._reapplyFilterSync();
+                for (const args of queued) {
+                    try { rp.runListeners.apply(rp, args); }
+                    catch (e) { dbg("[Weavero][filter] listener err: " + e); }
+                }
+            }
+        };
+        if (rp._wvOrigToggleOpenState) {
+            // Pass-through goes to `orig` (the layer below: the manual-expand
+            // tracker), so a toggle in a stale window is still tracked. The
+            // translated call goes to the NATIVE: this layer records the
+            // toggle itself, and the tracker's v9 context-hide splice must
+            // not run on filter-driven opens (the pre-layer wrapper replaced
+            // the tracker outright, so that is the behaviour kept).
+            wvWrap(rp, "toggleOpenState", "filter", tag, (orig: any) => function (filteredIdx, skipRowMapRefresh) {
+                if (this[SELF] || stale()) return orig.call(this, filteredIdx, skipRowMapRefresh);
+                const realIdx = rp._wvFilterView.keep[filteredIdx];
+                if (realIdx === undefined) return;
+                return runQueued.call(this, rp._wvOrigToggleOpenState, [realIdx, skipRowMapRefresh], [realIdx]);
+            });
+        }
+        const multi = (orig: any) => function (indices) {
+            if (this[SELF] || stale()) return orig.call(this, indices);
+            const keep = rp._wvFilterView.keep;
+            // Same user-open bookkeeping as the single-row toggle: the
+            // keyboard paths (multi-select ArrowRight -> expandRows) opened
+            // the container but the immediate reapply dropped its
+            // non-matching children again (2026-08-04).
+            const real = (indices || []).map(i => keep[i]).filter(x => x !== undefined);
+            return runQueued.call(this, orig, [real], real);
+        };
+        if (rp._wvOrigExpandRows) wvWrap(rp, "expandRows", "filter", tag, multi);
+        if (rp._wvOrigCollapseRows) wvWrap(rp, "collapseRows", "filter", tag, multi);
+        // `+` (expandAllRows) and `-` (collapseAllRows) take no indices --
+        // they iterate `this.rowCount` (raw) and call `this.isContainer(i)`
+        // with real indices. Run them with SELF set so the probes pass
+        // through; same listener queue + sync reapply.
+        const all = (orig: any) => function (...args) {
+            if (this[SELF]) return orig.apply(this, args);
+            return runQueued.call(this, orig, args, []);
+        };
+        if (rp._wvOrigExpandAllRows) wvWrap(rp, "expandAllRows", "filter", tag, all);
+        if (rp._wvOrigCollapseAllRows) wvWrap(rp, "collapseAllRows", "filter", tag, all);
+        rp._wvFilterPatchTag = tag;
+    }
+
+    /** V9-COMPAT: Zotero 9's virtualized-table React props are captured
+     *  at render time as bound closures (`getRowCount` is hardwired to
+     *  `() => this._rows.length`) and the WindowedList captures
+     *  `getItemCount` at construction, before the plugin loads. Rebind
+     *  the live props once and the windowed list's reference on EVERY
+     *  apply (robust to its re-construction). */
+    _wvFilterPatchV9Props(itemsView: any, rp: any) {
+        if (!itemsView || !itemsView.tree || !itemsView.tree.props) return;
+        const tp: any = itemsView.tree.props;
+        if (!tp._wvV9PropsPatched) {
+            tp._wvOrigGetRowCount = tp.getRowCount;
+            tp.getRowCount = () => (rp.getRowCount ? rp.getRowCount() : rp._rows.length);
+            tp._wvOrigIsContainer = tp.isContainer;
+            tp.isContainer = (idx) => rp.isContainer(idx);
+            tp._wvOrigIsContainerOpen = tp.isContainerOpen;
+            tp.isContainerOpen = (idx) => rp.isContainerOpen(idx);
+            tp._wvOrigIsContainerEmpty = tp.isContainerEmpty;
+            tp.isContainerEmpty = (idx) => rp.isContainerEmpty(idx);
+            tp._wvOrigToggleOpenState = tp.toggleOpenState;
+            tp.toggleOpenState = (idx, skip) => rp.toggleOpenState(idx, skip);
+            tp._wvV9PropsPatched = true;
+        }
+        const jsWin: any = itemsView.tree._jsWindow;
+        if (jsWin && jsWin.getItemCount !== tp.getRowCount) {
+            jsWin._wvOrigGetItemCount = jsWin._wvOrigGetItemCount || jsWin.getItemCount;
+            jsWin.getItemCount = tp.getRowCount;
+            if (typeof jsWin._getItemCount === "function") {
+                try { jsWin._getItemCount(); } catch (e) {}
+            }
+        }
+    }
+
+    /** Remove the translation: every "filter" / "v9safe" layer, the saved
+     *  natives, the count getter, v9's rebound props, the view and the
+     *  watermark. The user-open tracker (its own layer) survives. */
+    _wvFilterPatchRemove(rp: any, itemsView: any) {
+        try {
+            // A pre-layer build's own-prop wrappers (saved natives, no tag):
+            // v9's natives are own arrow fields, so the saved one goes back;
+            // v10's live on the prototype, so the own property goes.
+            const legacy = !rp._wvFilterPatchTag;
+            const isV9 = !!itemsView && !itemsView.rowProvider;
+            for (const [m, k] of WV_FILTER_RP_MEMBERS) {
+                wvUnwrap(rp, m, "filter");
+                wvUnwrap(rp, m, "v9safe");
+                if (legacy && rp[k] && Object.prototype.hasOwnProperty.call(rp, m)
+                        && !(rp._wvWraps && rp._wvWraps[m])) {
+                    try { if (isV9) rp[m] = rp[k]; else delete rp[m]; } catch (e) {}
+                }
+                delete rp[k];
+            }
+            if (rp._wvFilterSynthGetRowCount) {
+                delete rp.getRowCount;
+                delete rp._wvFilterSynthGetRowCount;
+            }
+            if (rp._wvObjRowCountHost) {
+                try { delete rp._wvObjRowCountHost.objectRowCount; } catch (e) {}
+                delete rp._wvObjRowCountHost;
+            }
+            const tp: any = itemsView && itemsView.tree && itemsView.tree.props;
+            if (tp && tp._wvV9PropsPatched) {
+                if (tp._wvOrigGetRowCount) tp.getRowCount = tp._wvOrigGetRowCount;
+                if (tp._wvOrigIsContainer) tp.isContainer = tp._wvOrigIsContainer;
+                if (tp._wvOrigIsContainerOpen) tp.isContainerOpen = tp._wvOrigIsContainerOpen;
+                if (tp._wvOrigIsContainerEmpty) tp.isContainerEmpty = tp._wvOrigIsContainerEmpty;
+                if (tp._wvOrigToggleOpenState) tp.toggleOpenState = tp._wvOrigToggleOpenState;
+                delete tp._wvOrigGetRowCount;
+                delete tp._wvOrigIsContainer;
+                delete tp._wvOrigIsContainerOpen;
+                delete tp._wvOrigIsContainerEmpty;
+                delete tp._wvOrigToggleOpenState;
+                delete tp._wvV9PropsPatched;
+                const jsWin: any = itemsView.tree._jsWindow;
+                if (jsWin && jsWin._wvOrigGetItemCount) {
+                    jsWin.getItemCount = jsWin._wvOrigGetItemCount;
+                    delete jsWin._wvOrigGetItemCount;
+                    if (typeof jsWin._getItemCount === "function") {
+                        try { jsWin._getItemCount(); } catch (e) {}
+                    }
+                }
+            }
+            delete rp._wvFilterSelfCall;
+            // The watermark describes a TRANSLATED view; with the translation
+            // gone, indices mean what they say (a leftover one made
+            // `_captureSelectedItemIDs` return null for the rest of the
+            // session, 2026-08-07).
+            delete rp._wvKeepRowsLen;
+            delete rp._wvFilterView;
+            delete rp._wvFilterPatchTag;
+        } catch (e) {
+            dbg("[Weavero][filter] _wvFilterPatchRemove err: " + e);
         }
     }
 
@@ -540,7 +1275,7 @@ class _FilterMixin {
      *  Zotero version (manifest's `strict_min_version`). */
     _patchExpandMatchParents() {
         try {
-            const win = Zotero.getMainWindow();
+            const win = this._wvFilterTargetWin();
             const itemsView = win && win.ZoteroPane && win.ZoteroPane.itemsView;
             if (!itemsView) return;
             // V9-COMPAT: Zotero 10 has `rowProvider._expandMatchParents`;
@@ -619,7 +1354,7 @@ class _FilterMixin {
      *  the handler is already wired to the items-tree element. */
     _installHiddenBadgeClickHandler() {
         try {
-            const win = Zotero.getMainWindow();
+            const win = this._wvFilterTargetWin();
             const doc = win && win.document;
             // Strip handlers from BOTH possible host elements before
             // re-attaching anywhere. Earlier load orders could have
@@ -1013,7 +1748,7 @@ class _FilterMixin {
 
     _patchRefreshForReveals() {
         try {
-            const win = Zotero.getMainWindow();
+            const win = this._wvFilterTargetWin();
             const iv: any = win && win.ZoteroPane
                 && win.ZoteroPane.itemsView;
             const rp: any = iv && iv.rowProvider;
@@ -1696,40 +2431,45 @@ class _FilterMixin {
         this._wvFirstVisibleAnnUnderAtt = firstVisibleChild;
     }
 
-    _patchUserOpenTracking() {
+    /** The manual-expand tracker on the target window's row source. */
+    _patchUserOpenTracking(win?: any) {
         try {
-            const win = Zotero.getMainWindow();
-            const itemsView = win && win.ZoteroPane
-                && win.ZoteroPane.itemsView;
+            const w = win || this._wvFilterTargetWin();
+            const itemsView = w && w.ZoteroPane && w.ZoteroPane.itemsView;
             if (!itemsView) return;
-            // V9-COMPAT: Zotero 10 puts `toggleOpenState` on
-            // `rowProvider`; Zotero 9 keeps it on the itemsView
-            // itself (as an async arrow-function class field).
+            this._wvInstallUserOpenTracking(itemsView);
+        } catch (e) {
+            Zotero.debug("[Weavero] _patchUserOpenTracking err: " + e);
+        }
+    }
+
+    /** Record manual opens / closes (`_userOpenedIDs` / `_userClosedIDs`)
+     *  so a filter rebuild force-keeps the children of a container the
+     *  user just expanded. A lib/wrap.ts layer ("userOpenTracking") on
+     *  `toggleOpenState`, installed UNDER the filter's translation (it
+     *  reads real indices) and left in place by every filter clear --
+     *  only the plugin's teardown takes it off. (Before step 4 the
+     *  filter's own per-apply wrapper replaced it and the clear deleted
+     *  both, leaving a stale stamp that blocked the re-install: tracking
+     *  was dead from the first filter clear until a reload.) */
+    _wvInstallUserOpenTracking(itemsView: any) {
+        try {
+            // V9-COMPAT: Zotero 10 puts `toggleOpenState` on `rowProvider`;
+            // Zotero 9 keeps it on the itemsView (an async arrow field).
             const rp: any = itemsView.rowProvider || itemsView;
             if (!rp || typeof rp.toggleOpenState !== "function") return;
-            // Version-aware marker — bump when the wrapper logic
-            // changes so a plugin reload picks up the new behaviour
-            // instead of keeping the old wrapper stuck on the
-            // persistent `itemsView` object.
-            const WRAPPER_VERSION = "v2-splice";
-            if (rp._wvUserOpenTrackingPatched === WRAPPER_VERSION) return;
-            // Peel off any previous wrappers we installed (older
-            // version markers, no marker, or plain "true" from
-            // pre-versioned builds) so we wrap the TRUE Zotero
-            // original instead of stacking wrappers.
-            if (rp._wvUserOpenTrackingPatched && rp._wvUserOpenTrackingOrig) {
+            // A pre-layer build's own-prop wrapper: restore its saved
+            // original so the layer table captures Zotero's native.
+            if (rp._wvUserOpenTrackingOrig && !(rp._wvWraps && rp._wvWraps.toggleOpenState)) {
                 rp.toggleOpenState = rp._wvUserOpenTrackingOrig;
-                delete rp._wvUserOpenTrackingOrig;
             }
-            const orig = rp.toggleOpenState.bind(rp);
-            rp._wvUserOpenTrackingOrig = rp.toggleOpenState;
-            const self = this;
-            // V9-COMPAT: detect whether this is an itemsView (v9, no
-            // rowProvider) so the post-toggle splice below only runs
-            // there. On v10 the equivalent filtering is done upstream
-            // via `_patchHideContextAttachments` on row classes.
+            delete rp._wvUserOpenTrackingOrig;
+            delete rp._wvUserOpenTrackingPatched;
+            // V9-COMPAT: the post-toggle splice below only runs on v9. On
+            // v10 the equivalent filtering is done upstream via
+            // `_patchHideContextAttachments` on row classes.
             const isV9Toggle = !itemsView.rowProvider;
-            rp.toggleOpenState = function (idx, skipRowMapRefresh) {
+            wvWrap(rp, "toggleOpenState", "userOpenTracking", this._wvWireTag(), (orig: any) => function (idx, skipRowMapRefresh) {
                 let wasOpenBeforeOrig = false;
                 let parentLevel = 0;
                 try {
@@ -1745,23 +2485,24 @@ class _FilterMixin {
                     // everything." Heuristic: track only calls with
                     // `skipRowMapRefresh=false` (== arity 1, manual
                     // twisty/keyboard) and skip internal `(i, true)`.
-                    if (!skipRowMapRefresh) {
+                    const lp: any = wvLivePlugin();
+                    if (lp && !skipRowMapRefresh) {
                         const row = rp._rows[idx];
                         const wasOpen = row && row.isOpen;
                         const id = row && row.ref && row.ref.id;
                         if (id != null) {
-                            if (!self._userOpenedIDs) {
-                                self._userOpenedIDs = new Set();
+                            if (!lp._userOpenedIDs) {
+                                lp._userOpenedIDs = new Set();
                             }
-                            if (!self._userClosedIDs) {
-                                self._userClosedIDs = new Set();
+                            if (!lp._userClosedIDs) {
+                                lp._userClosedIDs = new Set();
                             }
                             if (wasOpen) {
-                                self._userOpenedIDs.delete(id);
-                                self._userClosedIDs.add(id);
+                                lp._userOpenedIDs.delete(id);
+                                lp._userClosedIDs.add(id);
                             } else {
-                                self._userOpenedIDs.add(id);
-                                self._userClosedIDs.delete(id);
+                                lp._userOpenedIDs.add(id);
+                                lp._userClosedIDs.delete(id);
                             }
                         }
                     }
@@ -1771,7 +2512,7 @@ class _FilterMixin {
                         parentLevel = (r && r.level) || 0;
                     }
                 } catch (e) {}
-                const result = orig(idx, skipRowMapRefresh);
+                const result = orig.call(this, idx, skipRowMapRefresh);
                 // V9-COMPAT: replicate v10's `_patchHideContextAttachments`
                 // by post-splicing non-matching attachment/note rows
                 // out of `_rows`. Only when:
@@ -1824,16 +2565,15 @@ class _FilterMixin {
                         "[Weavero] post-toggle context-hide err: " + e);
                 }
                 return result;
-            };
-            rp._wvUserOpenTrackingPatched = "v2-splice";
+            });
         } catch (e) {
-            Zotero.debug("[Weavero] _patchUserOpenTracking err: " + e);
+            Zotero.debug("[Weavero] _wvInstallUserOpenTracking err: " + e);
         }
     }
 
     _patchIsSelectable() {
         try {
-            const win = Zotero.getMainWindow();
+            const win = this._wvFilterTargetWin();
             const itemsView = win && win.ZoteroPane && win.ZoteroPane.itemsView;
             if (!itemsView) return;
             const self = this;
@@ -1934,7 +2674,7 @@ class _FilterMixin {
             // NOT FileItemTreeRow or AnnotationItemTreeRow (those
             // both extend ZoteroItemTreeRow but already override
             // getChildItems or aren't containers).
-            const win = Zotero.getMainWindow();
+            const win = this._wvFilterTargetWin();
             const rp: any = win && win.ZoteroPane
                 && win.ZoteroPane.itemsView
                 && win.ZoteroPane.itemsView.rowProvider;
@@ -2542,241 +3282,75 @@ class _FilterMixin {
     // since Zotero handles them as their own row kind.
     get _ATTACHMENT_FILE_TYPES() { return _ATTACHMENT_FILE_TYPES_DATA; }
 
+    /** The dimensions table (src/modules/filter-facets.ts), for specs. */
+    _wvFilterDims() { return WV_FILTER_DIMS; }
+    /** Ids of the dimensions that have a per-row test (WV_DIM_TESTS), for specs. */
+    _wvFilterDimTestIds() { return Object.keys(WV_DIM_TESTS); }
+
+    /** Which row kinds a kind-specific chip in `group` targets, for the
+     *  quick search's own-kind match: the strict annotation and attachment
+     *  checks, and every parent-level dimension. Has PMID / PMCID were
+     *  missing from the hand-written parent list (2026-10-08), so a search
+     *  with only a PMID chip let a search-matched row of ANY kind count as
+     *  its own match, unlike the same search with a DOI chip. */
+    _wvQsChipKinds(group): { annotation: boolean; attachment: boolean; parent: boolean } {
+        return {
+            annotation: wvAnyDimSet(WV_DIMS_KIND.annotation, group),
+            attachment: wvAnyDimSet(WV_DIMS_KIND.attachment, group),
+            parent: wvAnyDimSet(WV_DIMS_PARENT, group),
+        };
+    }
+
     /** Empty filter group — one AND-combination of fields. The
      *  top-level `_filterState` is `{ groups: [...] }` where each
      *  group has this shape. Groups are OR'd at the top level. */
     _emptyFilterGroup() {
-        return {
-            // Annotation-scope (kept on annotation rows directly).
-            // For the icon-grid facets (`annotationColor`, `annotationType`,
-            // `attachmentFileType`), a parallel `*Exclude` array carries
-            // the Alt+click negative-selection set. The two arrays are
-            // mutually exclusive per value: setting one state clears the
-            // other.
-            annotationColor: [],
-            annotationColorExclude: [],
-            annotationType: [],
-            annotationTypeExclude: [],
-            annotationHasComment: null,
-            // Annotation source tri-state (`annotationIsExternal`):
-            //   null  → any source
-            //   true  → embedded in the PDF by an outside reader
-            //           (isExternal true; imported read-only items)
-            //   false → made in Zotero Reader (isExternal false).
-            // Embedded-first encoding since 2026-08-18 (MJT: plain click
-            // should select the external annotations) — true carries the
-            // tile's data-selected styling, so the primary gesture keeps
-            // the include look shared by every other tile.
-            // Native Advanced Search cannot express this at all —
-            // `isExternal` appears nowhere in searchConditions.js.
-            annotationSource: null,
-            annotationTag: [],
-            annotationTagExclude: [],
-            annotationAuthor: [],
-            annotationAuthorExclude: [],
-            // Parent metadata type (book / journalArticle / webpage /
-            // …) — applies to regular items only.
-            itemType: [],
-            itemTypeExclude: [],
-            // `attachmentFileType` narrows attachments by file kind
-            // (PDF / EPUB / Snapshot / Image / Video / Web Link /
-            // Other File). Notes are excluded — Zotero handles those
-            // separately. Multi-select.
-            attachmentFileType: [],
-            attachmentFileTypeExclude: [],
-            // DEV outline-eval facets (shown only when `weavero.devOutlineEval`
-            // is on). Attachment-resolving like `attachmentFileType`:
-            //   `outlineClass`   — classification source + flags.
-            //   `outlineVerdict` — recorded eval verdict (or unmarked).
-            // Matched via `_outlineMatchesList` (token-set intersection).
-            outlineClass: [],
-            outlineClassExclude: [],
-            outlineFlags: [],
-            outlineFlagsExclude: [],
-            outlineVerdict: [],
-            outlineVerdictExclude: [],
-            addedBy: [],
-            addedByExclude: [],
-            // Per-row-kind scope for the addedBy filter — checked
-            // only when `addedBy` is non-empty. Defaults to all-on
-            // so a freshly added Added By filter behaves the same
-            // as before this scope option existed.
+        // Every dimension's default comes from the table (filter-facets.ts,
+        // where each one is documented); the scope objects below narrow
+        // some of them per row kind and stay here.
+        return Object.assign(wvDimDefaults(), {
+            // Per-row-kind scope for Added By -- checked only when `addedBy`
+            // is non-empty. All-on by default, so a fresh Added By filter
+            // behaves as before the scope existed.
             addedByScope: {
                 topLevel: true,
                 attachments: true,
                 annotations: true,
             },
-            // Cross-level filters — applied to every row kind
-            // (parent / attachment / annotation) the same way.
-            // Tri-state like `annotationHasComment`:
-            //   null  → off
-            //   true  → must have the property
-            //   false → must NOT have the property (alt+click)
-            hasRelated: null,
-            hasLink: null,
-            hasTag: null,
-            // "Has Bookmarks" — item whose attachment(s) carry reader bookmarks
-            // (Weavero's per-attachment store). Tri-state, no scope.
-            hasBookmarks: null,
-            // Per-filter row-kind scope for the three cross-level
-            // tri-states. Default all-on = current behavior (filter
-            // applies to every kind). Each key maps to a row kind:
+            // Per-filter row-kind scope for the cross-level tri-states.
+            // All-on = the filter applies to every kind:
             //   annotation = annotation rows
-            //   attachment = attachment rows + item notes (notes
-            //                 attached to a regular item — same
-            //                 tree level)
-            //   parent     = regular items + standalone notes
-            //                 (top-level rows)
-            // Unchecking a kind makes the filter relax through for
-            // that kind (the row passes regardless of the property).
+            //   attachment = attachment rows + item notes (same tree level)
+            //   parent     = regular items + standalone notes (top level)
+            // Unchecking a kind makes the filter relax through for it.
             hasRelatedScope: { annotation: true, attachment: true, parent: true },
-            // Has Link's scope keys are text-source-specific rather
-            // than row-kind-generic, since URL detection only makes
-            // sense in three text fields:
-            //   annotationComment → annotation.annotationComment
-            //   itemNoteText      → note body, child notes
-            //   standaloneText    → note body, top-level notes
-            // Other row kinds (attachment, regular item) never
-            // satisfy Has Link and aren't surfaced in the scope.
+            // Has Link's scope keys are text sources, since URL detection
+            // only makes sense in three fields:
+            //   annotationComment -> annotation.annotationComment
+            //   itemNoteText      -> note body, child notes
+            //   standaloneText    -> note body, top-level notes
             hasLinkScope: {
                 annotationComment: true,
                 itemNoteText: true,
                 standaloneText: true,
             },
-            // Shared scope for BOTH the Has Tag (presence) filter
-            // and the Tag (specific value) filter. They're two
-            // facets of the same concept — splitting their scope
-            // confuses users (setting "no parent" on one would not
-            // affect the other). One field, one picker, applied to
-            // both filters in `_rowIsPrimary`, `_rowHasOwnKindMatch`,
-            // and `_treeSatisfiesCrossLevelScoped`.
+            // Shared by Has Tag (presence) AND Tag (specific value): two
+            // facets of one concept, one scope, one picker.
             hasTagScope: { annotation: true, attachment: true, parent: true },
-            // Quick-search scope: restricts which row kinds the
-            // popup-integrated quick search may surface. Default is
-            // all-on (no restriction → Zotero's native whole-tree
-            // match + cascade survives). Toggling a kind off drops
-            // rows of that kind from the result set after Zotero's
-            // search produces it; ancestors of kept rows are
-            // preserved by the existing cascade. The actual search
-            // query lives in Zotero's `#zotero-tb-search` box (the
-            // popup input synchronises with it bidirectionally) —
-            // we don't duplicate it into group state to avoid two
-            // sources of truth.
+            // Quick-search scope: which row kinds the popup-integrated quick
+            // search may surface. All-on = Zotero's native whole-tree match.
+            // A kind toggled off is dropped from the result after Zotero's
+            // search; ancestors of kept rows survive through the cascade.
+            // The query itself lives in Zotero's `#zotero-tb-search` box
+            // (synchronised with the popup input), not in group state.
             quickSearchScope: { annotation: true, attachment: true, parent: true },
-            // Note-kind defining tri-states. Strict per-row.
-            // (Zotero's UI calls notes attached to a regular item
-            // "Item Notes" — `itemNote=true` matches those.)
-            //   itemNote=true        → row must be a note attached
-            //                          to a regular item
-            //   standaloneNote=true  → row must be a top-level
-            //                          (parentless) note
-            // exclude variants reject those rows.
-            itemNote: null,
-            standaloneNote: null,
-            // Standalone Attachment tile (2026-08-19): tri-state like its
-            // note sibling; true = only parentless attachments, false =
-            // exclude them. Restriction (ANDs with file type), not a pair.
-            standaloneAttachment: null,
-            // Parent-targeting tri-state filters (regular items
-            // only; non-regulars relax through). Each is `null /
-            // true / false` for off / include / exclude.
-            hasAbstract: null,
-            hasDOI: null,
-            hasPMID: null,
-            hasPMCID: null,
-            // Retracted (2026-09-28, forum 133954): Zotero's own verdict,
-            // Zotero.Retractions.isRetracted() -- what the items list marks
-            // and the item pane's red box shows. Dismissed "Retract and
-            // Replace" items do not count. (Zotero's Retracted Items view
-            // also drops items whose CITATION warning was switched off,
-            // flag 2; they stay retracted here.) Parent-level tri-state.
-            retracted: null,
-            hasURL: null,
-            hasAttachment: null,
-            // Attachment-targeting tri-state — file attachments only.
-            hasAnnotations: null,
-            // "Has Embedded Annotations" (2026-08-19, MJT) — attachment-
-            // level tri-state: true = the file attachment carries at
-            // least one PDF-embedded annotation (annotationIsExternal),
-            // false = none. Unlike the annotation-level Source chip it
-            // does NOT filter annotation rows — an attachment with both
-            // kinds still shows all of them.
-            hasEmbeddedAnnotations: null,
-            // Has Weavero Outline (2026-08-20): attachments carrying a
-            // CURATED outline (weavero/outlines.json). Deliberately not
-            // "has an outline" -- embedded and extracted outlines can
-            // only be known by parsing each PDF (the dev outline-eval
-            // scan), so a tile promising those would answer "no" for
-            // every unscanned file. This one is instant and exact.
-            hasOutline: null,
-            // Publication multi-select (parent items only). State
-            // shape mirrors Tag / Author / Added By: parallel
-            // include + exclude arrays of titles.
-            publication: [],
-            publicationExclude: [],
-            // Read Status multi-select (Zotero Reading List plugin's
-            // `Read_Status:` extra-field property; parent items only).
-            // Same include/exclude shape as `publication`. Rendered only
-            // while that plugin is active; stale saved state is harmless.
-            readStatus: [],
-            readStatusExclude: [],
-            // "In Multiple Libraries" tri-state (parent items only): items
-            // with a linked copy (owl:sameAs relation) in ANY other library
-            // — the same data the item pane's "Libraries and Collections"
-            // box shows. Deliberately a single toggle, not a per-library
-            // picker (user 2026-08-05: "I just want a simple toggle…
-            // the item pane of those items will tell the full story").
-            inOtherLibrary: null,
-        };
+        });
     }
 
     /** Returns true iff at least one field in the group is set. */
     _isGroupActive(group) {
         if (!group) return false;
-        if (group.annotationColor && group.annotationColor.length) return true;
-        if (group.annotationColorExclude && group.annotationColorExclude.length) return true;
-        if (group.annotationType && group.annotationType.length) return true;
-        if (group.annotationTypeExclude && group.annotationTypeExclude.length) return true;
-        if (group.annotationHasComment != null) return true;
-        if (group.annotationSource != null) return true;
-        if (group.annotationTag && group.annotationTag.length) return true;
-        if (group.annotationTagExclude && group.annotationTagExclude.length) return true;
-        if (group.annotationAuthor && group.annotationAuthor.length) return true;
-        if (group.annotationAuthorExclude && group.annotationAuthorExclude.length) return true;
-        if (group.itemType && group.itemType.length) return true;
-        if (group.itemTypeExclude && group.itemTypeExclude.length) return true;
-        if (group.attachmentFileType && group.attachmentFileType.length) return true;
-        if (group.attachmentFileTypeExclude && group.attachmentFileTypeExclude.length) return true;
-        if (group.outlineClass && group.outlineClass.length) return true;
-        if (group.outlineClassExclude && group.outlineClassExclude.length) return true;
-        if (group.outlineFlags && group.outlineFlags.length) return true;
-        if (group.outlineFlagsExclude && group.outlineFlagsExclude.length) return true;
-        if (group.outlineVerdict && group.outlineVerdict.length) return true;
-        if (group.outlineVerdictExclude && group.outlineVerdictExclude.length) return true;
-        if (group.addedBy && group.addedBy.length) return true;
-        if (group.addedByExclude && group.addedByExclude.length) return true;
-        if (group.hasRelated != null) return true;
-        if (group.hasLink != null) return true;
-        if (group.hasBookmarks != null) return true;
-        if (group.hasTag != null) return true;
-        if (group.itemNote != null) return true;
-        if (group.standaloneNote != null) return true;
-        if (group.standaloneAttachment != null) return true;
-        if (group.hasAbstract != null) return true;
-        if (group.hasDOI != null) return true;
-        if (group.hasPMID != null) return true;
-        if (group.hasPMCID != null) return true;
-        if (group.retracted != null) return true;
-        if (group.hasURL != null) return true;
-        if (group.hasAttachment != null) return true;
-        if (group.hasAnnotations != null) return true;
-        if (group.hasEmbeddedAnnotations != null) return true;
-        if (group.hasOutline != null) return true;
-        if (group.publication && group.publication.length) return true;
-        if (group.publicationExclude && group.publicationExclude.length) return true;
-        if (group.readStatus && group.readStatus.length) return true;
-        if (group.readStatusExclude && group.readStatusExclude.length) return true;
-        if (group.inOtherLibrary != null) return true;
+        if (wvAnyDimSet(WV_FILTER_DIMS, group)) return true;
         // Quick-search scope only counts as active when at least
         // one kind is excluded — an all-on scope is the default
         // no-op and wouldn't justify installing our patches by
@@ -2818,6 +3392,64 @@ class _FilterMixin {
         return state.groups.some(g => this._isGroupActive(g));
     }
 
+    /** Does the active filter target CHILD rows (attachments/annotations)?
+     *
+     *  Gates the Order-B re-route. That re-route re-runs Zotero's search
+     *  refresh so a chip-matching CHILD the search alone dropped gets
+     *  re-added — necessary for annotation/attachment chips, and pure
+     *  damage for parent-level ones.
+     *
+     *  Measured 9 Aug 2026, mode `fields`, chip = itemType journalArticle:
+     *  with the re-route the view is 6 165 top-level items against a
+     *  ground truth of 6 166 (it drops items that match the search
+     *  DIRECTLY — they disappear from Zotero's raw `_rows` during the
+     *  rebuild); with it suppressed the view is exactly 6 166, missing 0,
+     *  extra 0. Suppressing it unconditionally is NOT an option: it
+     *  regresses annotationColor badly, which is the case it was written
+     *  for.
+     *
+     *  Reads the dimensions table (filter-facets.ts: the annotation and
+     *  attachment levels plus `kids`), so a new dimension is classified in
+     *  one place. Defaults to TRUE on any doubt — the old behaviour — so an
+     *  unclassified filter keeps the re-route. */
+    _wvFilterTargetsChildren(): boolean {
+        try {
+            // Judge the CHIPS ONLY. `_effectiveSelectionTargetKinds` is the
+            // wrong oracle here: it also folds in cross-level scopes and
+            // the QUICK SEARCH's own scope, which defaults to all three row
+            // kinds. With a search live it therefore answered "targets
+            // children" for a pure itemType chip and the re-route fired
+            // anyway — measured 9 Aug 2026: kinds
+            // {parent,attachment,annotation} all true with only itemType
+            // set, and item 3772 lost as a result. The same probe with no
+            // search live returned parent-only, which is what made the gate
+            // look correct when it was first written.
+            const g: any = this._activeGroup();
+            if (!g) return true;
+            // The annotation and attachment levels, plus the cross-level
+            // dimensions (`kids` in the table), which CAN match children and
+            // so keep the re-route. NOTE a tri-state set to false counts as
+            // unset here (unlike everywhere else) -- recorded as-is by the
+            // characterization spec, under review.
+            const isSet = (f: string) => {
+                const v = g[f];
+                if (v == null) return false;
+                return Array.isArray(v) ? v.length > 0 : v !== false;
+            };
+            for (const f of wvDimChildFields()) if (isSet(f)) return true;
+            return false;
+        }
+        catch (e) { return true; }
+    }
+
+    /** Which row LEVEL each filter dimension targets. Single source of
+     *  truth, shared by `_effectiveSelectionTargetKinds` (which also folds
+     *  in cross-level scopes and the quick search) and by
+     *  `_wvFilterTargetsChildren` (which must NOT). */
+    _wvDimLevels(): Record<string, string[]> {
+        return wvDimLevels();
+    }
+
     /** Resolve which row kinds Ctrl+A should select (and which the
      *  items tree should dim). Returns `{parent, attachment, annotation}`
      *  booleans.
@@ -2844,80 +3476,6 @@ class _FilterMixin {
      *  Ctrl+A grabs the annotations, not the ancestor rows the tree
      *  keeps around for shape; filter by annotation colour AND item type
      *  → it grabs both. The chips still override it. */
-    /** Does the active filter target CHILD rows (attachments/annotations)?
-     *
-     *  Gates the Order-B re-route. That re-route re-runs Zotero's search
-     *  refresh so a chip-matching CHILD the search alone dropped gets
-     *  re-added — necessary for annotation/attachment chips, and pure
-     *  damage for parent-level ones.
-     *
-     *  Measured 9 Aug 2026, mode `fields`, chip = itemType journalArticle:
-     *  with the re-route the view is 6 165 top-level items against a
-     *  ground truth of 6 166 (it drops items that match the search
-     *  DIRECTLY — they disappear from Zotero's raw `_rows` during the
-     *  rebuild); with it suppressed the view is exactly 6 166, missing 0,
-     *  extra 0. Suppressing it unconditionally is NOT an option: it
-     *  regresses annotationColor badly, which is the case it was written
-     *  for.
-     *
-     *  Reuses `_effectiveSelectionTargetKinds` rather than a second
-     *  dimension list, so a new dimension cannot be classified one way
-     *  here and another way there. Defaults to TRUE on any doubt — the
-     *  old behaviour — so an unclassified filter keeps the re-route. */
-    _wvFilterTargetsChildren(): boolean {
-        try {
-            // Judge the CHIPS ONLY. `_effectiveSelectionTargetKinds` is the
-            // wrong oracle here: it also folds in cross-level scopes and
-            // the QUICK SEARCH's own scope, which defaults to all three row
-            // kinds. With a search live it therefore answered "targets
-            // children" for a pure itemType chip and the re-route fired
-            // anyway — measured 9 Aug 2026: kinds
-            // {parent,attachment,annotation} all true with only itemType
-            // set, and item 3772 lost as a result. The same probe with no
-            // search live returned parent-only, which is what made the gate
-            // look correct when it was first written.
-            const g: any = this._activeGroup();
-            if (!g) return true;
-            const levels = this._wvDimLevels();
-            const isSet = (f: string) => {
-                const v = g[f];
-                if (v == null) return false;
-                return Array.isArray(v) ? v.length > 0 : v !== false;
-            };
-            for (const f of levels.annotation) if (isSet(f)) return true;
-            for (const f of levels.attachment) if (isSet(f)) return true;
-            // Cross-level dimensions (Has Tag / Has Related / Has Link /
-            // Added By) CAN match children, so they keep the re-route.
-            for (const f of ["hasTag", "hasRelated", "hasLink",
-                "addedBy", "addedByExclude"]) {
-                if (isSet(f)) return true;
-            }
-            return false;
-        }
-        catch (e) { return true; }
-    }
-
-    /** Which row LEVEL each filter dimension targets. Single source of
-     *  truth, shared by `_effectiveSelectionTargetKinds` (which also folds
-     *  in cross-level scopes and the quick search) and by
-     *  `_wvFilterTargetsChildren` (which must NOT). */
-    _wvDimLevels(): Record<string, string[]> {
-        return {
-            annotation: ["annotationColor", "annotationColorExclude", "annotationType",
-                "annotationTypeExclude", "annotationHasComment",
-                "annotationSource",
-                "annotationAuthor", "annotationAuthorExclude"],
-            attachment: ["attachmentFileType", "attachmentFileTypeExclude",
-                "outlineClass", "outlineClassExclude",
-                "outlineFlags", "outlineFlagsExclude",
-                "outlineVerdict", "outlineVerdictExclude"],
-            parent: ["itemType", "itemTypeExclude", "hasAbstract", "hasDOI",
-                "hasPMID", "hasPMCID", "retracted", "hasURL",
-                "hasAttachment", "publication", "publicationExclude",
-                "readStatus", "readStatusExclude", "inOtherLibrary"],
-        };
-    }
-
     _effectiveSelectionTargetKinds() {
         const ALL = { parent: true, attachment: true, note: true, annotation: true };
         const fs = this._filterState || {};
@@ -2938,76 +3496,42 @@ class _FilterMixin {
             || (fs.savedSearchesExclude && fs.savedSearchesExclude.length)) {
             return { ...ALL };
         }
-        // Per-group filter fields, grouped by which row kind they pin.
-        // `annotationTag` is NOT in here — despite the name (historical;
-        // the field was introduced for annotations), its check in
-        // `_rowIsPrimary` runs against `item.getTags()` which works for
-        // every item kind. Treat it as cross-level so the Selection
-        // Target smart-default picks all three kinds (parent +
-        // attachment + annotation), matching the user's expectation
-        // when filtering by a tag that may sit on any row.
-        const CAT: Record<string, string[]> = this._wvDimLevels();
-        const isSet = (g, f) => {
-            const v = g[f];
-            if (v == null) return false;
-            return Array.isArray(v) ? v.length > 0 : true;
-        };
-        // Mapping from a multi-scope (cross-level) filter's scope
-        // object to the row-kind categories it actually targets.
-        // Multi-scope filters used to be uniformly NEUTRAL and
-        // forced the selection target back to ALL — but the user
-        // wants the target narrowed to the row kinds the filter's
-        // scope actually allows (e.g. Has Tag scoped to "Annotation"
-        // only should leave Ctrl+A selecting annotations only).
         const addScopedKinds = (g) => {
-            // Generic row-kind scope (Has Related / Has Tag).
-            const rowScopedFields = [
-                { f: "hasRelated", s: "hasRelatedScope" },
-                { f: "hasTag",     s: "hasTagScope" },
-            ];
-            for (const { f, s } of rowScopedFields) {
-                if (!isSet(g, f)) continue;
-                const sc = g[s] || { annotation: true, attachment: true, parent: true };
-                for (const k of ["annotation", "attachment", "note", "parent"]) {
-                    if (this._wvScopeAllows(sc, k)) cats.add(k);
+            // Dimensions without a level contribute through `sel` (table):
+            // fixed kinds, or the kinds their scope object allows. (Multi-
+            // scope filters used to force the target back to ALL; the user
+            // wants it narrowed to what the scope allows -- Has Tag scoped
+            // to Annotation leaves Ctrl+A selecting annotations only.)
+            const ROW_SCOPE_DEFAULT = { annotation: true, attachment: true, parent: true };
+            for (const f of WV_FILTER_DIMS) {
+                if (!f.sel || !wvDimSet(g, f)) continue;
+                const sel: any = f.sel;
+                if (sel.kinds) {
+                    for (const k of sel.kinds) cats.add(k);
                 }
-            }
-            // Has Link — text-source-specific scope keys mapped to
-            // their natural row-kind buckets.
-            if (isSet(g, "hasLink")) {
-                const sc = g.hasLinkScope || { annotationComment: true, itemNoteText: true, standaloneText: true };
-                if (sc.annotationComment !== false) cats.add("annotation");
-                // Both note-text sources live on note-kind rows now.
-                if (sc.itemNoteText !== false) cats.add("note");
-                if (sc.standaloneText !== false) cats.add("note");
-            }
-            // Added By — topLevel→parent, attachments→attachment,
-            // annotations→annotation.
-            if (isSet(g, "addedBy") || isSet(g, "addedByExclude")) {
-                const sc = g.addedByScope || { topLevel: true, attachments: true, annotations: true };
-                if (sc.topLevel !== false) cats.add("parent");
-                if (sc.attachments !== false) cats.add("attachment");
-                if (sc.annotations !== false) cats.add("annotation");
-                if (sc.notes !== undefined
-                    ? sc.notes !== false : sc.topLevel !== false) cats.add("note");
-            }
-            // Single-kind neutrals — they only apply to one row
-            // kind, so they contribute exactly that kind.
-            if (isSet(g, "itemNote")) cats.add("note");
-            if (isSet(g, "standaloneNote")) cats.add("note");
-            if (isSet(g, "standaloneAttachment")) cats.add("attachment");
-            if (isSet(g, "hasAnnotations")) cats.add("attachment");
-            if (isSet(g, "hasEmbeddedAnnotations")) cats.add("attachment");
-            if (isSet(g, "hasOutline")) cats.add("attachment");
-            // Tag filter (annotationTag) — cross-level: matches any
-            // row whose own tags contain the chosen tag. Shares the
-            // `hasTagScope` with Has Tag (both are tag concepts;
-            // their scopes are unified for simpler UX).
-            if (isSet(g, "annotationTag") || isSet(g, "annotationTagExclude")) {
-                const sc = g.hasTagScope
-                    || { annotation: true, attachment: true, parent: true };
-                for (const k of ["annotation", "attachment", "note", "parent"]) {
-                    if (this._wvScopeAllows(sc, k)) cats.add(k);
+                else if (sel.rowScope) {
+                    const sc = g[sel.rowScope] || ROW_SCOPE_DEFAULT;
+                    for (const k of ["annotation", "attachment", "note", "parent"]) {
+                        if (this._wvScopeAllows(sc, k)) cats.add(k);
+                    }
+                }
+                else if (sel.linkScope) {
+                    // Text-source scope keys mapped to their row kinds; both
+                    // note-text sources live on note rows.
+                    const sc = g.hasLinkScope || { annotationComment: true, itemNoteText: true, standaloneText: true };
+                    if (sc.annotationComment !== false) cats.add("annotation");
+                    if (sc.itemNoteText !== false) cats.add("note");
+                    if (sc.standaloneText !== false) cats.add("note");
+                }
+                else if (sel.addedByScope) {
+                    // topLevel->parent, attachments->attachment,
+                    // annotations->annotation; notes follow topLevel when unset.
+                    const sc = g.addedByScope || { topLevel: true, attachments: true, annotations: true };
+                    if (sc.topLevel !== false) cats.add("parent");
+                    if (sc.attachments !== false) cats.add("attachment");
+                    if (sc.annotations !== false) cats.add("annotation");
+                    if (sc.notes !== undefined
+                        ? sc.notes !== false : sc.topLevel !== false) cats.add("note");
                 }
             }
             // Quick-search scope is also row-kind-scoped — include
@@ -3022,8 +3546,10 @@ class _FilterMixin {
         const cats = new Set<string>();
         for (const g of (fs.groups || [])) {
             if (!g || !this._isGroupActive(g)) continue;
-            for (const cat of ["annotation", "attachment", "parent"]) {
-                if (CAT[cat].some(f => isSet(g, f))) cats.add(cat);
+            // Dimensions that pin a row level contribute that level (the
+            // table's `level`; Tag is cross-level, see filter-facets.ts).
+            for (const f of WV_FILTER_DIMS) {
+                if (f.level && wvDimSet(g, f)) cats.add(f.level);
             }
             addScopedKinds(g);
         }
@@ -3074,13 +3600,18 @@ class _FilterMixin {
 
     /** The Collection tree's rows: depth-first, each level sorted like the
      *  collections pane, with depth / parent / has-children. */
-    _wvCollTreeValues(libraryID: number): any[] {
+    _wvCollTreeValues(libraryID: number, win?: any): any[] {
         const out: any[] = [];
+        // Collections hidden in this window's tree stay out here too, with
+        // their sub-collections (MJT 2026-10-05).
+        const P: any = this;
+        const hidden = (c: any) => !!(win && P._wvHidIsHidden && P._wvHidIsHidden(c, win));
         const cmp = (a: any, b: any) => (Zotero as any).localeCompare
             ? (Zotero as any).localeCompare(a.name, b.name) : a.name.localeCompare(b.name);
         const walk = (cols: any[], depth: number, parentId: number | null) => {
             for (const c of [...cols].sort(cmp)) {
-                const kids = Zotero.Collections.getByParent(c.id) || [];
+                if (hidden(c)) continue;
+                const kids = (Zotero.Collections.getByParent(c.id) || []).filter((k: any) => !hidden(k));
                 out.push({ id: c.id, name: c.name, depth, parentId, hasChildren: kids.length > 0 });
                 walk(kids, depth + 1, c.id);
             }
@@ -3799,9 +4330,8 @@ class _FilterMixin {
      *  `_rowSatisfiesTreeJoin`; "did this row hit on its own kind?"
      *  is handled by `_rowHasOwnKindMatch`. Universal filters (tag,
      *  author, addedBy with the row in scope) apply to every row. */
-    _rowPassesFilters(item, group, opts?) {
+    _rowPassesFilters(item, group) {
         if (!item || !group) return false;
-        opts = opts || {};
 
         // Kind-specific filters now use a TREE-JOIN model: filters
         // that target a kind don't fail rows of OTHER kinds — they
@@ -3812,86 +4342,18 @@ class _FilterMixin {
         // The cross-kind JOIN constraint is then enforced separately
         // by `_rowSatisfiesTreeJoin` (the tree must contain a
         // matching row at every kind a filter targets).
-        if (group.itemType && group.itemType.length) {
-            const isReg = !!(item.isRegularItem && item.isRegularItem());
-            if (isReg && !group.itemType.includes(item.itemType)) {
-                return false;
-            }
-        }
-        if (group.itemTypeExclude && group.itemTypeExclude.length) {
-            const isReg = !!(item.isRegularItem && item.isRegularItem());
-            if (isReg && group.itemTypeExclude.includes(item.itemType)) {
-                return false;
-            }
-        }
-        if (group.attachmentFileType && group.attachmentFileType.length) {
-            const isAtt = !!(item.isAttachment && item.isAttachment());
-            if (isAtt) {
-                if (!this._attachmentMatchesFileTypeList(
-                    item, group.attachmentFileType)) return false;
-            }
-        }
-        if (group.attachmentFileTypeExclude && group.attachmentFileTypeExclude.length) {
-            const isAtt = !!(item.isAttachment && item.isAttachment());
-            if (isAtt) {
-                if (this._attachmentMatchesFileTypeList(
-                    item, group.attachmentFileTypeExclude)) return false;
-            }
-        }
-        // DEV outline-eval facets — attachment-resolving. Source + Verdict use OR
-        // (any-of); Flags use AND (must have all selected). Excludes are always
-        // has-any -> reject.
-        if (item.isAttachment && item.isAttachment()) {
-            if (group.outlineClass && group.outlineClass.length
-                && !this._outlineMatchesList(item, group.outlineClass)) return false;
-            if (group.outlineClassExclude && group.outlineClassExclude.length
-                && this._outlineMatchesList(item, group.outlineClassExclude)) return false;
-            if (group.outlineFlags && group.outlineFlags.length
-                && !this._outlineMatchesAll(item, group.outlineFlags)) return false;
-            if (group.outlineFlagsExclude && group.outlineFlagsExclude.length
-                && this._outlineMatchesList(item, group.outlineFlagsExclude)) return false;
-            if (group.outlineVerdict && group.outlineVerdict.length
-                && !this._outlineMatchesList(item, group.outlineVerdict)) return false;
-            if (group.outlineVerdictExclude && group.outlineVerdictExclude.length
-                && this._outlineMatchesList(item, group.outlineVerdictExclude)) return false;
-        }
-        if (group.annotationColor && group.annotationColor.length) {
-            const isAnn = !!(item.isAnnotation && item.isAnnotation());
-            if (isAnn && !group.annotationColor.includes(item.annotationColor)) {
-                return false;
-            }
-        }
-        if (group.annotationColorExclude && group.annotationColorExclude.length) {
-            const isAnn = !!(item.isAnnotation && item.isAnnotation());
-            if (isAnn && group.annotationColorExclude.includes(item.annotationColor)) {
-                return false;
-            }
-        }
-        if (group.annotationType && group.annotationType.length) {
-            const isAnn = !!(item.isAnnotation && item.isAnnotation());
-            if (isAnn && !group.annotationType.includes(item.annotationType)) {
-                return false;
-            }
-        }
-        if (group.annotationTypeExclude && group.annotationTypeExclude.length) {
-            const isAnn = !!(item.isAnnotation && item.isAnnotation());
-            if (isAnn && group.annotationTypeExclude.includes(item.annotationType)) {
-                return false;
-            }
-        }
-        if (group.annotationHasComment != null) {
-            const isAnn = !!(item.isAnnotation && item.isAnnotation());
-            if (isAnn) {
-                const txt = item.annotationComment;
-                const hasComment = !!(txt && String(txt).trim().length);
-                if (hasComment !== group.annotationHasComment) return false;
-            }
-        }
-        if (group.annotationSource != null) {
-            const isAnn = !!(item.isAnnotation && item.isAnnotation());
-            if (isAnn && !this._annSourceMatches(item, group.annotationSource)) {
-                return false;
-            }
+        // Every dimension with a per-row test in the table (filter-facets.ts:
+        // annotation, attachment and parent-level dimensions, Author). Rows of
+        // another kind relax through -- this lets `annotationColor=yellow` and
+        // `attachmentFileType=PDF` co-exist (the yellow annotation passes the
+        // relaxed file type, the PDF the relaxed colour); the cross-kind JOIN
+        // is enforced separately by `_rowSatisfiesTreeJoin`.
+        let k = 0;
+        for (let i = 0; i < WV_DIMS_ROWS.length; i++) {
+            const f = WV_DIMS_ROWS[i], s = wvDimSetBits(f, group);
+            if (!s) continue;
+            if (!k) k = wvRowKind(item);
+            if (!wvDimRowPasses(this, f, item, group, s, k)) return false;
         }
         // Cross-level checks — apply to every row kind, strict
         // per-row matching. Each item is evaluated independently;
@@ -3899,7 +4361,7 @@ class _FilterMixin {
         // virtue of the parent matching (so picking Has Related
         // on a parent only shows the parent + the cascade-required
         // ancestors, not the parent's full subtree). Ancestor-keep
-        // for tree shape happens via `_hasMatchingAnnotation` in
+        // for tree shape happens via the apply's `hasMatch` in
         // the apply loop, which is what brings the parent in when
         // a descendant matches.
         // Cross-level scoped chips (Has Related, Has Link, Has
@@ -3919,7 +4381,7 @@ class _FilterMixin {
         // pass; everything else fails. Exclude rejects the matching
         // sub-kind. The cascade still keeps ancestors of the few
         // notes that match (item notes pull in their parent regular
-        // item) because `_hasMatchingAnnotation` walks `item.getNotes`
+        // item) because the apply's `hasMatch` walks `item.getNotes`
         // and returns true for any primary descendant.
         // Note-kind filters — RELAX on non-notes (they're a
         // different row kind, so the chip doesn't apply to them).
@@ -3963,176 +4425,36 @@ class _FilterMixin {
                 if (isStandalone !== group.standaloneAttachment) return false;
             }
         }
-        // Parent-targeting "Has *" tri-states. Each one only fails
-        // when the item IS a regular item and doesn't satisfy the
-        // chosen direction. Non-regulars relax through (matches the
-        // pattern used by `annotationHasComment` for non-annotations).
-        if (group.hasAbstract != null) {
-            const isReg = !!(item.isRegularItem && item.isRegularItem());
-            if (isReg) {
-                const v = !!(item.getField
-                    && String(item.getField("abstractNote") || "").trim().length);
-                if (v !== group.hasAbstract) return false;
-            }
-        }
-        if (group.hasDOI != null) {
-            const isReg = !!(item.isRegularItem && item.isRegularItem());
-            if (isReg && wvItemFieldNonEmpty(item, "DOI", "doi") !== group.hasDOI) return false;
-        }
-        if (group.hasPMID != null) {
-            const isReg = !!(item.isRegularItem && item.isRegularItem());
-            if (isReg && wvItemHasPubmedId(item, "PMID", WV_PMID_RE) !== group.hasPMID) return false;
-        }
-        if (group.hasPMCID != null) {
-            const isReg = !!(item.isRegularItem && item.isRegularItem());
-            if (isReg && wvItemHasPubmedId(item, "PMCID", WV_PMCID_RE) !== group.hasPMCID) return false;
-        }
-        if (group.retracted != null) {
-            const isReg = !!(item.isRegularItem && item.isRegularItem());
-            if (isReg && wvItemIsRetracted(item) !== group.retracted) return false;
-        }
-        if (group.hasURL != null) {
-            const isReg = !!(item.isRegularItem && item.isRegularItem());
-            if (isReg && wvItemFieldNonEmpty(item, "url", "url") !== group.hasURL) return false;
-        }
-        if (group.hasAttachment != null) {
-            const isReg = !!(item.isRegularItem && item.isRegularItem());
-            if (isReg) {
-                const v = wvItemHasFileAttachment(item);
-                if (v !== group.hasAttachment) return false;
-            }
-        }
-        if (group.hasAnnotations != null) {
-            const isFa = !!(item.isFileAttachment && item.isFileAttachment());
-            if (isFa) {
-                // Source-aware: while the Source chip is set, only
-                // annotations of that source count — so Source=Zotero
-                // + Has Annotations=No means "no annotations I made
-                // in Zotero" even when embedded ones exist.
-                const anns = item.getAnnotations() || [];
-                const v = anns.some(
-                    a => this._annSourceMatches(a, group.annotationSource));
-                if (v !== group.hasAnnotations) return false;
-            }
-        }
-        if (group.hasEmbeddedAnnotations != null) {
-            const isFa = !!(item.isFileAttachment && item.isFileAttachment());
-            if (isFa) {
-                // Attachment-level only — deliberately NOT source-
-                // scoped and never filters annotation rows.
-                const anns = item.getAnnotations() || [];
-                const v = anns.some(a => !!(a as any).annotationIsExternal);
-                if (v !== group.hasEmbeddedAnnotations) return false;
-            }
-        }
-        if (group.hasOutline != null) {
-            // Attachment-level, like its Has-* neighbours: a parent row
-            // relaxes through and is kept as an ancestor of whichever
-            // attachment matches.
-            const isFa = !!(item.isFileAttachment && item.isFileAttachment());
-            if (isFa) {
-                const v = this._wvHasCuratedOutline(item);
-                if (v !== group.hasOutline) return false;
-            }
-        }
-        // Publication — regular items only.
-        const wantedPub = group.publication;
-        const wantedPubX = group.publicationExclude;
-        if ((wantedPub && wantedPub.length)
-            || (wantedPubX && wantedPubX.length)) {
-            const isReg = !!(item.isRegularItem && item.isRegularItem());
-            if (isReg) {
-                const pub = (item.getField
-                    && item.getField("publicationTitle")) || "";
-                if (wantedPub && wantedPub.length
-                    && !wantedPub.includes(pub)) return false;
-                if (wantedPubX && wantedPubX.length
-                    && wantedPubX.includes(pub)) return false;
-            }
-        }
-        // Read Status (Zotero Reading List) — regular items only.
-        const wantedRS = group.readStatus;
-        const wantedRSX = group.readStatusExclude;
-        if ((wantedRS && wantedRS.length)
-            || (wantedRSX && wantedRSX.length)) {
-            const isReg = !!(item.isRegularItem && item.isRegularItem());
-            if (isReg) {
-                const rs = this._wvReadStatusOf(item);
-                if (wantedRS && wantedRS.length
-                    && !wantedRS.includes(rs)) return false;
-                if (wantedRSX && wantedRSX.length
-                    && wantedRSX.includes(rs)) return false;
-            }
-        }
-        // In Multiple Libraries — regular items only, via the precomputed
-        // linked-relations cache. A COLD cache passes rows through
-        // (degraded, never wrong-way filtering); the tile click kicks
-        // the async build + re-apply.
-        if (group.inOtherLibrary != null && this._wvLinkedLibCacheWarm()) {
-            const isReg = !!(item.isRegularItem && item.isRegularItem());
-            if (isReg) {
-                const v = this._wvItemInAnyOtherLib(item);
-                if (v !== group.inOtherLibrary) return false;
-            }
-        }
         const wantedTags = group.annotationTag;
         const wantedTagsX = group.annotationTagExclude;
         if ((wantedTags && wantedTags.length)
             || (wantedTagsX && wantedTagsX.length)) {
-            // Per-kind scope. Out-of-scope rows fail by default
-            // (mirrors `addedBy` — only in-scope rows can be primary
-            // by tag alone; ancestors of matches are still kept by
-            // the cascade). Subtree-keep walks set
-            // `opts.relaxOutOfScopeAddedBy` so out-of-scope rows
-            // auto-pass during those probes. Shares `hasTagScope`
-            // with the Has Tag filter — one scope, both filters.
+            // Per-kind scope. Out-of-scope rows fail (mirrors `addedBy`
+            // — only in-scope rows can be primary by tag alone;
+            // ancestors of matches are still kept by the cascade).
+            // Shares `hasTagScope` with the Has Tag filter — one scope,
+            // both filters.
             const tagSc = group.hasTagScope
                 || { annotation: true, attachment: true, parent: true };
             const inScope = this._wvScopeAllows(
                 tagSc, this._rowKindOf(item));
-            if (!inScope) {
-                if (!opts.relaxOutOfScopeAddedBy) return false;
-                // else: skip the tag check entirely (subtree-keep).
-            } else {
-                const tags = (item.getTags && item.getTags()) || [];
-                const names = tags.map(t => t && t.tag).filter(Boolean);
-                // Several picked tags: the row carries ALL of them (multi-
-                // valued, so AND is possible -- MJT 2026-09-28, like
-                // Zotero's tag selector). Excludes stay "any of them".
-                if (wantedTags && wantedTags.length
-                    && !wantedTags.every(t => names.includes(t))) return false;
-                if (wantedTagsX && wantedTagsX.length
-                    && wantedTagsX.some(t => names.includes(t))) return false;
-            }
-        }
-        const wantedAuthors = group.annotationAuthor;
-        const wantedAuthorsX = group.annotationAuthorExclude;
-        if ((wantedAuthors && wantedAuthors.length)
-            || (wantedAuthorsX && wantedAuthorsX.length)) {
-            const authors = this._getItemAuthors(item);
-            // ALL picked authors (item creators are multi-valued; an
-            // annotation has one author, so only a single pick can match it).
-            if (wantedAuthors && wantedAuthors.length
-                && !wantedAuthors.every(a => authors.includes(a))) return false;
-            if (wantedAuthorsX && wantedAuthorsX.length
-                && wantedAuthorsX.some(a => authors.includes(a))) return false;
+            if (!inScope) return false;
+            const tags = (item.getTags && item.getTags()) || [];
+            const names = tags.map(t => t && t.tag).filter(Boolean);
+            // Several picked tags: the row carries ALL of them (multi-
+            // valued, so AND is possible -- MJT 2026-09-28, like
+            // Zotero's tag selector). Excludes stay "any of them".
+            if (wantedTags && wantedTags.length
+                && !wantedTags.every(t => names.includes(t))) return false;
+            if (wantedTagsX && wantedTagsX.length
+                && wantedTagsX.some(t => names.includes(t))) return false;
         }
         const wantedAddedBy = group.addedBy;
         if (wantedAddedBy && wantedAddedBy.length) {
             // Row-kind scope: addedBy applies only to row kinds the
-            // user opted into.
-            //
-            // Default mode (primary check, opts.relaxOutOfScopeAddedBy
-            // is false): out-of-scope rows FAIL — they're never
-            // primary by addedBy alone. They can still be kept by
-            // ancestor-keep (`_hasMatchingAnnotation`) or by the
-            // filtered subtree-keep below.
-            //
-            // Relaxed mode (opts.relaxOutOfScopeAddedBy is true):
-            // out-of-scope rows AUTO-PASS — used during subtree-keep
-            // so e.g. attachments under a primary top-level item
-            // come along when the user said "addedBy applies to
-            // top-level only".
+            // user opted into. Out-of-scope rows FAIL — they're never
+            // primary by addedBy alone; they can still be kept as
+            // ancestors of a match (the apply's `hasMatch`).
             const scope = group.addedByScope || {
                 topLevel: true, attachments: true, annotations: true,
             };
@@ -4147,13 +4469,9 @@ class _FilterMixin {
                 || (isTopLevel && scope.topLevel)
                 || (isNt && (scope.notes !== undefined
                     ? scope.notes !== false : scope.topLevel !== false));
-            if (!inScope) {
-                if (!opts.relaxOutOfScopeAddedBy) return false;
-                // else: skip the addedBy check entirely.
-            } else {
-                const addedBy = this._getItemAddedBy(item);
-                if (!addedBy || !wantedAddedBy.includes(addedBy)) return false;
-            }
+            if (!inScope) return false;
+            const addedBy = this._getItemAddedBy(item);
+            if (!addedBy || !wantedAddedBy.includes(addedBy)) return false;
         }
         const wantedAddedByX = group.addedByExclude;
         if (wantedAddedByX && wantedAddedByX.length) {
@@ -4182,12 +4500,9 @@ class _FilterMixin {
         // `_rows` set, we just drop result rows whose kind is opted
         // out of this group's scope). Out-of-scope rows fail their
         // primary check; ancestors of in-scope matches are still
-        // kept by the existing cascade. Bypassed by
-        // `relaxOutOfScopeAddedBy` so the subtree-keep walks aren't
-        // blocked by the same rule.
+        // kept by the existing cascade.
         if (this._currentQuickSearchValue
-            && group.quickSearchScope
-            && !opts.relaxOutOfScopeAddedBy) {
+            && group.quickSearchScope) {
             const k = this._rowKindOf(item);
             if (k) {
                 // Out-of-scope kinds: drop entirely.
@@ -4340,7 +4655,7 @@ class _FilterMixin {
         // non-primary parents to the kept set when any descendant
         // is primary. Walking descendants in this function caused
         // a hang/crash in v0.9.1-dev.62: it's called many times per
-        // row (incl. from `_hasMatchingAnnotation`, which itself
+        // row (incl. from the apply's `hasMatch`, which itself
         // iterates children), making the cost effectively
         // `items × atts × anns` on the main thread.
         // `directSearchMatch` = the quick search hit THIS row at its
@@ -4453,12 +4768,10 @@ class _FilterMixin {
         // no annotations, so no annotation in the tree could have
         // related items.
         if (!this._treeSatisfiesCrossLevelScoped(item, group)) return false;
-        const annActiveOther = (group.annotationColor && group.annotationColor.length)
-            || (group.annotationColorExclude && group.annotationColorExclude.length)
-            || (group.annotationType && group.annotationType.length)
-            || (group.annotationTypeExclude && group.annotationTypeExclude.length)
-            || group.annotationHasComment != null;
-        const annActive = annActiveOther || group.annotationSource != null;
+        // Which kinds the strict per-kind checks constrain (table `kindCheck`).
+        // `annActiveOther` = without Source, for the Has Annotations=No waiver.
+        const annActiveOther = wvAnyDimSet(WV_DIMS_KIND.annotation, group, "annotationSource");
+        const annActive = annActiveOther || wvAnyDimSet(WV_DIMS_KIND.annotation, group);
         // Has Annotations=No + Source (and no other annotation chip)
         // legitimately selects trees with ZERO matching annotations
         // ("attachments I haven't annotated in Zotero") — the usual
@@ -4468,18 +4781,8 @@ class _FilterMixin {
         // comment chips are also set, No stays contradictory (empty),
         // same as before the Source chip existed.
         const annWaived = group.hasAnnotations === false && !annActiveOther;
-        const attActive = !!(
-            (group.attachmentFileType && group.attachmentFileType.length)
-            || (group.attachmentFileTypeExclude && group.attachmentFileTypeExclude.length)
-            || (group.outlineClass && group.outlineClass.length)
-            || (group.outlineClassExclude && group.outlineClassExclude.length)
-            || (group.outlineFlags && group.outlineFlags.length)
-            || (group.outlineFlagsExclude && group.outlineFlagsExclude.length)
-            || (group.outlineVerdict && group.outlineVerdict.length)
-            || (group.outlineVerdictExclude && group.outlineVerdictExclude.length));
-        const regActive = !!(
-            (group.itemType && group.itemType.length)
-            || (group.itemTypeExclude && group.itemTypeExclude.length));
+        const attActive = wvAnyDimSet(WV_DIMS_KIND.attachment, group);
+        const regActive = wvAnyDimSet(WV_DIMS_KIND.regular, group);
 
         const isAnn = !!(item.isAnnotation && item.isAnnotation());
         const isAtt = !isAnn && !!(item.isAttachment && item.isAttachment());
@@ -4845,16 +5148,7 @@ class _FilterMixin {
             // runs the OR check, and enforcing again would drop
             // PDFs whose spine has no item note even though they
             // satisfy the file-type half of the OR.
-            const attFTActive = !!(
-                (group.attachmentFileType && group.attachmentFileType.length)
-                || (group.attachmentFileTypeExclude
-                    && group.attachmentFileTypeExclude.length)
-                || (group.outlineClass && group.outlineClass.length)
-                || (group.outlineClassExclude && group.outlineClassExclude.length)
-                || (group.outlineFlags && group.outlineFlags.length)
-                || (group.outlineFlagsExclude && group.outlineFlagsExclude.length)
-                || (group.outlineVerdict && group.outlineVerdict.length)
-                || (group.outlineVerdictExclude && group.outlineVerdictExclude.length));
+            const attFTActive = wvAnyDimSet(WV_DIMS_KIND.attachment, group);
             if (!attFTActive) {
                 // Vertical-only: the row's spine must contain an
                 // item note (the `note` candidates bucket, four-type).
@@ -4920,56 +5214,20 @@ class _FilterMixin {
         // roots (standalone notes) trivially fail include
         // directions on parent-only chips, which matches per-row
         // semantics.
-        if (group.hasAbstract != null) {
-            const v = isReg && !!(root.getField
-                && String(root.getField("abstractNote") || "").trim().length);
-            if (v !== group.hasAbstract) return false;
-        }
-        if (group.hasDOI != null) {
-            const v = isReg && wvItemFieldNonEmpty(root, "DOI", "doi");
-            if (v !== group.hasDOI) return false;
-        }
-        if (group.hasPMID != null) {
-            if ((isReg && wvItemHasPubmedId(root, "PMID", WV_PMID_RE)) !== group.hasPMID) return false;
-        }
-        if (group.hasPMCID != null) {
-            if ((isReg && wvItemHasPubmedId(root, "PMCID", WV_PMCID_RE)) !== group.hasPMCID) return false;
-        }
-        if (group.retracted != null) {
-            if ((isReg && wvItemIsRetracted(root)) !== group.retracted) return false;
-        }
-        if (group.hasURL != null) {
-            const v = isReg && wvItemFieldNonEmpty(root, "url", "url");
-            if (v !== group.hasURL) return false;
-        }
-        if (group.hasAttachment != null) {
-            const v = isReg && wvItemHasFileAttachment(root);
-            if (v !== group.hasAttachment) return false;
-        }
-        if ((group.publication && group.publication.length)
-            || (group.publicationExclude && group.publicationExclude.length)) {
-            const pub = isReg && root.getField
-                && root.getField("publicationTitle") || "";
-            if (group.publication && group.publication.length
-                && !group.publication.includes(pub)) return false;
-            if (group.publicationExclude && group.publicationExclude.length
-                && group.publicationExclude.includes(pub)) return false;
-        }
-        if ((group.readStatus && group.readStatus.length)
-            || (group.readStatusExclude && group.readStatusExclude.length)) {
-            const rs = isReg ? this._wvReadStatusOf(root) : "";
-            if (group.readStatus && group.readStatus.length
-                && !group.readStatus.includes(rs)) return false;
-            if (group.readStatusExclude && group.readStatusExclude.length
-                && group.readStatusExclude.includes(rs)) return false;
-        }
-        if (group.inOtherLibrary != null && this._wvLinkedLibCacheWarm()) {
-            const v = isReg && this._wvItemInAnyOtherLib(root);
-            if (v !== group.inOtherLibrary) return false;
+        for (let i = 0; i < WV_DIMS_ROOT.length; i++) {
+            if (!wvDimRootOK(this, WV_DIMS_ROOT[i], root, isReg, group)) return false;
         }
         if (group.itemType && group.itemType.length) {
-            if (!isReg) return false;
-            if (!group.itemType.includes(root.itemType)) return false;
+            // Rule 1 parent-level OR pair (Item Type <-> Standalone Note): a
+            // standalone-note root is the other half of the pair, so it is not
+            // held to the item type. The per-row check already read it this
+            // way (standaloneNoteSelfMatched); this tree-level check rejected
+            // every note first (survey 2026-10-06 #12).
+            const rootIsSN = !!(root.isNote && root.isNote() && !root.parentItem);
+            if (!(group.standaloneNote === true && rootIsSN)) {
+                if (!isReg) return false;
+                if (!group.itemType.includes(root.itemType)) return false;
+            }
         }
         if (group.itemTypeExclude && group.itemTypeExclude.length) {
             if (isReg && group.itemTypeExclude.includes(root.itemType)) return false;
@@ -5016,9 +5274,6 @@ class _FilterMixin {
         return sc[kind] !== false;
     }
 
-    /** Strict kind-specific check: returns true iff `item` is
-     *  actually of `kind` AND passes all filters in `group` that
-     *  target that kind. Used by `_rowSatisfiesTreeJoin`. */
     /** Does annotation `ann` satisfy the tri-state Source value?
      *  `src` true = embedded in the PDF (`annotationIsExternal`),
      *  false = made in Zotero Reader, null/undefined = any
@@ -5032,59 +5287,19 @@ class _FilterMixin {
         return !!ann.annotationIsExternal === src;
     }
 
+    /** Strict kind-specific check: returns true iff `item` is
+     *  actually of `kind` AND passes all filters in `group` that
+     *  target that kind (the table's `kindCheck`). Used by `_rowSatisfiesTreeJoin`. */
     _kindOK(item, group, kind) {
         if (!item || !group) return false;
-        if (kind === "annotation") {
-            if (!(item.isAnnotation && item.isAnnotation())) return false;
-            if (group.annotationColor && group.annotationColor.length
-                && !group.annotationColor.includes(item.annotationColor)) return false;
-            if (group.annotationColorExclude && group.annotationColorExclude.length
-                && group.annotationColorExclude.includes(item.annotationColor)) return false;
-            if (group.annotationType && group.annotationType.length
-                && !group.annotationType.includes(item.annotationType)) return false;
-            if (group.annotationTypeExclude && group.annotationTypeExclude.length
-                && group.annotationTypeExclude.includes(item.annotationType)) return false;
-            if (group.annotationHasComment != null) {
-                const txt = item.annotationComment;
-                const has = !!(txt && String(txt).trim().length);
-                if (has !== group.annotationHasComment) return false;
-            }
-            if (!this._annSourceMatches(item, group.annotationSource)) {
-                return false;
-            }
-            return true;
+        const dims = WV_DIMS_KIND[kind];
+        if (!dims || !wvDimRowIs(item, dims[0].rows as string)) return false;
+        // The kind is checked: every dimension of the list applies to the row.
+        for (let i = 0; i < dims.length; i++) {
+            const f = dims[i], s = wvDimSetBits(f, group);
+            if (s && !wvDimRowPasses(this, f, item, group, s, WV_K_ALL)) return false;
         }
-        if (kind === "attachment") {
-            if (!(item.isAttachment && item.isAttachment())) return false;
-            if (group.attachmentFileType && group.attachmentFileType.length
-                && !this._attachmentMatchesFileTypeList(
-                    item, group.attachmentFileType)) return false;
-            if (group.attachmentFileTypeExclude && group.attachmentFileTypeExclude.length
-                && this._attachmentMatchesFileTypeList(
-                    item, group.attachmentFileTypeExclude)) return false;
-            if (group.outlineClass && group.outlineClass.length
-                && !this._outlineMatchesList(item, group.outlineClass)) return false;
-            if (group.outlineClassExclude && group.outlineClassExclude.length
-                && this._outlineMatchesList(item, group.outlineClassExclude)) return false;
-            if (group.outlineFlags && group.outlineFlags.length
-                && !this._outlineMatchesAll(item, group.outlineFlags)) return false;
-            if (group.outlineFlagsExclude && group.outlineFlagsExclude.length
-                && this._outlineMatchesList(item, group.outlineFlagsExclude)) return false;
-            if (group.outlineVerdict && group.outlineVerdict.length
-                && !this._outlineMatchesList(item, group.outlineVerdict)) return false;
-            if (group.outlineVerdictExclude && group.outlineVerdictExclude.length
-                && this._outlineMatchesList(item, group.outlineVerdictExclude)) return false;
-            return true;
-        }
-        if (kind === "regular") {
-            if (!(item.isRegularItem && item.isRegularItem())) return false;
-            if (group.itemType && group.itemType.length
-                && !group.itemType.includes(item.itemType)) return false;
-            if (group.itemTypeExclude && group.itemTypeExclude.length
-                && group.itemTypeExclude.includes(item.itemType)) return false;
-            return true;
-        }
-        return false;
+        return true;
     }
 
     /** True iff at least one filter in `group` targets `item`'s
@@ -5104,73 +5319,14 @@ class _FilterMixin {
             && !!(item.isNote && item.isNote());
         const isReg = !isAnn && !isAtt && !isNote;
 
-        // Annotation-targeting filters. Pure-exclude on a kind also
-        // counts as a "kind match" — e.g. "exclude yellow" alone
-        // should make every NON-yellow annotation primary.
-        if (isAnn) {
-            if (group.annotationColor && group.annotationColor.length
-                && group.annotationColor.includes(item.annotationColor)) {
-                return true;
-            }
-            if (group.annotationColorExclude && group.annotationColorExclude.length
-                && !group.annotationColorExclude.includes(item.annotationColor)) {
-                return true;
-            }
-            if (group.annotationType && group.annotationType.length
-                && group.annotationType.includes(item.annotationType)) {
-                return true;
-            }
-            if (group.annotationTypeExclude && group.annotationTypeExclude.length
-                && !group.annotationTypeExclude.includes(item.annotationType)) {
-                return true;
-            }
-            if (group.annotationHasComment != null) {
-                const txt = item.annotationComment;
-                const has = !!(txt && String(txt).trim().length);
-                if (has === group.annotationHasComment) return true;
-            }
-            if (group.annotationSource != null
-                && this._annSourceMatches(item, group.annotationSource)) {
-                return true;
-            }
-        }
-
-        // Attachment-targeting filter
-        if (isAtt) {
-            if (group.attachmentFileType && group.attachmentFileType.length
-                && this._attachmentMatchesFileTypeList(
-                    item, group.attachmentFileType)) {
-                return true;
-            }
-            if (group.attachmentFileTypeExclude && group.attachmentFileTypeExclude.length
-                && !this._attachmentMatchesFileTypeList(
-                    item, group.attachmentFileTypeExclude)) {
-                return true;
-            }
-            if (group.outlineClass && group.outlineClass.length
-                && this._outlineMatchesList(item, group.outlineClass)) return true;
-            if (group.outlineClassExclude && group.outlineClassExclude.length
-                && !this._outlineMatchesList(item, group.outlineClassExclude)) return true;
-            if (group.outlineFlags && group.outlineFlags.length
-                && this._outlineMatchesAll(item, group.outlineFlags)) return true;
-            if (group.outlineFlagsExclude && group.outlineFlagsExclude.length
-                && !this._outlineMatchesList(item, group.outlineFlagsExclude)) return true;
-            if (group.outlineVerdict && group.outlineVerdict.length
-                && this._outlineMatchesList(item, group.outlineVerdict)) return true;
-            if (group.outlineVerdictExclude && group.outlineVerdictExclude.length
-                && !this._outlineMatchesList(item, group.outlineVerdictExclude)) return true;
-        }
-
-        // Regular-targeting filters
-        if (isReg) {
-            if (group.itemType && group.itemType.length
-                && group.itemType.includes(item.itemType)) {
-                return true;
-            }
-            if (group.itemTypeExclude && group.itemTypeExclude.length
-                && !group.itemTypeExclude.includes(item.itemType)) {
-                return true;
-            }
+        // Every dimension with a per-row test in the table: an include, a pure
+        // exclude, or the tri-state, on a row of the dimension's kind.
+        let k = 0;
+        for (let i = 0; i < WV_DIMS_ROWS.length; i++) {
+            const f = WV_DIMS_ROWS[i], s = wvDimSetBits(f, group);
+            if (!s) continue;
+            if (!k) k = wvRowKindFrom(item, isAnn, isAtt, isNote);
+            if (wvDimOwnMatch(this, f, item, group, s, k)) return true;
         }
 
         // Universal filters — apply to any row, count as
@@ -5197,18 +5353,6 @@ class _FilterMixin {
                     && !group.annotationTagExclude.some(t => names.includes(t))) {
                     return true;
                 }
-            }
-        }
-        if ((group.annotationAuthor && group.annotationAuthor.length)
-            || (group.annotationAuthorExclude && group.annotationAuthorExclude.length)) {
-            const authors = this._getItemAuthors(item);
-            if (group.annotationAuthor && group.annotationAuthor.length
-                && group.annotationAuthor.every(a => authors.includes(a))) {
-                return true;
-            }
-            if (group.annotationAuthorExclude && group.annotationAuthorExclude.length
-                && !group.annotationAuthorExclude.some(a => authors.includes(a))) {
-                return true;
             }
         }
         if ((group.addedBy && group.addedBy.length)
@@ -5290,82 +5434,6 @@ class _FilterMixin {
                 && !item.parentItem);
             if (isSA === group.standaloneAttachment) return true;
         }
-        // Parent-targeting Has-* — only regular items can be primary
-        // for these. Non-regulars don't count as kind matches here.
-        if (isReg) {
-            if (group.hasAbstract != null) {
-                const v = !!(item.getField
-                    && String(item.getField("abstractNote") || "").trim().length);
-                if (v === group.hasAbstract) return true;
-            }
-            if (group.hasDOI != null) {
-                if (wvItemFieldNonEmpty(item, "DOI", "doi") === group.hasDOI) return true;
-            }
-            if (group.hasPMID != null) {
-                if (wvItemHasPubmedId(item, "PMID", WV_PMID_RE) === group.hasPMID) return true;
-            }
-            if (group.hasPMCID != null) {
-                if (wvItemHasPubmedId(item, "PMCID", WV_PMCID_RE) === group.hasPMCID) return true;
-            }
-            if (group.retracted != null) {
-                if (wvItemIsRetracted(item) === group.retracted) return true;
-            }
-            if (group.hasURL != null) {
-                if (wvItemFieldNonEmpty(item, "url", "url") === group.hasURL) return true;
-            }
-            if (group.hasAttachment != null) {
-                const v = wvItemHasFileAttachment(item);
-                if (v === group.hasAttachment) return true;
-            }
-            if ((group.publication && group.publication.length)
-                || (group.publicationExclude && group.publicationExclude.length)) {
-                const pub = (item.getField
-                    && item.getField("publicationTitle")) || "";
-                if (group.publication && group.publication.length
-                    && group.publication.includes(pub)) return true;
-                if (group.publicationExclude && group.publicationExclude.length
-                    && !group.publicationExclude.includes(pub)) return true;
-            }
-            if ((group.readStatus && group.readStatus.length)
-                || (group.readStatusExclude && group.readStatusExclude.length)) {
-                const rs = this._wvReadStatusOf(item);
-                if (group.readStatus && group.readStatus.length
-                    && group.readStatus.includes(rs)) return true;
-                if (group.readStatusExclude && group.readStatusExclude.length
-                    && !group.readStatusExclude.includes(rs)) return true;
-            }
-            if (group.inOtherLibrary != null && this._wvLinkedLibCacheWarm()) {
-                const v = this._wvItemInAnyOtherLib(item);
-                if (v === group.inOtherLibrary) return true;
-            }
-        }
-        // Has Annotations — file attachments only. Source-aware,
-        // same as the per-row check.
-        if (group.hasAnnotations != null) {
-            const isFa = !!(item.isFileAttachment && item.isFileAttachment());
-            if (isFa) {
-                const anns = item.getAnnotations() || [];
-                const v = anns.some(
-                    a => this._annSourceMatches(a, group.annotationSource));
-                if (v === group.hasAnnotations) return true;
-            }
-        }
-        // Has Weavero Outline — file attachments only.
-        if (group.hasOutline != null) {
-            const isFaOl = !!(item.isFileAttachment && item.isFileAttachment());
-            if (isFaOl && this._wvHasCuratedOutline(item) === group.hasOutline) {
-                return true;
-            }
-        }
-        // Has Embedded Annotations — file attachments only.
-        if (group.hasEmbeddedAnnotations != null) {
-            const isFa = !!(item.isFileAttachment && item.isFileAttachment());
-            if (isFa) {
-                const anns = item.getAnnotations() || [];
-                const v = anns.some(a => !!(a as any).annotationIsExternal);
-                if (v === group.hasEmbeddedAnnotations) return true;
-            }
-        }
         // Quick search — only count as a kind-match when THIS
         // specific item is in Zotero's `_searchItemIDs` set (i.e.
         // it actually matched the query). Without that membership
@@ -5390,44 +5458,10 @@ class _FilterMixin {
                     isQsMatch = !!(sIDs && item && sIDs.has(item.id));
                 } catch (e) {}
                 if (isQsMatch) {
-                    const annChipActive = !!(
-                        (group.annotationColor
-                            && group.annotationColor.length)
-                        || (group.annotationColorExclude
-                            && group.annotationColorExclude.length)
-                        || (group.annotationType
-                            && group.annotationType.length)
-                        || (group.annotationTypeExclude
-                            && group.annotationTypeExclude.length)
-                        || group.annotationHasComment != null
-                        || group.annotationSource != null);
-                    const attChipActive = !!(
-                        (group.attachmentFileType
-                            && group.attachmentFileType.length)
-                        || (group.attachmentFileTypeExclude
-                            && group.attachmentFileTypeExclude.length)
-                        || (group.outlineClass && group.outlineClass.length)
-                        || (group.outlineClassExclude && group.outlineClassExclude.length)
-                        || (group.outlineFlags && group.outlineFlags.length)
-                        || (group.outlineFlagsExclude && group.outlineFlagsExclude.length)
-                        || (group.outlineVerdict && group.outlineVerdict.length)
-                        || (group.outlineVerdictExclude && group.outlineVerdictExclude.length));
-                    const parChipActive = !!(
-                        (group.itemType && group.itemType.length)
-                        || (group.itemTypeExclude
-                            && group.itemTypeExclude.length)
-                        || group.hasAbstract != null
-                        || group.hasDOI != null
-                        || group.retracted != null
-                        || group.hasURL != null
-                        || group.hasAttachment != null
-                        || (group.publication && group.publication.length)
-                        || (group.publicationExclude
-                            && group.publicationExclude.length)
-                        || (group.readStatus && group.readStatus.length)
-                        || (group.readStatusExclude
-                            && group.readStatusExclude.length)
-                        || group.inOtherLibrary != null);
+                    const ck = this._wvQsChipKinds(group);
+                    const annChipActive = ck.annotation;
+                    const attChipActive = ck.attachment;
+                    const parChipActive = ck.parent;
                     const anyKindSpecific = annChipActive
                         || attChipActive || parChipActive;
                     if (!anyKindSpecific) return true;
@@ -5951,8 +5985,17 @@ class _FilterMixin {
                 Zotero.debug("[Weavero] filter key-fix err: " + err);
             }
         };
-        doc.addEventListener("keydown", spaceFix, true);
-        this._filterSpaceFix = { doc, fn: spaceFix };
+        // Keyed (wvListen), replaced on every build of the panel: the handler
+        // closes over THIS panel. The stored-ref teardown reached only the
+        // target window's, so a reload left the other windows' handlers on
+        // (full-suite reload audit 2026-10-13). Peel what earlier builds
+        // stored.
+        if (this._filterSpaceFix) {
+            try { this._filterSpaceFix.doc.removeEventListener("keydown", this._filterSpaceFix.fn, true); } catch (e) {}
+            this._filterSpaceFix = null;
+        }
+        wvUnlisten(doc, "filterPanel:keys");
+        wvListen(doc, "filterPanel:keys", "keydown", spaceFix, true, this._wvWireTag());
 
         tbBtn.appendChild(panel);
         searchBox.parentNode.insertBefore(tbBtn, searchBox.nextSibling);
@@ -6011,11 +6054,7 @@ class _FilterMixin {
         this._filterBar = bar;
         this._filterTbBtn = tbBtn;
         this._renderFilterBar();
-        this._patchIsSelectable();
-        this._patchExpandMatchParents();
-        this._patchHideContextAttachments();
-        this._patchUserOpenTracking();
-        this._installHiddenBadgeClickHandler();
+        this._wvWireItemsFilterViewIn(win);
 
         // Re-apply filter when scroll / data-change brings new rows into
         // the virtualized window. We watch the inner tree element for
@@ -6054,14 +6093,43 @@ class _FilterMixin {
                 // so retry on every tree mutation. Self-bails once
                 // the prototype is patched.
                 try { this._patchHideContextAttachments(); } catch (e) {}
-                try { this._patchUserOpenTracking(); } catch (e) {}
+                try { this._patchUserOpenTracking(win); } catch (e) {}
                 try { this._installHiddenBadgeClickHandler(); } catch (e) {}
             });
             this._filterTreeObserver.observe(treeInner,
                 { childList: true, subtree: true });
         }
+    }
 
-        // Collection-switch hook. The mutation observer above isn't
+    /** The items-VIEW half of the filter wiring (row-provider patches and
+     *  the setFilter / changeCollectionTreeRow / selectItems wraps), on its
+     *  own so a window whose view did not exist yet at setup can get it
+     *  later: a main window opened mid-session runs setup before ZoteroPane
+     *  creates `itemsView`, and the panel's `wv-filter-bar` guard then
+     *  stopped every later setup before these wraps (2026-10-09, see
+     *  _wvWhenPaneViewsReady). Each wrap is tag-stamped, so re-running is
+     *  safe. The patch installers it calls resolve their window through
+     *  `_wvFilterTargetWin()` (this override), never
+     *  `Zotero.getMainWindow()`: that is the FOCUSED window, and a second
+     *  window wired while the first had focus got the first one patched
+     *  twice and its own isSelectable / expandMatchParents / row
+     *  prototype / hidden-badge handler never (found 2026-10-09). */
+    _wvWireItemsFilterView(win: any) {
+        if (!this._getEnableItemsTreeFilter() || !win || win.closed) return;
+        const prev = (this as any)._wvFilterWinOverride;
+        (this as any)._wvFilterWinOverride = win;
+        try { this._wvWireItemsFilterViewIn(win); }
+        finally { (this as any)._wvFilterWinOverride = prev || null; }
+    }
+
+    _wvWireItemsFilterViewIn(win: any) {
+        this._patchIsSelectable();
+        this._patchExpandMatchParents();
+        this._patchHideContextAttachments();
+        this._patchUserOpenTracking(win);
+        this._installHiddenBadgeClickHandler();
+
+        // Collection-switch hook. The tree MutationObserver isn't
         // reliable across collection swaps: Zotero's
         // `CollectionViewItemTree.changeCollectionTreeRow` swaps
         // rows on the same `rowProvider` instance, so our patched
@@ -6298,27 +6366,23 @@ class _FilterMixin {
         // `_rowMap` internals) so it holds on both v9 and v10 row
         // plumbing. Idempotent.
         try {
-            const WRAP_VER = 3;
             const itemsView = win && win.ZoteroPane && win.ZoteroPane.itemsView;
-            if (itemsView && typeof itemsView.selectItems === "function"
-                && (itemsView._wvSelectItemsWrapVer || 0) < WRAP_VER) {
-                // Versioned re-wrap: assigning over any previous wrapper
-                // orphans its (possibly stale-instance) closure instead
-                // of stacking on it. `selectItems` is a prototype
-                // method, so teardown restores by deleting the own
-                // property. Bind the PROTOTYPE method, not
-                // `itemsView.selectItems` — the latter could be a
-                // leftover own-property wrapper from a predecessor
-                // instance, and binding it would stack us on a stale
-                // closure.
-                const proto = Object.getPrototypeOf(itemsView);
-                const origSelect = itemsView._wvOrigSelectItems
-                    || ((proto && typeof proto.selectItems === "function")
-                        ? proto.selectItems.bind(itemsView)
-                        : itemsView.selectItems.bind(itemsView));
-                itemsView._wvOrigSelectItems = origSelect;
-                itemsView._wvSelectItemsWrapVer = WRAP_VER;
-                itemsView.selectItems = async (ids, noRecurse, noScroll) => {
+            if (itemsView && typeof itemsView.selectItems === "function") {
+                // Legacy own-prop wrapper from a build before the layered
+                // helper (constant stamp): drop it so the PROTOTYPE method is
+                // the native the helper records -- binding a leftover wrapper
+                // would stack us on a stale closure.
+                if (itemsView._wvSelectItemsWrapVer) {
+                    delete itemsView.selectItems;
+                    delete itemsView._wvOrigSelectItems;
+                    delete itemsView._wvSelectItemsWrapVer;
+                }
+                // Tag-stamped layer "filterParity" (lib/wrap.ts): a reload
+                // re-wraps from the native; `selectItems` is a prototype
+                // method, so the unwrap deletes the own property.
+                wvWrap(itemsView, "selectItems", "filterParity", this._wvWireTag(), (orig: any) => {
+                const origSelect = (ids: any, noRecurse: any, noScroll: any) => orig.call(itemsView, ids, noRecurse, noScroll);
+                return async (ids, noRecurse, noScroll) => {
                     let result = await origSelect(ids, noRecurse, noScroll);
                     try {
                         // Resolve the LIVE plugin instance at call time —
@@ -6326,8 +6390,7 @@ class _FilterMixin {
                         // captured `this` could be a torn-down
                         // predecessor whose clear would fight the
                         // current instance's patches.
-                        const live: any = (Zotero as any).Weavero
-                            && (Zotero as any).Weavero.plugin;
+                        const live: any = wvLivePlugin();
                         // `noRecurse` is Zotero's own retry marker — its
                         // recursive call must not re-trigger us. The
                         // getMainWindow guard scopes the clear to the
@@ -6335,7 +6398,7 @@ class _FilterMixin {
                         // (state is per-window; clearing another
                         // window's filter would be a cross-window
                         // clobber).
-                        if (live && !live._wvDestroyed
+                        if (live
                             && !noRecurse && ids && ids.length
                             && win === Zotero.getMainWindow()
                             && live._isFilterActive(live._filterState)) {
@@ -6385,7 +6448,7 @@ class _FilterMixin {
                         dbg("[Weavero][filter] selectItems filter-parity err: " + e);
                     }
                     return result;
-                };
+                }; });
             }
         } catch (e) {
             dbg("[Weavero][filter] selectItems wrap err: " + e);
@@ -6442,72 +6505,42 @@ class _FilterMixin {
             const itemsView = win && win.ZoteroPane && win.ZoteroPane.itemsView;
             // Restore the selectItems wrap (an own property shadowing
             // the prototype method — delete lets it show through).
-            if (itemsView && itemsView._wvSelectItemsWrapVer) {
-                delete itemsView.selectItems;
-                delete itemsView._wvOrigSelectItems;
-                delete itemsView._wvSelectItemsWrapVer;
+            if (itemsView) {
+                wvUnwrap(itemsView, "selectItems", "filterParity");
+                // Legacy keys (builds before the layered helper).
+                if (itemsView._wvSelectItemsWrapVer) {
+                    delete itemsView.selectItems;
+                    delete itemsView._wvOrigSelectItems;
+                    delete itemsView._wvSelectItemsWrapVer;
+                }
+            }
+            // The setFilter / changeCollectionTreeRow wraps (own props over
+            // the prototype methods) and their stamps. Left in place, the
+            // next quick search re-applied the old filter from a dead
+            // instance with no chip bar to clear it (survey 2026-10-06 #14).
+            if (itemsView && itemsView._wvSetFilterWrapped) {
+                delete itemsView.setFilter;
+                delete itemsView._wvSetFilterWrapped;
+            }
+            if (itemsView && itemsView._wvCollChangeWrapped) {
+                delete itemsView.changeCollectionTreeRow;
+                delete itemsView._wvCollChangeWrapped;
             }
             // The first column's model minimum (paired with the CSS floor).
             try { this._wvUnpatchFirstColumnMinWidth(itemsView); } catch (e) {}
             const rp = itemsView && itemsView.rowProvider;
             if (rp && rp._wvOrigGetRow) {
-                // Delete the own-property monkey-patches so the
-                // prototype methods show through. Reassigning to
-                // `rp._wvOrigGetRow` would just reinstall a bound
-                // copy (which still works, but `delete` is cleaner
-                // and avoids re-stacking on next reload).
-                delete rp.getRow;
-                delete rp.getRowCount;
-                delete rp._wvOrigGetRow;
-                delete rp._wvOrigGetRowCount;
-                // Restore the item pane's count getter (own property on the
-                // itemsView; deleting it re-exposes the prototype getter).
-                // The host is stored on `rp` because these teardown sites
-                // only have `rp` in scope.
-                if (rp._wvObjRowCountHost) {
-                    try { delete rp._wvObjRowCountHost.objectRowCount; }
-                    catch (e) {}
-                    delete rp._wvObjRowCountHost;
-                }
-                if (rp._wvOrigGetLevel) {
-                    delete rp.getLevel;
-                    delete rp._wvOrigGetLevel;
-                }
-                if (rp._wvOrigIsContainer) {
-                    delete rp.isContainer;
-                    delete rp._wvOrigIsContainer;
-                }
-                if (rp._wvOrigIsContainerOpen) {
-                    delete rp.isContainerOpen;
-                    delete rp._wvOrigIsContainerOpen;
-                }
-                if (rp._wvOrigIsContainerEmpty) {
-                    delete rp.isContainerEmpty;
-                    delete rp._wvOrigIsContainerEmpty;
-                }
-                if (rp._wvOrigToggleOpenState) {
-                    delete rp.toggleOpenState;
-                    delete rp._wvOrigToggleOpenState;
-                }
-                if (rp._wvOrigExpandRows) {
-                    delete rp.expandRows;
-                    delete rp._wvOrigExpandRows;
-                }
-                if (rp._wvOrigCollapseRows) {
-                    delete rp.collapseRows;
-                    delete rp._wvOrigCollapseRows;
-                }
-                if (rp._wvOrigExpandAllRows) {
-                    delete rp.expandAllRows;
-                    delete rp._wvOrigExpandAllRows;
-                }
-                if (rp._wvOrigCollapseAllRows) {
-                    delete rp.collapseAllRows;
-                    delete rp._wvOrigCollapseAllRows;
-                }
-                delete rp._wvFilterSelfCall;
+                this._wvFilterPatchRemove(rp, itemsView);
                 this._partialCollapseOnFilterClear(rp, itemsView);
                 try { itemsView.tree && itemsView.tree.invalidate(); } catch (e) {}
+            }
+            // The manual-expand tracker outlives filter clears; the
+            // plugin's teardown is what takes it off.
+            const trp: any = itemsView && (itemsView.rowProvider || itemsView);
+            if (trp) {
+                wvUnwrap(trp, "toggleOpenState", "userOpenTracking");
+                delete trp._wvUserOpenTrackingPatched;
+                delete trp._wvUserOpenTrackingOrig;
             }
         } catch (e) {}
         try {
@@ -6531,6 +6564,7 @@ class _FilterMixin {
                 }
                 const popup = doc.getElementById("wv-filter-popup");
                 if (popup) popup.remove();
+                wvUnlisten(doc, "filterPanel:keys");
             }
         } catch (e) {}
         if (this._filterSpaceFix) {
@@ -6656,159 +6690,20 @@ class _FilterMixin {
             }
             firstActive = false;
 
-            if (group.annotationColor && group.annotationColor.length) {
-                bar.appendChild(this._buildColorChip(doc, group, gi));
+            // One chip per set include / exclude list or tri-state, in table
+            // order (filter-facets.ts); WV_CHIPS says how each one reads.
+            const dev = this._wvOeEnabled();
+            for (const f of WV_FILTER_DIMS) {
+                if (f.dev && !dev) continue;
+                const s = wvDimSetBits(f, group);
+                if (s & 4) bar.appendChild(this._buildDimChip(doc, group, gi, f, false));
+                if (s & 1) bar.appendChild(this._buildDimChip(doc, group, gi, f, false));
+                if (s & 2) bar.appendChild(this._buildDimChip(doc, group, gi, f, true));
             }
-            if (group.annotationColorExclude && group.annotationColorExclude.length) {
-                bar.appendChild(this._buildColorChip(doc, group, gi, true));
-            }
-            if (group.annotationType && group.annotationType.length) {
-                bar.appendChild(this._buildTypeChip(doc, group, gi));
-            }
-            if (group.annotationTypeExclude && group.annotationTypeExclude.length) {
-                bar.appendChild(this._buildTypeChip(doc, group, gi, true));
-            }
-            if (group.annotationHasComment != null) {
-                bar.appendChild(this._buildHasCommentChip(doc, group, gi));
-            }
-            if (group.annotationSource != null) {
-                bar.appendChild(this._buildAnnotationSourceChip(doc, group, gi));
-            }
-            if (group.annotationTag && group.annotationTag.length) {
-                bar.appendChild(this._buildTagChip(doc, group, gi));
-            }
-            if (group.annotationTagExclude && group.annotationTagExclude.length) {
-                bar.appendChild(this._buildTagChip(doc, group, gi, true));
-            }
-            if (group.annotationAuthor && group.annotationAuthor.length) {
-                bar.appendChild(this._buildAuthorChip(doc, group, gi));
-            }
-            if (group.annotationAuthorExclude && group.annotationAuthorExclude.length) {
-                bar.appendChild(this._buildAuthorChip(doc, group, gi, true));
-            }
-            if (group.itemType && group.itemType.length) {
-                bar.appendChild(this._buildItemTypeChip(doc, group, gi));
-            }
-            if (group.itemTypeExclude && group.itemTypeExclude.length) {
-                bar.appendChild(this._buildItemTypeChip(doc, group, gi, true));
-            }
-            if (group.attachmentFileType && group.attachmentFileType.length) {
-                bar.appendChild(this._buildAttachmentFileTypeChip(doc, group, gi));
-            }
-            if (group.attachmentFileTypeExclude && group.attachmentFileTypeExclude.length) {
-                bar.appendChild(this._buildAttachmentFileTypeChip(doc, group, gi, true));
-            }
-            // DEV outline-eval chips -- gated on the pref (belt-and-suspenders on
-            // top of the toggle-time scrub in _wvOeOnPrefToggle), so a disabled
-            // pref never surfaces a dev chip even if a group somehow still held
-            // dev tokens. This is per-group (not per-row), so the pref read is cheap.
-            if (this._wvOeEnabled()) {
-                if (group.outlineClass && group.outlineClass.length) {
-                    bar.appendChild(this._buildOutlineClassChip(doc, group, gi));
-                }
-                if (group.outlineClassExclude && group.outlineClassExclude.length) {
-                    bar.appendChild(this._buildOutlineClassChip(doc, group, gi, true));
-                }
-                if (group.outlineFlags && group.outlineFlags.length) {
-                    bar.appendChild(this._buildOutlineFlagsChip(doc, group, gi));
-                }
-                if (group.outlineFlagsExclude && group.outlineFlagsExclude.length) {
-                    bar.appendChild(this._buildOutlineFlagsChip(doc, group, gi, true));
-                }
-                if (group.outlineVerdict && group.outlineVerdict.length) {
-                    bar.appendChild(this._buildOutlineVerdictChip(doc, group, gi));
-                }
-                if (group.outlineVerdictExclude && group.outlineVerdictExclude.length) {
-                    bar.appendChild(this._buildOutlineVerdictChip(doc, group, gi, true));
-                }
-            }
-            if (group.addedBy && group.addedBy.length) {
-                bar.appendChild(this._buildAddedByChip(doc, group, gi));
-            }
-            if (group.addedByExclude && group.addedByExclude.length) {
-                bar.appendChild(this._buildAddedByChip(doc, group, gi, true));
-            }
-            if (group.hasRelated != null) {
-                bar.appendChild(this._buildHasRelatedChip(doc, group, gi));
-            }
-            if (group.hasLink != null) {
-                bar.appendChild(this._buildHasLinkChip(doc, group, gi));
-            }
-            if (group.hasBookmarks != null) {
-                bar.appendChild(this._buildHasBookmarksChip(doc, group, gi));
-            }
-            if (group.hasTag != null) {
-                bar.appendChild(this._buildHasTagChip(doc, group, gi));
-            }
-            if (group.itemNote != null) {
-                bar.appendChild(this._buildItemNoteChip(doc, group, gi));
-            }
-            if (group.standaloneNote != null) {
-                bar.appendChild(this._buildStandaloneNoteChip(doc, group, gi));
-            }
-            if (group.standaloneAttachment != null) {
-                bar.appendChild(this._buildStandaloneAttachmentChip(doc, group, gi));
-            }
-            if (group.hasAbstract != null) {
-                bar.appendChild(this._buildHasFieldChip(doc, group, gi,
-                    "hasAbstract", "Has Abstract"));
-            }
-            if (group.hasDOI != null) {
-                bar.appendChild(this._buildHasFieldChip(doc, group, gi,
-                    "hasDOI", "Has DOI"));
-            }
-            if (group.hasPMID != null) {
-                bar.appendChild(this._buildHasFieldChip(doc, group, gi,
-                    "hasPMID", "Has PMID"));
-            }
-            if (group.hasPMCID != null) {
-                bar.appendChild(this._buildHasFieldChip(doc, group, gi,
-                    "hasPMCID", "Has PMCID"));
-            }
-            if (group.retracted != null) {
-                bar.appendChild(this._buildHasFieldChip(doc, group, gi,
-                    "retracted", "Retracted"));
-            }
-            if (group.hasURL != null) {
-                bar.appendChild(this._buildHasFieldChip(doc, group, gi,
-                    "hasURL", "Has URL"));
-            }
-            if (group.hasAttachment != null) {
-                bar.appendChild(this._buildHasFieldChip(doc, group, gi,
-                    "hasAttachment", "Has Attachment File"));
-            }
-            if (group.hasAnnotations != null) {
-                bar.appendChild(this._buildHasFieldChip(doc, group, gi,
-                    "hasAnnotations", "Has Annotations"));
-            }
-            if (group.hasOutline != null) {
-                bar.appendChild(this._buildHasFieldChip(doc, group, gi,
-                    "hasOutline", "Has Weavero Outline"));
-            }
-            if (group.hasEmbeddedAnnotations != null) {
-                bar.appendChild(this._buildHasFieldChip(doc, group, gi,
-                    "hasEmbeddedAnnotations", "Has Embedded Annotations"));
-            }
-            if (group.publication && group.publication.length) {
-                bar.appendChild(this._buildPublicationChip(doc, group, gi));
-            }
-            if (group.publicationExclude && group.publicationExclude.length) {
-                bar.appendChild(this._buildPublicationChip(doc, group, gi, true));
-            }
-            if (group.readStatus && group.readStatus.length) {
-                bar.appendChild(this._buildReadStatusChip(doc, group, gi));
-            }
-            if (group.readStatusExclude && group.readStatusExclude.length) {
-                bar.appendChild(this._buildReadStatusChip(doc, group, gi, true));
-            }
-            if (group.inOtherLibrary != null) {
-                bar.appendChild(this._buildHasFieldChip(doc, group, gi,
-                    "inOtherLibrary", "In Multiple Libraries"));
-                // An active condition with a COLD cache (e.g. right after a
-                // window re-wire) filters nothing; warm it and re-apply.
-                if (!this._wvLinkedLibCacheWarm()) {
-                    try { this._wvEnsureLinkedLibCache(winOf(bar), true); } catch (e) {}
-                }
+            // An active In Multiple Libraries with a COLD cache (e.g. right
+            // after a window re-wire) filters nothing; warm it and re-apply.
+            if (group.inOtherLibrary != null && !this._wvLinkedLibCacheWarm()) {
+                try { this._wvEnsureLinkedLibCache(winOf(bar), true); } catch (e) {}
             }
         }
 
@@ -6974,126 +6869,26 @@ class _FilterMixin {
         this._openFilterPanel();
     }
 
-    _buildColorChip(doc, group, gi, exclude?) {
-        const colors = exclude ? group.annotationColorExclude : group.annotationColor;
+    /** The chip of dimension `f` in group `gi`: its include list, its
+     *  exclude list (`exclude`), or its tri-state. Label from the table,
+     *  operator and value from WV_CHIPS; x clears exactly that field. */
+    _buildDimChip(doc, group, gi, f: WvDim, exclude: boolean) {
+        const spec = WV_CHIPS[f.id] || {};
+        const list = f.shape === "list" ? (exclude ? group[f.idX as string] : group[f.id]) : null;
+        const value = f.shape === "tri" ? group[f.id] : null;
+        const op = spec.op ? spec.op(list, exclude, value)
+            : f.shape === "tri" ? (value ? "is" : "is not")
+            : (exclude ? "is not" : "is");
         return this._buildFilterChip(doc, {
-            field: "Annotation Color",
-            op: exclude ? "is not" : "is",
-            fillValue: (valSeg) => {
-                const NS_HTML = "http://www.w3.org/1999/xhtml";
-                for (const c of colors) {
-                    // Native rounded-square swatch, chip-sized (12px).
-                    valSeg.appendChild(this._wvNativeColorSwatch(doc, c, 12));
-                }
-                const labelText = colors.map(c => {
-                    const def = this._ANNOTATION_COLORS.find(x => x.value === c);
-                    return def ? def.label : c;
-                }).join(", ");
-                const labelSpan = doc.createElementNS(NS_HTML, "span");
-                labelSpan.textContent = labelText;
-                valSeg.appendChild(labelSpan);
+            field: f.chip,
+            op,
+            fillValue: (seg) => {
+                if (spec.fill) spec.fill(this, doc, seg, list, exclude, value);
+                else if (list) seg.textContent = list.join(", ");
             },
             onRemove: () => {
-                if (exclude) group.annotationColorExclude = [];
-                else group.annotationColor = [];
-                this._pruneEmptyGroups();
-            },
-            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
-        });
-    }
-
-    _buildTypeChip(doc, group, gi, exclude?) {
-        const types = exclude ? group.annotationTypeExclude : group.annotationType;
-        return this._buildFilterChip(doc, {
-            field: "Annotation Type",
-            op: exclude ? "is not" : "is",
-            fillValue: (valSeg) => {
-                const labelText = types.map(t => {
-                    const def = this._ANNOTATION_TYPES.find(x => x.value === t);
-                    return def ? def.label : t;
-                }).join(", ");
-                valSeg.textContent = labelText;
-            },
-            onRemove: () => {
-                if (exclude) group.annotationTypeExclude = [];
-                else group.annotationType = [];
-                this._pruneEmptyGroups();
-            },
-            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
-        });
-    }
-
-    _buildHasCommentChip(doc, group, gi) {
-        // value=true  → include (annotations WITH comment)
-        // value=false → exclude (annotations WITHOUT comment)
-        const value = group.annotationHasComment;
-        return this._buildFilterChip(doc, {
-            field: "Has Comment",
-            op: value ? "is" : "is not",
-            fillValue: () => {},
-            onRemove: () => {
-                group.annotationHasComment = null;
-                this._pruneEmptyGroups();
-            },
-            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
-        });
-    }
-
-    _buildAnnotationSourceChip(doc, group, gi) {
-        // value=true  → embedded in the PDF (external)
-        // value=false → made in Zotero Reader
-        const value = group.annotationSource;
-        return this._buildFilterChip(doc, {
-            field: "Annotation Source",
-            op: "is",
-            fillValue: (valSeg) => {
-                valSeg.textContent = value
-                    ? "Embedded in PDF" : "Made in Zotero";
-            },
-            onRemove: () => {
-                group.annotationSource = null;
-                this._pruneEmptyGroups();
-            },
-            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
-        });
-    }
-
-    _buildHasRelatedChip(doc, group, gi) {
-        const value = group.hasRelated;
-        return this._buildFilterChip(doc, {
-            field: "Has Related",
-            op: value ? "is" : "is not",
-            fillValue: () => {},
-            onRemove: () => {
-                group.hasRelated = null;
-                this._pruneEmptyGroups();
-            },
-            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
-        });
-    }
-
-    _buildHasLinkChip(doc, group, gi) {
-        const value = group.hasLink;
-        return this._buildFilterChip(doc, {
-            field: "Has Link",
-            op: value ? "is" : "is not",
-            fillValue: () => {},
-            onRemove: () => {
-                group.hasLink = null;
-                this._pruneEmptyGroups();
-            },
-            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
-        });
-    }
-
-    _buildHasBookmarksChip(doc, group, gi) {
-        const value = group.hasBookmarks;
-        return this._buildFilterChip(doc, {
-            field: "Has Bookmarks",
-            op: value ? "is" : "is not",
-            fillValue: () => {},
-            onRemove: () => {
-                group.hasBookmarks = null;
+                if (f.shape === "tri") group[f.id] = null;
+                else group[exclude ? f.idX as string : f.id] = [];
                 this._pruneEmptyGroups();
             },
             onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
@@ -7131,113 +6926,7 @@ class _FilterMixin {
         return svg;
     }
 
-    _buildHasTagChip(doc, group, gi) {
-        const value = group.hasTag;
-        return this._buildFilterChip(doc, {
-            field: "Has Tag",
-            op: value ? "is" : "is not",
-            fillValue: () => {},
-            onRemove: () => {
-                group.hasTag = null;
-                this._pruneEmptyGroups();
-            },
-            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
-        });
-    }
 
-    _buildItemNoteChip(doc, group, gi) {
-        const value = group.itemNote;
-        return this._buildFilterChip(doc, {
-            field: "Item Note",
-            op: value ? "is" : "is not",
-            fillValue: () => {},
-            onRemove: () => {
-                group.itemNote = null;
-                this._pruneEmptyGroups();
-            },
-            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
-        });
-    }
-
-    _buildStandaloneNoteChip(doc, group, gi) {
-        const value = group.standaloneNote;
-        return this._buildFilterChip(doc, {
-            field: "Standalone Note",
-            op: value ? "is" : "is not",
-            fillValue: () => {},
-            onRemove: () => {
-                group.standaloneNote = null;
-                this._pruneEmptyGroups();
-            },
-            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
-        });
-    }
-
-    _buildStandaloneAttachmentChip(doc, group, gi) {
-        const value = group.standaloneAttachment;
-        return this._buildFilterChip(doc, {
-            field: "Standalone Attachment",
-            op: value ? "is" : "is not",
-            fillValue: () => {},
-            onRemove: () => {
-                group.standaloneAttachment = null;
-                this._pruneEmptyGroups();
-            },
-            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
-        });
-    }
-
-    _buildHasFieldChip(doc, group, gi, key, fieldLabel) {
-        const value = group[key];
-        return this._buildFilterChip(doc, {
-            field: fieldLabel,
-            op: value ? "is" : "is not",
-            fillValue: () => {},
-            onRemove: () => {
-                group[key] = null;
-                this._pruneEmptyGroups();
-            },
-            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
-        });
-    }
-
-    _buildPublicationChip(doc, group, gi, exclude?) {
-        const list = exclude ? group.publicationExclude : group.publication;
-        return this._buildFilterChip(doc, {
-            field: "Publication",
-            op: exclude ? "excludes any" : "includes any",
-            fillValue: (valSeg) => { valSeg.textContent = list.join(", "); },
-            onRemove: () => {
-                if (exclude) group.publicationExclude = [];
-                else group.publication = [];
-                this._pruneEmptyGroups();
-            },
-            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
-        });
-    }
-
-
-
-    _buildReadStatusChip(doc, group, gi, exclude?) {
-        const list = exclude ? group.readStatusExclude : group.readStatus;
-        const icons = {};
-        try { for (const st of this._wvReadStatuses()) icons[st.name] = st.icon; } catch (e) {}
-        return this._buildFilterChip(doc, {
-            field: "Read Status",
-            op: exclude ? "excludes any" : "includes any",
-            fillValue: (valSeg) => {
-                valSeg.textContent = list
-                    .map((n) => (icons[n] ? icons[n] + " " : "") + (n || "No Status"))
-                    .join(", ");
-            },
-            onRemove: () => {
-                if (exclude) group.readStatusExclude = [];
-                else group.readStatus = [];
-                this._pruneEmptyGroups();
-            },
-            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
-        });
-    }
 
     // ---- Zotero Reading List integration (Read Status filter) -----------
     // The plugin (reading-list@hotmail.com) stores a per-item status in the
@@ -7427,18 +7116,6 @@ class _FilterMixin {
         return !!(this._cachedLinkedLibraries && this._cachedLinkedLibraries.map);
     }
 
-    _wvItemInAnyLinkedLib(item, libIDs) {
-        try {
-            const c = this._cachedLinkedLibraries;
-            if (!c || !c.map || !item) return false;
-            for (const id of libIDs) {
-                const set = c.map.get(String(id));
-                if (set && set.has(item.id)) return true;
-            }
-        } catch (e) {}
-        return false;
-    }
-
     /** True when the cached map shows a linked copy in ANY other library —
      *  the whole question the In Multiple Libraries tile asks. */
     _wvItemInAnyOtherLib(item) {
@@ -7513,91 +7190,6 @@ class _FilterMixin {
         }
     }
 
-    _buildTagChip(doc, group, gi, exclude?) {
-        const tags = exclude ? group.annotationTagExclude : group.annotationTag;
-        return this._buildFilterChip(doc, {
-            field: "Tag",
-            // several picks must ALL match (multi-valued); exclusions: any
-            op: exclude ? "excludes any" : (tags.length > 1 ? "includes all" : "includes"),
-            fillValue: (valSeg) => { valSeg.textContent = tags.join(", "); },
-            onRemove: () => {
-                if (exclude) group.annotationTagExclude = [];
-                else group.annotationTag = [];
-                this._pruneEmptyGroups();
-            },
-            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
-        });
-    }
-
-    _buildAuthorChip(doc, group, gi, exclude?) {
-        const authors = exclude ? group.annotationAuthorExclude : group.annotationAuthor;
-        return this._buildFilterChip(doc, {
-            field: "Author",
-            // several picks must ALL match (multi-valued); exclusions: any
-            op: exclude ? "excludes any" : (authors.length > 1 ? "includes all" : "includes"),
-            fillValue: (valSeg) => { valSeg.textContent = authors.join(", "); },
-            onRemove: () => {
-                if (exclude) group.annotationAuthorExclude = [];
-                else group.annotationAuthor = [];
-                this._pruneEmptyGroups();
-            },
-            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
-        });
-    }
-
-    _buildItemTypeChip(doc, group, gi, exclude?) {
-        const types = exclude ? group.itemTypeExclude : group.itemType;
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-        return this._buildFilterChip(doc, {
-            field: "Item Type",
-            op: exclude ? "is not" : "is",
-            // Render the value segment as a row of item-type icons
-            // (no localised name) — the icon already conveys the
-            // type and saves chip width when several types are
-            // selected.
-            fillValue: (valSeg) => {
-                while (valSeg.firstChild) valSeg.removeChild(valSeg.firstChild);
-                for (const t of types) {
-                    const icon = doc.createElementNS(NS_HTML, "span");
-                    icon.className = "icon icon-css icon-item-type";
-                    icon.dataset.itemType = t;
-                    let label = t;
-                    try { label = Zotero.ItemTypes.getLocalizedString(t); }
-                    catch (e) {}
-                    icon.title = label;
-                    valSeg.appendChild(icon);
-                }
-            },
-            onRemove: () => {
-                if (exclude) group.itemTypeExclude = [];
-                else group.itemType = [];
-                this._pruneEmptyGroups();
-            },
-            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
-        });
-    }
-
-    _buildAttachmentFileTypeChip(doc, group, gi, exclude?) {
-        const kinds = exclude ? group.attachmentFileTypeExclude : group.attachmentFileType;
-        const labelOf = (k) => {
-            const def = this._ATTACHMENT_FILE_TYPES.find(x => x.value === k);
-            return def ? def.label : k;
-        };
-        return this._buildFilterChip(doc, {
-            field: "Attachment File Type",
-            op: exclude ? "is not" : "is",
-            fillValue: (valSeg) => {
-                valSeg.textContent = kinds.map(labelOf).join(", ");
-            },
-            onRemove: () => {
-                if (exclude) group.attachmentFileTypeExclude = [];
-                else group.attachmentFileType = [];
-                this._pruneEmptyGroups();
-            },
-            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
-        });
-    }
-
     /** DEV outline-eval: the outlineClass facet's token catalogue
      *  ({value,label}), shared by its chip + panel section. Source tokens
      *  first, then the `flag:*` quality flags. Kept in sync with
@@ -7625,58 +7217,6 @@ class _FilterMixin {
             { value: "verdict:scan", label: "Scan" },
             { value: "verdict:unmarked", label: "Unmarked" },
         ];
-    }
-
-    _buildOutlineClassChip(doc, group, gi, exclude?) {
-        const vals = exclude ? group.outlineClassExclude : group.outlineClass;
-        const cat = this._wvOutlineClassCatalogue();
-        const labelOf = (k) => { const d = cat.find(x => x.value === k); return d ? d.label : k; };
-        return this._buildFilterChip(doc, {
-            field: "Outline Source",
-            op: exclude ? "is not" : "is",
-            fillValue: (valSeg) => { valSeg.textContent = vals.map(labelOf).join(", "); },
-            onRemove: () => {
-                if (exclude) group.outlineClassExclude = [];
-                else group.outlineClass = [];
-                this._pruneEmptyGroups();
-            },
-            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
-        });
-    }
-
-    _buildOutlineFlagsChip(doc, group, gi, exclude?) {
-        const vals = exclude ? group.outlineFlagsExclude : group.outlineFlags;
-        const cat = this._wvOutlineClassCatalogue();
-        const labelOf = (k) => { const d = cat.find(x => x.value === k); return d ? d.label : k; };
-        return this._buildFilterChip(doc, {
-            field: "Outline Flags",
-            // Include is AND ("has all"); exclude is has-any -> hide.
-            op: exclude ? "has none of" : "has",
-            fillValue: (valSeg) => { valSeg.textContent = vals.map(labelOf).join(exclude ? ", " : " + "); },
-            onRemove: () => {
-                if (exclude) group.outlineFlagsExclude = [];
-                else group.outlineFlags = [];
-                this._pruneEmptyGroups();
-            },
-            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
-        });
-    }
-
-    _buildOutlineVerdictChip(doc, group, gi, exclude?) {
-        const vals = exclude ? group.outlineVerdictExclude : group.outlineVerdict;
-        const cat = this._wvOutlineVerdictCatalogue();
-        const labelOf = (k) => { const d = cat.find(x => x.value === k); return d ? d.label : k; };
-        return this._buildFilterChip(doc, {
-            field: "Outline Verdict",
-            op: exclude ? "is not" : "is",
-            fillValue: (valSeg) => { valSeg.textContent = vals.map(labelOf).join(", "); },
-            onRemove: () => {
-                if (exclude) group.outlineVerdictExclude = [];
-                else group.outlineVerdict = [];
-                this._pruneEmptyGroups();
-            },
-            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
-        });
     }
 
     /** DEV outline-eval: token → count over the in-memory eval store, for the
@@ -7763,8 +7303,8 @@ class _FilterMixin {
         // flex-column with ONE gap, so the vertical spacing between them is
         // uniform. (Splitting Verdict into its own panel section made the
         // Flags->Verdict gap the panel's inter-section gap, wider than the
-        // Source->Flags one -- 2026-07-24.) The Verdict field is still separate;
-        // `_renderOutlineVerdictSection` just stays empty.
+        // Source->Flags one -- 2026-07-24.) The Verdict FIELD stays separate
+        // in the filter group; only its panel row lives here.
         section.className = "";
         section.style.display = "flex";
         section.style.flexDirection = "column";
@@ -7776,14 +7316,6 @@ class _FilterMixin {
         this._renderOutlineFacetGrid(doc, section, refreshAll, "Flags", flags, "outlineFlags", "outlineFlagsExclude", false);
         this._renderOutlineFacetGrid(doc, section, refreshAll, "Verdict",
             this._wvOutlineVerdictCatalogue(), "outlineVerdict", "outlineVerdictExclude", true);
-    }
-
-    /** DEV: the Verdict row is rendered inside `_renderOutlineClassSection` (so
-     *  all three rows share one uniform gap); this section stays empty. */
-    _renderOutlineVerdictSection(doc, section, refreshAll) {
-        while (section.firstChild) section.removeChild(section.firstChild);
-        section.className = "";
-        section.style.display = "none";
     }
 
     /** Inline SVG glyph (inner markup, 16×16 viewBox) for a dev outline
@@ -7888,47 +7420,6 @@ class _FilterMixin {
         }
     }
 
-    _buildAddedByChip(doc, group, gi, exclude?) {
-        const users = exclude ? group.addedByExclude : group.addedBy;
-        const colorOn = this._getEnableAddedByColors();
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-        return this._buildFilterChip(doc, {
-            field: "Added By",
-            op: exclude ? "is not" : "is",
-            fillValue: (valSeg) => {
-                if (!colorOn) {
-                    valSeg.textContent = users.join(", ");
-                    return;
-                }
-                // Per-user colored pills inside the chip's value
-                // segment — reuses the same per-user palette as the
-                // annotation badge and the addedBy column pill.
-                while (valSeg.firstChild) valSeg.removeChild(valSeg.firstChild);
-                users.forEach((u, k) => {
-                    if (k > 0) {
-                        const sep = doc.createElementNS(NS_HTML, "span");
-                        sep.className = "wv-chip-value-sep";
-                        sep.textContent = ", ";
-                        valSeg.appendChild(sep);
-                    }
-                    const pill = doc.createElementNS(NS_HTML, "span");
-                    pill.className = "wv-chip-value-user";
-                    pill.textContent = u;
-                    const colour = this._colorForUser(u);
-                    pill.style.color = colour;
-                    pill.style.backgroundColor = this._withAlpha(colour, 0.18);
-                    valSeg.appendChild(pill);
-                });
-            },
-            onRemove: () => {
-                if (exclude) group.addedByExclude = [];
-                else group.addedBy = [];
-                this._pruneEmptyGroups();
-            },
-            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
-        });
-    }
-
     /** Build the XUL <panel> shell used by every filter popover, plus
      *  return an HTML inner div for callers to fill in. The panel hosts
      *  an HTML subtree so it gets native arrow-popup positioning and
@@ -7979,41 +7470,6 @@ class _FilterMixin {
             }
         }
         return { include: [...inc], exclude: [...exc] };
-    }
-
-    /** Wire a search-input + suggestion-box pair to show on focus
-     *  and hide on focus moving away OR a mousedown outside `opts`.
-     *  The document-level mousedown handler covers clicks on inert
-     *  popup regions (group headers, padding, section titles) that
-     *  never take focus and therefore wouldn't fire a focusout.
-     *  Outside-clicks also blur the search input so the caret leaves
-     *  the popup along with the suggestions collapsing. */
-    _wireFilterBoxFocus(doc, search, box, opts) {
-        let onDocMouseDown = null;
-        const hideBox = () => {
-            box.style.display = "none";
-            if (onDocMouseDown) {
-                doc.removeEventListener("mousedown", onDocMouseDown, true);
-                onDocMouseDown = null;
-            }
-        };
-        const showBox = () => {
-            if (box.style.display !== "none") return;
-            box.style.display = "";
-            if (!onDocMouseDown) {
-                onDocMouseDown = (e) => {
-                    if (opts.contains(e.target)) return;
-                    try { search.blur(); } catch (err) {}
-                    hideBox();
-                };
-                doc.addEventListener("mousedown", onDocMouseDown, true);
-            }
-        };
-        opts.addEventListener("focusin", showBox);
-        opts.addEventListener("focusout", (e) => {
-            if (e.relatedTarget && opts.contains(e.relatedTarget)) return;
-            hideBox();
-        });
     }
 
     _renderFilterPanelContents(panel, inner) {
@@ -8106,7 +7562,6 @@ class _FilterMixin {
 
         const colorSection = doc.createElementNS(NS_HTML, "div");
         const typeSection = doc.createElementNS(NS_HTML, "div");
-        const commentSection = doc.createElementNS(NS_HTML, "div");
         // The Attachment File Type section also hosts the Item Note
         // tile (right of the file-type icons, after a vertical bar).
         const attachmentFileTypeSection = doc.createElementNS(NS_HTML, "div");
@@ -8134,7 +7589,6 @@ class _FilterMixin {
         // label grids. Attachment-resolving facets over the eval store.
         const outlineScanSection = doc.createElementNS(NS_HTML, "div");
         const outlineClassSection = doc.createElementNS(NS_HTML, "div");
-        const outlineVerdictSection = doc.createElementNS(NS_HTML, "div");
 
         // Selection Target uses include/exclude semantics like every
         // other filter group: empty include + empty exclude means
@@ -8258,8 +7712,6 @@ class _FilterMixin {
         //   Attachment   — file-type / item-note / has-annotations
         //   Annotation   — color / type / comment
         //   Selection Target — Ctrl+A target picker (bottom bar)
-        const quickSearchSection = doc.createElementNS(NS_HTML, "div");
-        inner.appendChild(quickSearchSection);
 
         // Header row — title + Clear + × button (mirrors the reader
         // sidebar's filter popup, where this same row sits at the very
@@ -8307,7 +7759,10 @@ class _FilterMixin {
         addGroupHeader("Annotation");
         inner.appendChild(colorSection);
         inner.appendChild(typeSection);
-        inner.appendChild(commentSection);
+        // The Annotation group ends 3px lower than the others: the flex gap
+        // of an empty Has Comment section that sat here until 2026-10-09
+        // (Has Comment moved into the type row). Kept, pixels unchanged.
+        typeSection.style.marginBottom = "3px";
 
         // DEV outline-eval group — only when the pref is on. The whole header
         // + sections are omitted otherwise, so normal users never see them.
@@ -8315,7 +7770,6 @@ class _FilterMixin {
             addGroupHeader("Outline (dev)");
             inner.appendChild(outlineScanSection);
             inner.appendChild(outlineClassSection);
-            inner.appendChild(outlineVerdictSection);
         }
 
         // Bottom: Selection Target bar (controls Ctrl+A scope only,
@@ -8484,7 +7938,6 @@ class _FilterMixin {
         const refreshAll = () => {
             this._renderColorSection(doc, colorSection, refreshAll);
             this._renderTypeSection(doc, typeSection, refreshAll);
-            this._renderHasCommentSection(doc, commentSection, refreshAll);
             this._renderAttachmentFileTypeSection(doc, attachmentFileTypeSection, refreshAll);
             this._renderNotesSection(doc, notesSection, refreshAll);
             this._renderHasAnnotationsSection(doc, hasAnnotationsSection, refreshAll);
@@ -8506,11 +7959,9 @@ class _FilterMixin {
             this._renderParentHasFieldsSection(doc, parentHasFieldsSection, refreshAll);
             this._renderUnifiedSearchSection(doc, searchSection, refreshAll, searchCtx);
             this._renderCrossLevelSection(doc, crossLevelSection, refreshAll);
-            this._renderQuickSearchSection(doc, quickSearchSection, refreshAll);
             if (this._wvOeEnabled()) {
                 this._renderOutlineScanSection(doc, outlineScanSection, refreshAll);
                 this._renderOutlineClassSection(doc, outlineClassSection, refreshAll);
-                this._renderOutlineVerdictSection(doc, outlineVerdictSection, refreshAll);
             }
             renderHeader();
             // Filters changed → the smart Selection Target may have changed
@@ -8835,7 +8286,7 @@ class _FilterMixin {
             },
             getValues: async () => {
                 try {
-                    return this._wvCollTreeValues(libraryID);
+                    return this._wvCollTreeValues(libraryID, doc.defaultView);
                 } catch (e) {
                     dbg("[Weavero][filter] collections enum err: " + e);
                     return [];
@@ -8890,6 +8341,7 @@ class _FilterMixin {
             getValues: async () => {
                 try {
                     return ((Zotero.Searches as any).getByLibrary(libraryID) || [])
+                        .filter(s => !(this as any)._wvHidIsHidden(s, doc.defaultView))
                         .map(s => ({ id: s.id, name: s.name }))
                         .sort((a, b) => a.name.localeCompare(b.name));
                 } catch (e) {
@@ -9423,9 +8875,14 @@ class _FilterMixin {
         };
 
         const loadAndRender = async () => {
+            // The mode this load is FOR. A switch while it is in flight
+            // supersedes it: a slow load of the previous mode used to land
+            // last and fill the list with its values (2026-10-09).
+            const forMode = mode;
             try {
-                cached = await mode.getValues();
-                if (!section.isConnected) return;
+                const vals = await forMode.getValues();
+                if (forMode !== mode || !section.isConnected) return;
+                cached = vals;
                 renderSelectedList();
                 renderButtons();
             } catch (e) {
@@ -10265,18 +9722,6 @@ class _FilterMixin {
         return null;
     }
 
-    /** Quick Search section — placeholder. The actual "Restrict
-     *  Quick Search to:" dropdown is now injected INSIDE the
-     *  toolbar's `#zotero-tb-search` element (see
-     *  `_installQuickSearchScopeButton`) so it sits on the right
-     *  side of the search box, visible only when the search has
-     *  text. The popup section itself stays in the layout as a
-     *  named anchor but renders nothing. */
-    _renderQuickSearchSection(_doc, section, _refreshAll) {
-        while (section.firstChild) section.removeChild(section.firstChild);
-        section.className = "";
-    }
-
     /** Inject the "Restrict Quick Search to: ▾" dropdown as a
      *  child of `#zotero-tb-search`, positioned to the right of
      *  the search-textbox's × clear button (visually inside the
@@ -10287,37 +9732,39 @@ class _FilterMixin {
         const sb: any = doc.getElementById("zotero-tb-search");
         if (!sb) return;
         const wrapper = sb.querySelector("#search-wrapper") || sb;
-        // Idempotent — re-call during refreshAll is safe.
-        let btn: any = wrapper.querySelector(".wv-qs-scope-btn");
-        if (btn) {
-            this._refreshQuickSearchScopeButtonState(btn);
-            this._updateQuickSearchScopeButtonVisibility(sb, btn);
-            return;
-        }
-
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-        btn = doc.createElementNS(NS_HTML, "button");
-        btn.type = "button";
-        btn.className = "wv-qs-scope-btn";
-        // Label moved entirely to tooltip — the button now shows
-        // only the ▾ glyph to keep it compact inside the search
-        // box (the visible "Restrict Quick Search to:" text was
-        // wrapping and crowding the input).
-        btn.title = "Restrict Quick Search to: — choose which row kinds the toolbar quick-search may surface in the results. All-on (default) means no restriction.";
-        btn.setAttribute("aria-label", "Restrict Quick Search to");
-        const arrow = doc.createElementNS(NS_HTML, "span");
-        arrow.className = "wv-qs-scope-btn-arrow";
-        arrow.textContent = "▾";
-        btn.appendChild(arrow);
-
         const KINDS_QS = [
             { key: "parent",     label: "Parent" },
             { key: "attachment", label: "Attachment" },
             { key: "note",       label: "Note" },
             { key: "annotation", label: "Annotation" },
         ];
-        btn.__wvKinds = KINDS_QS;
-        btn.addEventListener("click", (e) => {
+        // The button is built once; its listeners are wired on EVERY call,
+        // keyed and instance-tagged (lib/listen.ts): a reload used to find the
+        // previous instance's button, return early, and leave that instance's
+        // listeners in charge -- or, once destroy() removes them, none at all
+        // (wiring slice 3, 2026-10-12). Idempotent: a re-call during
+        // refreshAll changes nothing.
+        let btn: any = wrapper.querySelector(".wv-qs-scope-btn");
+        if (!btn) {
+            const NS_HTML = "http://www.w3.org/1999/xhtml";
+            btn = doc.createElementNS(NS_HTML, "button");
+            btn.type = "button";
+            btn.className = "wv-qs-scope-btn";
+            // Label moved entirely to tooltip — the button now shows
+            // only the ▾ glyph to keep it compact inside the search
+            // box (the visible "Restrict Quick Search to:" text was
+            // wrapping and crowding the input).
+            btn.title = "Restrict Quick Search to: — choose which row kinds the toolbar quick-search may surface in the results. All-on (default) means no restriction.";
+            btn.setAttribute("aria-label", "Restrict Quick Search to");
+            const arrow = doc.createElementNS(NS_HTML, "span");
+            arrow.className = "wv-qs-scope-btn-arrow";
+            arrow.textContent = "▾";
+            btn.appendChild(arrow);
+            btn.__wvKinds = KINDS_QS;
+            wrapper.appendChild(btn);
+        }
+        const tag = (this as any)._wvWireTag();
+        wvListen(btn, "qsScope:click", "click", (e) => {
             e.stopPropagation();
             e.preventDefault();
             // Open a real XUL menupopup (top-level overlay) rather
@@ -10327,19 +9774,16 @@ class _FilterMixin {
             // positioned popup would land inside the filter popup
             // and get clipped by its bounds.
             this._openQuickSearchScopeMenupopup(btn, KINDS_QS, refreshAll);
-        });
-        wrapper.appendChild(btn);
-
-        this._refreshQuickSearchScopeButtonState(btn);
-        this._updateQuickSearchScopeButtonVisibility(sb, btn);
-
+        }, false, tag);
         // Live-update visibility as the user types.
         const onSearchInput = () => {
             this._updateQuickSearchScopeButtonVisibility(sb, btn);
         };
-        btn.__wvInputHandler = onSearchInput;
-        sb.addEventListener("input", onSearchInput, true);
-        sb.addEventListener("command", onSearchInput);
+        wvListen(sb, "qsScope:input", "input", onSearchInput, true, tag);
+        wvListen(sb, "qsScope:command", "command", onSearchInput, false, tag);
+
+        this._refreshQuickSearchScopeButtonState(btn);
+        this._updateQuickSearchScopeButtonVisibility(sb, btn);
     }
 
     /** Refresh the scope-button's "modified" marker — set when any
@@ -10488,12 +9932,15 @@ class _FilterMixin {
         try {
             const sb: any = doc.getElementById("zotero-tb-search");
             if (!sb) return;
+            wvUnlisten(sb, "qsScope:input");
+            wvUnlisten(sb, "qsScope:command");
             const btn: any = sb.querySelector(".wv-qs-scope-btn");
             if (!btn) return;
-            if (btn.__wvInputHandler) {
+            if (btn.__wvInputHandler) {   // builds before the keyed wiring
                 sb.removeEventListener("input", btn.__wvInputHandler, true);
                 sb.removeEventListener("command", btn.__wvInputHandler);
             }
+            wvUnlisten(btn, "qsScope:click");
             btn.remove();
         } catch (e) {}
     }
@@ -10740,66 +10187,6 @@ class _FilterMixin {
         };
         const win = winOf(doc);
         win.setTimeout(() => doc.addEventListener("mousedown", onDoc, true), 0);
-    }
-
-    /** Single-button tri-state section (matches `_renderHasCommentSection`'s
-     *  shape) for boolean kind filters that target a row sub-kind.
-     *  `key` is the group field name; `iconBuilder(doc)` returns an
-     *  icon element. The button cycles include / exclude via plain
-     *  click and Alt+click respectively, with `data-selected` /
-     *  `data-excluded` for the standard CSS treatment. */
-    _renderBoolKindIconSection(doc, section, refreshAll, opts) {
-        while (section.firstChild) section.removeChild(section.firstChild);
-        section.className = "wv-filter-section";
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-
-        const optsBox = doc.createElementNS(NS_HTML, "div");
-        optsBox.className = "wv-filter-options";
-        section.appendChild(optsBox);
-
-        const g0 = this._activeGroup();
-        const cur = g0 ? g0[opts.key] : null;
-        const btn = doc.createElementNS(NS_HTML, "button");
-        btn.type = "button";
-        btn.className = "wv-filter-opt wv-filter-opt-icon";
-        btn.title = opts.tip;
-        if (cur === true) btn.dataset.selected = "true";
-        else if (cur === false) btn.dataset.excluded = "true";
-        const icon = opts.iconBuilder(doc);
-        if (icon) btn.appendChild(icon);
-        btn.addEventListener("click", (e) => {
-            e.stopPropagation();
-            const g = this._activeGroup();
-            if (!g) return;
-            let next;
-            if (e.altKey) {
-                next = (g[opts.key] === false) ? null : false;
-            }
-            else {
-                next = (g[opts.key] === true) ? null : true;
-            }
-            g[opts.key] = next;
-            this._renderFilterBar();
-            this._applyItemsListFilter({ cascade: true });
-            refreshAll();
-        });
-        optsBox.appendChild(btn);
-    }
-
-    /** Item Note tile is now rendered inline by
-     *  `_renderAttachmentFileTypeSection` (right of the file-type
-     *  icons, after a vertical separator). This shim is kept as a
-     *  no-op placeholder in case external code references the
-     *  method name. */
-    _renderItemNoteSection(_doc, _section, _refreshAll) {
-        // Intentionally empty.
-    }
-
-    /** Standalone Note tile is now rendered inline by
-     *  `_renderItemTypeRow` (right end of the Item Type row, after
-     *  a vertical separator). No-op shim for back-compat. */
-    _renderStandaloneNoteSection(_doc, _section, _refreshAll) {
-        // Intentionally empty.
     }
 
     /** Render a row of parent-targeting "Has *" tri-state icon
@@ -11635,17 +11022,6 @@ class _FilterMixin {
         panel._wvTtVer = VER;
     }
 
-    /** Has Comment now sits inline at the right end of the
-     *  Annotation Type row (see `_renderTypeSection`). This
-     *  renderer is kept as a no-op shim so the standalone section
-     *  div stays empty and collapses out of the layout — keeps the
-     *  outer panel `appendChild(commentSection)` call working
-     *  without it producing a visible row. */
-    _renderHasCommentSection(_doc, section, _refreshAll) {
-        while (section.firstChild) section.removeChild(section.firstChild);
-        section.className = "";
-    }
-
     /** Build the Has Comment glyph — a rounded speech bubble with a
      *  capital "C" inside, painted in `--tag-purple` to match the
      *  annotation-pane accent. Inline SVG so we don't need to ship
@@ -11697,169 +11073,6 @@ class _FilterMixin {
         c.setAttribute("fill", "none");
         svg.appendChild(c);
         return svg;
-    }
-
-    /** Annotation Tag picker — dynamic-list section with a GitHub-
-     *  style filter input above the tag chips. Tags are scoped to
-     *  the active library; we collect all tags actually attached to
-     *  annotation items there (via SQL — fast through
-     *  `Zotero.DB.columnQueryAsync`). The fetch runs once per popup
-     *  open (cached on `_cachedAnnotationTags`); typing in the
-     *  filter input only re-renders the chip list, so input focus
-     *  is preserved across keystrokes.
-     *
-     *  Multi-select with ANY-of semantics. */
-    _renderTagSection(doc, section, refreshAll) {
-        while (section.firstChild) section.removeChild(section.firstChild);
-        section.className = "wv-filter-section";
-
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-        // Stacked layout: input on top, tag list below. Both sit
-        // inside the standard `.wv-filter-options` flex column for
-        // alignment with the section title.
-        const opts = doc.createElementNS(NS_HTML, "div");
-        opts.className = "wv-filter-options wv-filter-options-stacked";
-        section.appendChild(opts);
-
-        const search = doc.createElementNS(NS_HTML, "input");
-        search.type = "search";
-        search.className = "wv-filter-search-input";
-        search.placeholder = "Filter tags…";
-        search.value = this._tagSearchQuery || "";
-        opts.appendChild(search);
-
-        // The tag list is collapsed by default — only the search
-        // input is visible until the user focuses it. Mirrors
-        // GitHub's tag picker: clean section by default, suggestions
-        // appear on demand. We re-expand on focus-in to anywhere
-        // inside the section (so clicking a chip keeps the list
-        // open) and re-collapse when focus leaves entirely.
-        const tagBox = doc.createElementNS(NS_HTML, "div");
-        tagBox.className = "wv-filter-tag-list";
-        tagBox.style.display = "none";
-        opts.appendChild(tagBox);
-
-        this._wireFilterBoxFocus(doc, search, tagBox, opts);
-
-        // Initial placeholder while we fetch tags (replaced on
-        // success / error / cache hit).
-        const placeholder = doc.createElementNS(NS_HTML, "span");
-        placeholder.style.opacity = "0.5";
-        placeholder.style.fontSize = "12px";
-        placeholder.textContent = "Loading…";
-        tagBox.appendChild(placeholder);
-
-        // GitHub-style ranking — when the user is typing a query,
-        // show a small set of suggestions ordered by relevance:
-        //   1. exact match (case-insensitive)
-        //   2. prefix match
-        //   3. substring match
-        // Within each tier, alphabetical. Capped at SUGGEST_LIMIT
-        // so a long tag library doesn't drown out the picker; if
-        // matches were truncated we surface "+N more" so the user
-        // knows to refine. With an empty query we show every tag
-        // (still chip-style multi-select).
-        const SUGGEST_LIMIT = 10;
-        const rankMatches = (allTags, q) => {
-            const exact = [], prefix = [], substring = [], acr = [];
-            for (const t of allTags) {
-                const lc = t.toLowerCase();
-                if (lc === q) exact.push(t);
-                else if (lc.startsWith(q)) prefix.push(t);
-                else if (lc.includes(q)) substring.push(t);
-                else if (this._wvAcronymMatch(t, q)) acr.push(t);
-            }
-            acr.sort((a, b) => this._wvInitialsLen(a) - this._wvInitialsLen(b));
-            return [...exact, ...prefix, ...substring, ...acr];
-        };
-
-        // (Re-)render only the chip list — keeps the search input
-        // intact so typing doesn't drop focus.
-        const renderButtons = (allTags) => {
-            while (tagBox.firstChild) tagBox.removeChild(tagBox.firstChild);
-            const q = (this._tagSearchQuery || "").trim().toLowerCase();
-            let ranked;
-            if (q) ranked = rankMatches(allTags, q);
-            else ranked = allTags;
-            const overflow = q ? Math.max(0, ranked.length - SUGGEST_LIMIT) : 0;
-            const filtered = q ? ranked.slice(0, SUGGEST_LIMIT) : ranked;
-            if (!filtered.length) {
-                const empty = doc.createElementNS(NS_HTML, "span");
-                empty.style.opacity = "0.5";
-                empty.style.fontSize = "12px";
-                empty.textContent = q
-                    ? "No matching tags"
-                    : "No annotation tags in this library";
-                tagBox.appendChild(empty);
-                return;
-            }
-            const selected = new Set(
-                (this._activeGroup() && this._activeGroup().annotationTag) || []);
-            for (const tag of filtered) {
-                const btn = doc.createElementNS(NS_HTML, "button");
-                btn.type = "button";
-                btn.className = "wv-filter-opt";
-                btn.title = tag;
-                if (selected.has(tag)) btn.dataset.selected = "true";
-                btn.textContent = tag;
-                btn.addEventListener("click", (e) => {
-                    e.stopPropagation();
-                    if (selected.has(tag)) selected.delete(tag);
-                    else selected.add(tag);
-                    { const g = this._activeGroup(); if (g) g.annotationTag = [...selected]; }
-                    this._renderFilterBar();
-                    this._applyItemsListFilter({ cascade: true });
-                    // Re-render only this section's buttons (NOT
-                    // `refreshAll`) so the search input keeps focus.
-                    renderButtons(allTags);
-                });
-                tagBox.appendChild(btn);
-            }
-            if (overflow > 0) {
-                const more = doc.createElementNS(NS_HTML, "span");
-                more.style.opacity = "0.5";
-                more.style.fontSize = "12px";
-                more.style.alignSelf = "center";
-                more.textContent = "+" + overflow + " more";
-                tagBox.appendChild(more);
-            }
-        };
-
-        // Type-to-filter wiring. We rebuild the chip list on every
-        // keystroke; `tagBox` rebuild is local so the input element
-        // is preserved and keeps focus.
-        search.addEventListener("input", () => {
-            this._tagSearchQuery = search.value || "";
-            const cached = this._cachedAnnotationTags;
-            if (cached) renderButtons(cached);
-        });
-
-        const win = doc.defaultView;
-        const libraryID = this._wvSelectedLibraryID(win)
-            || (Zotero.Libraries && Zotero.Libraries.userLibraryID);
-
-        // Use cached tags if we already fetched during this popup
-        // open (cache cleared on `popupshowing`). Otherwise fetch.
-        if (this._cachedAnnotationTags) {
-            renderButtons(this._cachedAnnotationTags);
-            return;
-        }
-        this._collectAnnotationTags(libraryID).then((tags) => {
-            this._cachedAnnotationTags = tags;
-            // Bail if the section was rebuilt mid-fetch — the new
-            // render kicked off its own pass already.
-            if (!section.isConnected) return;
-            renderButtons(tags);
-        }).catch((e) => {
-            dbg("[Weavero][filter] tag fetch err: " + e);
-            if (!section.isConnected) return;
-            while (tagBox.firstChild) tagBox.removeChild(tagBox.firstChild);
-            const err = doc.createElementNS(NS_HTML, "span");
-            err.style.opacity = "0.5";
-            err.style.fontSize = "12px";
-            err.textContent = "(failed to load tags)";
-            tagBox.appendChild(err);
-        });
     }
 
     /** Distinct tag names attached to annotation items in the given
@@ -11966,117 +11179,6 @@ class _FilterMixin {
             dbg("[Weavero][filter] annotation authors query err: " + e);
         }
         return [...names].sort((a: any, b: any) => a.localeCompare(b));
-    }
-
-    _renderAuthorSection(doc, section, refreshAll) {
-        while (section.firstChild) section.removeChild(section.firstChild);
-        section.className = "wv-filter-section";
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-
-        const opts = doc.createElementNS(NS_HTML, "div");
-        opts.className = "wv-filter-options wv-filter-options-stacked";
-        section.appendChild(opts);
-
-        const search = doc.createElementNS(NS_HTML, "input");
-        search.type = "search";
-        search.className = "wv-filter-search-input";
-        search.placeholder = "Filter authors…";
-        search.value = this._authorSearchQuery || "";
-        opts.appendChild(search);
-
-        const box = doc.createElementNS(NS_HTML, "div");
-        box.className = "wv-filter-tag-list";
-        box.style.display = "none";
-        opts.appendChild(box);
-
-        this._wireFilterBoxFocus(doc, search, box, opts);
-
-        const placeholder = doc.createElementNS(NS_HTML, "span");
-        placeholder.style.opacity = "0.5";
-        placeholder.style.fontSize = "12px";
-        placeholder.textContent = "Loading…";
-        box.appendChild(placeholder);
-
-        const SUGGEST_LIMIT = 10;
-        const rank = (all, q) => {
-            const exact = [], pre = [], sub = [], acr = [];
-            for (const t of all) {
-                const lc = t.toLowerCase();
-                if (lc === q) exact.push(t);
-                else if (lc.startsWith(q)) pre.push(t);
-                else if (lc.includes(q)) sub.push(t);
-                else if (this._wvAcronymMatch(t, q)) acr.push(t);
-            }
-            acr.sort((a, b) => this._wvInitialsLen(a) - this._wvInitialsLen(b));
-            return [...exact, ...pre, ...sub, ...acr];
-        };
-        const renderButtons = (all) => {
-            while (box.firstChild) box.removeChild(box.firstChild);
-            const q = (this._authorSearchQuery || "").trim().toLowerCase();
-            const ranked = q ? rank(all, q) : all;
-            const overflow = q ? Math.max(0, ranked.length - SUGGEST_LIMIT) : 0;
-            const filtered = q ? ranked.slice(0, SUGGEST_LIMIT) : ranked;
-            if (!filtered.length) {
-                const empty = doc.createElementNS(NS_HTML, "span");
-                empty.style.opacity = "0.5";
-                empty.style.fontSize = "12px";
-                empty.textContent = q
-                    ? "No matching authors"
-                    : "No annotation authors in this library";
-                box.appendChild(empty);
-                return;
-            }
-            const selected = new Set(
-                (this._activeGroup() && this._activeGroup().annotationAuthor) || []);
-            for (const a of filtered) {
-                const btn = doc.createElementNS(NS_HTML, "button");
-                btn.type = "button";
-                btn.className = "wv-filter-opt";
-                btn.title = a;
-                if (selected.has(a)) btn.dataset.selected = "true";
-                btn.textContent = a;
-                btn.addEventListener("click", (e) => {
-                    e.stopPropagation();
-                    if (selected.has(a)) selected.delete(a);
-                    else selected.add(a);
-                    { const g = this._activeGroup(); if (g) g.annotationAuthor = [...selected]; }
-                    this._renderFilterBar();
-                    this._applyItemsListFilter({ cascade: true });
-                    renderButtons(all);
-                });
-                box.appendChild(btn);
-            }
-            if (overflow > 0) {
-                const more = doc.createElementNS(NS_HTML, "span");
-                more.style.opacity = "0.5";
-                more.style.fontSize = "12px";
-                more.style.alignSelf = "center";
-                more.textContent = "+" + overflow + " more";
-                box.appendChild(more);
-            }
-        };
-
-        search.addEventListener("input", () => {
-            this._authorSearchQuery = search.value || "";
-            const cached = this._cachedAnnotationAuthors;
-            if (cached) renderButtons(cached);
-        });
-
-        const win = doc.defaultView;
-        const libraryID = this._wvSelectedLibraryID(win)
-            || (Zotero.Libraries && Zotero.Libraries.userLibraryID);
-
-        if (this._cachedAnnotationAuthors) {
-            renderButtons(this._cachedAnnotationAuthors);
-            return;
-        }
-        this._collectAnnotationAuthors(libraryID).then((authors) => {
-            this._cachedAnnotationAuthors = authors;
-            if (!section.isConnected) return;
-            renderButtons(authors);
-        }).catch((e) => {
-            dbg("[Weavero][filter] author fetch err: " + e);
-        });
     }
 
     /** Attachment File Type — multi-select buttons with icons,
@@ -12318,195 +11420,6 @@ class _FilterMixin {
         }
     }
 
-    /** Multi-select Collection picker — narrows the items list to
-     *  members of any selected collection in the active library.
-     *  Stored in `_filterState.collections` (array of collection
-     *  IDs). */
-    _renderCollectionSection(doc, section, refreshAll) {
-        while (section.firstChild) section.removeChild(section.firstChild);
-        section.className = "wv-filter-section";
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-
-        const opts = doc.createElementNS(NS_HTML, "div");
-        opts.className = "wv-filter-options wv-filter-options-stacked";
-        section.appendChild(opts);
-
-        const win = doc.defaultView;
-        const libraryID = this._wvSelectedLibraryID(win)
-            || (Zotero.Libraries && Zotero.Libraries.userLibraryID);
-        let cols = [];
-        try {
-            cols = (Zotero.Collections.getByLibrary(libraryID, true) || [])
-                .map(c => ({ id: c.id, name: c.name }))
-                .sort((a, b) => a.name.localeCompare(b.name));
-        } catch (e) {
-            dbg("[Weavero][filter] collections enum err: " + e);
-        }
-        if (!cols.length) {
-            const empty = doc.createElementNS(NS_HTML, "span");
-            empty.style.opacity = "0.5";
-            empty.style.fontSize = "12px";
-            empty.textContent = "No collections in this library.";
-            opts.appendChild(empty);
-            return;
-        }
-
-        const search = doc.createElementNS(NS_HTML, "input");
-        search.type = "search";
-        search.className = "wv-filter-search-input";
-        search.placeholder = "Filter collections…";
-        search.value = this._collectionSearchQuery || "";
-        opts.appendChild(search);
-
-        const box = doc.createElementNS(NS_HTML, "div");
-        box.className = "wv-filter-tag-list";
-        box.style.display = "none";
-        opts.appendChild(box);
-
-        this._wireFilterBoxFocus(doc, search, box, opts);
-
-        const SUGGEST_LIMIT = 12;
-        const renderButtons = () => {
-            while (box.firstChild) box.removeChild(box.firstChild);
-            const q = (this._collectionSearchQuery || "").trim().toLowerCase();
-            let list = cols;
-            if (q) list = cols.filter(c => c.name.toLowerCase().includes(q)
-                || this._wvAcronymMatch(c.name, q));
-            const overflow = q ? Math.max(0, list.length - SUGGEST_LIMIT) : 0;
-            list = q ? list.slice(0, SUGGEST_LIMIT) : list;
-            const selected = new Set(this._filterState.collections || []);
-            for (const c of list) {
-                const btn = doc.createElementNS(NS_HTML, "button");
-                btn.type = "button";
-                btn.className = "wv-filter-opt";
-                btn.title = c.name;
-                if (selected.has(c.id)) btn.dataset.selected = "true";
-                btn.textContent = c.name;
-                btn.addEventListener("click", (e) => {
-                    e.stopPropagation();
-                    if (selected.has(c.id)) selected.delete(c.id);
-                    else selected.add(c.id);
-                    this._filterState.collections = [...selected];
-                    this._renderFilterBar();
-                    this._applyItemsListFilter({ cascade: true });
-                    renderButtons();
-                });
-                box.appendChild(btn);
-            }
-            if (overflow > 0) {
-                const more = doc.createElementNS(NS_HTML, "span");
-                more.style.opacity = "0.5";
-                more.style.fontSize = "12px";
-                more.style.alignSelf = "center";
-                more.textContent = "+" + overflow + " more";
-                box.appendChild(more);
-            }
-        };
-        search.addEventListener("input", () => {
-            this._collectionSearchQuery = search.value || "";
-            renderButtons();
-        });
-        renderButtons();
-    }
-
-    /** Multi-select Saved Search picker — narrows the items list to
-     *  matches of any selected saved search. Each saved search runs
-     *  asynchronously and yields a set of item IDs; results are
-     *  cached per-search via `_savedSearchResults` and consulted
-     *  synchronously in the filter pass.
-     *
-     *  Mirrors `_renderCollectionSection`: a search input on top, the
-     *  suggestions box below revealed only when the input has focus. */
-    _renderSavedSearchSection(doc, section, refreshAll) {
-        while (section.firstChild) section.removeChild(section.firstChild);
-        section.className = "wv-filter-section";
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-
-        const opts = doc.createElementNS(NS_HTML, "div");
-        opts.className = "wv-filter-options wv-filter-options-stacked";
-        section.appendChild(opts);
-
-        const win = doc.defaultView;
-        const libraryID = this._wvSelectedLibraryID(win)
-            || (Zotero.Libraries && Zotero.Libraries.userLibraryID);
-        let searches = [];
-        try {
-            searches = ((Zotero.Searches as any).getByLibrary(libraryID) || [])
-                .map(s => ({ id: s.id, name: s.name }))
-                .sort((a, b) => a.name.localeCompare(b.name));
-        } catch (e) {
-            dbg("[Weavero][filter] saved searches enum err: " + e);
-        }
-        if (!searches.length) {
-            const empty = doc.createElementNS(NS_HTML, "span");
-            empty.style.opacity = "0.5";
-            empty.style.fontSize = "12px";
-            empty.textContent = "No saved searches in this library.";
-            opts.appendChild(empty);
-            return;
-        }
-
-        const search = doc.createElementNS(NS_HTML, "input");
-        search.type = "search";
-        search.className = "wv-filter-search-input";
-        search.placeholder = "Filter saved searches…";
-        search.value = this._savedSearchSearchQuery || "";
-        opts.appendChild(search);
-
-        const box = doc.createElementNS(NS_HTML, "div");
-        box.className = "wv-filter-tag-list";
-        box.style.display = "none";
-        opts.appendChild(box);
-
-        this._wireFilterBoxFocus(doc, search, box, opts);
-
-        const SUGGEST_LIMIT = 12;
-        const renderButtons = () => {
-            while (box.firstChild) box.removeChild(box.firstChild);
-            const q = (this._savedSearchSearchQuery || "").trim().toLowerCase();
-            let list = searches;
-            if (q) list = searches.filter(s => s.name.toLowerCase().includes(q)
-                || this._wvAcronymMatch(s.name, q));
-            const overflow = q ? Math.max(0, list.length - SUGGEST_LIMIT) : 0;
-            list = q ? list.slice(0, SUGGEST_LIMIT) : list;
-            const selected = new Set(this._filterState.savedSearches || []);
-            for (const s of list) {
-                const btn = doc.createElementNS(NS_HTML, "button");
-                btn.type = "button";
-                btn.className = "wv-filter-opt";
-                btn.title = s.name;
-                if (selected.has(s.id)) btn.dataset.selected = "true";
-                btn.textContent = s.name;
-                btn.addEventListener("click", async (e) => {
-                    e.stopPropagation();
-                    if (selected.has(s.id)) selected.delete(s.id);
-                    else selected.add(s.id);
-                    this._filterState.savedSearches = [...selected];
-                    // Recompute the saved-search ID cache before
-                    // applying so the filter has fresh data.
-                    await this._refreshSavedSearchResults();
-                    this._renderFilterBar();
-                    this._applyItemsListFilter({ cascade: true });
-                    renderButtons();
-                });
-                box.appendChild(btn);
-            }
-            if (overflow > 0) {
-                const more = doc.createElementNS(NS_HTML, "span");
-                more.style.opacity = "0.5";
-                more.style.fontSize = "12px";
-                more.style.alignSelf = "center";
-                more.textContent = "+" + overflow + " more";
-                box.appendChild(more);
-            }
-        };
-        search.addEventListener("input", () => {
-            this._savedSearchSearchQuery = search.value || "";
-            renderButtons();
-        });
-        renderButtons();
-    }
-
     /** Run every saved search referenced in `_filterState.savedSearches`,
      *  union the matching item IDs into a Set on `_savedSearchResults`.
      *  Called from the saved-search button click and from the filter
@@ -12556,190 +11469,6 @@ class _FilterMixin {
             this._savedSearchResults = null;
             this._savedSearchExcludeResults = null;
         }
-    }
-
-    _renderAddedBySection(doc, section, refreshAll) {
-        while (section.firstChild) section.removeChild(section.firstChild);
-        section.className = "wv-filter-section";
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-
-        // Row-kind scope checkboxes — control which row kinds the
-        // `addedBy` filter applies to. Hidden until the user has
-        // selected at least one user; the choice would have no
-        // observable effect before that.
-        const scopeRow = doc.createElementNS(NS_HTML, "div");
-        scopeRow.className = "wv-filter-scope-row";
-        section.appendChild(scopeRow);
-
-        const opts = doc.createElementNS(NS_HTML, "div");
-        opts.className = "wv-filter-options wv-filter-options-stacked";
-        section.appendChild(opts);
-
-        const search = doc.createElementNS(NS_HTML, "input");
-        search.type = "search";
-        search.className = "wv-filter-search-input";
-        search.placeholder = "Filter users…";
-        search.value = this._addedBySearchQuery || "";
-        opts.appendChild(search);
-
-        const box = doc.createElementNS(NS_HTML, "div");
-        box.className = "wv-filter-tag-list";
-        box.style.display = "none";
-        opts.appendChild(box);
-
-        this._wireFilterBoxFocus(doc, search, box, opts);
-
-        const placeholder = doc.createElementNS(NS_HTML, "span");
-        placeholder.style.opacity = "0.5";
-        placeholder.style.fontSize = "12px";
-        placeholder.textContent = "Loading…";
-        box.appendChild(placeholder);
-
-        const SUGGEST_LIMIT = 10;
-        const rank = (all, q) => {
-            const exact = [], pre = [], sub = [], acr = [];
-            for (const t of all) {
-                const lc = t.toLowerCase();
-                if (lc === q) exact.push(t);
-                else if (lc.startsWith(q)) pre.push(t);
-                else if (lc.includes(q)) sub.push(t);
-                else if (this._wvAcronymMatch(t, q)) acr.push(t);
-            }
-            acr.sort((a, b) => this._wvInitialsLen(a) - this._wvInitialsLen(b));
-            return [...exact, ...pre, ...sub, ...acr];
-        };
-        const renderScope = () => {
-            while (scopeRow.firstChild) scopeRow.removeChild(scopeRow.firstChild);
-            const group = this._activeGroup();
-            const hasUsers = !!(group && group.addedBy
-                && group.addedBy.length);
-            if (!hasUsers) {
-                scopeRow.style.display = "none";
-                return;
-            }
-            scopeRow.style.display = "";
-            if (!group.addedByScope) {
-                group.addedByScope = {
-                    topLevel: true, attachments: true, annotations: true,
-                };
-            }
-            const scope = group.addedByScope;
-            // MIGRATION (2026-08-19): unset `notes` follows topLevel
-            // (all notes rode the top-level toggle pre-four-type).
-            if (scope.notes === undefined) {
-                scope.notes = scope.topLevel !== false;
-            }
-            const items = [
-                { key: "topLevel",    label: "Top-level items" },
-                { key: "attachments", label: "Attachments" },
-                { key: "notes",       label: "Notes" },
-                { key: "annotations", label: "Annotations" },
-            ];
-            for (const it of items) {
-                const lbl = doc.createElementNS(NS_HTML, "label");
-                lbl.className = "wv-filter-scope-cb";
-                const cb = doc.createElementNS(NS_HTML, "input");
-                cb.type = "checkbox";
-                cb.checked = !!scope[it.key];
-                cb.addEventListener("change", (e) => {
-                    e.stopPropagation();
-                    scope[it.key] = cb.checked;
-                    this._renderFilterBar();
-                    this._applyItemsListFilter({ cascade: true });
-                });
-                const txt = doc.createElementNS(NS_HTML, "span");
-                txt.textContent = it.label;
-                lbl.appendChild(cb);
-                lbl.appendChild(txt);
-                scopeRow.appendChild(lbl);
-            }
-        };
-        const renderButtons = (all) => {
-            while (box.firstChild) box.removeChild(box.firstChild);
-            const q = (this._addedBySearchQuery || "").trim().toLowerCase();
-            const ranked = q ? rank(all, q) : all;
-            const overflow = q ? Math.max(0, ranked.length - SUGGEST_LIMIT) : 0;
-            const filtered = q ? ranked.slice(0, SUGGEST_LIMIT) : ranked;
-            if (!filtered.length) {
-                const empty = doc.createElementNS(NS_HTML, "span");
-                empty.style.opacity = "0.5";
-                empty.style.fontSize = "12px";
-                empty.textContent = q
-                    ? "No matching users"
-                    : "No tracked creators in this library";
-                box.appendChild(empty);
-                return;
-            }
-            const selected = new Set(
-                (this._activeGroup() && this._activeGroup().addedBy) || []);
-            const colorOn = this._getEnableAddedByColors();
-            for (const u of filtered) {
-                const btn = doc.createElementNS(NS_HTML, "button");
-                btn.type = "button";
-                btn.className = "wv-filter-opt";
-                btn.title = u;
-                if (selected.has(u)) btn.dataset.selected = "true";
-                btn.textContent = u;
-                if (colorOn) {
-                    const colour = this._colorForUser(u);
-                    btn.style.color = colour;
-                    btn.style.borderColor = this._withAlpha(colour, 0.4);
-                    // Selected → stronger fill so the user-color tint
-                    // still reads as "active". Idle → subtle 0.12-alpha
-                    // wash so the per-user hue is visible without
-                    // looking selected.
-                    btn.style.backgroundColor = this._withAlpha(
-                        colour, selected.has(u) ? 0.28 : 0.12);
-                }
-                btn.addEventListener("click", (e) => {
-                    e.stopPropagation();
-                    if (selected.has(u)) selected.delete(u);
-                    else selected.add(u);
-                    { const g = this._activeGroup(); if (g) g.addedBy = [...selected]; }
-                    this._renderFilterBar();
-                    this._applyItemsListFilter({ cascade: true });
-                    renderButtons(all);
-                });
-                box.appendChild(btn);
-            }
-            if (overflow > 0) {
-                const more = doc.createElementNS(NS_HTML, "span");
-                more.style.opacity = "0.5";
-                more.style.fontSize = "12px";
-                more.style.alignSelf = "center";
-                more.textContent = "+" + overflow + " more";
-                box.appendChild(more);
-            }
-            renderScope();
-        };
-
-        search.addEventListener("input", () => {
-            this._addedBySearchQuery = search.value || "";
-            const cached = this._cachedAddedByUsers;
-            if (cached) renderButtons(cached);
-        });
-
-        const win = doc.defaultView;
-        const libraryID = this._wvSelectedLibraryID(win)
-            || (Zotero.Libraries && Zotero.Libraries.userLibraryID);
-
-        // Render the scope row immediately even while user list is
-        // loading — so the ticks appear without waiting on the SQL
-        // round-trip when the popup re-opens with users already
-        // selected.
-        renderScope();
-
-        if (this._cachedAddedByUsers) {
-            renderButtons(this._cachedAddedByUsers);
-            return;
-        }
-        this._collectAddedByUsers(libraryID).then((users) => {
-            this._cachedAddedByUsers = users;
-            if (!section.isConnected) return;
-            renderButtons(users);
-        }).catch((e) => {
-            dbg("[Weavero][filter] addedBy fetch err: " + e);
-        });
     }
 
     /** V9-COMPAT: re-apply the Weavero filter after Zotero rebuilds
@@ -12933,8 +11662,7 @@ class _FilterMixin {
         try {
             (this as any)._wvCascadeRetryUntil = Date.now() + 3000;
             if ((this as any)._wvCascadeRetryTimer) return;   // already pending
-            const win = Zotero.getMainWindow();
-            const setT = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+            const setT = wvTimeout;
             (this as any)._wvCascadeRetryTimer = setT(() => {
                 const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                 if (!P || P !== this) return;                  // stale instance
@@ -12971,7 +11699,7 @@ class _FilterMixin {
         // observer cycle described in _wvArmFinalApply would loop.
         try {
             if (!(this as any)._wvViaSetFilter) {
-                const _w0 = Zotero.getMainWindow();
+                const _w0 = this._wvFilterTargetWin();
                 const _sb0: any = _w0 && _w0.document
                     && _w0.document.getElementById("zotero-tb-search");
                 if (_sb0 && _sb0.value && String(_sb0.value).trim()) {
@@ -13051,7 +11779,7 @@ class _FilterMixin {
         // own re-apply) keeps it from looping. Cost: a visible tree
         // re-render on such chip changes. TODO: a non-flickery re-invoke.
         try {
-            const _win = Zotero.getMainWindow();
+            const _win = this._wvFilterTargetWin();
             const _sb: any = _win && _win.document
                 .getElementById("zotero-tb-search");
             const _live = (_sb && _sb.value) ? String(_sb.value).trim() : "";
@@ -13081,7 +11809,7 @@ class _FilterMixin {
         // Make sure Zotero's own pre-mutation capture point is mirrored before
         // we read the selection (idempotent; cheap when already wired).
         try {
-            const _w = Zotero.getMainWindow();
+            const _w = this._wvFilterTargetWin();
             const _iv2 = _w && _w.ZoteroPane && _w.ZoteroPane.itemsView;
             this._wvPatchCacheStateForSelection(_iv2);
             // Same idea one level earlier: capture on every genuine
@@ -13101,8 +11829,6 @@ class _FilterMixin {
             catch (e) {}
         }
         finally {
-            const win = Zotero.getMainWindow();
-            const setT = (win && win.setTimeout) || setTimeout;
             // Set a post-apply observer-suppression window. The
             // `tree.invalidate()` call inside the inner apply produces
             // DOM mutations that arrive ASYNCHRONOUSLY over the next
@@ -13121,9 +11847,10 @@ class _FilterMixin {
                 || (this as any)._suppressTreeObserverUntil < post) {
                 (this as any)._suppressTreeObserverUntil = post;
             }
-            setT(() => {
-                this._filterApplying = false;
-            }, 80);
+            // A plugin-level flag runs on the sandbox clock, never on a
+            // window that can close (src-ts.md timer hosts; this site's
+            // idiom escaped the step-3 scan).
+            wvTimeout(() => { this._filterApplying = false; }, 80);
         }
     }
 
@@ -13151,7 +11878,7 @@ class _FilterMixin {
      *  `_rowMap` by id, never by index. */
     _captureSelectedItemIDs() {
         try {
-            const win = Zotero.getMainWindow();
+            const win = this._wvFilterTargetWin();
             const ZP = win && win.ZoteroPane;
             if (!ZP || typeof ZP.getSelectedItems !== "function") return [];
             const iv: any = ZP.itemsView;
@@ -13343,8 +12070,7 @@ class _FilterMixin {
             // flickering). The stale-keep retry defers while this is set.
             (this as any)._wvFAHold = true;
             if ((this as any)._wvFATimer) return;          // tick loop already running
-            const win = Zotero.getMainWindow();
-            const setT = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+            const setT = wvTimeout;
             const tick = () => {
                 (this as any)._wvFATimer = null;
                 try {
@@ -13355,7 +12081,7 @@ class _FilterMixin {
                         (this as any)._wvFAHold = false;                // episode over
                         return;
                     }
-                    const w2 = Zotero.getMainWindow();
+                    const w2 = this._wvFilterTargetWin();
                     const iv: any = w2 && w2.ZoteroPane && w2.ZoteroPane.itemsView;
                     const rp: any = iv && (iv.rowProvider || iv);
                     if (!rp) { (this as any)._wvFAHold = false; return; }
@@ -13395,7 +12121,10 @@ class _FilterMixin {
                         (this as any)._wvFAHold = false;                // done
                         return;
                     }
-                    if (st.applies >= 3) return;                        // backstop
+                    // Backstop: give up on this episode -- and RELEASE the hold,
+                    // or the stale-keep repair stays blocked until the next live
+                    // search arms a new episode (survey 2026-10-06).
+                    if (st.applies >= 3) { (this as any)._wvFAHold = false; return; }
                     st.applies++; st.stable = 0;
                     (this as any)._wvFALastSig = sig;
                     dbg("[Weavero][filter] final apply at quiescence (" + sig + ")");
@@ -13420,9 +12149,7 @@ class _FilterMixin {
                 (this as any)._wvStaleKeepUntil = now + 4000;
             }
             if ((this as any)._wvStaleKeepTimer) return;       // already pending
-            const win = Zotero.getMainWindow();
-            const setT = (win && win.setTimeout)
-                ? win.setTimeout.bind(win) : setTimeout;
+            const setT = wvTimeout;
             (this as any)._wvStaleKeepTimer = setT(() => {
                 (this as any)._wvStaleKeepTimer = null;
                 try {
@@ -13448,7 +12175,7 @@ class _FilterMixin {
                         this._wvScheduleStaleKeepRetry();
                         return;
                     }
-                    const w2 = Zotero.getMainWindow();
+                    const w2 = this._wvFilterTargetWin();
                     const iv: any = w2 && w2.ZoteroPane && w2.ZoteroPane.itemsView;
                     const rp: any = iv && (iv.rowProvider || iv);
                     if (!rp) return;
@@ -13689,7 +12416,7 @@ class _FilterMixin {
         const untrusted = prevSelectedIDs === null;
         const state = this._filterState;
         if (!state || !this._isFilterActive(state)) return;
-        const win = Zotero.getMainWindow();
+        const win = this._wvFilterTargetWin();   // same window as `state` (#10)
         const iv: any = win && win.ZoteroPane && win.ZoteroPane.itemsView;
         if (!iv || !iv.selection || typeof iv.getRowCount !== "function") {
             return;
@@ -13840,10 +12567,7 @@ class _FilterMixin {
             if (this._currentQuickSearchValue) return false;
             if (state.collections && state.collections.length) return false;
             if (state.savedSearches && state.savedSearches.length) return false;
-            const PARENT = new Set(["itemType", "itemTypeExclude",
-                "hasAbstract", "hasDOI", "hasPMID", "hasPMCID", "retracted", "hasURL",
-                "hasAttachment", "publication", "publicationExclude",
-                "readStatus", "readStatusExclude", "inOtherLibrary"]);
+            const PARENT = new Set(wvDimLevels().parent);
             for (const g of (state.groups || [])) {
                 if (!g || !this._isGroupActive(g)) continue;
                 for (const [k, v] of Object.entries(g)) {
@@ -13927,11 +12651,12 @@ class _FilterMixin {
      *  sync fires hundreds, so the timer coalesces them into a single
      *  apply after the traffic stops.
      *
-     *  FOCUSED WINDOW ONLY, deliberately. `_applyItemsListFilterInner`
-     *  resolves its working window with `Zotero.getMainWindow()`, so an
-     *  apply "aimed" at a background window lands in the foreground one
-     *  (measured 2026-08-07: the target was A, the rows moved in B) --
-     *  and stealing focus to fix a background window would be worse than
+     *  FOCUSED WINDOW ONLY, deliberately. The apply pipeline binds to
+     *  `_wvFilterTargetWin()` -- the focused main unless a targeted
+     *  setup/teardown pass overrides it -- so an apply "aimed" at a
+     *  background window from here would land in the foreground one
+     *  (measured 2026-08-07: the target was A, the rows moved in B), and
+     *  stealing focus to fix a background window would be worse than
      *  the staleness. Other windows recompute on their next apply
      *  (chip, search, collection switch), which is what they did for
      *  every edit before this hook existed.
@@ -13943,8 +12668,7 @@ class _FilterMixin {
             const self: any = this;
             if (self._wvDestroyed) return;
             const win: any = Zotero.getMainWindow();
-            const st = (win && !win.closed && win.setTimeout)
-                ? win.setTimeout.bind(win) : setTimeout;
+            const st = wvTimeout;
             const ct = (win && !win.closed && win.clearTimeout)
                 ? win.clearTimeout.bind(win) : clearTimeout;
             if (self._wvDataChangeTimer) {
@@ -13988,9 +12712,7 @@ class _FilterMixin {
                     // debounced per edit burst, and an apply that finds
                     // nothing to change is cheap.
                     if (n < 3) {
-                        const w2: any = Zotero.getMainWindow();
-                        const st2 = (w2 && !w2.closed && w2.setTimeout)
-                            ? w2.setTimeout.bind(w2) : setTimeout;
+                        const st2 = wvTimeout;
                         st2(() => pass(n + 1), n === 0 ? 450 : (n === 1 ? 800 : 1400));
                     }
                 } catch (e) {
@@ -14015,7 +12737,9 @@ class _FilterMixin {
     /** Is the tiered item-pane count enabled? Default ON; the pref only
      *  exists so a user who prefers Zotero's single number can have it. */
     _wvCountBreakdownEnabled(): boolean {
-        try { return Zotero.Prefs.get("weavero.itemCountBreakdown") !== false; }
+        // A child of Sort & Filters (prefs.html gates it there); it ran with
+        // the master off (survey 2026-10-06).
+        try { return this._getEnableFilters() && Zotero.Prefs.get("weavero.itemCountBreakdown") !== false; }
         catch (e) { return true; }
     }
 
@@ -14419,15 +13143,38 @@ class _FilterMixin {
     }
 
     _applyItemsListFilterInner(opts?) {
+        // One apply, in phases over a context (survey 2026-10-06 step 4):
+        // the bodies are the former single method's, moved verbatim, each
+        // reading and extending `ctx`. Behaviour is unchanged by design.
+        const ctx = this._wvFilterApplyBegin(opts);
+        if (!ctx) return;
+        if (!ctx.active) { this._wvFilterApplyInactive(ctx); return; }
+        if (this._wvFilterApplySkip(ctx)) return;
+        this._wvFilterApplyPrepare(ctx);
+        this._wvFilterApplyCascade(ctx);
+        this._wvFilterApplyKeep(ctx);
+        this._wvFilterApplyMaterialise(ctx);
+        this._wvFilterApplyPublish(ctx);
+    }
+
+    /** Phase 0: resolve the target window, its tree and row source, snapshot
+     *  the quick search, detect a library change, start the perf clock,
+     *  read the state. Null when there is nothing to apply to. */
+    _wvFilterApplyBegin(opts?): WvFilterApplyCtx | null {
         // Auto-expand cascade is opt-IN. The MutationObserver-fired
         // reapply must NOT cascade (it would re-open every parent the
         // user just collapsed via the twisty/`-` key). Only the
         // explicit color-picker click passes `cascade: true`.
         const cascade = !!(opts && opts.cascade);
-        const win = Zotero.getMainWindow();
-        if (!win) return;
+        // The TARGET window (override while a targeted apply/teardown runs,
+        // else the focused main): the `_filterState` accessors already bind
+        // there, so binding the tree to `Zotero.getMainWindow()` filtered the
+        // focused window's tree with a background window's state (survey
+        // 2026-10-06 #10; the per-main-window invariant in CLAUDE.md).
+        const win = this._wvFilterTargetWin();
+        if (!win) return null;
         const itemsView = win.ZoteroPane && win.ZoteroPane.itemsView;
-        if (!itemsView || !itemsView.tree) return;
+        if (!itemsView || !itemsView.tree) return null;
 
         // Re-arm the reveal hook on the CURRENT collection-tree rows.
         // Selecting another collection swaps `rowProvider.collectionTreeRows`
@@ -14455,10 +13202,13 @@ class _FilterMixin {
         // every row fail the global check in library B (none of the
         // items in B belong to A's collections). Detect the switch
         // and reset both filters + the saved-search results cache.
+        // Per WINDOW: a plugin-global "last library" wiped a window's
+        // collection filter whenever applies alternated between two
+        // windows on different libraries (#10).
         try {
             const curLib = this._wvSelectedLibraryID(win);
-            if (this._lastLibraryID !== undefined
-                && this._lastLibraryID !== curLib
+            if (win._wvLastLibraryID !== undefined
+                && win._wvLastLibraryID !== curLib
                 && this._filterState) {
                 if (this._filterState.collections
                     && this._filterState.collections.length) {
@@ -14471,7 +13221,7 @@ class _FilterMixin {
                 this._savedSearchResults = null;
                 try { this._renderFilterBar(); } catch (e) {}
             }
-            this._lastLibraryID = curLib;
+            win._wvLastLibraryID = curLib;
         } catch (e) {
             dbg("[Weavero][filter] library-change check err: " + e);
         }
@@ -14490,7 +13240,7 @@ class _FilterMixin {
         // - No `expandRows` / `collapseRows` / `_refreshContainer`
         //   / `_openContainer` — single-row async operations only.
         const rp: any = itemsView.rowProvider || itemsView;
-        if (!rp) return;
+        if (!rp) return null;
         const isV9 = !itemsView.rowProvider;
 
         // ---- Filter-apply phase timing (always on, ~µs overhead) ----
@@ -14519,164 +13269,104 @@ class _FilterMixin {
 
         const state = this._filterState;
         const active = this._isFilterActive(state);
+        const ctx: WvFilterApplyCtx = {
+            win, itemsView, rp, isV9, cascade, state, active,
+            perf: _perf, perfNow: _perfNow, perfT0: _perfT0, mark: _mark,
+            sig: null, wasPatchedAtEntry: false,
+            origGetRow: null, origGetRowCount: null,
+            isPrimary: null, hasMatch: null, hasPrimaryDescendant: null,
+            total: 0, keepSet: null, primaryIDs: null,
+            keep: null, keepHash: 0, keepRowsLen: 0,
+        };
+        return ctx;
+    }
 
-        // Filter cleared: restore originals by deleting the
-        // own-property patches so prototype methods show through.
-        // V9-COMPAT: for methods that were originally OWN-property
-        // arrow-function fields on the itemsView (not prototype
-        // methods), `delete` would remove the original too. Reassign
-        // from the saved `_wvOrig*` instead.
-        if (!active) {
-            // Drop transient per-row reveal state ONLY on the
-            // active→inactive transition (Weavero filter just got
-            // cleared). The user-revealed set must survive subsequent
-            // inactive applies — otherwise a chevron click during
-            // quick-search-only mode would re-enter this branch on
-            // the click's own apply call and immediately undo itself.
-            if (this._wvFilterWasActive) {
-                if (this._userRevealedAllIDs
-                    && this._userRevealedAllIDs.size) {
-                    this._userRevealedAllIDs.clear();
-                }
-                // Also drop the manual expand/collapse state so clearing
-                // the filter returns the tree to its default expansion.
-                // The user's per-row collapse/expand was relative to the
-                // filtered view, so it must NOT be remembered once the
-                // filter is gone (re-applying should start fresh).
-                if (this._userOpenedIDs && this._userOpenedIDs.size) {
-                    this._userOpenedIDs.clear();
-                }
-                if (this._userClosedIDs && this._userClosedIDs.size) {
-                    this._userClosedIDs.clear();
-                }
+    /** Phase 1 (filter cleared): take the translation off, settle the tree
+     *  (partial collapse, chevron maps for a quick search), repaint, refresh
+     *  the item-pane count. */
+    _wvFilterApplyInactive(ctx: WvFilterApplyCtx) {
+        const { win, itemsView, rp } = ctx;
+        // Drop transient per-row reveal state ONLY on the
+        // active→inactive transition (Weavero filter just got
+        // cleared). The user-revealed set must survive subsequent
+        // inactive applies — otherwise a chevron click during
+        // quick-search-only mode would re-enter this branch on
+        // the click's own apply call and immediately undo itself.
+        if (this._wvFilterWasActive) {
+            if (this._userRevealedAllIDs
+                && this._userRevealedAllIDs.size) {
+                this._userRevealedAllIDs.clear();
             }
-            this._wvFilterWasActive = false;
-            // Even with no Weavero filter, populate the chevron maps
-            // from Zotero's quick-search state so the indicator
-            // renders on first visible children of quick-search-
-            // hiding containers. Empty maps if no search either.
-            this._wvComputeChevronMapsForQuickSearch(rp);
-            // The keep watermark describes a TRANSLATED view. With the
-            // patches gone `getRow` is Zotero's own again and indices
-            // mean what they say, so a leftover watermark would keep
-            // reporting a stale mapping forever (it is only ever
-            // compared against the LIVE `_rows.length`, which changes on
-            // every collapse/expand). That made `_captureSelectedItemIDs`
-            // return null permanently after the first filter of a
-            // session — harmless while the reconcile merely bailed, but
-            // since 2026-08-07 the untrusted path CLEARS the selection,
-            // so it became a visible "my selection keeps vanishing" bug.
-            delete rp._wvKeepRowsLen;
-            if (rp._wvOrigGetRow) {
-                // getRow / getLevel / getRowCount / *expand* /
-                // *collapse* live on the prototype on v10 and on
-                // v9's LibraryTree prototype too — safe to delete.
-                delete rp.getRow;
-                delete rp.getRowCount;
-                delete rp._wvOrigGetRow;
-                delete rp._wvOrigGetRowCount;
-                // Restore the item pane's count getter (own property on the
-                // itemsView; deleting it re-exposes the prototype getter).
-                // The host is stored on `rp` because these teardown sites
-                // only have `rp` in scope.
-                if (rp._wvObjRowCountHost) {
-                    try { delete rp._wvObjRowCountHost.objectRowCount; }
-                    catch (e) {}
-                    delete rp._wvObjRowCountHost;
-                }
-                if (rp._wvOrigGetLevel) {
-                    delete rp.getLevel;
-                    delete rp._wvOrigGetLevel;
-                }
-                // The container probes + toggleOpenState are
-                // OWN-property arrow fields on v9 — restore via
-                // assignment so the original is preserved.
-                const restoreField = (name, origKey) => {
-                    if (rp[origKey]) {
-                        if (isV9) rp[name] = rp[origKey];
-                        else delete rp[name];
-                        delete rp[origKey];
-                    }
-                };
-                restoreField("isContainer", "_wvOrigIsContainer");
-                restoreField("isContainerOpen", "_wvOrigIsContainerOpen");
-                restoreField("isContainerEmpty", "_wvOrigIsContainerEmpty");
-                restoreField("toggleOpenState", "_wvOrigToggleOpenState");
-                // expandRows / collapseRows don't exist on v9 — we
-                // only patched them on v10 (prototype methods).
-                if (rp._wvOrigExpandRows) {
-                    delete rp.expandRows;
-                    delete rp._wvOrigExpandRows;
-                }
-                if (rp._wvOrigCollapseRows) {
-                    delete rp.collapseRows;
-                    delete rp._wvOrigCollapseRows;
-                }
-                if (rp._wvOrigExpandAllRows) {
-                    delete rp.expandAllRows;
-                    delete rp._wvOrigExpandAllRows;
-                }
-                if (rp._wvOrigCollapseAllRows) {
-                    delete rp.collapseAllRows;
-                    delete rp._wvOrigCollapseAllRows;
-                }
-                // V9-COMPAT: restore the React props we rebound
-                // to live patches on v9.
-                if (isV9 && itemsView.tree && itemsView.tree.props
-                    && itemsView.tree.props._wvV9PropsPatched) {
-                    const tp: any = itemsView.tree.props;
-                    if (tp._wvOrigGetRowCount) tp.getRowCount = tp._wvOrigGetRowCount;
-                    if (tp._wvOrigIsContainer) tp.isContainer = tp._wvOrigIsContainer;
-                    if (tp._wvOrigIsContainerOpen) tp.isContainerOpen = tp._wvOrigIsContainerOpen;
-                    if (tp._wvOrigIsContainerEmpty) tp.isContainerEmpty = tp._wvOrigIsContainerEmpty;
-                    if (tp._wvOrigToggleOpenState) tp.toggleOpenState = tp._wvOrigToggleOpenState;
-                    delete tp._wvOrigGetRowCount;
-                    delete tp._wvOrigIsContainer;
-                    delete tp._wvOrigIsContainerOpen;
-                    delete tp._wvOrigIsContainerEmpty;
-                    delete tp._wvOrigToggleOpenState;
-                    delete tp._wvV9PropsPatched;
-                    // Restore WindowedList's captured getItemCount too.
-                    const jsWin: any = itemsView.tree._jsWindow;
-                    if (jsWin && jsWin._wvOrigGetItemCount) {
-                        jsWin.getItemCount = jsWin._wvOrigGetItemCount;
-                        delete jsWin._wvOrigGetItemCount;
-                        if (typeof jsWin._getItemCount === "function") {
-                            try { jsWin._getItemCount(); } catch (e) {}
-                        }
-                    }
-                }
-                delete rp._wvFilterSelfCall;
-                this._partialCollapseOnFilterClear(rp, itemsView);
-                try { itemsView.tree.invalidate(); } catch (e) {}
+            // Also drop the manual expand/collapse state so clearing
+            // the filter returns the tree to its default expansion.
+            // The user's per-row collapse/expand was relative to the
+            // filtered view, so it must NOT be remembered once the
+            // filter is gone (re-applying should start fresh).
+            if (this._userOpenedIDs && this._userOpenedIDs.size) {
+                this._userOpenedIDs.clear();
             }
-            // Repaint so chevrons (just computed by the helper above
-            // for quick-search-only mode) actually appear on the rows
-            // the tree painted BEFORE the MutationObserver ran the
-            // apply pass. Without this, the first paint after a quick
-            // search has empty maps and skips the chevron path; the
-            // user sees no indicator until something else mutates the
-            // tree. Pure paint invalidate — doesn't add/remove rows —
-            // so it can't loop through the MutationObserver.
-            try { itemsView.tree.invalidate(); } catch (e) {}
-            // Re-render the item pane count on the CLEAR path too. The
-            // count getter has just been unpatched, but the message
-            // itself is only refreshed from `itemsView.onRefresh`
-            // upstream, so without this it keeps showing the FILTERED
-            // number after the filter is gone (measured 2026-08-08:
-            // message stuck at 15,329 with 17,928 rows restored).
-            // Same empty-selection gate as the apply path.
-            try {
-                const _zp: any = win && win.ZoteroPane;
-                const _sel: any = itemsView && itemsView.selection;
-                if (_zp && typeof _zp.itemSelected === "function"
-                    && _sel && _sel.count === 0) {
-                    Promise.resolve(_zp.itemSelected()).catch(() => {});
-                }
-            } catch (e) {}
-            return;
+            if (this._userClosedIDs && this._userClosedIDs.size) {
+                this._userClosedIDs.clear();
+            }
         }
+        this._wvFilterWasActive = false;
+        // Even with no Weavero filter, populate the chevron maps
+        // from Zotero's quick-search state so the indicator
+        // renders on first visible children of quick-search-
+        // hiding containers. Empty maps if no search either.
+        this._wvComputeChevronMapsForQuickSearch(rp);
+        // The keep watermark describes a TRANSLATED view. With the
+        // patches gone `getRow` is Zotero's own again and indices
+        // mean what they say, so a leftover watermark would keep
+        // reporting a stale mapping forever (it is only ever
+        // compared against the LIVE `_rows.length`, which changes on
+        // every collapse/expand). That made `_captureSelectedItemIDs`
+        // return null permanently after the first filter of a
+        // session — harmless while the reconcile merely bailed, but
+        // since 2026-08-07 the untrusted path CLEARS the selection,
+        // so it became a visible "my selection keeps vanishing" bug.
+        delete rp._wvKeepRowsLen;
+        if (rp._wvOrigGetRow) {
+            // The translation off whole (layers, natives, count getter,
+            // v9 props, view) -- the manual-expand tracker is its own
+            // layer and stays: it used to go with the filter's wrapper
+            // while its stamp stayed, so the observer's re-install
+            // returned early and tracking was dead from the first
+            // filter clear until a reload (survey 2026-10-06).
+            this._wvFilterPatchRemove(rp, itemsView);
+            this._partialCollapseOnFilterClear(rp, itemsView);
+            try { itemsView.tree.invalidate(); } catch (e) {}
+        }
+        // Repaint so chevrons (just computed by the helper above
+        // for quick-search-only mode) actually appear on the rows
+        // the tree painted BEFORE the MutationObserver ran the
+        // apply pass. Without this, the first paint after a quick
+        // search has empty maps and skips the chevron path; the
+        // user sees no indicator until something else mutates the
+        // tree. Pure paint invalidate — doesn't add/remove rows —
+        // so it can't loop through the MutationObserver.
+        try { itemsView.tree.invalidate(); } catch (e) {}
+        // Re-render the item pane count on the CLEAR path too. The
+        // count getter has just been unpatched, but the message
+        // itself is only refreshed from `itemsView.onRefresh`
+        // upstream, so without this it keeps showing the FILTERED
+        // number after the filter is gone (measured 2026-08-08:
+        // message stuck at 15,329 with 17,928 rows restored).
+        // Same empty-selection gate as the apply path.
+        try {
+            const _zp: any = win && win.ZoteroPane;
+            const _sel: any = itemsView && itemsView.selection;
+            if (_zp && typeof _zp.itemSelected === "function"
+                && _sel && _sel.count === 0) {
+                Promise.resolve(_zp.itemSelected()).catch(() => {});
+            }
+        } catch (e) {}
+    }
 
+    /** Phase 2: the state signature, the reveal-scope reset, and the no-op
+     *  skip (true = nothing to do). Publishes `ctx.sig` / `ctx.wasPatchedAtEntry`. */
+    _wvFilterApplySkip(ctx: WvFilterApplyCtx): boolean {
+        const { win, itemsView, rp, cascade } = ctx;
         // ---- No-op skip (perf fix #1, 2026-08-05) ----
         // Observer-triggered re-applies frequently arrive with NOTHING
         // changed — measured as ~650ms x4 bursts after a single click.
@@ -14716,150 +13406,43 @@ class _FilterMixin {
             }
             (this as any)._wvRevealScopeKey = scopeKey;
         } catch (e) {}
-        // Whether our getRow patch was ALREADY installed when this apply
+        // Whether a translated view was ALREADY live when this apply
         // began — used by the identical-keep invalidate skip below (a
         // first activation must always re-render).
-        const _wasPatchedAtEntry = !!rp._wvOrigGetRow
-            && Object.prototype.hasOwnProperty.call(rp, "getRow");
+        const _wasPatchedAtEntry = !!(rp._wvFilterPatchTag && rp._wvFilterView);
+        ctx.sig = _sig;
+        ctx.wasPatchedAtEntry = _wasPatchedAtEntry;
         if (!cascade
             && this._wvLastApplySig === _sig
             && this._wvLastApplyRawRows === rp._rows.length
-            && rp._wvOrigGetRow
-            && Object.prototype.hasOwnProperty.call(rp, "getRow")) {
+            && _wasPatchedAtEntry) {
             (Zotero as any)._wvFilterPerfSkips
                 = ((Zotero as any)._wvFilterPerfSkips || 0) + 1;
-            return;
+            return true;
         }
+        return false;
+    }
 
-        // Save originals on first activation. Cover `getLevel` too:
-        // virtualized-table.jsx's `_getDepth(index)` (used for indent
-        // and parent twisty arrows) walks the shared `_rows` array
-        // through `getLevel(idx)` / `getParentIndex(idx)`, so without
-        // mapping `idx` back to the original space the visual depth
-        // is computed for the wrong row.
-        //
-        // Always walk to the PROTOTYPE-defined method, not whatever's
-        // currently on the instance. Plugin disable+enable leaves
-        // monkey-patched versions on the instance (via own properties)
-        // whose closures hold stale `keep` arrays from the previous
-        // plugin module — saving those as "the original" and then
-        // re-patching produces a chain with mismatched indices.
-        //
-        // V9-COMPAT: Zotero 9 defines `isContainer` / `getRow` / etc.
-        // as arrow-function class fields, which live as OWN properties
-        // on the instance rather than the prototype. We accept those
-        // (and trust our own marker checks below to detect our own
-        // installed wrappers) so v9 has originals to wrap.
-        const findProtoMethod = (obj, name) => {
-            // Skip own props that ARE our wrappers — checking the
-            // chain below still finds the real prototype original.
-            // For v9 (no proto method), accept the own prop.
-            let p = Object.getPrototypeOf(obj);
-            while (p) {
-                if (Object.prototype.hasOwnProperty.call(p, name)
-                    && typeof p[name] === "function") {
-                    return p[name];
-                }
-                p = Object.getPrototypeOf(p);
-            }
-            // V9-COMPAT: fall back to the instance's own property
-            // when no prototype method exists.
-            if (Object.prototype.hasOwnProperty.call(obj, name)
-                && typeof obj[name] === "function") {
-                return obj[name];
-            }
-            return null;
-        };
-        // Patch the rowProvider only. `itemsView.getLevel` etc. are
-        // arrow-function fields on the LibraryTree base that simply
-        // delegate to `this.rowProvider.<same>(idx)` — so patching at
-        // the rp level is reached by every public consumer (the
-        // virtualized table's bound props all dispatch through to rp).
-        // Patching itemsView in addition would double-stack mapping
-        // (keep[keep[idx]]).
-        if (!rp._wvOrigGetRow) {
-            const rpGetRow = findProtoMethod(rp, "getRow");
-            const rpGetRowCount = findProtoMethod(rp, "getRowCount");
-            const rpGetLevel = findProtoMethod(rp, "getLevel");
-            const rpIsContainer = findProtoMethod(rp, "isContainer");
-            const rpIsContainerOpen = findProtoMethod(rp, "isContainerOpen");
-            const rpIsContainerEmpty = findProtoMethod(rp, "isContainerEmpty");
-            const rpToggle = findProtoMethod(rp, "toggleOpenState");
-            const rpExpand = findProtoMethod(rp, "expandRows");
-            const rpCollapse = findProtoMethod(rp, "collapseRows");
-            const rpExpandAll = findProtoMethod(rp, "expandAllRows");
-            const rpCollapseAll = findProtoMethod(rp, "collapseAllRows");
-            rp._wvOrigGetRow = (rpGetRow || rp.getRow).bind(rp);
-            // Zotero 9 has no `getRowCount` method — the count comes
-            // from `_rows.length`. Synthesise one so the rest of the
-            // patch code is uniform.
-            if (rpGetRowCount) {
-                rp._wvOrigGetRowCount = rpGetRowCount.bind(rp);
-            } else if (typeof rp.getRowCount === "function") {
-                rp._wvOrigGetRowCount = rp.getRowCount.bind(rp);
-            } else {
-                rp._wvOrigGetRowCount = function () {
-                    return (rp._rows && rp._rows.length) || 0;
-                };
-            }
-            if (rpGetLevel) rp._wvOrigGetLevel = rpGetLevel.bind(rp);
-            if (rpIsContainer) rp._wvOrigIsContainer = rpIsContainer.bind(rp);
-            if (rpIsContainerOpen) rp._wvOrigIsContainerOpen = rpIsContainerOpen.bind(rp);
-            if (rpIsContainerEmpty) rp._wvOrigIsContainerEmpty = rpIsContainerEmpty.bind(rp);
-            if (rpToggle) rp._wvOrigToggleOpenState = rpToggle.bind(rp);
-            if (rpExpand) rp._wvOrigExpandRows = rpExpand.bind(rp);
-            if (rpCollapse) rp._wvOrigCollapseRows = rpCollapse.bind(rp);
-            if (rpExpandAll) rp._wvOrigExpandAllRows = rpExpandAll.bind(rp);
-            if (rpCollapseAll) rp._wvOrigCollapseAllRows = rpCollapseAll.bind(rp);
-        }
-
-        // V9-COMPAT: Zotero 9's `isContainer` / `isContainerOpen` are
-        // instance-field arrow functions that do `getRow(i).ref` /
-        // `getRow(i).isOpen` UNCONDITIONALLY. The cascade pass below
-        // opens containers (on v9, single `toggleOpenState` calls),
-        // each of which mutates `_rows` and fires a re-render that
-        // calls these probes — and at that point our translating
-        // `getRow` patch isn't installed yet (it goes in AFTER the
-        // cascade), so a transient out-of-range index hands back
-        // `undefined` and `.ref`/`.isOpen` crashes the whole window
-        // via `Zotero.crash()` (itemTree.js:2290 / :2295). The
-        // `wrapProbe` install later only guards the post-cascade
-        // window. Make the live probes null-safe NOW, before the
-        // cascade, so any transient bad index returns false instead
-        // of throwing. v10's probes already tolerate undefined, so
-        // this is gated to v9. They delegate to whatever `getRow` is
-        // current (native during the cascade, the patched translating
-        // version afterwards) — null-safe either way.
-        if (isV9) {
-            rp.isContainer = function (index) {
-                const r = rp.getRow(index);
-                if (!r || !r.ref) return false;
-                try {
-                    return !!(r.ref.isRegularItem
-                        && (r.ref.isRegularItem()
-                            || r.ref.isFileAttachment()));
-                } catch (e) { return false; }
-            };
-            if (typeof rp.isContainerOpen === "function") {
-                rp.isContainerOpen = function (index) {
-                    const r = rp.getRow(index);
-                    return !!(r && r.isOpen);
-                };
-            }
-            // Re-apply after Zotero's own refreshes (e.g. the
-            // hideContextAnnotationRows pref observer) so the toggle's
-            // expanded view isn't left collapsed. v10 gets this from
-            // the rowProvider._refresh wrap; v9 needs it on the
-            // itemsView. Idempotent.
-            try { this._patchV9RefreshReapply(itemsView); } catch (e) {}
-        }
+    /** Phase 3: the row-provider translation (once per instance), the native
+     *  accessors, and the sig-keyed verdict caches both passes share. */
+    _wvFilterApplyPrepare(ctx: WvFilterApplyCtx) {
+        const { itemsView, rp, isV9, state, mark: _mark } = ctx;
+        const _sig = ctx.sig;
+        // The row-provider translation: installed ONCE per instance
+        // (_wvFilterPatchInstall: lib/wrap.ts layers reading the per-apply
+        // view `rp._wvFilterView`, published at the end of this apply).
+        // Installed before the cascade: with no view yet, or a stale one,
+        // the layers pass through to the natives, and v9's null-safe
+        // probes must be live while the cascade opens containers (a
+        // transient bad index used to crash the window there).
+        this._wvFilterPatchInstall(rp, itemsView, isV9);
 
         const origGetRow = rp._wvOrigGetRow;
         const origGetRowCount = rp._wvOrigGetRowCount;
 
         // ---- Per-apply hot-path caches (perf) ----
         // Hoisted here (above the cascade pass) so Pass 1's
-        // `_hasMatchingAnnotation` calls share the cache with
+        // `hasMatch` calls share the cache with
         // Pass 2's `_rowIsPrimary` checks. Without this, cascade
         // recomputes per-item primary verdicts that pass 2 then
         // recomputes again.
@@ -14901,7 +13484,8 @@ class _FilterMixin {
             if (id != null && hasMatchCache.has(id)) {
                 return hasMatchCache.get(id);
             }
-            // Inline a cache-aware version of `_hasMatchingAnnotation`
+            // A cache-aware subtree walk (the uncached method it replaced
+            // was removed as dead code, 2026-10-08)
             // so its recursive descents into attachments / notes /
             // annotations also hit the cache. The original method
             // calls `this._rowIsPrimary` directly without caching.
@@ -14987,6 +13571,19 @@ class _FilterMixin {
         };
 
         _mark("setup");
+        ctx.origGetRow = origGetRow;
+        ctx.origGetRowCount = origGetRowCount;
+        ctx.isPrimary = isPrimary;
+        ctx.hasMatch = hasMatch;
+        ctx.hasPrimaryDescendant = hasPrimaryDescendant;
+    }
+
+    /** Phase 4 (pass 1, opt-in): open every container with a strictly
+     *  deeper primary match -- by construction (build mode) or by depth
+     *  scans over expandRows. */
+    _wvFilterApplyCascade(ctx: WvFilterApplyCtx) {
+        const { itemsView, rp, cascade, state, perf: _perf, mark: _mark,
+            origGetRow, origGetRowCount, hasPrimaryDescendant } = ctx;
         // Pass 1 — auto-expand containers whose subtree contains a
         // STRICTLY DEEPER primary match (an attachment under a parent,
         // an annotation under an attachment, etc.). Walk FORWARDS so
@@ -15217,6 +13814,13 @@ class _FilterMixin {
         }
 
         _mark("pass1");
+    }
+
+    /** Phase 5 (pass 2): the keep set -- primaries and their ancestors, the
+     *  context rules (non-matching attachments / annotations), the user's
+     *  reveals and opens, fresh items, then the quick-search scope gate. */
+    _wvFilterApplyKeep(ctx: WvFilterApplyCtx) {
+        const { isV9, state, mark: _mark, origGetRow, origGetRowCount, isPrimary, hasMatch } = ctx;
         // Pass 2 — collect indices to keep: primary matches + every
         // ancestor row that contains them (so the tree shape is
         // preserved). For item-scope-alone matches the entire subtree
@@ -15678,6 +14282,15 @@ class _FilterMixin {
                     + toDrop.length + " out-of-scope row(s)");
             }
         }
+        ctx.total = total;
+        ctx.keepSet = keepSet;
+        ctx.primaryIDs = _primaryIDs;
+    }
+
+    /** Phase 6: the keep array and its hash, the chevron maps (hidden
+     *  counts, first visible child), the watermark. */
+    _wvFilterApplyMaterialise(ctx: WvFilterApplyCtx) {
+        const { rp, origGetRow, hasMatch, keepSet, total } = ctx;
         // Materialise the deduped keep set as a sorted array. The
         // rest of the apply logic (`getRow` patch etc.) consumes
         // this as the row-index translation table.
@@ -15798,422 +14411,26 @@ class _FilterMixin {
 
         dbg("[Weavero][filter] kept " + keep.length
             + " of " + total + " rows");
+        ctx.keep = keep;
+        ctx.keepHash = _keepHash;
+        ctx.keepRowsLen = keepRowsLen;
+    }
 
-        // Patch the data layer on the rowProvider — the virtualized
-        // table reads through it directly (see itemTree.jsx:1362).
-        // Patching `itemsView.getRow` alone would only catch the
-        // ItemTree wrapper, not the prop the virtualized table calls.
-        //
-        // SELF flag: rp's own internals (e.g. _toggleOpenState) call
-        // `this.getRow(idx)` / `this.getLevel(idx)` etc. with REAL
-        // indices into `_rows`. Without a bypass our translating
-        // patches double-translate (keep[realIdx]) and the toggle
-        // operates on the wrong row — twisty/+ key would no-op or
-        // open the wrong subtree. The flag is set during calls into
-        // the original toggleOpenState / expandRows / collapseRows,
-        // so any nested data-access falls through to the raw method.
-        const SELF = "_wvFilterSelfCall";
-        const self = this;
-
-        // Defensive bounds-check: between an original toggle's
-        // `runListeners('update', ..., {restoreSelection: true})` and
-        // our reapply, `_rows` may have shrunk while `keep` still
-        // holds an index past the new tail. Returning `undefined`
-        // (rather than letting the original throw "non-existent tree
-        // row N") lets the caller no-op cleanly. The pre-crash
-        // path `_restoreSelection -> selection.select(realIdx) ->
-        // itemSelected -> getRow(...).ref` would still throw on
-        // `.ref`, but the fix below (sync reapply before listeners
-        // fire) prevents that path from being reached.
-        const safeReal = function (idx): number {
-            const r = keep[idx] as number;
-            if (r === undefined) return -1;
-            if (r >= rp._rows.length) return -1;
-            return r;
-        };
-
-        // Helper: keep is stale whenever `_rows.length` no longer
-        // matches what we measured at apply time. Translating through
-        // a stale keep is what produced the search-clear crash AND
-        // the duplicate-row glitch. We fall through to the unfiltered
-        // original until the MutationObserver-driven reapply runs.
-        const stale = () => rp._rows.length !== keepRowsLen;
-
-        // V9-COMPAT: Zotero 9 calls `getRow(index).ref` /
-        // `.isOpen` UNCONDITIONALLY in several places — most notably
-        // `isContainer` / `isContainerOpen`, which on v9 are
-        // instance-field arrow functions (NOT prototype methods), so
-        // our `wrapProbe` never replaces them and they hit this
-        // patched `getRow` directly. If we ever return `undefined`
-        // (out-of-range index, or a stale window where a cached
-        // larger row count is still being iterated) the `.ref`
-        // access throws and crashes the whole window via
-        // `Zotero.crash()`. v10 callers tolerated `undefined`, but v9
-        // does not — so this patched getRow must NEVER return
-        // undefined. `safeRaw` clamps every lookup to a valid row.
-        const safeRaw = function (i) {
-            const len = rp._rows.length;
-            if (!len) return rp._wvOrigGetRow(0);
-            let j = i;
-            if (j == null || j < 0 || j >= len) j = 0;
-            const row = rp._wvOrigGetRow(j);
-            return row === undefined ? rp._wvOrigGetRow(0) : row;
-        };
-        rp.getRow = function (idx) {
-            // The SELF / stale branches differ between versions ONLY
-            // for out-of-range indices: v9 must never see `undefined`
-            // (its `isContainer`/`isContainerOpen` deref it and crash
-            // the window), so it clamps via `safeRaw`; v10 tolerated
-            // `undefined` and is left byte-identical to pre-dev.70 to
-            // avoid any phantom-row flash in a stale window.
-            if (this[SELF]) {
-                return isV9 ? safeRaw(idx) : rp._wvOrigGetRow(idx);
-            }
-            if (stale()) {
-                return isV9 ? safeRaw(idx) : rp._wvOrigGetRow(idx);
-            }
-            // These branches already returned a valid (clamped) row on
-            // both versions pre-dev.70 — `safeRaw` is equivalent here,
-            // with a harmless extra undefined-guard.
-            const r = safeReal(idx);
-            if (r < 0) return safeRaw(idx);
-            return safeRaw(r);
-        };
-        rp.getRowCount = function () {
-            if (this[SELF]) return rp._wvOrigGetRowCount();
-            if (stale()) return rp._wvOrigGetRowCount();
-            return keep.length;
-        };
-        // The item pane's "N items in this view" message reads
-        // `itemsView.objectRowCount` (itemPane.js), which reduces over
-        // `this._rows` DIRECTLY -- it never goes through getRow /
-        // getRowCount, so our translation does not reach it and the pane
-        // reports the UNFILTERED library count while a chip is active.
-        // Measured 2026-08-08 on the real library: pane said "17,928
-        // items in this view" with 15,329 rows actually shown.
-        //
-        // This is Weavero's discrepancy to fix, and is deliberately
-        // scoped to it. The related upstream bug -- expanding a row does
-        // not refresh the message at all, because zoteroPane.js only
-        // updates it from `itemsView.onRefresh` (added for
-        // zotero/zotero#5913, whose own comment lists only refresh-driven
-        // causes) -- is NOT patched here: it affects every Zotero user,
-        // and two mechanisms racing on the same message once upstream
-        // fixes it would be worse than the bug.
-        //
-        // Patched on the itemsView INSTANCE (the getter lives on the
-        // prototype), so teardown is a plain `delete`. The host is
-        // remembered on `rp` because the teardown sites only have `rp`.
-        try {
-            const findProtoGetter = (obj, name) => {
-                let o = obj;
-                while (o) {
-                    const d = Object.getOwnPropertyDescriptor(o, name);
-                    if (d && typeof d.get === "function") return d.get;
-                    o = Object.getPrototypeOf(o);
-                }
-                return null;
-            };
-            // Capture the REAL prototype getter exactly once. After the
-            // first install the own property IS our getter, so re-reading
-            // it here would capture ourselves and recurse. Cached on the
-            // itemsView and cleared on teardown.
-            const host: any = itemsView;
-            if (!host._wvOrigObjCountGetter) {
-                const g = findProtoGetter(
-                    Object.getPrototypeOf(itemsView), "objectRowCount");
-                if (g) host._wvOrigObjCountGetter = g;
-            }
-            const origObjCount = host._wvOrigObjCountGetter;
-            // REDEFINE ON EVERY APPLY. The previous version installed once
-            // and skipped thereafter if the own property existed, so the
-            // getter kept closing over the FIRST apply's `keep` and
-            // watermark. Every later apply then tripped its own stale()
-            // check and fell through to the UNFILTERED count -- the item
-            // pane read "20,508 items in this view" over a 2,190-row
-            // filtered view, while the tiers (which go through the
-            // per-apply getRow/getRowCount patches) stayed correct.
-            // Reported 2026-08-08.
-            if (origObjCount) {
-                Object.defineProperty(itemsView, "objectRowCount", {
-                    configurable: true,
-                    get: function () {
-                        try {
-                            // Same contract as the other patched
-                            // accessors: a stale keep means fall through
-                            // to the unfiltered original.
-                            if (stale()) return origObjCount.call(this);
-                            let n = 0;
-                            for (let i = 0; i < keep.length; i++) {
-                                const row = rp._wvOrigGetRow(keep[i] as number);
-                                if (row && row.isObjectRow) n++;
-                            }
-                            return n;
-                        }
-                        catch (e) {
-                            try { return origObjCount.call(this); }
-                            catch (e2) { return 0; }
-                        }
-                    },
-                });
-                rp._wvObjRowCountHost = itemsView;
-            }
-        } catch (e) {}
-        if (rp._wvOrigGetLevel) {
-            rp.getLevel = function (idx) {
-                if (this[SELF]) return rp._wvOrigGetLevel(idx);
-                if (stale()) return rp._wvOrigGetLevel(idx);
-                const r = safeReal(idx);
-                if (r < 0) return 0;
-                return rp._wvOrigGetLevel(r);
-            };
-        }
-        // The Container probes call `this.getRow(idx)` internally —
-        // method-dispatch on `rp.getRow` (our patched translating
-        // version). Set SELF for the duration of the original call so
-        // the inner getRow sees the raw real index instead of doing a
-        // second `keep[idx]` translation. Same for getLevel-using
-        // probes (only isContainerEmpty in some impls), but
-        // getLevel/getRow themselves are field-accesses with no
-        // dispatch, so they don't need the flag.
-        const wrapProbe = function (origFn, fallback) {
-            return function (idx) {
-                if (this[SELF]) return origFn.call(this, idx);
-                if (stale()) return origFn.call(this, idx);
-                const realIdx = safeReal(idx);
-                if (realIdx < 0) return fallback;
-                const wasFlag = this[SELF];
-                this[SELF] = true;
-                try { return origFn.call(this, realIdx); }
-                finally { this[SELF] = wasFlag; }
-            };
-        };
-        if (rp._wvOrigIsContainer) {
-            rp.isContainer = wrapProbe(rp._wvOrigIsContainer, false);
-        }
-        if (rp._wvOrigIsContainerOpen) {
-            rp.isContainerOpen = wrapProbe(rp._wvOrigIsContainerOpen, false);
-        }
-        if (rp._wvOrigIsContainerEmpty) {
-            rp.isContainerEmpty = wrapProbe(rp._wvOrigIsContainerEmpty, true);
-        }
-
-        // Twisty clicks (toggleOpenState) and `+`/`-` keyboard
-        // shortcuts (expandRows / collapseRows) hand FILTERED indices
-        // to the rowProvider. Translate through `keep`, set the SELF
-        // flag so internal `this.getRow`/`this.getLevel` calls inside
-        // the original see the raw real index. The original then
-        // mutates `_rows` AND fires `runListeners('update', ...,
-        // {restoreSelection: true})`, which dispatches a selection
-        // restore that reads `rowMap[id]` (REAL idx after the toggle)
-        // and calls `selection.select(realIdx)` — but `selection` is
-        // in FILTERED space, so the table looks up `getRow(realIdx)`
-        // which lands past the end of `keep` and crashes.
-        //
-        // Defer the listeners until AFTER we rebuild `keep`, so
-        // selection restoration sees a fresh filtered view. We swap
-        // `runListeners` for a queue while the original runs, rebuild
-        // keep synchronously, then flush.
-        // Track manual user opens / closes so the next keep rebuild
-        // force-keeps the children of containers the user just expanded.
-        // Without this, opening a non-matching container reveals its
-        // children for one frame and the reapply immediately drops them
-        // again because they don't satisfy the filter.
-        //
-        // Call BEFORE the original runs — the direction is inferred from
-        // the row's CURRENT state, which the original is about to flip.
-        // The same inference serves both the toggle and the multi-row
-        // paths: upstream `_expandRows` only toggles rows that are closed
-        // and `collapseRows` only rows that are open, so "was open" ==
-        // "this call is a collapse" in every case.
-        const noteUserToggle = function (realIdx) {
-            try {
-                const row = rp._rows[realIdx as number];
-                const wasOpen = row && row.isOpen;
-                const id = row && row.ref && row.ref.id;
-                if (id == null) return;
-                if (!self._userOpenedIDs) self._userOpenedIDs = new Set();
-                if (!self._userClosedIDs) self._userClosedIDs = new Set();
-                if (wasOpen) {
-                    // Collapsing → record so the cascade and
-                    // `_expandMatchParents` skip it on later reapplies.
-                    self._userOpenedIDs.delete(id);
-                    self._userClosedIDs.add(id);
-                } else {
-                    // Expanding → record so reapply force-keeps the
-                    // children even if they don't satisfy the filter.
-                    self._userOpenedIDs.add(id);
-                    self._userClosedIDs.delete(id);
-                }
-            } catch (e) {}
-        };
-        const wrapToggle = function (origFn) {
-            return function (filteredIdx, skipRowMapRefresh) {
-                if (this[SELF]) {
-                    return origFn.call(this, filteredIdx, skipRowMapRefresh);
-                }
-                if (stale()) {
-                    return origFn.call(this, filteredIdx, skipRowMapRefresh);
-                }
-                const realIdx = keep[filteredIdx];
-                if (realIdx === undefined) return;
-                noteUserToggle(realIdx);
-                const wasFlag = this[SELF];
-                this[SELF] = true;
-                const queued = [];
-                const origListeners = rp.runListeners;
-                rp.runListeners = function (...args) { queued.push(args); };
-                try {
-                    return origFn.call(this, realIdx, skipRowMapRefresh);
-                } finally {
-                    rp.runListeners = origListeners;
-                    this[SELF] = wasFlag;
-                    self._reapplyFilterSync();
-                    for (const args of queued) {
-                        try { rp.runListeners.apply(rp, args); }
-                        catch (e) {
-                            dbg("[Weavero][filter] listener err: " + e);
-                        }
-                    }
-                }
-            };
-        };
-        const wrapMulti = function (origFn) {
-            return function (indices) {
-                if (this[SELF]) return origFn.call(this, indices);
-                if (stale()) return origFn.call(this, indices);
-                const real = (indices || []).map(i => keep[i])
-                    .filter(x => x !== undefined);
-                // Same user-open bookkeeping as the single-row toggle.
-                // Without it the keyboard paths (multi-select ArrowRight /
-                // ArrowLeft -> itemTree.expandSelectedRows ->
-                // rowProvider.expandRows) opened the container but the
-                // immediate reapply dropped its non-matching children
-                // again -- an open twisty with nothing under it, while
-                // clicking the same twisty by hand worked (2026-08-04).
-                for (const realIdx of real) noteUserToggle(realIdx);
-                const wasFlag = this[SELF];
-                this[SELF] = true;
-                const queued = [];
-                const origListeners = rp.runListeners;
-                rp.runListeners = function (...args) { queued.push(args); };
-                try {
-                    return origFn.call(this, real);
-                } finally {
-                    rp.runListeners = origListeners;
-                    this[SELF] = wasFlag;
-                    self._reapplyFilterSync();
-                    for (const args of queued) {
-                        try { rp.runListeners.apply(rp, args); }
-                        catch (e) {
-                            dbg("[Weavero][filter] listener err: " + e);
-                        }
-                    }
-                }
-            };
-        };
-        if (rp._wvOrigToggleOpenState) {
-            rp.toggleOpenState = wrapToggle(rp._wvOrigToggleOpenState);
-        }
-        if (rp._wvOrigExpandRows) {
-            rp.expandRows = wrapMulti(rp._wvOrigExpandRows);
-        }
-        if (rp._wvOrigCollapseRows) {
-            rp.collapseRows = wrapMulti(rp._wvOrigCollapseRows);
-        }
-
-        // `+` (expandAllRows) and `-` (collapseAllRows) keys take no
-        // indices — they iterate `this.rowCount` (= `_rows.length`,
-        // raw real count) and call `this.isContainer(i)` etc. with
-        // real indices. Run them with SELF set so our patched probes
-        // pass-through to the originals (real-space). Same listener
-        // queue + sync reapply pattern as wrapToggle, since the
-        // original fires `runListeners('update', ..., {restoreSelection})`
-        // at the end.
-        const wrapAll = function (origFn) {
-            return function (...args) {
-                if (this[SELF]) return origFn.apply(this, args);
-                const wasFlag = this[SELF];
-                this[SELF] = true;
-                const queued = [];
-                const origListeners = rp.runListeners;
-                rp.runListeners = function (...lArgs) { queued.push(lArgs); };
-                try {
-                    return origFn.apply(this, args);
-                } finally {
-                    rp.runListeners = origListeners;
-                    this[SELF] = wasFlag;
-                    self._reapplyFilterSync();
-                    for (const lArgs of queued) {
-                        try { rp.runListeners.apply(rp, lArgs); }
-                        catch (e) {
-                            dbg("[Weavero][filter] listener err: " + e);
-                        }
-                    }
-                }
-            };
-        };
-        if (rp._wvOrigExpandAllRows) {
-            rp.expandAllRows = wrapAll(rp._wvOrigExpandAllRows);
-        }
-        if (rp._wvOrigCollapseAllRows) {
-            rp.collapseAllRows = wrapAll(rp._wvOrigCollapseAllRows);
-        }
-
-        // V9-COMPAT: Zotero 9's virtualized-table React props are
-        // captured at render time as bound closures. `getRowCount` is
-        // hardwired to `() => this._rows.length` and bypasses our
-        // `iv.getRowCount` patch entirely. Rebind the live prop so the
-        // table reads our filtered count. We do the same for the
-        // toggle / probe props — they were captured by VALUE so the
-        // table still calls the original arrow-function fields, not
-        // our wrapped own-property versions on the itemsView.
-        //
-        // CRITICAL: the underlying WindowedList ALSO captures
-        // `getItemCount` at its construction time (virtualized-table
-        // line 1114). That capture happens at Zotero startup before
-        // our plugin loads, so `_jsWindow.getItemCount` always points
-        // at the original `() => this._rows.length`. Patching the
-        // React prop alone is insufficient — the windowed list never
-        // re-reads the prop. We also overwrite `_jsWindow.getItemCount`.
-        if (isV9 && itemsView.tree && itemsView.tree.props) {
-            const tp: any = itemsView.tree.props;
-            if (!tp._wvV9PropsPatched) {
-                tp._wvOrigGetRowCount = tp.getRowCount;
-                tp.getRowCount = () => (rp.getRowCount
-                    ? rp.getRowCount()
-                    : rp._rows.length);
-                // Re-bind data-layer probes to whatever's currently on
-                // the itemsView (= our wrapped versions). These need to
-                // stay live — Zotero's setFilter may rebuild props, in
-                // which case we re-patch on the next apply pass.
-                tp._wvOrigIsContainer = tp.isContainer;
-                tp.isContainer = (idx) => rp.isContainer(idx);
-                tp._wvOrigIsContainerOpen = tp.isContainerOpen;
-                tp.isContainerOpen = (idx) => rp.isContainerOpen(idx);
-                tp._wvOrigIsContainerEmpty = tp.isContainerEmpty;
-                tp.isContainerEmpty = (idx) => rp.isContainerEmpty(idx);
-                tp._wvOrigToggleOpenState = tp.toggleOpenState;
-                tp.toggleOpenState = (idx, skip) => rp.toggleOpenState(idx, skip);
-                tp._wvV9PropsPatched = true;
-            }
-            // Always update the WindowedList's captured reference —
-            // it's the actual source-of-truth for row-count rendering.
-            // Doing this on every apply (not just first install) keeps
-            // us robust to WindowedList re-construction.
-            const jsWin: any = itemsView.tree._jsWindow;
-            if (jsWin && jsWin.getItemCount !== tp.getRowCount) {
-                jsWin._wvOrigGetItemCount = jsWin._wvOrigGetItemCount
-                    || jsWin.getItemCount;
-                jsWin.getItemCount = tp.getRowCount;
-                // Force a re-read so `_lastItemCount` updates against
-                // the fresh count and the table re-renders to the new
-                // size on the next paint.
-                if (typeof jsWin._getItemCount === "function") {
-                    try { jsWin._getItemCount(); } catch (e) {}
-                }
-            }
-        }
+    /** Phase 7: publish the view the translation layers read, repaint
+     *  (unless identical), record perf and the no-op watermarks, hand the
+     *  primary ids to the reconcile, refresh the item-pane count. */
+    _wvFilterApplyPublish(ctx: WvFilterApplyCtx) {
+        const { win, itemsView, rp, isV9, perf: _perf, perfNow: _perfNow, perfT0: _perfT0, mark: _mark,
+            keep, keepRowsLen, primaryIDs: _primaryIDs } = ctx;
+        const _sig = ctx.sig, _keepHash = ctx.keepHash, _wasPatchedAtEntry = ctx.wasPatchedAtEntry;
+        // Publish THIS apply's view. The translation layers (installed once
+        // per instance by _wvFilterPatchInstall, before the cascade) read it
+        // on every call; a view whose watermark disagrees with `_rows.length`
+        // is stale and they pass through to the natives.
+        rp._wvFilterView = { keep, keepRowsLen };
+        // V9-COMPAT: the table's captured props and the windowed list's
+        // count are rebound on every apply (robust to re-construction).
+        if (isV9) this._wvFilterPatchV9Props(itemsView, rp);
 
         _mark("gatePatch");
         // Identical keep + already-patched view => nothing visible can
@@ -16308,7 +14525,7 @@ class _FilterMixin {
         // collapse should only fire when the tree is truly going
         // back to its default unfiltered/unsearched view.
         try {
-            const win = Zotero.getMainWindow();
+            const win = this._wvFilterTargetWin();
             const sb: any = win && win.document.getElementById("zotero-tb-search");
             const qs = (sb && sb.value ? String(sb.value).trim() : "");
             if (qs) return;
@@ -16370,53 +14587,6 @@ class _FilterMixin {
         try { rp.runListeners && rp.runListeners("update", true, {
             restoreSelection: true,
         }); } catch (e) {}
-    }
-
-    /** Recursively check whether `item` contains an annotation whose
-     *  color is in the `allowed` set. Walks attachments for regular
-     *  items so a parent regular-item is included whenever any of its
-     *  file-attachments hold a matching annotation.
-     *
-     *  IMPORTANT: `getAnnotations()` throws ("can only be called on file
-     *  attachments") for anything that isn't a file attachment, so the
-     *  branches must gate on the item type — a generic try/catch would
-     *  silently return false for every regular item and drop their
-     *  parent rows from the keep set. */
-    /** True iff `item` is itself a primary match OR has any
-     *  descendant that is. Used to decide whether a row should be
-     *  kept as an ancestor-of-match (so the tree shape is preserved). */
-    _hasMatchingAnnotation(item, state) {
-        if (!item) return false;
-        try {
-            if (this._rowIsPrimary(item, state)) return true;
-            if (item.isFileAttachment && item.isFileAttachment()) {
-                const anns = (typeof item.getAnnotations === "function")
-                    ? (item.getAnnotations() || []) : [];
-                for (const ann of anns) {
-                    if (this._rowIsPrimary(ann, state)) return true;
-                }
-                return false;
-            }
-            if (item.isRegularItem && item.isRegularItem()) {
-                const attIds = (typeof item.getAttachments === "function")
-                    ? item.getAttachments() : [];
-                for (const id of attIds) {
-                    const att = Zotero.Items.get(id);
-                    if (att && this._hasMatchingAnnotation(att, state)) {
-                        return true;
-                    }
-                }
-                const noteIds = (typeof item.getNotes === "function")
-                    ? item.getNotes() : [];
-                for (const id of noteIds) {
-                    const n = Zotero.Items.get(id);
-                    if (n && this._rowIsPrimary(n, state)) return true;
-                }
-            }
-        } catch (e) {
-            dbg("[Weavero][filter] hasMatch err: " + e);
-        }
-        return false;
     }
 
     /** Decorate the iframe-rendered annotation context menu so our

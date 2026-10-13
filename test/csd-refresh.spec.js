@@ -13,7 +13,7 @@ describe("Weavero -- window chrome re-evaluated after a button-side change", () 
 
 	before(function () {
 		wv = Zotero.Weavero && Zotero.Weavero.plugin;
-		if (!wv) this.skip();
+		if (!wv) wvT.absent('!wv');
 		// Not a skip when the method is missing: its absence IS the regression.
 		assert.isFunction(wv._wvRefreshStaleCsdWindows, "the stale-window nudge exists");
 	});

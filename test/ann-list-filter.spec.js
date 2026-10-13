@@ -16,12 +16,11 @@
 describe("Weavero — annotations-pane funnel (issue #43)", function () {
     this.timeout(90000);
     let wv, win, att, hl, ink, reader;
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     const waitFor = async (fn, ms, what) => {
         const t0 = Date.now();
         while (Date.now() - t0 < ms) {
             try { const v = fn(); if (v) return v; } catch (e) {}
-            await sleep(250);
+            await wvT.sleep(250);
         }
         throw new Error("timeout waiting for " + what);
     };
@@ -61,7 +60,7 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
 
     before(async function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvAnnPaneState !== "function") this.skip();
+        if (!wv || typeof wv._wvAnnPaneState !== "function") wvT.absent('!wv || typeof wv._wvAnnPaneState !== "function"');
         win = Zotero.getMainWindow();
         const path = PathUtils.join(PathUtils.tempDir, "wv-al-" + Date.now() + ".pdf");
         await IOUtils.writeUTF8(path, minimalPDFBytes());
@@ -209,10 +208,10 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
     it("a sort write keeps the departure", async function () {
         await setPane({ typesExcl: ["ink"] });
         wv._wvAnnSetSort("dateModified", "desc", reader);
-        await sleep(600);
+        await wvT.sleep(600);
         assert.deepEqual(wv._wvAnnListHidden(reader), ["ink"], "the list choice survived the sort write");
         wv._wvAnnSetSort("position", "asc", reader);
-        await sleep(600);
+        await wvT.sleep(600);
         assert.deepEqual(wv._wvAnnListHidden(reader), ["ink"]);
         await wv._wvAnnPaneClear(reader);
     });
@@ -301,11 +300,11 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         const idoc = reader._iframeWindow.document;
         // Continues from the previous case: the default lists only highlights.
         Zotero.Prefs.set(wv._wvAnnListPrefName("ink"), true);
-        await sleep(800);
+        await wvT.sleep(800);
         assert.notInclude(wv._wvAnnListHidden(reader), "ink", "the checkbox won over the include set");
         await waitFor(() => cards(idoc).length === 2, 15000, "ink listed again");
         await wv._wvAnnPaneClearDefault(reader, idoc);
-        await sleep(600);
+        await wvT.sleep(600);
         assert.deepEqual(wv._wvAnnPaneCanon(wv._wvAnnPaneDefaultState()), {}, "default gone");
         assert.deepEqual(wv._wvAnnListTypes().filter(t => !wv._getAnnListShow(t)), [],
             "every checkbox back on");
@@ -376,7 +375,7 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         };
         await wv._wvAnnPaneClearDefault(reader, idoc);
         await wv._wvAnnPaneBackToDefault(reader);
-        await sleep(600);
+        await wvT.sleep(600);
         assert.deepEqual(cues(), { dot: false, green: false, bowlGone: true }, "nothing set anywhere");
 
         await setPane({ typesExcl: ["ink"] });
@@ -650,6 +649,27 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         await wv._wvApplyReaderFilter(reader, { colors: [], tags: [], authors: [] });
         await wv._wvAnnPaneClear(reader);
         await waitFor(() => cards(idoc).length === 2, 15000, "both rows back");
+    });
+
+    it("two quick chip clicks both count: a chip reads the state at click time", async function () {
+        // Survey 2026-10-06 (smaller bugs): a chip computed its toggle from
+        // the arrays its RENDER saw, so a second click landing before the
+        // first click's re-render undid the first.
+        const idoc = reader._iframeWindow.document;
+        await wv._wvAnnPaneClear(reader);
+        if (idoc.getElementById("wv-reader-filter-popup-v2")) wv._wvCloseReaderFilterPopup(idoc);
+        wv._wvAnnListTogglePopup(reader, idoc, idoc.querySelector("#sidebarContainer .wv-al-btn"));
+        const popup = await waitFor(() => idoc.getElementById("wv-reader-filter-popup-v2"), 5000, "popup");
+        const chip = (label) => [...popup.querySelectorAll(".wv-filter-or-inline .wv-filter-opt")]
+            .find(b => (b.title || "").startsWith(label + " "));
+        const a = chip("Highlight"), b = chip("Ink");
+        assert.isOk(a && b, "both type chips");
+        a.click();
+        b.click();   // before the first click's apply + re-render
+        await waitFor(() => (wv._wvAnnPaneState(reader).types || []).length === 2, 10000, "both types included");
+        assert.sameMembers(wv._wvAnnPaneState(reader).types, ["highlight", "ink"]);
+        wv._wvCloseReaderFilterPopup(idoc);
+        await wv._wvAnnPaneClear(reader);
     });
 
     it("no error-console entries from the feature", function () {

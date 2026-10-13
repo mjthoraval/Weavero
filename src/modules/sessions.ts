@@ -1,3 +1,7 @@
+import { wvInjectStyle } from "../lib/style";
+import { wvStoreWrite, wvStoreRead } from "../lib/store";
+import { wvTimeout } from "../lib/timers";
+
 // Module: named TAB SESSIONS — capture the set of open tabs across all main
 // windows into a NAMED session, and switch between sessions (close the current
 // reader/note tabs, reopen the saved set).
@@ -111,22 +115,29 @@ class _TabSessionsMixin {
     }
 
     /** Load tab-sessions.json into `_wvTabSessionDoc` once (cached promise).
-     *  Missing → fresh; unreadable → backed up to `*.corrupt-<ts>` + start clean. */
+     *  Missing → fresh; corrupt → backed up to `*.corrupt-<ts>` + start
+     *  clean; UNREADABLE (a lock, antivirus, sync) → kept, and the store is
+     *  read-only this session -- one catch used to move it aside and the
+     *  auto-save slot then overwrote the user's sessions with an empty file
+     *  (lib/store.ts, survey 2026-10-06 §3.4). */
     _wvTabSessionInit() {
         if (this._wvTabSessionInitPromise) return this._wvTabSessionInitPromise;
         this._wvTabSessionInitPromise = (async () => {
             const path = this._wvTabSessionPath();
-            try {
-                const text: any = await Zotero.File.getContentsAsync(path);
-                this._wvTabSessionDoc = this._wvTabSessionNormalize(JSON.parse(text));
-            } catch (e) {
-                let exists = false;
-                try { exists = await IOUtils.exists(path); } catch (_) {}
-                if (exists) {
+            const r = await wvStoreRead(path);
+            if (r.status === "ok") {
+                try { this._wvTabSessionDoc = this._wvTabSessionNormalize(r.doc); }
+                catch (e) {
                     const bak = path + ".corrupt-" + Date.now();
                     try { await IOUtils.move(path, bak); } catch (_) {}
-                    Zotero.debug("[Weavero] tab-sessions.json unreadable, backed up to "
-                        + bak + ": " + e);
+                    Zotero.debug("[Weavero] tab-sessions.json unreadable, backed up to " + bak + ": " + e);
+                    this._wvTabSessionDoc = { version: 1, sessions: [] };
+                }
+            }
+            else {
+                if (r.status === "io-error") {
+                    Zotero.debug("[Weavero] tab-sessions.json could not be read (kept; store is READ-ONLY this session): " + r.error);
+                    this._wvTabSessionReadOnly = true;
                 }
                 this._wvTabSessionDoc = { version: 1, sessions: [] };
             }
@@ -245,18 +256,11 @@ class _TabSessionsMixin {
         return out;
     }
 
-    /** Atomic, serialized write of the current doc to disk. */
+    /** Atomic, serialized write of the current doc to disk (lib/store.ts). */
     _wvTabSessionPersist() {
         if (!this._wvTabSessionDoc) return Promise.resolve();
-        const snapshot = JSON.stringify(this._wvTabSessionDoc, null, 2);
-        const dir = this._wvTabSessionDir();
-        const path = this._wvTabSessionPath();
-        this._wvTabSessionWriteChain = (this._wvTabSessionWriteChain || Promise.resolve())
-            .then(async () => {
-                await IOUtils.makeDirectory(dir, { ignoreExisting: true });
-                await IOUtils.writeUTF8(path, snapshot, { tmpPath: path + ".tmp" });
-            })
-            .catch((e: any) => Zotero.debug("[Weavero] tab-sessions persist failed: " + e));
+        if (this._wvTabSessionReadOnly) { Zotero.debug("[Weavero] tab-sessions persist skipped: store is read-only (unreadable at load)"); return Promise.resolve(); }
+        this._wvTabSessionWriteChain = wvStoreWrite(this._wvTabSessionPath(), this._wvTabSessionDoc);
         return this._wvTabSessionWriteChain;
     }
 
@@ -389,6 +393,14 @@ class _TabSessionsMixin {
                     state.columnPrefs = JSON.parse(JSON.stringify(cp));
                 }
             }
+            // The window's hidden collections / searches / groups travel
+            // with its library view (pane.ts, "Hidden collections").
+            const hc = (this as any)._wvHidCapture ? (this as any)._wvHidCapture(w) : undefined;
+            if (hc) state.hiddenColl = hc;
+            // And its custom title (tabs.ts, "custom title is part of the
+            // window's own saved state").
+            const ct = (this as any)._wvWindowCustomTitle ? (this as any)._wvWindowCustomTitle(w) : null;
+            if (ct) state.title = ct;
         } catch (e) { Zotero.debug("[Weavero] _wvTabSessionCaptureMainState err: " + e); }
         return state;
     }
@@ -576,30 +588,50 @@ class _TabSessionsMixin {
     /** Re-capture the workspace into the active session (debounced). No-op when
      *  nothing is active or a switch is mid-flight. Hooked to the tab Notifier,
      *  reader-window changes, and main-window open/close. */
-    _wvTabSessionTrackingUpdate() {
+    /** May the live workspace be captured into the active session RIGHT NOW?
+     *  Checked when a capture is scheduled AND again when the timer fires
+     *  (survey 2026-10-06: the guards ran only at schedule time, so a flush
+     *  queued in the 700 ms before a session switch fired mid-teardown and
+     *  wrote the half-torn-down topology into the session being LEFT; the
+     *  same at quit). */
+    _wvTabSessionTrackingAllowed(): boolean {
         try {
             // Sessions disabled → go DORMANT: stop tracking so saved sessions are
             // frozen (never overwritten) and can be recovered when re-enabled.
-            if (!this._wvGetEnableTabSessions()) return;
-            if (this._wvTabSessionSwitching) return;
-            if (!this._wvTabSessionGetActiveId()) return;
+            if (!this._wvGetEnableTabSessions()) return false;
+            if (this._wvTabSessionSwitching) return false;
+            if (!this._wvTabSessionGetActiveId()) return false;
             // Half-restored startup or quit-teardown must NOT be captured into
             // the active session — a lossy restore would overwrite the saved
             // session with the degraded workspace (restart-protocol run 2: a
             // lost reader window silently shrank "Main session" 17 → 13 tabs).
             // The workspace settles before the group restore-guard lifts; any
             // churn after that re-triggers tracking normally.
-            if ((this as any)._wvTabGroupRestoreGuard) return;
-            if ((this as any)._wvQuitting) return;
+            if ((this as any)._wvTabGroupRestoreGuard) return false;
+            if ((this as any)._wvQuitting) return false;
             // The group guard lifts after ~3 s, but reader windows can still be
             // reopening (their entries unconsumed) well past that; a tracking
             // capture in between shrank the active session by the window that
             // had not arrived yet (2026-09-16, two-quick-restarts leg). The
             // reader restore re-arms tracking when it completes.
-            if ((this as any)._wvWTRestoreActive) return;
-            if (this._wvTabSessionTrackTimer) {
-                try { clearTimeout(this._wvTabSessionTrackTimer); } catch (e) {}
-            }
+            if ((this as any)._wvWTRestoreActive) return false;
+            return true;
+        } catch (e) { return false; }
+    }
+
+    /** Drop a pending (debounced) capture -- called by the destructive paths
+     *  (switch, new empty) before they tear the workspace down. */
+    _wvTabSessionTrackingCancel() {
+        if (this._wvTabSessionTrackTimer) {
+            try { clearTimeout(this._wvTabSessionTrackTimer); } catch (e) {}
+            this._wvTabSessionTrackTimer = null;
+        }
+    }
+
+    _wvTabSessionTrackingUpdate() {
+        try {
+            if (!this._wvTabSessionTrackingAllowed()) return;
+            this._wvTabSessionTrackingCancel();
             this._wvTabSessionTrackTimer = setTimeout(() => {
                 this._wvTabSessionTrackTimer = null;
                 this._wvTabSessionTrackingFlush();
@@ -607,9 +639,13 @@ class _TabSessionsMixin {
         } catch (e) {}
     }
 
-    /** Immediately capture the workspace into the active session + persist. */
-    async _wvTabSessionTrackingFlush() {
+    /** Immediately capture the workspace into the active session + persist.
+     *  A SCHEDULED flush re-checks the guards; the destructive paths flush
+     *  the outgoing workspace deliberately while `_wvTabSessionSwitching` is
+     *  already set, so they pass `{ force: true }`. */
+    async _wvTabSessionTrackingFlush(opts?: { force?: boolean }) {
         try {
+            if (!(opts && opts.force) && !this._wvTabSessionTrackingAllowed()) return;
             await this._wvTabSessionInit();
             const id = this._wvTabSessionGetActiveId();
             if (!id) return;
@@ -714,6 +750,15 @@ class _TabSessionsMixin {
         try {
             const zp = w && w.ZoteroPane;
             if (!zp || !entry) return;
+            // Hidden set first (absent = nothing hidden: a session switch
+            // gives the reused anchor THIS session's set), so the saved
+            // collection is selected in the filtered tree.
+            try { if ((this as any)._wvHidRestore) await (this as any)._wvHidRestore(w, entry.hiddenColl || null); } catch (_) {}
+            // Custom title, same rule (absent = the default "Window N").
+            try {
+                const want = entry.title || "";
+                if (((w as any)._wvWindowTitle || "") !== want && (this as any)._wvWindowSetCustomTitle) (this as any)._wvWindowSetCustomTitle(w, want);
+            } catch (_) {}
             // Collection first — selecting it reloads the items view.
             if (entry.collection && zp.collectionsView
                     && typeof zp.collectionsView.selectByID === "function") {
@@ -780,7 +825,7 @@ class _TabSessionsMixin {
                     tabs: this._wvTabSessionToGetStateTabs(m.tabs),
                     // Carried into the spawned window so it restores its OWN
                     // collection + items-tree columns/sort, not the anchor's.
-                    wvMainState: { collection: m.collection, columnPrefs: m.columnPrefs },
+                    wvMainState: { collection: m.collection, columnPrefs: m.columnPrefs, hiddenColl: m.hiddenColl, title: m.title },
                     // Placement (2026-07-15) — the spawn path applies it;
                     // entries without one (legacy sessions) get maximized
                     // there instead of the tiny default window.
@@ -799,8 +844,7 @@ class _TabSessionsMixin {
             try { await this._wvTabSessionReconstructReaderWindow(rw); } catch (_) {}
         }
         try {
-            const w = Zotero.getMainWindow();
-            const st = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            const st = wvTimeout;
             st(() => {
                 try {
                     const wins = Zotero.getMainWindows();
@@ -818,8 +862,7 @@ class _TabSessionsMixin {
             // Lift the guard once windows (esp. async reader windows) have settled,
             // then re-apply so the new groups render and any stale empties clear.
             try {
-                const w = Zotero.getMainWindow();
-                const st = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+                const st = wvTimeout;
                 st(() => {
                     try { (this as any)._wvTabGroupRestoreGuard = false; } catch (e) {}
                     try { (this as any)._wvTabGroupApplyEverywhere(); } catch (e) {}
@@ -843,11 +886,12 @@ class _TabSessionsMixin {
             ? JSON.parse(JSON.stringify(sess.tabGroups)) : undefined;
         const activeId = this._wvTabSessionGetActiveId();
         this._wvTabSessionSwitching = true;   // suppress tracking during teardown/rebuild
+        this._wvTabSessionTrackingCancel();   // a pending capture must not fire mid-switch
         try {
             // Preserve the OUTGOING workspace: a tracked session is kept current
             // by flushing it; an untracked one snapshots to the auto slot.
             if (activeId && activeId !== id) {
-                try { await this._wvTabSessionTrackingFlush(); } catch (_) {}
+                try { await this._wvTabSessionTrackingFlush({ force: true }); } catch (_) {}
             } else if (!activeId && id !== WV_TABSESSION_AUTOSAVE_ID) {
                 try { await this._wvTabSessionAutosaveCurrent(); } catch (_) {}
             }
@@ -861,16 +905,6 @@ class _TabSessionsMixin {
     }
 
     // ---- Small UI helpers --------------------------------------------------
-
-    _wvTabSessionToast(msg: string) {
-        try {
-            const pw = new (Zotero as any).ProgressWindow();
-            pw.changeHeadline("Weavero");
-            pw.addDescription(msg);
-            pw.show();
-            pw.startCloseTimer(2500);
-        } catch (e) { Zotero.debug("[Weavero] tab-session: " + msg); }
-    }
 
     _wvTabSessionTabCountLabel(n: number) {
         return n + (n === 1 ? " tab" : " tabs");
@@ -899,10 +933,11 @@ class _TabSessionsMixin {
         await this._wvTabSessionInit();
         const activeId = this._wvTabSessionGetActiveId();
         this._wvTabSessionSwitching = true;   // suppress tracking during teardown/rebuild
+        this._wvTabSessionTrackingCancel();
         try {
             // Keep the outgoing workspace: flush the live tabs into the active
             // session (or snapshot to the auto slot if somehow none is active).
-            if (activeId) { try { await this._wvTabSessionTrackingFlush(); } catch (_) {} }
+            if (activeId) { try { await this._wvTabSessionTrackingFlush({ force: true }); } catch (_) {} }
             else { try { await this._wvTabSessionAutosaveCurrent(); } catch (_) {} }
             // Create the fresh, empty session and make it the current one.
             const now = Date.now();
@@ -1121,15 +1156,9 @@ class _TabSessionsMixin {
                 "  white-space: nowrap; font-weight: 700; }",
                 ".wv-cursess-unsaved .wv-cursess-label { font-weight: 600; font-style: italic; opacity: 0.8; }",
             ].join("\n");
-            // Find-or-create + refresh when changed, so CSS edits take effect on a
-            // plugin reload (the old stylesheet survives the reload otherwise).
-            let st = doc.getElementById("wv-tab-session-styles");
-            if (!st) {
-                st = doc.createElementNS(HTML, "style");
-                st.id = "wv-tab-session-styles";
-                (doc.documentElement || doc).appendChild(st);
-            }
-            if (st.textContent !== css) st.textContent = css;
+            // Refreshed when changed, so CSS edits take effect on a plugin
+            // reload (the old stylesheet survives the reload otherwise).
+            wvInjectStyle(doc, "wv-tab-session-styles", css, doc.documentElement || doc);
         } catch (e) { Zotero.debug("[Weavero] _wvEnsureTabSessionStyles err: " + e); }
     }
 
@@ -1582,7 +1611,9 @@ class _TabSessionsMixin {
                                                             name: rec.name || sec.label, named: !!rec.name,
                                                             kind: isReader ? "reader" : "main",
                                                             tabs, count: tabs.length,
-                                                            geom: rec.geom || null, glyph: null, wvMainState: null,
+                                                            geom: rec.geom || null, glyph: null,
+                                                            wvMainState: (rec.collection || rec.columnPrefs || rec.hiddenColl || rec.title)
+                                                                ? { collection: rec.collection, columnPrefs: rec.columnPrefs, hiddenColl: rec.hiddenColl, title: rec.title } : null,
                                                             sessionId: activeId, savedAt: Date.now(),
                                                         });
                                                         p2._wvSavedWindowsPersist();

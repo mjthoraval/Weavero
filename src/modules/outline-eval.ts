@@ -25,6 +25,8 @@
 // The offline census + scoring harness (work/eval/, not shipped) consumes
 // this store together with outlines.json.
 
+import { wvStoreWrite, wvStoreRead } from "../lib/store";
+
 declare const Zotero: any;
 declare const PathUtils: any;
 declare const IOUtils: any;
@@ -32,6 +34,7 @@ declare const IOUtils: any;
 class _OutlineEvalMixin {
     _wvOeRoot: any;
     _wvOeWriteChain: any;
+    _wvOeReadOnly: any;
     _wvOeScanState: any;
 
     /** Dev gate — every entry point checks this. Default OFF. */
@@ -117,29 +120,23 @@ class _OutlineEvalMixin {
 
     async _wvOeInit(this: any) {
         if (this._wvOeRoot) return;
-        try {
-            const raw = await IOUtils.readUTF8(this._wvOeFilePath());
-            const d = JSON.parse(raw);
-            if (d && typeof d === "object" && d.cases) {
-                if (!d.classifications) d.classifications = {};   // schema v2 backfill
-                this._wvOeRoot = d;
-                return;
-            }
-        } catch (_) {}
+        // lib/store.ts: a corrupt file is moved aside; an unreadable one is
+        // kept and the store runs read-only this session.
+        const r = await wvStoreRead(this._wvOeFilePath());
+        if (r.status === "io-error") this._wvOeReadOnly = true;
+        const d = r.doc;
+        if (r.status === "ok" && d && typeof d === "object" && d.cases) {
+            if (!d.classifications) d.classifications = {};   // schema v2 backfill
+            this._wvOeRoot = d;
+            return;
+        }
         this._wvOeRoot = { producer: "weavero", schemaVersion: 2, cases: {}, classifications: {} };
     }
 
     _wvOePersist(this: any) {
         if (!this._wvOeRoot) return Promise.resolve();
-        const snapshot = JSON.stringify(this._wvOeRoot, null, 2);
-        const dir = PathUtils.join(Zotero.DataDirectory.dir, "weavero");
-        const path = this._wvOeFilePath();
-        this._wvOeWriteChain = (this._wvOeWriteChain || Promise.resolve())
-            .then(async () => {
-                await IOUtils.makeDirectory(dir, { ignoreExisting: true });
-                await IOUtils.writeUTF8(path, snapshot, { tmpPath: path + ".tmp" });
-            })
-            .catch((e: any) => Zotero.debug("[Weavero] outline-eval persist failed: " + e));
+        if (this._wvOeReadOnly) { Zotero.debug("[Weavero] outline-eval persist skipped: store is read-only (unreadable at load)"); return Promise.resolve(); }
+        this._wvOeWriteChain = wvStoreWrite(this._wvOeFilePath(), this._wvOeRoot);
         return this._wvOeWriteChain;
     }
 
@@ -181,20 +178,6 @@ class _OutlineEvalMixin {
             await this._wvOePersist();
             try { (this as any)._wvReaderPanelNote(idoc, "Eval: marked " + verdict.toUpperCase() + " (" + Object.keys(this._wvOeRoot.cases).length + " cases recorded)"); } catch (_) {}
         } catch (e) { Zotero.debug("[Weavero] _wvOeMark err: " + e); }
-    }
-
-    /** Counts by verdict, for the menu / quick status. */
-    _wvOeStats(this: any): any {
-        const out: any = { good: 0, bad: 0, scan: 0, total: 0 };
-        const r = this._wvOeRoot;
-        if (r && r.cases) {
-            for (const k of Object.keys(r.cases)) {
-                out.total++;
-                const v = r.cases[k].verdict;
-                if (out[v] != null) out[v]++;
-            }
-        }
-        return out;
     }
 
     /** Clear the CURRENT document's verdict back to "not marked" (delete the
@@ -261,6 +244,9 @@ class _OutlineEvalMixin {
         return (r && r.classifications && r.classifications[libraryID + ":" + itemKey]) || null;
     }
 
+    /** DEV console hook: stop a running library scan. The panel offers no
+     *  Cancel (its Scan button is disabled while a scan runs), so this is the
+     *  way out of a long one. Kept although nothing in the code calls it. */
     _wvOeScanCancel(this: any) { if (this._wvOeScanState) this._wvOeScanState.cancel = true; }
 
     /** Dev-only: classify every PDF attachment in a library by opening each in a

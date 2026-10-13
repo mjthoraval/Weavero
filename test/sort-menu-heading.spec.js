@@ -31,7 +31,7 @@ describe("Weavero — reader sort menus are titled", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvShowAnnSortMenu !== "function") this.skip();
+        if (!wv || typeof wv._wvShowAnnSortMenu !== "function") wvT.absent('!wv || typeof wv._wvShowAnnSortMenu !== "function"');
         doc = Zotero.getMainWindow().document;
     });
 

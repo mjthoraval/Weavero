@@ -28,7 +28,7 @@ describe("Weavero — context-menu handlers ignore bubbled submenu events", () =
 
 	before(function () {
 		wv = Zotero.Weavero && Zotero.Weavero.plugin;
-		if (!wv) this.skip();
+		if (!wv) wvT.absent('!wv');
 		win = Zotero.getMainWindow();
 		doc = win.document;
 	});

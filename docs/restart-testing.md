@@ -56,6 +56,29 @@ scripts.
   cool-down (`outline-spy-cache.spec.js` locks that rule — the 2026-09-03
   run found permanently-poisoned misses leaving the highlight dead).
 
+## Leave the instance as you found it
+
+The fixture adds windows, groups, pins, a session (made ACTIVE), a hidden
+collection, a window title and parked windows, and `reset: true` CLOSES
+everything that was open first. `cycle.js` backs up only when it runs, i.e.
+AFTER the fixture. So, on any instance someone works in:
+
+1. **Before the fixture**, copy `<profile>/session.json` and
+   `<data dir>/weavero/*.json` to a folder of their own, and note the pin
+   and group prefs (`weavero.pinnedTabs`, `weavero.tabGroups`), the active
+   session and the open windows.
+2. **After the last cycle**, put that state back and check it store by
+   store: the open windows and tabs, pins, groups (an emptied group is
+   deleted when its last tab closes), the active session, parked windows,
+   the hidden set and title, and both undo-close histories (Zotero's
+   `_history` and Weavero's closed-window stack and closed-in-series
+   buffer, which the next quit would otherwise fold back as open windows).
+
+Reading positions the fixture moves are not restored by this; prefer a
+throw-away profile when that matters. (2026-10-12: a series without step 1
+closed a user's 13 tabs and lost a pin and a group; the rebuild had to
+subtract the fixture's items from the first post-fixture backup.)
+
 ## Running a cycle — one script, run twice
 
 `test/restart/cycle.js` does the whole cycle; `snapshot.js` is the capture it
@@ -213,6 +236,7 @@ rows a given run actually exercised.
 | Companion plugins present (Better BibTeX, Better Notes) | both installed on the dev profile | companion plugin active after restart |
 | Better Notes closes one of two copies of a note open twice at startup and Weavero's anchor repair judged tabs per ITEM, so the copy stayed lost (found with the companions installed 2026-09-16; fixed in 0.19.9: repair per copy) | N1 open twice in W1, Better Notes active | tab multiset per window |
 | Note deck restore took another item's window for its throwaway anchor while several reader windows opened at once: the note was mounted there, that window's own document closed, the real anchor window left as a stray (found 2026-09-16; fixed in 0.19.9: the anchor window is resolved by item) | note deck + four reader windows restored concurrently | reader windows missing; extra window fails |
+| Anchor window's custom title and hidden collections dropped by the quit flush (`anchorTitle` / `anchorHidden` left out of the record; survey 2026-10-06 §2 #1, fixed in 0.21.9-next.2; escaped this protocol because the fixture set neither) | W1 titled "RTF anchor"; collection "RTF hidden" hidden in W1 | custom title and hidden set per main window |
 
 ## How the restore works (as of 0.15.3)
 

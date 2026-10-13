@@ -22,27 +22,53 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
 import { wvSetBoolAttr } from "../lib/dom";
+import { wvListen, wvUnlisten } from "../lib/listen";
+import { wvInjectStyle, wvRemoveStyle } from "../lib/style";
+import { wvTimeout } from "../lib/timers";
+import { wvStoreWrite, wvStoreRead } from "../lib/store";
 
 declare const Zotero: any;
 declare const Services: any;
 
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 
-/** Firefox-like group palette. `id` is what the pref stores. */
+/** Firefox's nine group colours in Firefox's picker order (tabgroup-menu.js
+ *  `COLORS`: blue, purple, cyan, orange, yellow, pink, green, gray, red --
+ *  MJT 2026-10-07; the order also drives the auto-colour of new groups).
+ *  Stored by name; an older Weavero shows an unknown name as blue (the
+ *  _tabGroupColorHex fallback), without rewriting it. `hex` is the classic
+ *  light-theme colour (WV_CLASSIC_GROUP_COLORS.l), the last-resort fallback. */
 const WV_GROUP_COLORS: Array<{ id: string; hex: string }> = [
-    { id: "blue", hex: "#4f7ce0" },
-    { id: "red", hex: "#d9534f" },
-    // Firefox's 9th group colour (MJT 2026-09-28). Stored by name like the
-    // others; an older Weavero shows an unknown name as blue (the
-    // _tabGroupColorHex fallback), without rewriting it.
-    { id: "orange", hex: "#dc7633" },
-    { id: "yellow", hex: "#c99613" },
-    { id: "green", hex: "#2e9e5b" },
-    { id: "pink", hex: "#d65db1" },
-    { id: "purple", hex: "#8a63d2" },
-    { id: "cyan", hex: "#2aa1b3" },
-    { id: "gray", hex: "#7a7f87" },
+    { id: "blue", hex: "#0053cb" },
+    { id: "purple", hex: "#8627a8" },
+    { id: "cyan", hex: "#007792" },
+    { id: "orange", hex: "#ae2000" },
+    { id: "yellow", hex: "#985500" },
+    { id: "pink", hex: "#ad0059" },
+    { id: "green", hex: "#007700" },
+    { id: "gray", hex: "#5e6a77" },
+    { id: "red", hex: "#b20037" },
 ];
+
+/** Firefox's NON-nova group colours, used while Firefox-style tabs are OFF
+ *  (tabs.css default block: --tab-group-<c> = light-dark(--color-<c>-70,
+ *  --color-<c>-20), text --tab-group-<c>-invert = light-dark(--color-<c>-0,
+ *  --color-<c>-70); gray hard-coded light-dark(#5e6a77, #99a6b4) with text
+ *  light-dark(#f2f9ff, #5e6a77)). The oklch tokens (tokens-shared.css) are
+ *  resolved by Gecko itself -- canvas fillStyle on Zotero 10 / Gecko 140,
+ *  2026-10-07 -- so the chips carry what Firefox paints. l/d = light/dark
+ *  background, tl/td = light/dark-theme text. */
+const WV_CLASSIC_GROUP_COLORS: { [id: string]: { l: string; d: string; tl: string; td: string } } = {
+    blue:   { l: "#0053cb", d: "#84c6ff", tl: "#e2f7ff", td: "#0053cb" },
+    purple: { l: "#8627a8", d: "#eaabff", tl: "#ffecff", td: "#8627a8" },
+    cyan:   { l: "#007792", d: "#61dce9", tl: "#cfffff", td: "#007792" },
+    orange: { l: "#ae2000", d: "#ffb57a", tl: "#ffecd8", td: "#ae2000" },
+    yellow: { l: "#985500", d: "#f5cc58", tl: "#fff4d0", td: "#985500" },
+    pink:   { l: "#ad0059", d: "#ff9fc3", tl: "#ffe8f4", td: "#ad0059" },
+    green:  { l: "#007700", d: "#8adf8d", tl: "#e1ffe1", td: "#007700" },
+    gray:   { l: "#5e6a77", d: "#99a6b4", tl: "#f2f9ff", td: "#5e6a77" },
+    red:    { l: "#b20037", d: "#ffa0aa", tl: "#ffe8ea", td: "#b20037" },
+};
 
 /** Firefox 157 nova group colours, used while Firefox-style tabs are on:
  *  --tab-group-<c> = light-dark(--color-<c>-50, --color-<c>-30) and
@@ -103,56 +129,49 @@ class _TabGroupsMixin {
      *  Rotating only on group-removal keeps the .bak from being churned by
      *  the frequent membership-only rewrites. */
     _wvTabGroupsBackupWrite(this: any, arr: any[]) {
-        const dir = PathUtils.join(Zotero.DataDirectory.dir, "weavero");
-        const path = PathUtils.join(dir, "tab-groups.json");
-        const payload = JSON.stringify({ version: 1, savedAt: new Date().toISOString(), groups: arr || [] }, null, 2);
+        const path = PathUtils.join(Zotero.DataDirectory.dir, "weavero", "tab-groups.json");
         const newIds = new Set((arr || []).map((g: any) => g && g.id));
-        this._wvTabGroupsBackupChain = (this._wvTabGroupsBackupChain || Promise.resolve())
-            .then(async () => {
-                await IOUtils.makeDirectory(dir, { ignoreExisting: true });
-                try {
-                    const prev = JSON.parse(await IOUtils.readUTF8(path));
-                    const prevGroups = (prev && Array.isArray(prev.groups)) ? prev.groups : [];
-                    if (prevGroups.some((g: any) => g && !newIds.has(g.id))) {
-                        await IOUtils.copy(path, path + ".bak");
-                    }
-                } catch (_) {}   // no previous mirror / unreadable -> nothing to rotate
-                await IOUtils.writeUTF8(path, payload, { tmpPath: path + ".tmp" });
-            })
-            .catch((e: any) => Zotero.debug("[Weavero] tab-groups backup write err: " + e));
+        // lib/store.ts: the .bak rotation runs on the chain, against the
+        // previous on-disk document, only when a group is about to vanish.
+        this._wvTabGroupsBackupChain = wvStoreWrite(path,
+            { version: 1, savedAt: new Date().toISOString(), groups: arr || [] },
+            { rotateBak: (prev: any) => {
+                const prevGroups = (prev && Array.isArray(prev.groups)) ? prev.groups : [];
+                return prevGroups.some((g: any) => g && !newIds.has(g.id));
+            } });
         return this._wvTabGroupsBackupChain;
-    }
-
-    /** Read the tab-groups backup mirror (recovery source when the pref is lost).
-     *  Returns the groups array, or null if the file is missing/unreadable. */
-    async _wvTabGroupsBackupRead(this: any): Promise<any[] | null> {
-        try {
-            const path = PathUtils.join(Zotero.DataDirectory.dir, "weavero", "tab-groups.json");
-            const d = JSON.parse(await IOUtils.readUTF8(path));
-            return (d && Array.isArray(d.groups)) ? d.groups : null;
-        } catch (e) { return null; }
     }
 
     _tabGroupColorHex(colorID: any) {
         const c = WV_GROUP_COLORS.find(x => x.id === colorID) || WV_GROUP_COLORS[0];
-        // Firefox-style tabs on: nova's group colours, light or dark
-        // (MJT 2026-09-28, comparison C). Every consumer gets a real hex
-        // (menu dots are generated SVGs), so the choice happens here and
-        // _wvTabGroupApplyEverywhere re-renders on a design or theme switch.
+        // Firefox's colours either way: nova's with Firefox-style tabs on
+        // (MJT 2026-09-28, comparison C), Firefox's classic non-nova ones
+        // otherwise (MJT 2026-10-07) -- both light or dark with the theme.
+        // Every consumer gets a real hex (menu dots are generated SVGs), so
+        // the choice happens here and _wvTabGroupApplyEverywhere re-renders
+        // on a design or theme switch.
         try {
+            const dark = this._wvUiIsDark();
             const n = WV_NOVA_GROUP_COLORS[c.id];
-            if (n && (this as any)._getSelectedTabRing()) return this._wvUiIsDark() ? n.d : n.l;
+            if (n && (this as any)._getSelectedTabRing()) return dark ? n.d : n.l;
+            const k = WV_CLASSIC_GROUP_COLORS[c.id];
+            if (k) return dark ? k.d : k.l;
         } catch (e) {}
         return c.hex;
     }
 
-    /** Text on a group chip: white, except nova's dark text in dark theme
-     *  with Firefox-style tabs (--tab-group-<colour>-text). */
+    /** Text on a group chip, Firefox's: nova (Firefox-style tabs on) white in
+     *  the light theme and --tab-group-<colour>-text in the dark one; classic
+     *  (off) the --tab-group-<colour>-invert pair -- the pale tint in the
+     *  light theme, the deep colour in the dark one. */
     _tabGroupTextHex(colorID: any) {
         try {
             const c = WV_GROUP_COLORS.find(x => x.id === colorID) || WV_GROUP_COLORS[0];
+            const dark = this._wvUiIsDark();
             const n = WV_NOVA_GROUP_COLORS[c.id];
-            if (n && (this as any)._getSelectedTabRing() && this._wvUiIsDark()) return n.td;
+            if (n && (this as any)._getSelectedTabRing()) return dark ? n.td : "#ffffff";
+            const k = WV_CLASSIC_GROUP_COLORS[c.id];
+            if (k) return dark ? k.td : k.tl;
         } catch (e) {}
         return "#ffffff";
     }
@@ -243,15 +262,12 @@ class _TabGroupsMixin {
 
     /** Cross-window move / tear-out: a tab leaving its window leaves its group
      *  (Firefox model — the group doesn't follow the tab to the new window).
-     *  Call this BEFORE closing the source tab so the close doesn't park it as
-     *  recently-closed (and the reopen in the other window doesn't rejoin it).
-     *  Also clears any stale recently-closed record. */
+     *  Call this BEFORE closing the source tab. */
     _wvForgetTabGroupForItem(itemID: any) {
         try {
             const it: any = (itemID != null) && Zotero.Items.get(itemID);
             if (!it) return;
             this._tabGroupRemoveKey(it.libraryID, it.key);
-            this._wvForgetClosed(it.libraryID, it.key);
         } catch (e) {}
     }
 
@@ -304,15 +320,16 @@ class _TabGroupsMixin {
         try {
             if (!doc) return;
             const on = !!(this as any)._getSelectedTabRing();
-            // nova's group colours differ per theme: re-render chips and lines
-            // when the theme flips. One listener per window, calling the LIVE
-            // plugin (it survives reloads; a stale instance does nothing).
+            // The group colours differ per theme (nova's AND the classic ones):
+            // re-render chips and lines when the theme flips. One listener per
+            // window, calling the LIVE plugin (it survives reloads; a stale
+            // instance does nothing).
             try {
                 const win: any = doc.defaultView;
                 if (win && win.matchMedia && !win._wvThemeMQ) {
                     const mq = win.matchMedia("(prefers-color-scheme: dark)");
                     const fn = () => {
-                        try { const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; if (p && !p._wvDestroyed && p._getSelectedTabRing()) p._wvTabGroupApplyEverywhere(); } catch (e) {}
+                        try { const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; if (p && !p._wvDestroyed) p._wvTabGroupApplyEverywhere(); } catch (e) {}
                     };
                     mq.addEventListener("change", fn);
                     win._wvThemeMQ = { mq, fn };
@@ -320,14 +337,9 @@ class _TabGroupsMixin {
             } catch (e) {}
             // Narrow tabs: close buttons only on the selected tab (Firefox).
             try { this._wvScheduleCloseButtons(doc.defaultView); } catch (e) {}
-            const old = doc.getElementById("wv-selected-tab-ring");
-            if (!on) { if (old) old.remove(); return; }
-            const VER = "13";
-            if (old && old.getAttribute("data-wv-ver") === VER) return;
-            if (old) old.remove();
-            const st = doc.createElementNS(HTML_NS, "style");
-            st.id = "wv-selected-tab-ring";
-            st.setAttribute("data-wv-ver", VER);
+            if (!on) { wvRemoveStyle(doc, "wv-selected-tab-ring"); return; }
+            // Written through wvInjectStyle (only when the text changed): no
+            // version constant to remember (src-ts.md sheet replace).
             // Pinned tabs are drawn by Weavero's MIRRORS (#wv-pinned-mirrors
             // .wv-pinned-mirror; the real pinned .tab is display:none), with
             // their own 6px radius + Zotero's raised shadow (tabs.ts
@@ -341,7 +353,7 @@ class _TabGroupsMixin {
             const ring = "#tab-bar-container .tab.selected:not(.wv-multisel)::before,"
                 + " .wv-window-tabs .wv-window-tab.wv-active:not(.wv-multisel)::before,"
                 + " " + MIR + ".selected::before";
-            st.textContent = [
+            const css = [
                 // nova's pill shape, for EVERY tab (hover, selected, multi-
                 // selected, the group-create drop target): --tab-border-radius
                 // -> --button-border-radius -> --border-radius-xlarge = 24px
@@ -481,6 +493,11 @@ class _TabGroupsMixin {
                 // Weavero's = Firefox's: 1px, 2px on the selected one.
                 ":root { --wv-ff-tab-selected: #ffffff; --wv-ff-focus: #764edd; }",
                 "@media (prefers-color-scheme: dark) { :root { --wv-ff-tab-selected: #171519; --wv-ff-focus: #b89cff; } }",
+                // The colour picker's discs are 20px under nova (tabs.css
+                // `.tab-group-editor-swatch` in the browser.nova.enabled block;
+                // 16px otherwise -- the base rule in the tab-group sheet, which
+                // comes AFTER this one, hence the higher specificity here).
+                ".wv-tg-swatches .wv-tg-swatch { width: 20px; height: 20px; }",
                 "@media not ((prefers-contrast) or (forced-colors)) {",
                 sel + " { background: var(--wv-ff-tab-selected); }",
                 "#tab-bar-container .tab.wv-multisel.wv-multisel.wv-multisel,",
@@ -549,7 +566,7 @@ class _TabGroupsMixin {
                 "}",
                 "}",
             ].join("\n");
-            (doc.head || doc.documentElement).appendChild(st);
+            wvInjectStyle(doc, "wv-selected-tab-ring", css);
         } catch (e) { Zotero.debug("[Weavero] _wvEnsureSelectedTabRing err: " + e); }
     }
 
@@ -619,15 +636,11 @@ class _TabGroupsMixin {
     _ensureTabGroupStyles(doc: any) {
         try { this._wvEnsureSelectedTabRing(doc); } catch (e) {}
         try {
-            const STYLE_VERSION = "27";
-            const old = doc.getElementById("wv-tab-group-styles");
-            if (old) {
-                if (old.getAttribute("data-wv-ver") === STYLE_VERSION) return;
-                old.remove();                       // stale rules from a previous build
-            }
+            // Always replaced (src-ts.md sheet replace): stale rules from a
+            // previous build go whether or not anyone bumped a version.
+            wvRemoveStyle(doc, "wv-tab-group-styles");
             const st = doc.createElementNS(HTML_NS, "style");
             st.id = "wv-tab-group-styles";
-            st.setAttribute("data-wv-ver", STYLE_VERSION);
             st.textContent = [
                 // Member underline — a ::after bar that extends LEFT across the
                 // 4px flex gap to the previous member (7px for the first member,
@@ -731,11 +744,16 @@ class _TabGroupsMixin {
                 "  box-shadow: 0 0 0 3px color-mix(in srgb, var(--wv-group-color, #4072e5) 35%, transparent);",
                 "}",
                 // Editor panel, Firefox "Manage tab group" layout.
-                ".wv-tg-title { text-align: center; font-weight: 600; font-size: inherit; padding: 2px 0 4px; }",
+                // Manage Window / Rename card title. ONE rule: two used to merge
+                // (centred + padded from one, 600 / 11px / .75 from a later
+                // duplicate) -- the merged look is the one kept, 2026-10-09.
+                ".wv-tg-title { text-align: center; font-weight: 600; font-size: 11px; opacity: 0.75; padding: 2px 0 4px; }",
                 // Context line under a Manage-card title: status (active/
                 // saved), tab count, owning window/session (user request
                 // 2026-07-16).
                 ".wv-tg-info { text-align: center; font-size: 11px; opacity: 0.65; padding: 0 0 6px; }",
+                // The group editor's status line as a FOOTER under the actions.
+                ".wv-tg-info.wv-tg-footer { padding: 4px 0 1px; }",
                 ".wv-tg-label { font-size: 11px; opacity: 0.7; margin: 2px 2px -2px; }",
                 ".wv-tg-menuitem {",
                 "  padding: 4px 8px; border-radius: 5px; font-size: inherit;",
@@ -766,15 +784,18 @@ class _TabGroupsMixin {
                 // a saved group's tab rows align pixel-exact with an ACTIVE
                 // group's member rows (measured 2px off, user report 2026-07-17).
                 ".wv-winscope.wv-tgmenu-scope { margin: 0 4px 4px 18px; }",
-                /* Hover-preview title: the group's FULL name (wraps). */
-                ".wv-tg-preview-title {",
+                // Hover-preview HEADER: the group's FULL name (wraps). Its own
+                // class: until 2026-10-09 it shared `.wv-tg-preview-title` with
+                // the member rows, so the member rule below made the name
+                // truncate and this one made every member bold and underlined.
+                ".wv-tg-preview-head {",
                 "  display: flex; align-items: center; gap: 7px;",
                 "  padding: 4px 8px 5px; margin-bottom: 3px;",
                 "  font-weight: 600;",
                 "  border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent);",
                 "  white-space: normal; overflow-wrap: anywhere;",
                 "}",
-                ".wv-tg-preview-title > .wv-tgmenu-dot { flex: 0 0 auto; }",
+                ".wv-tg-preview-head > .wv-tgmenu-dot { flex: 0 0 auto; }",
                 ".wv-tg-preview-count {",
                 "  margin-inline-start: auto; padding-inline-start: 10px;",
                 "  font-weight: 400; opacity: 0.6;",
@@ -941,17 +962,27 @@ class _TabGroupsMixin {
                 "  border: 1px solid rgba(127,127,127,0.45); border-radius: 4px;",
                 "  background: transparent; color: inherit; font: inherit;",
                 "}",
-                ".wv-tg-swatches { display: flex; gap: 6px; flex-wrap: wrap; }",
-                // Rounded SQUARE, not a circle — tab groups' glyph is the
-                // rounded square chip (12px, radius 3), so the colour
-                // picker uses the same shape at swatch size (user request
-                // 2026-07-15). The WINDOW swatch rows override this
-                // per-kind inline (circle = reader, square = main).
+                // Room for the selected swatch's ring (2px gap + 2px ring).
+                ".wv-tg-swatches { display: flex; gap: 9px; flex-wrap: wrap; padding: 3px 3px 4px; }",
+                // Firefox's picker (tabs.css `.tab-group-editor-swatch`, verified
+                // 2026-10-07): CIRCLES; the current one ringed with a gap in
+                // the FOCUS colour -- `input:checked + .tab-group-editor-swatch
+                // { border-color: var(--focus-outline-color) }` -- the same
+                // colour whatever the swatch (MJT: "the circle is always the
+                // same color"). Weavero's Firefox focus colour is --wv-ff-focus
+                // (nova's violet, from the selected-tab ring sheet); toolkit's
+                // --focus-outline-color / AccentColor are the fallbacks. The
+                // 2026-07-15 rounded squares, which mirrored the chip glyph, are
+                // superseded (Firefox's chip is a rounded label, its picker
+                // still circles). The WINDOW swatch rows override the shape per
+                // kind inline (circle = reader, square = main).
                 ".wv-tg-swatch {",
-                "  width: 16px; height: 16px; border-radius: 4px; cursor: pointer;",
-                "  border: 2px solid transparent; box-sizing: border-box;",
+                "  width: 16px; height: 16px; border-radius: 50%; cursor: pointer;",
+                "  box-sizing: border-box;",
                 "}",
-                ".wv-tg-swatch.wv-selected { border-color: currentColor; }",
+                ".wv-tg-swatch.wv-selected {",
+                "  outline: 2px solid var(--wv-ff-focus, var(--focus-outline-color, AccentColor)); outline-offset: 2px;",
+                "}",
                 ".wv-tg-btnrow { display: flex; gap: 6px; justify-content: flex-end; }",
                 ".wv-tg-btn {",
                 "  padding: 3px 10px; border-radius: 5px; cursor: pointer;",
@@ -960,7 +991,6 @@ class _TabGroupsMixin {
                 "}",
                 ".wv-tg-btn:hover { background: rgba(127,127,127,0.15); }",
                 ".wv-tg-sep { border-top: 1px solid rgba(127,127,127,0.3); margin: 2px 0; }",
-                ".wv-tg-title { font-weight: 600; opacity: 0.75; font-size: 11px; }",
             ].join("\n");
             doc.documentElement.appendChild(st);
         } catch (e) { Zotero.debug("[Weavero] _ensureTabGroupStyles err: " + e); }
@@ -1146,28 +1176,6 @@ class _TabGroupsMixin {
             const emptyGroupIds = new Set<string>();
             const wantClass = new Map<string, { group: any; hidden: boolean; first?: boolean }>();   // tabID →
             let prefDirty = false;
-            // Rejoin: an open, UNSTAMPED tab whose item was recently closed from a
-            // group (undo-close / reopened soon after) rejoins it by re-stamping.
-            for (let i = 1; i < Z_Tabs._tabs.length; i++) {
-                const t = Z_Tabs._tabs[i];
-                if (this._wvTabGroupStamp(t)) continue;            // already grouped
-                const pk = t && (this as any)._tabPinKey(t);
-                if (!pk) continue;
-                const gid = this._wvRecentClosedGroup(pk.libraryID, pk.itemKey);
-                if (!gid) continue;
-                const tg = groups.find((x: any) => x.id === gid && !(x as any).saved);
-                if (!tg) continue;
-                // Home guard, same as the claim pass below (it was MISSING here):
-                // without it, a DUPLICATE copy of the member's item open in
-                // another window rejoined the group THERE, splitting it across
-                // windows -- a "Notes 1" chip leaked into a second main window
-                // while the real group ("Notes 6") lived in its home window
-                // (2026-07-26). Single-window model: rejoin only in the group's
-                // home window (or when it has no home yet).
-                const rjHome = this._wvTabGroupHomeWin(gid);
-                if (rjHome && rjHome !== win) continue;
-                this._wvTabGroupSetStamp(t, gid); this._wvForgetClosed(pk.libraryID, pk.itemKey);
-            }
             // Claim pass: stamp any UNSTAMPED open tab whose item is in a live
             // group's item-key shadow (covers add paths that only wrote the
             // shadow — drag-create, drop-into-group, cross-window send arrival).
@@ -1454,65 +1462,6 @@ class _TabGroupsMixin {
     // RESTORED tab (undo-close, or reopened soon after) rejoin its original
     // group, the {item → group} association is parked here for a short window.
     // Stored on the Zotero global so it survives plugin reloads.
-
-    _wvRecentClosedMap(): any {
-        const z: any = Zotero;
-        return (z._wvRecentClosedGroups = z._wvRecentClosedGroups || {});
-    }
-    _wvRecordClosedFromGroup(libraryID: any, itemKey: any, groupID: any) {
-        try {
-            const m = this._wvRecentClosedMap();
-            m[libraryID + ":" + itemKey] = { groupID, ts: Date.now() };
-            const keys = Object.keys(m);
-            if (keys.length > 80) {            // keep only the 80 most recent
-                keys.map((k) => [k, m[k].ts] as [string, number])
-                    .sort((a, b) => a[1] - b[1])
-                    .slice(0, keys.length - 80)
-                    .forEach(([k]) => { delete m[k]; });
-            }
-        } catch (e) {}
-    }
-    _wvRecentClosedGroup(libraryID: any, itemKey: any): any {
-        try {
-            const m = this._wvRecentClosedMap();
-            const rec = m[libraryID + ":" + itemKey];
-            if (!rec) return null;
-            if (Date.now() - rec.ts > 30 * 60 * 1000) { delete m[libraryID + ":" + itemKey]; return null; }  // 30-min window
-            if (!this._tabGroupsGet().some((g: any) => g.id === rec.groupID)) { delete m[libraryID + ":" + itemKey]; return null; }
-            return rec.groupID;
-        } catch (e) { return null; }
-    }
-    _wvForgetClosed(libraryID: any, itemKey: any) {
-        try { delete this._wvRecentClosedMap()[libraryID + ":" + itemKey]; } catch (e) {}
-    }
-
-    /** Keys ("lib:key") of every item open as a tab in ANY window — main tab
-     *  bars and Weavero reader-window strips. Used so a per-window group re-sync
-     *  never drops a member that's merely open in a different window. */
-    _wvGlobalOpenKeys(): Set<string> {
-        const s = new Set<string>();
-        try {
-            for (const w of Zotero.getMainWindows()) {
-                const Z: any = (w as any).Zotero_Tabs;
-                for (const t of (Z && Z._tabs) || []) {
-                    const k = (this as any)._tabPinKey(t);
-                    if (k) s.add(k.libraryID + ":" + k.itemKey);
-                }
-            }
-        } catch (e) {}
-        try {
-            const en = Services.wm.getEnumerator("zotero:reader");
-            while (en.hasMoreElements()) {
-                const w: any = en.getNext();
-                if (!w || !w._wvWT) continue;
-                for (const t of w._wvWT.tabs || []) {
-                    const k = this._wvTabGroupDeckKey(t);
-                    if (k) s.add(k.libraryID + ":" + k.itemKey);
-                }
-            }
-        } catch (e) {}
-        return s;
-    }
 
     /** Group ids currently being reopened from a saved state — _applyTabGroups
      *  keeps their members and won't delete them while their tabs come back. */
@@ -1997,6 +1946,10 @@ class _TabGroupsMixin {
                     if (srcWin !== tgtWin) {
                         newId = null;
                         try { newId = await this._wvWTMountTab(tgtWin, itemID, { allowDuplicate: true, select: !noFocus, await: true }); } catch (e) {}
+                        // Never destroy the original before the replacement is
+                        // alive (the rule at _wvTabGroupSendTabToWin; survey
+                        // 2026-10-06: a failed mount still closed the source).
+                        if (newId == null || (Zotero as any).Weavero?.plugin !== this) return;
                         try {
                             if (srcIsReader) this._wvWTCloseTab(srcWin, tabId);
                             else { (this as any)._wvBlindAutomationTabClose(tabId); srcWin.Zotero_Tabs.close(tabId); }
@@ -2030,6 +1983,8 @@ class _TabGroupsMixin {
                 }
                 let newRId: any = null;
                 try { newRId = await this._wvWTMountTab(tgtWin, itemID, { allowDuplicate: true, select: !noFocus, await: true }); } catch (e) {}
+                // Replacement first, source second (see the new-group branch).
+                if (newRId == null || (Zotero as any).Weavero?.plugin !== this) return;
                 // Precise slot from the popup: move the just-mounted tab there.
                 if (target.index != null) {
                     try {
@@ -2305,18 +2260,17 @@ class _TabGroupsMixin {
     /** Container-level DnD wiring (called from the tab-bar decoration setup).
      *  The listeners are THIN DELEGATES to methods on the LIVE plugin —
      *  reloads update behavior without rewiring — and the wiring itself is
-     *  VERSIONED + removable, so a reload that does change the listener set
-     *  replaces it instead of being skipped by a boolean guard (the stale
-     *  guard previously left dev.4 listeners running forever, which is why
-     *  drag-into-group and the live preview "shipped" but never fired). */
+     *  keyed and instance-tagged (lib/listen.ts): a reload replaces them, a
+     *  disable removes them. (A boolean guard once left dev.4 listeners
+     *  running forever; the hand-bumped WIRE_VERSION that replaced it still
+     *  kept the first build's handlers until someone bumped it -- wiring
+     *  slice 3, 2026-10-12.) */
     _wvWireTabGroupDnD(win: any) {
         try {
-            const WIRE_VERSION = 3;
             const doc = win.document;
             const container = doc.getElementById("tab-bar-container");
             if (!container) return;
-            if ((container as any)._wvTabGroupDnDVer === WIRE_VERSION) return;
-            try { (container as any)._wvTabGroupDnDOff?.(); } catch (e) {}
+            const tag = (this as any)._wvWireTag();
             const live = () => {
                 try { return (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; } catch (e) { return null; }
             };
@@ -2330,7 +2284,7 @@ class _TabGroupsMixin {
                 ["drop", mk("_wvTabGroupDnDDrop")],
                 ["dragend", mk("_wvTabGroupDnDDragEnd")],
             ];
-            for (const [t, h] of hs) container.addEventListener(t, h, true);
+            for (const [t, h] of hs) wvListen(container, "tabGroupDnD:" + t, t, h, true, tag);
             // Esc-during-drag detector (diagnostic, 2026-07-27): Gecko's drag
             // service normally swallows key events during a drag session, so
             // whether this line ever appears in the ring tells us WHERE the
@@ -2345,12 +2299,10 @@ class _TabGroupsMixin {
                     }
                 } catch (er) {}
             };
-            win.addEventListener("keydown", keyH, true);
-            (container as any)._wvTabGroupDnDVer = WIRE_VERSION;
+            wvListen(win, "tabGroupDnD:escKey", "keydown", keyH, true, tag);
             (container as any)._wvTabGroupDnDOff = () => {
-                try { for (const [t, h] of hs) container.removeEventListener(t, h, true); } catch (e) {}
-                try { win.removeEventListener("keydown", keyH, true); } catch (e) {}
-                (container as any)._wvTabGroupDnDVer = 0;
+                for (const [t] of hs) wvUnlisten(container, "tabGroupDnD:" + t);
+                wvUnlisten(win, "tabGroupDnD:escKey");
             };
         } catch (e) { Zotero.debug("[Weavero] _wvWireTabGroupDnD err: " + e); }
     }
@@ -3656,27 +3608,6 @@ class _TabGroupsMixin {
         }
     }
 
-    /** The LIVE group a TAB belongs to (per-tab). Its own stamp wins (precise
-     *  for duplicates); falls back to legacy item-key membership for tabs that
-     *  predate the stamp (migration / not-yet-stamped). Saved groups excluded. */
-    _wvTabGroupOfTab(tab: any) {
-        try {
-            const gid = this._wvTabGroupStamp(tab);
-            if (gid) {
-                const g = this._tabGroupsGet().find((x: any) => !(x as any).saved && x.id === gid);
-                if (g) return g;
-            }
-            // A tab KEPT OUT of groups (explicitly ungrouped: removed by the
-            // user, or restored from the store with no stamp) is not a legacy
-            // pre-stamp tab -- the item-key fallback must not claim it. A reader
-            // window's ungrouped copy of an old group's member was re-stamped
-            // through this fallback on every render (2026-09-16).
-            if ((tab as any)._wvGroupExcluded) return null;
-            const k = this._wvTabGroupDeckKey(tab);
-            return k ? this._tabGroupOfKey(k.libraryID, k.itemKey) : null;
-        } catch (e) { return null; }
-    }
-
     /** Per-tab JOIN for the DRAG paths: stamp THIS specific tab into the group
      *  (+ keep the item-key shadow as the restart fallback). Unlike a bare
      *  `_tabGroupAddKey`, this stamps the actual tab — so a DUPLICATE tab of an
@@ -3963,15 +3894,13 @@ class _TabGroupsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupHandleReaderReorder err: " + e); }
     }
 
-    /** Reader-window strip accepts group-chip drops (versioned, reload-proof —
-     *  same delegate pattern as the main wiring). */
+    /** Reader-window strip accepts group-chip drops (keyed listeners, same
+     *  delegate pattern as the main wiring). */
     _wvWireTabGroupReaderDnD(win: any) {
         try {
-            const WIRE_VERSION = 2;
             const strip = win.document.querySelector(".wv-window-tabstrip");
             if (!strip) return;
-            if ((strip as any)._wvTabGroupDnDVer === WIRE_VERSION) return;
-            try { (strip as any)._wvTabGroupDnDOff?.(); } catch (e) {}
+            const tag = (this as any)._wvWireTag();
             const live = () => {
                 try { return (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; } catch (e) { return null; }
             };
@@ -3983,11 +3912,9 @@ class _TabGroupsMixin {
                 ["dragleave", mk("_wvTabGroupReaderDnDDragLeave")],
                 ["drop", mk("_wvTabGroupReaderDnDDrop")],
             ];
-            for (const [t, h] of hs) strip.addEventListener(t, h, true);
-            (strip as any)._wvTabGroupDnDVer = WIRE_VERSION;
+            for (const [t, h] of hs) wvListen(strip, "tabGroupReaderDnD:" + t, t, h, true, tag);
             (strip as any)._wvTabGroupDnDOff = () => {
-                try { for (const [t, h] of hs) strip.removeEventListener(t, h, true); } catch (e) {}
-                (strip as any)._wvTabGroupDnDVer = 0;
+                for (const [t] of hs) wvUnlisten(strip, "tabGroupReaderDnD:" + t);
             };
         } catch (e) {}
     }
@@ -4001,12 +3928,10 @@ class _TabGroupsMixin {
      *  Strip-area events are left to the strip/container handlers (precise
      *  slot + ghost); everything else lands the group at the pointer's x.
      *  Gated on a live `_wvGroupDrag`, so normal item/text drags are
-     *  untouched. Delegate pattern (live-resolved), versioned, reload-proof. */
+     *  untouched. Delegate pattern (live-resolved), keyed listeners. */
     _wvWireTabGroupWindowDnD(win: any, isReader: boolean) {
         try {
-            const WIRE_VERSION = 1;
-            if ((win as any)._wvTabGroupWinDnDVer === WIRE_VERSION) return;
-            try { (win as any)._wvTabGroupWinDnDOff?.(); } catch (e) {}
+            const tag = (this as any)._wvWireTag();
             const live = () => {
                 try { return (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; } catch (e) { return null; }
             };
@@ -4041,12 +3966,11 @@ class _TabGroupsMixin {
                     p._wvTabGroupMigrateGroup(gd.sourceWin, win, gd.groupID, e.clientX);
                 } catch (er) {}
             };
-            win.addEventListener("dragover", onOver, true);
-            win.addEventListener("drop", onDrop, true);
-            (win as any)._wvTabGroupWinDnDVer = WIRE_VERSION;
+            wvListen(win, "tabGroupWinDnD:dragover", "dragover", onOver, true, tag);
+            wvListen(win, "tabGroupWinDnD:drop", "drop", onDrop, true, tag);
             (win as any)._wvTabGroupWinDnDOff = () => {
-                try { win.removeEventListener("dragover", onOver, true); win.removeEventListener("drop", onDrop, true); } catch (e) {}
-                (win as any)._wvTabGroupWinDnDVer = 0;
+                wvUnlisten(win, "tabGroupWinDnD:dragover");
+                wvUnlisten(win, "tabGroupWinDnD:drop");
             };
         } catch (e) {}
     }
@@ -4884,7 +4808,7 @@ class _TabGroupsMixin {
             } catch (eLog) {}
             try { this._wvTabGroupApplyEverywhere(); } catch (e) {}
             // Re-apply once the new window's React strip has rendered the tabs.
-            try { const mw: any = Zotero.getMainWindow(); const st = (mw && mw.setTimeout) ? mw.setTimeout.bind(mw) : setTimeout; st(() => { try { this._wvTabGroupApplyEverywhere(); } catch (e) {} }, 220); } catch (e) {}
+            try { wvTimeout(() => { try { this._wvTabGroupApplyEverywhere(); } catch (e) {} }, 220); } catch (e) {}
         }
     }
 
@@ -5474,7 +5398,7 @@ class _TabGroupsMixin {
             // request 2026-07-15). Wraps rather than truncating.
             {
                 const titleRow = doc.createElementNS(HTML_NS, "div");
-                titleRow.className = "wv-tg-preview-title";
+                titleRow.className = "wv-tg-preview-head";
                 const tdot = doc.createElementNS(HTML_NS, "span");
                 tdot.className = "wv-tgmenu-dot";
                 tdot.style.background = hex;
@@ -5658,43 +5582,24 @@ class _TabGroupsMixin {
             const body = panel.querySelector(".wv-tg-panel-body");
             while (body.firstChild) body.removeChild(body.firstChild);
 
-            // Firefox's "Manage tab group" panel layout: title, labeled name
-            // field, color swatches, then menu-style action rows with the
-            // destructive action set apart at the bottom.
-            const title = doc.createElementNS(HTML_NS, "div");
-            title.className = "wv-tg-title";
-            title.textContent = "Manage Tab Group";
-            body.appendChild(title);
+            // Firefox's "Manage tab group" panel layout (MJT 2026-10-07, the
+            // Firefox 143 card side by side): the colour swatches first, the
+            // name field right under them (placeholder, no label, no
+            // heading), then the menu-style action rows with the destructive
+            // one set apart -- what the user came for is at the top. The
+            // context line (status, tab count, owning window; user request
+            // 2026-07-16) is a muted FOOTER. Guard: test/tab-group-editor.spec.js.
+            body.appendChild(this._wvTabGroupSwatchRow(win, g.color, (c: string) => {
+                this._tabGroupUpdate(groupID, { color: c });
+                this._wvTabGroupApplyEverywhere();
+            }));
 
-            // Context line: status, tab count, owning window (user
-            // request 2026-07-16).
-            try {
-                const openCount = this._wvTabGroupOpenCount(groupID);
-                const isActive = openCount > 0 && !g.saved;
-                const count = isActive ? openCount : ((g.members || []).length);
-                const homeWin = isActive ? this._wvTabGroupHomeWin(groupID) : null;
-                const winName = homeWin
-                    ? ((this as any)._wvWindowCustomTitle(homeWin)
-                        || (this as any)._wvWindowDefaultName(homeWin))
-                    : null;
-                const info = doc.createElementNS(HTML_NS, "div");
-                info.className = "wv-tg-info";
-                info.textContent = (isActive ? "Active" : "Saved")
-                    + " · " + count + " tab" + (count === 1 ? "" : "s")
-                    + (winName ? " · in " + winName : "");
-                body.appendChild(info);
-            } catch (e) {}
-
-            const nameLabel = doc.createElementNS(HTML_NS, "div");
-            nameLabel.className = "wv-tg-label";
-            nameLabel.textContent = "Name";
-            body.appendChild(nameLabel);
             const nameRow = doc.createElementNS(HTML_NS, "div");
             nameRow.className = "wv-tg-row";
             const input = doc.createElementNS(HTML_NS, "input");
             input.className = "wv-tg-name-input";
             input.value = g.name || "";
-            input.setAttribute("placeholder", "Group name");
+            input.setAttribute("placeholder", "Example: Literature review");
             input.addEventListener("change", () => {
                 this._tabGroupUpdate(groupID, { name: input.value });
                 this._wvTabGroupApplyEverywhere();
@@ -5709,11 +5614,6 @@ class _TabGroupsMixin {
             });
             nameRow.appendChild(input);
             body.appendChild(nameRow);
-
-            body.appendChild(this._wvTabGroupSwatchRow(win, g.color, (c: string) => {
-                this._tabGroupUpdate(groupID, { color: c });
-                this._wvTabGroupApplyEverywhere();
-            }));
 
             const mkSep = () => {
                 const s = doc.createElementNS(HTML_NS, "div");
@@ -5813,6 +5713,26 @@ class _TabGroupsMixin {
             mkItem("Delete group",
                 () => this._wvTabGroupCloseTabs(win, groupID), true);
 
+            // Footer: status, tab count, owning window -- information, so it
+            // sits below the actions.
+            try {
+                const openCount = this._wvTabGroupOpenCount(groupID);
+                const isActive = openCount > 0 && !g.saved;
+                const count = isActive ? openCount : ((g.members || []).length);
+                const homeWin = isActive ? this._wvTabGroupHomeWin(groupID) : null;
+                const winName = homeWin
+                    ? ((this as any)._wvWindowCustomTitle(homeWin)
+                        || (this as any)._wvWindowDefaultName(homeWin))
+                    : null;
+                mkSep();
+                const info = doc.createElementNS(HTML_NS, "div");
+                info.className = "wv-tg-info wv-tg-footer";
+                info.textContent = (isActive ? "Active" : "Saved")
+                    + " · " + count + " tab" + (count === 1 ? "" : "s")
+                    + (winName ? " · in " + winName : "");
+                body.appendChild(info);
+            } catch (e) {}
+
             // Focus the name box as soon as the panel is up so the user can
             // type the group name immediately (esp. right after New Group).
             panel.addEventListener("popupshown", () => {
@@ -5824,7 +5744,6 @@ class _TabGroupsMixin {
 
     // ---- Tab context menu entries ---------------------------------------------
 
-    /** A colored-circle icon (data URI) for group menu entries. */
     /** A 12px group-colour dot for menus. `outline` draws the SAVED-group
      *  variant — a hollow ring (transparent centre + coloured stroke), matching
      *  the tabs-menu list's saved-group dot; otherwise a filled circle. */
@@ -5837,38 +5756,29 @@ class _TabGroupsMixin {
         return "data:image/svg+xml," + encodeURIComponent(svg);
     }
 
-    /** Firefox's "New Group" flow for a single tab. */
-    _wvTabGroupNewFromTab(win: any, tabID: any) {
-        this._wvTabGroupNewFromTabs(win, [tabID]);
-    }
-
     // ---- Multi-select (Ctrl / Shift + click) ---------------------------------
     // Firefox-style: accel+click toggles a tab in/out of the selection,
     // shift+click selects the range from the ACTIVE tab, a plain click clears.
     // The selection only feeds the group commands ("Add N Tabs to Group"),
     // so it lives here rather than in tabs.ts.
 
-    /** Wire the multi-select listeners on a main window's tab bar. Versioned +
+    /** Wire the multi-select listeners on a main window's tab bar. Keyed +
      *  delegate-based (same pattern as _wvWireTabGroupDnD) so plugin reloads
      *  re-wire cleanly and handlers always resolve the LIVE plugin. */
     _wvWireTabMultiSel(win: any) {
         try {
-            const WIRE_VERSION = 1;
-            if (win._wvTabMultiSelVer === WIRE_VERSION) return;
             const container = win.document.getElementById("tab-bar-container");
             if (!container) return;
-            if (win._wvTabMultiSelOff) { try { win._wvTabMultiSelOff(); } catch (e) {} }
+            const tag = (this as any)._wvWireTag();
             const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
             const onMouseDown = (e: any) => { const p: any = live(); if (p) p._wvTabMultiSelMouseDown(win, e); };
             const onClick = (e: any) => { const p: any = live(); if (p) p._wvTabMultiSelClick(win, e); };
-            container.addEventListener("mousedown", onMouseDown, true);
-            container.addEventListener("click", onClick, true);
+            wvListen(container, "tabMultiSel:mousedown", "mousedown", onMouseDown, true, tag);
+            wvListen(container, "tabMultiSel:click", "click", onClick, true, tag);
             win._wvTabMultiSelOff = () => {
-                try { container.removeEventListener("mousedown", onMouseDown, true); } catch (e) {}
-                try { container.removeEventListener("click", onClick, true); } catch (e) {}
-                win._wvTabMultiSelVer = null;
+                wvUnlisten(container, "tabMultiSel:mousedown");
+                wvUnlisten(container, "tabMultiSel:click");
             };
-            win._wvTabMultiSelVer = WIRE_VERSION;
         } catch (e) {}
     }
 
@@ -5977,26 +5887,21 @@ class _TabGroupsMixin {
 
     _wvWireTabMultiSelReader(win: any) {
         try {
-            const WIRE_VERSION = 1;
             const strip = win.document.querySelector(".wv-window-tabstrip");
             if (!strip) return;
-            // Version flag lives ON THE STRIP ELEMENT (like the DnD wiring):
-            // a window-level flag survives strip rebuilds and left the new
-            // strip without listeners ("can't multi-select in reader").
-            if ((strip as any)._wvWTMultiSelVer === WIRE_VERSION) return;
-            if (win._wvWTMultiSelOff) { try { win._wvWTMultiSelOff(); } catch (e) {} }
+            // Keyed ON THE STRIP ELEMENT (like the DnD wiring): a window-level
+            // flag survived strip rebuilds and left the new strip without
+            // listeners ("can't multi-select in reader").
+            const tag = (this as any)._wvWireTag();
             const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
             const onMouseDown = (e: any) => { const p: any = live(); if (p) p._wvWTMultiSelMouseDown(win, e); };
             const onClick = (e: any) => { const p: any = live(); if (p) p._wvWTMultiSelClick(win, e); };
-            strip.addEventListener("mousedown", onMouseDown, true);
-            strip.addEventListener("click", onClick, true);
+            wvListen(strip, "wtMultiSel:mousedown", "mousedown", onMouseDown, true, tag);
+            wvListen(strip, "wtMultiSel:click", "click", onClick, true, tag);
             win._wvWTMultiSelOff = () => {
-                try { strip.removeEventListener("mousedown", onMouseDown, true); } catch (e) {}
-                try { strip.removeEventListener("click", onClick, true); } catch (e) {}
-                try { (strip as any)._wvWTMultiSelVer = null; } catch (e) {}
+                wvUnlisten(strip, "wtMultiSel:mousedown");
+                wvUnlisten(strip, "wtMultiSel:click");
             };
-            (strip as any)._wvWTMultiSelVer = WIRE_VERSION;
-            win._wvWTMultiSelVer = WIRE_VERSION;   // kept for diagnostics only
         } catch (e) {}
     }
 
@@ -6253,26 +6158,6 @@ class _TabGroupsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvReaderStampTabGroup err: " + e); }
     }
 
-    /** "New Group" from one or several tabs: create (auto-cycled color, no
-     *  name), add them all, then open the editor on the fresh chip. */
-    _wvTabGroupNewFromTabs(win: any, tabIDs: any[]) {
-        try {
-            const groups = this._tabGroupsGet();
-            const color = WV_GROUP_COLORS[groups.length % WV_GROUP_COLORS.length].id;
-            const g = this._tabGroupCreate("", color);
-            for (const id of tabIDs) this._wvTabGroupAddTab(win, id, g.id);
-            this._wvTabMultiSelClear(win);
-            try {
-                win.setTimeout(() => {
-                    try {
-                        const chip = win.document.getElementById("wv-tgchip-" + g.id);
-                        if (chip) this._wvShowTabGroupEditor(win, g.id, chip);
-                    } catch (e) {}
-                }, 120);
-            } catch (e) {}
-        } catch (e) { Zotero.debug("[Weavero] _wvTabGroupNewFromTabs err: " + e); }
-    }
-
     /** Move our menuitem just above the native "Move Tab" submenu (found by
      *  its localized label). No-op when Move Tab isn't in this popup. */
     _wvTabGroupRepositionBeforeMove(menuElem: any) {
@@ -6325,84 +6210,6 @@ class _TabGroupsMixin {
                                 }
                             } catch (e) {}
                             try { ctx.setVisible(false); } catch (e) {}
-                            return;
-                            // eslint-disable-next-line no-unreachable
-                            try {
-                                if (!self._getEnableTabGroups() || ctx.tabID === "zotero-pane") {
-                                    ctx.setVisible(false); return;
-                                }
-                                const item = ctx.items && ctx.items[0];
-                                if (!item || !item.libraryID || !item.key) { ctx.setVisible(false); return; }
-                                ctx.setVisible(true);
-                                const doc = ctx.menuElem.ownerDocument;
-                                const win = doc.defaultView;
-                                const tabID = ctx.tabID;
-                                // Operate on the multi-selection when the
-                                // context tab is part of it.
-                                const targets = self._wvTabMultiSelTargets(win, tabID);
-                                ctx.menuElem.setAttribute("label", targets.length > 1
-                                    ? "Add " + targets.length + " Tabs to Group"
-                                    : "Add Tab to Group");
-                                try { self._wvTabGroupRepositionBeforeMove(ctx.menuElem); } catch (e) {}
-                                // Rebuild the submenu popup from the live groups.
-                                const popup = ctx.menuElem.querySelector("menupopup");
-                                if (!popup) return;
-                                while (popup.firstChild) popup.removeChild(popup.firstChild);
-                                const mkItem = (label: string, icon: string | null, fn: () => void) => {
-                                    const mi = doc.createXULElement("menuitem");
-                                    mi.setAttribute("label", label);
-                                    if (icon) {
-                                        mi.setAttribute("class", "menuitem-iconic");
-                                        mi.setAttribute("image", icon);
-                                    }
-                                    mi.addEventListener("command", (e: any) => {
-                                        try { e.stopPropagation(); fn(); } catch (er) {}
-                                    });
-                                    popup.appendChild(mi);
-                                    return mi;
-                                };
-                                mkItem("New Group", null, () => self._wvTabGroupNewFromTabs(win, targets));
-                                const groups = self._tabGroupsGet();
-                                // Don't offer the group the tab is already STAMPED into
-                                // (single-tab case only — a multi-selection may mix
-                                // members of several groups). Per-tab, NOT by item key:
-                                // a DUPLICATE tab of a member's item is its own tab and
-                                // CAN be added to the same group, so key it off the
-                                // tab's stamp — else the group is wrongly filtered out.
-                                let cur: any = null;
-                                if (targets.length === 1) {
-                                    try {
-                                        const ZT: any = win.Zotero_Tabs;
-                                        const tab = ZT && ZT._tabs.find((t: any) => t.id === tabID);
-                                        const sid = tab && self._wvTabGroupStamp(tab);
-                                        if (sid) cur = groups.find((x: any) => x.id === sid) || null;
-                                    } catch (e) {}
-                                }
-                                const others = groups.filter((x: any) => !cur || x.id !== cur.id);
-                                if (others.length) {
-                                    popup.appendChild(doc.createXULElement("menuseparator"));
-                                    for (const g of others) {
-                                        // Saved (parked) group → match the tabs-menu
-                                        // list's design: a hollow group-colour dot and
-                                        // a right-aligned "saved" label.
-                                        const parked = self._wvTabGroupOpenCount(g.id) === 0;
-                                        const gmi = mkItem(g.name || "Unnamed group",
-                                            self._wvTabGroupDotImage(self._tabGroupColorHex(g.color), parked),
-                                            () => {
-                                                // Staggered: cross-window adds migrate
-                                                // tabs (close + deferred reopen), and
-                                                // simultaneous opens collide.
-                                                targets.forEach((id: any, i: number) => {
-                                                    win.setTimeout(() => {
-                                                        try { self._wvTabGroupAddTab(win, id, g.id); } catch (e) {}
-                                                    }, i * 170);
-                                                });
-                                                self._wvTabMultiSelClear(win);
-                                            });
-                                        if (parked) { try { const n = (g.members || []).length; gmi.setAttribute("acceltext", n ? (n + (n === 1 ? " tab" : " tabs") + " · saved") : "saved"); } catch (e) {} }
-                                    }
-                                }
-                            } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
                         },
                     },
                     {

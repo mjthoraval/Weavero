@@ -856,13 +856,13 @@ export const PLUGIN_CSS = [
     "}",
     ".wv-filter-color-row:hover { background: rgba(127,127,127,0.12); }",
     // Wide unified-panel layout (one section per filter type).
-    // Top padding kept to 0 so the popup's top edge sits flush
-    // against the (visually-framed) quick-search box above —
-    // making the "Restrict to:" row read as the search's own
-    // settings. Other sides retain a small gutter.
+    // 3px above the header row: the flex gap an empty placeholder
+    // section left there until 2026-10-09 (the "Restrict to:" row it
+    // once held lives in the toolbar search box). Padding now, same
+    // pixels. Other sides keep a small gutter.
     ".wv-filter-panel-inner {",
     "  display: flex; flex-direction: column;",
-    "  gap: 3px; padding: 0 6px 4px;",
+    "  gap: 3px; padding: 3px 6px 4px;",
     // Anchor for absolutely-positioned children — currently used
     // by the per-cross-level-filter scope popup.
     "  position: relative;",

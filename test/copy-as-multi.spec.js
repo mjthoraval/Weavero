@@ -20,7 +20,7 @@ describe("Weavero — tab-menu Copy As is multi-select aware", () => {
 
 	before(async function () {
 		wv = Zotero.Weavero && Zotero.Weavero.plugin;
-		if (!wv || typeof wv._wvTabCtxTargetItems !== "function") this.skip();
+		if (!wv || typeof wv._wvTabCtxTargetItems !== "function") wvT.absent('!wv || typeof wv._wvTabCtxTargetItems !== "function"');
 		const lib = Zotero.Libraries.userLibraryID;
 
 		itemA = new Zotero.Item("journalArticle");
@@ -179,7 +179,7 @@ describe("Weavero — tab-menu Copy As is multi-select aware", () => {
 		const rTab = (id, itemID) => ({ id, type: "reader", data: { itemID } });
 
 		it("copies ALL selected tabs' items, routed through parents", function () {
-			if (typeof wv._wvWireQuickCopyMultiTab !== "function") this.skip();
+			if (typeof wv._wvWireQuickCopyMultiTab !== "function") wvT.absent('typeof wv._wvWireQuickCopyMultiTab !== "function"');
 			const { win, calls } = mkStubWin(["t1", "t2"],
 				[libTab2, rTab("t1", attA.id), rTab("t2", attB.id)], "t1");
 			wv._wvWireQuickCopyMultiTab(win);
@@ -192,7 +192,7 @@ describe("Weavero — tab-menu Copy As is multi-select aware", () => {
 		});
 
 		it("restores the shadowed getters after the call", function () {
-			if (typeof wv._wvWireQuickCopyMultiTab !== "function") this.skip();
+			if (typeof wv._wvWireQuickCopyMultiTab !== "function") wvT.absent('typeof wv._wvWireQuickCopyMultiTab !== "function"');
 			const { win } = mkStubWin(["t1", "t2"],
 				[libTab2, rTab("t1", attA.id), rTab("t2", attB.id)], "t1");
 			wv._wvWireQuickCopyMultiTab(win);
@@ -203,7 +203,7 @@ describe("Weavero — tab-menu Copy As is multi-select aware", () => {
 		});
 
 		it("leaves the native path untouched without a multi-selection", function () {
-			if (typeof wv._wvWireQuickCopyMultiTab !== "function") this.skip();
+			if (typeof wv._wvWireQuickCopyMultiTab !== "function") wvT.absent('typeof wv._wvWireQuickCopyMultiTab !== "function"');
 			const { win, calls } = mkStubWin(["t1"],
 				[libTab2, rTab("t1", attA.id)], "t1");
 			wv._wvWireQuickCopyMultiTab(win);
@@ -213,7 +213,7 @@ describe("Weavero — tab-menu Copy As is multi-select aware", () => {
 		});
 
 		it("leaves the library tab untouched even with tabs selected", function () {
-			if (typeof wv._wvWireQuickCopyMultiTab !== "function") this.skip();
+			if (typeof wv._wvWireQuickCopyMultiTab !== "function") wvT.absent('typeof wv._wvWireQuickCopyMultiTab !== "function"');
 			const { win, calls } = mkStubWin(["t1", "t2"],
 				[libTab2, rTab("t1", attA.id), rTab("t2", attB.id)], "zotero-pane");
 			wv._wvWireQuickCopyMultiTab(win);
@@ -223,7 +223,7 @@ describe("Weavero — tab-menu Copy As is multi-select aware", () => {
 		});
 
 		it("wires once per build and unwires back to the raw function", function () {
-			if (typeof wv._wvWireQuickCopyMultiTab !== "function") this.skip();
+			if (typeof wv._wvWireQuickCopyMultiTab !== "function") wvT.absent('typeof wv._wvWireQuickCopyMultiTab !== "function"');
 			const { win, rawCopy } = mkStubWin(["t1", "t2"],
 				[libTab2, rTab("t1", attA.id), rTab("t2", attB.id)], "t1");
 			wv._wvWireQuickCopyMultiTab(win);

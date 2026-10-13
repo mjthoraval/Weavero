@@ -14,7 +14,7 @@ describe("Weavero — selected-tab outline (Firefox nova)", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvEnsureSelectedTabRing !== "function") this.skip();
+        if (!wv || typeof wv._wvEnsureSelectedTabRing !== "function") wvT.absent('!wv || typeof wv._wvEnsureSelectedTabRing !== "function"');
         win = Zotero.getMainWindow(); doc = win.document;
         prev = Zotero.Prefs.get(PREF);
     });
@@ -167,17 +167,20 @@ describe("Weavero — selected-tab outline (Firefox nova)", () => {
         assert.equal(wv._tabGroupTextHex("blue"), dark ? "#111524" : "#ffffff");
         assert.equal(wv._tabGroupColorHex("gray"), dark ? "#949297" : "#515054");
         Zotero.Prefs.set(PREF, false);
-        assert.equal(wv._tabGroupColorHex("blue"), "#4f7ce0");
-        assert.equal(wv._tabGroupTextHex("blue"), "#ffffff");
+        // The Zotero-style look takes Firefox's CLASSIC (non-nova) palette
+        // since 2026-10-07 (MJT: "same colours as Firefox", all three
+        // differences) -- blue-70/blue-20, text blue-0/blue-70.
+        assert.equal(wv._tabGroupColorHex("blue"), dark ? "#84c6ff" : "#0053cb");
+        assert.equal(wv._tabGroupTextHex("blue"), dark ? "#0053cb" : "#e2f7ff");
         Zotero.Prefs.set(PREF, true);
     });
 
-    it("orange is a 9th group colour (Firefox's): nova orange with the design, its own hex without", () => {
+    it("orange is a 9th group colour (Firefox's): nova orange with the design, classic orange without", () => {
         const dark = win.matchMedia("(prefers-color-scheme: dark)").matches;
         Zotero.Prefs.set(PREF, true);
         assert.equal(wv._tabGroupColorHex("orange"), dark ? "#ff9565" : "#cd4208");
         Zotero.Prefs.set(PREF, false);
-        assert.equal(wv._tabGroupColorHex("orange"), "#dc7633", "not the blue fallback");
+        assert.equal(wv._tabGroupColorHex("orange"), dark ? "#ffb57a" : "#ae2000", "not the blue fallback");
         const g = wv._tabGroupCreate("wv-orange-probe", "orange");
         try { assert.equal(g.color, "orange", "accepted, not normalised to blue"); }
         finally { try { wv._tabGroupDelete(g.id); } catch (e) {} }

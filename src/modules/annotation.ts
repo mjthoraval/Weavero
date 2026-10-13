@@ -1,4 +1,5 @@
 import { MD_REGEX } from "../lib/links";
+import { wvListen } from "../lib/listen";
 import { normalize as wvNormalize } from "../lib/text";
 import { wvSetBoolAttr } from "../lib/dom";
 
@@ -88,16 +89,17 @@ class _AnnotationMixin {
      *    in place so doesn't need a separate indicator.
      *
      *  Icon & Popup mode (inlineLinks=false): the popup is the only access
-     *    path to formatted content. Each content type has its own sub-toggle
-     *    (enableIconUrls / enableIconMarkdown / enableIconAppLinks); the
-     *    icon shows when ANY enabled type is present in the comment.
-     *    URLs are classified per-match via matchAll: a comment containing
-     *    BOTH http://… and mailto:… triggers the icon if EITHER toggle is on.
+     *    path to formatted content. Each content type's Settings checkbox
+     *    (URLs / App links / Markdown -- the same pref as in Inline mode,
+     *    read through _getEnableIconUrls / _getEnableIconAppLinks /
+     *    _getEnableIconMarkdown); the icon shows when ANY enabled type is
+     *    present in the comment. URLs are classified per-match via matchAll:
+     *    a comment containing BOTH http://… and mailto:… triggers the icon
+     *    if EITHER toggle is on.
      *
-     *  Master gates still apply: enableAppLinks=false strips app schemes
-     *  from URL_REGEX entirely, so enableIconAppLinks becomes a no-op when
-     *  the master is off. _anyMarkdownEnabled() must also be true for the
-     *  markdown branch to fire. */
+     *  enableAppLinks=false also strips app schemes from URL_REGEX entirely.
+     *  _anyMarkdownEnabled() must also be true for the markdown branch to
+     *  fire. */
     _iconWantedFor(t) {
         if (!t) return false;
         const n = this.normalize(t);
@@ -521,11 +523,12 @@ class _AnnotationMixin {
      *  Item Link, etc.). Resolves the underlying Zotero.Item from the
      *  row's `annotation-id` attribute (set by upstream's
      *  AnnotationRow custom element — see annotationRow.js:64).
-     *  Idempotent via a dataset flag so repeat scans don't stack
-     *  duplicate listeners. */
+     *  Keyed and instance-tagged (lib/listen.ts): repeat scans add
+     *  nothing, and a reload replaces the previous instance's handler
+     *  instead of stacking a second one (the dataset flag alone was reset
+     *  at startup; wiring slice 3, 2026-10-12). */
     _wireAnnotationRowContextMenu(row) {
         if (!row || !row.dataset) return;
-        if (row.dataset.wvCtxWired === "1") return;
         // Pref gate (Relations group → Open Related Item submenu).
         // The right-click handler is bound only when the toggle is on;
         // already-wired rows continue to fire their bound handler
@@ -552,7 +555,7 @@ class _AnnotationMixin {
                     Zotero.debug("[Weavero] pane row ctx err: " + err);
                 }
             };
-            row.addEventListener("contextmenu", handler);
+            wvListen(row, "annRowCtx:contextmenu", "contextmenu", handler, false, (this as any)._wvWireTag());
             row.dataset.wvCtxWired = "1";
         } catch (e) {
             Zotero.debug("[Weavero] _wireAnnotationRowContextMenu err: " + e);

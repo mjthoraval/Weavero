@@ -19,7 +19,7 @@ describe("Weavero — Plugins Manager: Recent Updates time frame", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvPMEnsureRecentFrame !== "function") this.skip();
+        if (!wv || typeof wv._wvPMEnsureRecentFrame !== "function") wvT.absent('!wv || typeof wv._wvPMEnsureRecentFrame !== "function"');
         savedPref = Zotero.Prefs.get(PREF);
     });
     after(() => {

@@ -37,7 +37,7 @@ describe("Weavero — reader stylesheet injection is idempotent", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._ensureReaderOuterStyles !== "function") this.skip();
+        if (!wv || typeof wv._ensureReaderOuterStyles !== "function") wvT.absent('!wv || typeof wv._ensureReaderOuterStyles !== "function"');
         doc = Zotero.getMainWindow().document;
         // A detached document stands in for the reader's outer iframe: the
         // method only needs getElementById / createElement / head.

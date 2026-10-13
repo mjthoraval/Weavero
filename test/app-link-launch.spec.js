@@ -37,7 +37,7 @@ describe("Weavero — app links launch with a triggering principal (10.0.2 shim)
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvLaunchNonHttpWithPrincipal !== "function") this.skip();
+        if (!wv || typeof wv._wvLaunchNonHttpWithPrincipal !== "function") wvT.absent('!wv || typeof wv._wvLaunchNonHttpWithPrincipal !== "function"');
         origLaunchURL = Zotero.launchURL;
         prevSkip = Zotero.Prefs.get("weavero.enableAppLinksSkipConfirm");
     });

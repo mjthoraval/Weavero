@@ -15,12 +15,11 @@
 describe("Weavero — reader sidebar toolbar and popup geometry", function () {
     this.timeout(90000);
     let wv, win, att, hl, reader, idoc, view;
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     const waitFor = async (fn, ms, what) => {
         const t0 = Date.now();
         while (Date.now() - t0 < ms) {
             try { const v = fn(); if (v) return v; } catch (e) {}
-            await sleep(250);
+            await wvT.sleep(250);
         }
         throw new Error("timeout waiting for " + what);
     };
@@ -44,7 +43,7 @@ describe("Weavero — reader sidebar toolbar and popup geometry", function () {
 
     before(async function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvAnnListEnsureButton !== "function") this.skip();
+        if (!wv || typeof wv._wvAnnListEnsureButton !== "function") wvT.absent('!wv || typeof wv._wvAnnListEnsureButton !== "function"');
         win = Zotero.getMainWindow();
         const path = PathUtils.join(PathUtils.tempDir, "wv-look-" + Date.now() + ".pdf");
         await IOUtils.writeUTF8(path, minimalPDFBytes());

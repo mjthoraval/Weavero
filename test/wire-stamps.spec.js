@@ -28,13 +28,38 @@
 
 describe("Weavero — wire stamps are build-keyed (hot-upgrade rewiring)", () => {
     let wv, win, iv;
+    // What Zotero.Reader._readers holds, for a failure message: class, item,
+    // whether its window is gone (a dead Proxy reads as "dead").
+    const describeReaders = (R) => {
+        try {
+            return (R._readers || []).map((r) => {
+                try {
+                    let w = "";
+                    try { w = r._window && r._window.closed ? "(window closed)" : ""; } catch (e) { w = "(window dead)"; }
+                    return (r.constructor && r.constructor.name) + ":" + r.itemID + w;
+                } catch (e) { return "dead"; }
+            }).join(", ");
+        } catch (e) { return String(e); }
+    };
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvWireTag !== "function") this.skip();
+        if (!wv || typeof wv._wvWireTag !== "function") wvT.absent('!wv || typeof wv._wvWireTag !== "function"');
         win = Zotero.getMainWindow();
         iv = win.ZoteroPane && win.ZoteroPane.itemsView;
         if (!iv) this.skip();
+        // Isolation (same as tearoff.spec.js): an earlier spec's plain-closed
+        // reader window can leave its reader in Zotero.Reader._readers for a
+        // beat; the getWindowStates cases below run the NATIVE on purpose,
+        // which derefs such a reader's dead iframe. Drop window-dead entries.
+        try {
+            const rs = /** @type {any[]} */ (Zotero.Reader._readers || []);
+            for (let i = rs.length - 1; i >= 0; i--) {
+                let dead = false;
+                try { const r = rs[i]; dead = !r || !r._window || r._window.closed; } catch (e) { dead = true; }
+                if (dead) rs.splice(i, 1);
+            }
+        } catch (e) {}
     });
 
     it("the tag is build-keyed, not a constant", () => {
@@ -138,7 +163,7 @@ describe("Weavero — wire stamps are build-keyed (hot-upgrade rewiring)", () =>
     });
 
     it("the native-navigate outline wrapper peels a boolean-era wrap", function () {
-        if (typeof wv._wvOutlineInstallRecovery !== "function") this.skip();
+        if (typeof wv._wvOutlineInstallRecovery !== "function") wvT.absent('typeof wv._wvOutlineInstallRecovery !== "function"');
         // A view whose navigate lives on the PROTOTYPE, wrapped by a stale
         // own-prop from "another build" under the boolean stamp -- the exact
         // state that killed native outline clicks on 2026-08-26.
@@ -153,6 +178,154 @@ describe("Weavero — wire stamps are build-keyed (hot-upgrade rewiring)", () =>
         assert.strictEqual(pv._wvOutlineWired, wv._wvWireTag());
         assert.notStrictEqual(pv._wvOutlineOrigNavigate, stale,
             "the dead saved bind must be dropped, not trusted for restore");
+    });
+
+    // Zotero.Notes.open / Zotero.Reader.open carry TWO Weavero layers (the
+    // multi-window wrapper, then the deck-window / hosted-tab wrapper). Their
+    // guard was a hand-bumped constant (`WV_OPEN_PATCH_V = 2`) until the
+    // 2026-10-07 survey pass. `open` is an OWN property of those singletons
+    // (no prototype fallback), so a peel restores the saved native instead of
+    // deleting. Pre-fix code finds its own constant on the planted stamp,
+    // skips, and the dead chain survives.
+    // The hold stamp travels with the chain: on a real app start the hold
+    // layer sits between the outer wrapper and the multi-window one.
+    const saveOpen = (host) => ({ open: host.open, o: host._wvOrigOpen, mw: host._wvMwOrigOpen, v: host._wvOpenPatchedV, w: host._wvOpenWired, h: host._wvHoldWrapped });
+    const restoreOpen = (host, s) => {
+        host.open = s.open;
+        for (const [k, v] of [["_wvOrigOpen", s.o], ["_wvMwOrigOpen", s.mw], ["_wvOpenPatchedV", s.v], ["_wvOpenWired", s.w], ["_wvHoldWrapped", s.h]]) {
+            if (v === undefined) delete host[k]; else host[k] = v;
+        }
+    };
+
+    it("Notes.open / Reader.open: a constant-era stamp over a dead two-layer chain is peeled to the native and re-wrapped", function () {
+        if (typeof wv._wvPatchNotesOpenForMultiWindow !== "function" || typeof wv._wvOpenPatchPeel !== "function") wvT.absent('typeof wv._wvPatchNotesOpenForMultiWindow !== "function" || typeof wv._wvOpenPatchPeel !== "function"');
+        for (const host of [Zotero.Notes, Zotero.Reader]) {
+            const saved = saveOpen(host);
+            const native = host._wvMwOrigOpen || host._wvOrigOpen || host.open;
+            try {
+                const staleMw = function _wvStaleMwFromOldBuild() { throw new Error("stale wrapper ran"); };
+                const staleOuter = function _wvStaleOuterFromOldBuild() { throw new Error("stale wrapper ran"); };
+                host._wvMwOrigOpen = native;
+                host._wvOrigOpen = staleMw;
+                host.open = staleOuter;
+                host._wvOpenPatchedV = 2;          // the constant that shipped
+                host._wvOpenWired = true;
+                wv._wvPatchNotesOpenForMultiWindow();
+                assert.notStrictEqual(host.open, staleOuter, "the dead outer wrapper is gone");
+                assert.notStrictEqual(host.open, staleMw, "the dead multi-window wrapper is gone");
+                assert.strictEqual(host._wvMwOrigOpen, native, "the native is the saved original again");
+                assert.isUndefined(host._wvOrigOpen, "the dead outer layer's saved ref is dropped (init re-wraps that layer)");
+                assert.strictEqual(host._wvOpenPatchedV, wv._wvWireTag());
+                assert.include(String(host.open), "_wvWithMainWindow", "the live wrapper is this build's");
+                const cur = host.open;
+                wv._wvPatchNotesOpenForMultiWindow();
+                assert.strictEqual(host.open, cur, "same tag must not re-wrap");
+            }
+            finally { restoreOpen(host, saved); }
+        }
+    });
+
+    it("the live Notes.open / Reader.open chains carry this instance's multi-window wrapper under tag stamps", () => {
+        for (const host of [Zotero.Notes, Zotero.Reader]) {
+            // With the boot-only hold in place (a real app start) the
+            // multi-window wrapper is inside the hold's closure, not a slot.
+            if (!host._wvHoldWrapped) {
+                const chain = [host.open, host._wvOrigOpen, host._wvMwOrigOpen].filter(f => typeof f === "function").map(String);
+                assert.isTrue(chain.some(s => s.includes("_wvWithMainWindow")), "the multi-window wrapper is in the live chain");
+            }
+            assert.strictEqual(host._wvOpenPatchedV, wv._wvWireTag(), "multi-window layer: tag-stamped, not a constant");
+            assert.strictEqual(host._wvOpenWired, wv._wvWireTag(), "outer layer: tag-stamped, not a boolean");
+        }
+    });
+
+    it("Reader.getWindowStates: a constant-era inner stamp over a dead two-layer chain is peeled to the native and re-wrapped", function () {
+        if (typeof wv._wvPatchReaderGetWindowStates !== "function" || typeof wv._wvReaderGWSPeel !== "function") wvT.absent('typeof wv._wvPatchReaderGetWindowStates !== "function" || typeof wv._wvReaderGWSPeel !== "function"');
+        const R = Zotero.Reader;
+        const saved = { f: R.getWindowStates, a: R._wvGWSOrig, b: R._wvOrigGetWindowStates, v: R._wvGWSPatchVer, w: R._wvGWSWired };
+        const native = R._wvGWSOrig || R._wvOrigGetWindowStates || R.getWindowStates;
+        try {
+            const staleInner = function _wvStaleInnerFromOldBuild() { throw new Error("stale wrapper ran"); };
+            const staleOuter = function _wvStaleOuterFromOldBuild() { throw new Error("stale wrapper ran"); };
+            R._wvGWSOrig = native;
+            R._wvOrigGetWindowStates = staleInner;
+            R.getWindowStates = staleOuter;
+            R._wvGWSPatchVer = 3;              // the constant that shipped
+            wv._wvPatchReaderGetWindowStates();
+            assert.notStrictEqual(R.getWindowStates, staleOuter, "the dead outer wrapper is gone");
+            assert.notStrictEqual(R.getWindowStates, staleInner, "the dead inner wrapper is gone");
+            assert.strictEqual(R._wvGWSOrig, native, "the native is the saved original again");
+            assert.isUndefined(R._wvOrigGetWindowStates, "the dead outer layer's saved ref is dropped");
+            assert.strictEqual(R._wvGWSPatchVer, wv._wvWireTag());
+            // Two calls, each named: a ReaderWindow left in `_readers` by an
+            // earlier spec with its window gone makes the NATIVE throw
+            // "can't access dead object" (getSecondViewState on a dead
+            // iframe); the wrapper's purge must have dropped it first.
+            let viaWrapper, viaNative;
+            try { viaWrapper = R.getWindowStates(); }
+            catch (e) { assert.fail("the live wrapper threw: " + e + " (readers: " + describeReaders(R) + ")"); }
+            try { viaNative = native.call(R); }
+            catch (e) { assert.fail("the native threw after the wrapper's purge: " + e + " (readers: " + describeReaders(R) + ")"); }
+            assert.deepEqual(viaWrapper, viaNative, "the live wrapper passes through outside a quit");
+        }
+        finally {
+            R.getWindowStates = saved.f;
+            for (const [k, v] of [["_wvGWSOrig", saved.a], ["_wvOrigGetWindowStates", saved.b], ["_wvGWSPatchVer", saved.v], ["_wvGWSWired", saved.w]]) {
+                if (v === undefined) delete R[k]; else R[k] = v;
+            }
+        }
+    });
+
+    it("Reader.getWindowStates: the wrapper's purge drops a reader whose window is already closed", function () {
+        // The native derefs such a reader's torn-down iframe and throws
+        // (getSecondViewState), which would sink the quit-time session save.
+        // Pre-fix the purge only dropped dead Proxies (an itemID read that
+        // throws); a live object with a closed window stayed.
+        if (typeof wv._wvPatchReaderGetWindowStates !== "function") wvT.absent('typeof wv._wvPatchReaderGetWindowStates !== "function"');
+        const R = /** @type {any} */ (Zotero.Reader);
+        const ghost = /** @type {any} */ ({ itemID: 0, _window: { closed: true } });
+        R._readers.push(ghost);
+        try {
+            assert.doesNotThrow(() => R.getWindowStates());
+            assert.notInclude(R._readers, ghost, "a closed-window reader is purged before the native runs");
+        }
+        finally {
+            const i = R._readers.indexOf(ghost);
+            if (i >= 0) R._readers.splice(i, 1);
+        }
+    });
+
+    it("the destroy-side peel returns a singleton member to the innermost saved original with no stamp left", function () {
+        if (typeof wv._wvSingletonPeel !== "function") wvT.absent('typeof wv._wvSingletonPeel !== "function"');
+        const native = function native() { return "native"; };
+        const mid = function mid() { return "mid"; };
+        const fake = { open: function outer() {}, _wvMwOrigOpen: native, _wvOrigOpen: mid, _wvOpenPatchedV: "x", _wvOpenWired: "y", _wvHoldWrapped: "z", _wvOther: 1 };
+        wv._wvOpenPatchPeel(fake);
+        assert.strictEqual(fake.open, native, "innermost saved original wins");
+        assert.deepEqual(Object.keys(fake).filter(k => /^_wv/.test(k)), ["_wvOther"], "every open stamp and saved ref is gone; unrelated keys stay");
+        const g = { getWindowStates: function outer() {}, _wvGWSOrig: native, _wvOrigGetWindowStates: mid, _wvGWSPatchVer: 3, _wvGWSWired: "t" };
+        wv._wvReaderGWSPeel(g);
+        assert.strictEqual(g.getWindowStates, native);
+        assert.deepEqual(Object.keys(g).filter(k => /^_wv/.test(k)), []);
+        const l = { getByTabID: function outer() {}, _wvOrigGetByTabID: native, _wvLookupVer: 1 };
+        wv._wvReaderLookupPeel(l);
+        assert.strictEqual(l.getByTabID, native);
+        assert.deepEqual(Object.keys(l).filter(k => /^_wv/.test(k)), []);
+        // Nothing saved: the member is left alone (never set to undefined).
+        const n = { open: native };
+        wv._wvOpenPatchPeel(n);
+        assert.strictEqual(n.open, native);
+    });
+
+    it("no boolean or constant wire stamps remain on the Zotero.Notes / Zotero.Reader singletons", () => {
+        const offenders = [];
+        for (const o of [Zotero.Notes, Zotero.Reader].filter(Boolean)) {
+            for (const k of Object.getOwnPropertyNames(o)) {
+                if (!/^_wv.*(Wired|Wrapped|Patched|PatchedV|Ver)$/.test(k)) continue;
+                const v = o[k];
+                if (typeof v === "boolean" || typeof v === "number") offenders.push(k + "=" + v);
+            }
+        }
+        assert.deepEqual(offenders, [], "a stamp that survives destroy() skips the re-wire (2026-08-25 / 2026-10-07)");
     });
 
     it("re-running the wiring under the CURRENT tag is a no-op (idempotent)", () => {

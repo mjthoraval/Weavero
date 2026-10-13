@@ -124,3 +124,29 @@ Use `test/restart/fixture-notes.md` (2 main windows + 2 reader windows + 3 group
    (dragstart never arms the flag for `zotero-pane`) and the renderer self-heal
    (a stale flag no longer freezes chip drawing), and was verified to FAIL on
    the pre-fix code. A1–A5 (restart/session survival) remain to be automated.
+
+## Moves never lose tabs (survey 2026-10-06)
+
+Hand checks for the tab-move and conversion paths; the code contracts are in
+`test/stuck-state-contracts.spec.js`, the behaviour needs windows. Each one:
+the source tab or window must still be there when the target cannot take it.
+
+- [ ] **Move a tab to a reader window** (List all tabs ▸ row ▸ move, or drag):
+      the tab appears in the target BEFORE it leaves the source; with the
+      target window closed mid-move, the source tab stays.
+- [ ] **Move Tabs to New Window** with two selected tabs: both land in the
+      new window; if the new window fails to open (watch the debug log for
+      "new window never settled"), the source tabs are still open.
+- [ ] **Convert reader window → main** and **main → reader**: close the NEW
+      window within a second of starting the conversion → the source keeps
+      every tab; no tab is dropped silently.
+- [ ] **Drag one main tab into a reader window's strip** (no-reload swap):
+      the moved reader keeps rendering and reacting (its tab id is the source
+      tab's); the other tabs in the strip stay visible if the swap bails.
+- [ ] **Saved windows ▸ Reopen** on an entry that holds only notes: the alert
+      shows and the entry is STILL in the list afterwards.
+- [ ] **Session switch with a change in the last second**: edit a tab (open /
+      close one), switch sessions immediately, switch back → the outgoing
+      session has the tab set from BEFORE the switch, not a half-closed one.
+- [ ] **Quit with hidden collections and a custom title on the first window**
+      (E1 restart): both are back after the restart.

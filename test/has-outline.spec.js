@@ -32,7 +32,7 @@ describe("Weavero — Has Weavero Outline filter", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
         // Stand in for the outline store so the spec needs no files.
         savedHasCurated = wv._wvOutlineHasCurated;
         wv._wvOutlineHasCurated = (_lib, key) => CURATED.has(key);

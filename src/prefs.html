@@ -398,13 +398,13 @@
   <vbox class="wv-block" data-gated-by="enableLinksAndRelations" data-wv-in="links">
       <html:div class="wv-show-row">
         <html:span class="wv-show-label">Show:</html:span>
-        <checkbox label="URLs" class="wv-mirror wv-mark-url" data-wv-also="enableIconUrls"
+        <checkbox label="URLs" class="wv-mark-url"
           preference="extensions.zotero.weavero.enableInlineUrls"/>
         <checkbox label="Zotero links" class="wv-mark-zotero"
           preference="extensions.zotero.weavero.enableZoteroLinks"/>
-        <checkbox label="App links" class="wv-mirror wv-mark-app" data-wv-also="enableIconAppLinks"
+        <checkbox label="App links" class="wv-mark-app"
           preference="extensions.zotero.weavero.enableAppLinks"/>
-        <checkbox label="Markdown" class="wv-mirror" data-wv-also="enableIconMarkdown"
+        <checkbox label="Markdown"
           preference="extensions.zotero.weavero.enableCommentMarkdown"/>
       </html:div>
       <html:p class="wv-desc">Markdown: <html:strong>**bold**</html:strong>, <html:em>*italic*</html:em>, ~~strike~~, <html:span class="wv-mono">`code`</html:span>, <html:span class="wv-mono">[label](url)</html:span>. App-link schemes are picked just below.</html:p>
@@ -854,7 +854,7 @@
   <vbox class="wv-block wv-block-end" data-gated-by="enableVisualExtras" data-wv-in="extras x-plugins">
       <checkbox label="Plugins Manager extras (search box, card details, normal window)" native="true"
         preference="extensions.zotero.weavero.enablePluginsSearch"/>
-      <html:p class="wv-desc">Tools → Plugins gets a search box (Ctrl+F focuses it, × clears it), cards showing author [GitHub owner] · version · last updated, a normal window with minimize/maximize (with <html:em>Hide Title Bar &#8594; Plugins Manager</html:em> on, the main window&#8217;s title-bar layout; off, the system&#8217;s own title bar and menu bar), and Recent Updates always visible, with a menu on its heading for how far back it goes (last day to all; Zotero&#8217;s own stops at 2 days), remembered. The manager reopens on the Plugins list.</html:p>
+      <html:p class="wv-desc">Tools → Plugins gets a search box (Ctrl+F focuses it, × clears it), cards showing author [GitHub owner] · version · last updated, a normal window with minimize/maximize (with <html:em>Hide Title Bar &#8594; Plugins Manager</html:em> on, the main window&#8217;s title-bar layout; off, the system&#8217;s own title bar and menu bar), and Recent Updates always visible, with a menu on its heading for how far back it goes (last day to all; Zotero&#8217;s own stops at 2 days), remembered. The manager reopens on the Plugins list. On Zotero 11, whose manager hides its sidebar, the sidebar comes back with Plugins and Recent Updates (and Available Updates while updates are pending).</html:p>
   </vbox>
 
   <!-- ============================ Default attachment

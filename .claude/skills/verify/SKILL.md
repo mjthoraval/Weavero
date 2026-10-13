@@ -99,5 +99,6 @@ manifest changed, their rules files carry the extra checks.
 Confirm with the version in the link text, e.g.
 `[View the rebuilt XPI — v0.18.6-dev.3](weavero-v0.18.6-dev.3.xpi)`, state
 what was verified with evidence, and list any remaining manual checks at the
-end. Commit in logical units (feature/fix commit separate from the `chore:`
+end. Say what you left: any warning, failing or skipped check you decided to
+accept, and why — never silently. Commit in logical units (feature/fix commit separate from the `chore:`
 bump; never `git add -A`).

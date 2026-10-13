@@ -21,7 +21,7 @@ describe("Weavero — filter tile icons", () => {
 
 	before(function () {
 		wv = Zotero.Weavero && Zotero.Weavero.plugin;
-		if (!wv || !wv._ATTACHMENT_FILE_TYPES) this.skip();
+		if (!wv || !wv._ATTACHMENT_FILE_TYPES) wvT.absent('!wv || !wv._ATTACHMENT_FILE_TYPES');
 	});
 
 	it("Linked File is Zotero's transparent page + chain badge in currentColor", () => {

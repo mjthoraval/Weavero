@@ -15,7 +15,7 @@ describe("Weavero — undo engine", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvUndoPush !== "function") this.skip();
+        if (!wv || typeof wv._wvUndoPush !== "function") wvT.absent('!wv || typeof wv._wvUndoPush !== "function"');
         wv._wvUndoClear(SCOPE);
         wv._wvUndoRegisterType("spec.step", {
             undo(d) { d.log.push("undo " + d.label); },
@@ -118,9 +118,8 @@ describe("Weavero — undo engine", () => {
 
     it("overlapping or throwing batches close: later pushes are not grouped into them (review 2026-10-05)", async () => {
         wv._wvUndoClear(SCOPE);
-        const sleep = ms => new Promise(r => setTimeout(r, ms));
         // The first to start ends first: a restore-on-exit depth stuck at 1 here.
-        await Promise.all([wv._wvUndoBatch(() => sleep(5)), wv._wvUndoBatch(() => sleep(20))]);
+        await Promise.all([wv._wvUndoBatch(() => wvT.sleep(5)), wv._wvUndoBatch(() => wvT.sleep(20))]);
         assert.isFalse(wv._wvUndoInBatch(), "two overlapping gestures: depth back to 0");
         let threw = false;
         try { await wv._wvUndoBatch(async () => { throw new Error("body"); }); } catch (_) { threw = true; }

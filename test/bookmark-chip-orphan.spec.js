@@ -21,7 +21,7 @@ describe("Weavero — bookmark filter: an orphan matches the kind chip it is cou
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvBmNodeMatchesChips !== "function") this.skip();
+        if (!wv || typeof wv._wvBmNodeMatchesChips !== "function") wvT.absent('!wv || typeof wv._wvBmNodeMatchesChips !== "function"');
     });
 
     it("is counted as an item", () => {
@@ -62,7 +62,7 @@ describe("Weavero — bookmark kind remembered at bookmark time", () => {
     let wv;
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._bmStampItemKind !== "function") this.skip();
+        if (!wv || typeof wv._bmStampItemKind !== "function") wvT.absent('!wv || typeof wv._bmStampItemKind !== "function"');
     });
 
     it("stamps nothing for a target that does not resolve", () => {
@@ -97,7 +97,7 @@ describe("Weavero — an orphan keeps its annotation type and colour", () => {
     });
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvBmNodeWas !== "function") this.skip();
+        if (!wv || typeof wv._wvBmNodeWas !== "function") wvT.absent('!wv || typeof wv._wvBmNodeWas !== "function"');
     });
 
     it("from the remembered kind", () => {

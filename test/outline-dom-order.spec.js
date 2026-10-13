@@ -12,7 +12,7 @@ describe("Weavero — DOM outline insertion order", () => {
 
 	before(function () {
 		wv = Zotero.Weavero && Zotero.Weavero.plugin;
-		if (!wv || typeof wv._wvOutlineDomOrderIndex !== "function") this.skip();
+		if (!wv || typeof wv._wvOutlineDomOrderIndex !== "function") wvT.absent('!wv || typeof wv._wvOutlineDomOrderIndex !== "function"');
 		doc = Zotero.getMainWindow().document.implementation
 			.createHTMLDocument("wv-order-test");
 	});

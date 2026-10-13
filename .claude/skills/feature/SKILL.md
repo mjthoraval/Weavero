@@ -39,6 +39,12 @@ issues and `docs/`) for prior decisions touching the same surface.
 Never assert how Zotero/Firefox behaves from memory — verify in the mirror or
 live via `zotero_execute_js`, or label it a guess.
 
+Then check the capability isn't already done or under way: open upstream
+issues and PRs on zotero/zotero and zotero/reader (an open upstream PR for the
+same thing changes the plan — the undo work had to account for PR #6021), and
+the plugin registry for a plugin that already does it. Say what you found in
+the plan, including "nothing".
+
 ## Step 3: Plan checkpoint
 
 Present a short plan: files touched, approach, invariants at risk (check the
@@ -48,6 +54,11 @@ LAST interaction.
 
 ## Step 4: Implement
 
+- **Write the check before the code.** For each done-when item a spec
+  (`test/*.spec.js`) or a live-suite check can express, write that check
+  first and run it once, targeted, to watch it fail: the failing run is the
+  proof the check can see the feature at all, and it becomes Step 6's guard
+  for free. Items only a human can verify stay on Step 5's hands-on list.
 - New methods go in the right `modules/*.ts` bundle as
   `function(this: WeaveroPlugin, …)`; wire via `Object.assign` in index.ts.
 - Follow the path rules (auto-loaded from `.claude/rules/` when editing).
@@ -72,7 +83,8 @@ assumed, a convention was missing, a verification step was invented on the
 spot — route the lesson to its one home (rules file / skill step / root
 CLAUDE.md invariant / upstream register / memory) before reporting. New
 behaviour with a contract worth keeping gets a guard: a spec, a live-suite
-check, or a manual-protocol entry (same rules as /bugfix Step 6).
+check, or a manual-protocol entry (same rules as /bugfix Step 6) — usually
+the check already written in Step 4.
 
 ## Step 7: Report
 
@@ -80,6 +92,8 @@ Lead with what shipped and the verified evidence. Include:
 - the rebuilt-XPI link with version in the text,
 - any checks that need the user's hands (list them explicitly at the end),
 - commits made (logical units, conventional prefixes, bump separate),
-- guards added and lessons routed (or "none needed").
+- guards added and lessons routed (or "none needed"),
+- what you left: every warning, failing or skipped check, and shortcut you
+  decided to accept, and why — never silently.
 
 Do not push, release, or comment on public issues — those wait for the user.

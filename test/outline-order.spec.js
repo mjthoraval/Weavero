@@ -28,7 +28,7 @@ describe("Weavero — outline location→title matching declines ambiguity", () 
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvOutlineFindTitle !== "function") this.skip();
+        if (!wv || typeof wv._wvOutlineFindTitle !== "function") wvT.absent('!wv || typeof wv._wvOutlineFindTitle !== "function"');
     });
 
     it("a unique position resolves to its title", () => {
@@ -63,7 +63,7 @@ describe("Weavero — outline document-order insertion", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvOutlineDocOrderGap !== "function") this.skip();
+        if (!wv || typeof wv._wvOutlineDocOrderGap !== "function") wvT.absent('!wv || typeof wv._wvOutlineDocOrderGap !== "function"');
         const doc = Zotero.getMainWindow().document;
         host = doc.implementation.createHTMLDocument("wv-order-test");
         host.body.innerHTML = "<p id='a'>Alpha</p><p id='b'>Beta</p>"

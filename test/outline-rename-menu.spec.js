@@ -13,7 +13,7 @@ describe("Weavero — outline rename from the menu keeps the cursor", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) this.skip();
+        if (!wv) wvT.absent('!wv');
     });
 
     const stub = () => {

@@ -13,7 +13,7 @@ describe("Weavero — outline keyboard shortcuts (#51)", () => {
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvOutlineShortcutKey !== "function") this.skip();
+        if (!wv || typeof wv._wvOutlineShortcutKey !== "function") wvT.absent('!wv || typeof wv._wvOutlineShortcutKey !== "function"');
         for (const id of IDS) prev[id] = Zotero.Prefs.get("weavero.outlineKey." + id);
     });
 

@@ -38,7 +38,7 @@ describe("Weavero — open a collection in a new window; right-click keeps the s
     before(async function () {
         this.timeout(20000);
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvOpenRowInNewMainWindow !== "function") this.skip();
+        if (!wv || typeof wv._wvOpenRowInNewMainWindow !== "function") wvT.absent('!wv || typeof wv._wvOpenRowInNewMainWindow !== "function"');
         win = Zotero.getMainWindow(); doc = win.document; cv = win.ZoteroPane.collectionsView;
         if (!doc._wvCollTreeGestures) this.skip();
         savedPref = Zotero.Prefs.get("weavero.newMainWindow");

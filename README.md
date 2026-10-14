@@ -4,14 +4,14 @@
 </h1>
 
 [![Zotero](https://img.shields.io/badge/Zotero-7%E2%80%9310-brightgreen?logo=zotero&logoColor=red)](https://www.zotero.org)
-[![Tested on](https://img.shields.io/badge/Tested-Zotero%2010.0--beta-blue?logo=zotero&logoColor=red)](https://www.zotero.org/support/dev/client_coding/zotero_7_for_developers)
+[![Tested on](https://img.shields.io/badge/Tested-Zotero%2011%20beta%20%C2%B7%2010.0-blue?logo=zotero&logoColor=red)](https://www.zotero.org/support/dev/zotero_11_for_developers/)
 [![CI](https://img.shields.io/github/actions/workflow/status/mjthoraval/Weavero/test.yml?branch=main&label=CI&logo=github)](https://github.com/mjthoraval/Weavero/actions/workflows/test.yml)
 
 [![Latest release](https://img.shields.io/github/v/release/mjthoraval/Weavero?label=Release&color=blue)](https://github.com/mjthoraval/Weavero/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/mjthoraval/Weavero/latest/total?color=brightgreen)](https://github.com/mjthoraval/Weavero/releases)
 [![License](https://img.shields.io/github/license/mjthoraval/Weavero?label=License&color=lightgrey)](LICENSE)
 
-A Zotero 7 to 10 plugin that layers convenience features on top of the standard library and reader: clickable links in annotation comments and notes, a fast filter pane, bookmarks, related-item tools, a structured tabs menu, tab and window management, and extra items-tree columns. Everything is individually toggleable in Preferences.
+A Zotero 7 to 10 plugin, also tested on the Zotero 11 beta, that layers convenience features on top of the standard library and reader: clickable links in annotation comments and notes, a fast filter pane, bookmarks, related-item tools, a structured tabs menu, tab and window management, and extra items-tree columns. Everything is individually toggleable in Preferences.
 
 > [!NOTE]
 > **Your documents are safe.** Weavero never writes to or modifies your PDF files or attachments on disk — there's no risk of corrupting your documents. It only layers UI on top of Zotero's standard views and keeps its own data (bookmarks, preferences) in separate files. Any feature you turn off is inert.
@@ -19,7 +19,7 @@ A Zotero 7 to 10 plugin that layers convenience features on top of the standard 
 > [!WARNING]
 > **Weavero is under active development — please report anything that misbehaves** ([open an issue](https://github.com/mjthoraval/Weavero/issues)). A few things to know:
 >
-> - **Built on Zotero's internals.** Weavero hooks deep into Zotero's reader, items tree, tabs menu, and preferences, and is developed and tested against **Zotero 10.0-beta**. A Zotero update (beta or stable) can temporarily break a feature until the plugin catches up.
+> - **Built on Zotero's internals.** Weavero hooks deep into Zotero's reader, items tree, tabs menu, and preferences, and is developed on the **Zotero 11 beta** and tested there and on Zotero 10.0. A Zotero update (beta or stable) can temporarily break a feature until the plugin catches up.
 > - **Bookmarks are local-only.** The Bookmarks feature stores its data in `<Zotero data dir>/weavero/bookmarks.json`. Bookmarks are **not synced** across computers and are **not included in Zotero's cloud backup** — they won't appear on your other devices, and they're lost if you start a fresh profile or lose that folder. **Back up your Zotero data directory if your bookmarks matter to you.** (The Zotero developers have said they intend to add plugin-managed synced storage; Weavero will adopt it once it's available.)
 > - **Some features need Zotero 10.** A few rely on Zotero 10 APIs and may be unavailable or behave differently on Zotero 9.
 > - **Experimental, opt-in features.** Some features are off by default and marked *experimental* in Preferences (e.g. *PDF outline text highlight* in the Extras tab) — they may be rough or change.
@@ -320,7 +320,8 @@ Build/test tooling is all `devDependencies` (nothing from npm ships in the XPI):
 ## Compatibility
 
 - Zotero 7.0+ (declared `strict_min_version: 7.0`, `strict_max_version: 10.0.*`).
-- Tested on Zotero 10.0-beta. Some features rely on Zotero 10 APIs and may be unavailable or behave differently on Zotero 9.
+- Tested on the Zotero 11 beta and on Zotero 10.0. Zotero beta builds do not enforce `strict_max_version`, so Weavero runs on the 11 beta as it is; the declared range stays at 10.0.* because Zotero asks plugins not to declare Zotero 11 compatibility until Zotero 11 is feature-frozen ([Zotero 11 for developers](https://www.zotero.org/support/dev/zotero_11_for_developers/)).
+- Some features rely on Zotero 10 APIs and may be unavailable or behave differently on Zotero 9.
 
 ## Support
 

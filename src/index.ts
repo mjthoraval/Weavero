@@ -885,12 +885,13 @@ class WeaveroPlugin {
             return v === undefined ? true : !!v;
         } catch(e) { return true; }
     }
-    /** Experimental, standalone (NOT gated by any master): when on, clicking a
+    /** Standalone (NOT gated by any master): when on, clicking a
      *  PDF outline entry flashes the target HEADING TEXT — recovered from the
      *  page for embedded outlines (which only store a point), or used directly
      *  for extracted ones — with a consistent reset-on-each-click timer that
      *  also works around Zotero's native rapid-click highlight bug. Read at
-     *  click time by the reader navigate hook. Default OFF. */
+     *  click time by the reader navigate hook. Default ON (no longer
+     *  experimental). */
     _getEnableOutlineTextHighlight() {
         try {
             const v = Zotero.Prefs.get("weavero.enableOutlineTextHighlight");

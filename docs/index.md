@@ -40,7 +40,7 @@ Pinned tabs, named colour-coded **tab groups**, multi-select tabs, and a structu
 
 ## Extras
 
-Items-tree columns for annotation / tag / related counts, an *Added By* badge for annotations in group libraries with per-user colours, a Firefox-style hidden title bar, *Open in External Viewer*, a Plugins Manager with a search box (Ctrl+F), cards showing author, GitHub owner, version and last update, a remembered time frame for Recent Updates, its sidebar back on Zotero 11, in a normal resizable window, and an experimental PDF outline text highlight.
+Items-tree columns for annotation / tag / related counts, an *Added By* badge for annotations in group libraries with per-user colours, a Firefox-style hidden title bar, *Open in External Viewer*, a Plugins Manager with a search box (Ctrl+F), cards showing author, GitHub owner, version and last update, a remembered time frame for Recent Updates, its sidebar back on Zotero 11, in a normal resizable window, and a PDF outline text highlight.
 
 ## Install
 

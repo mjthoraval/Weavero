@@ -3,7 +3,7 @@
   Weavero
 </h1>
 
-[![Zotero](https://img.shields.io/badge/Zotero-7%E2%80%9310-brightgreen?logo=zotero&logoColor=red)](https://www.zotero.org)
+[![Zotero](https://img.shields.io/badge/Zotero-7%E2%80%9311-brightgreen?logo=zotero&logoColor=red)](https://www.zotero.org)
 [![Tested on](https://img.shields.io/badge/Tested-Zotero%2011%20beta%20%C2%B7%2010.0-blue?logo=zotero&logoColor=red)](https://www.zotero.org/support/dev/zotero_11_for_developers/)
 [![CI](https://img.shields.io/github/actions/workflow/status/mjthoraval/Weavero/test.yml?branch=main&label=CI&logo=github)](https://github.com/mjthoraval/Weavero/actions/workflows/test.yml)
 

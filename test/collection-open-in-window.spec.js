@@ -270,6 +270,13 @@ describe("Weavero — open a collection in a new window; right-click keeps the s
         assert.ok(wv._wvCollectionMenus && wv._wvCollectionMenus.length === 1, "one entry registered (a top-level separator would get the whole registration refused)");
         assert.ok(wv._wvCollectionMenuID, "MenuManager accepted it");
         const menu = doc.getElementById("zotero-collectionmenu");
+        // The separator's rule: shown only when the next VISIBLE entry below it
+        // is an entry, not another separator -- a visible separator there
+        // (the hidden-collections entries' own `.wv-hid-entry`, present once a
+        // second main window has existed) already draws the line. Asserting
+        // "any visible entry follows" failed in the full suite after
+        // anchor-mark-close (2026-10-14), on a correct one-line menu.
+        const sepWanted = (s) => { let n = s.nextElementSibling; while (n && n.hidden) n = n.nextElementSibling; return !!n && n.localName !== "menuseparator"; };
         await cv.selectByID("C" + coll.id);
         await win.ZoteroPane.buildCollectionContextMenu();
         const shown = new Promise(r => menu.addEventListener("popupshown", r, { once: true }));
@@ -298,8 +305,12 @@ describe("Weavero — open a collection in a new window; right-click keeps the s
             assert.ok(sep && sep.localName === "menuseparator" && sep.hasAttribute("data-wv-collection-open-sep"), "our separator under the entry");
             assert.strictEqual(menu.querySelectorAll("[data-wv-collection-open-sep]").length, 1, "one separator of ours");
             const followers = () => { const out = []; let n = sep.nextElementSibling; while (n) { out.push(n); n = n.nextElementSibling; } return out; };
-            const followed = () => followers().some(n => !n.hidden && n.localName !== "menuseparator");
-            assert.strictEqual(sep.hidden, !followed(), "separator follows what is visible after it");
+            assert.strictEqual(sep.hidden, !sepWanted(sep), "separator follows what is visible after it");
+            const shownBelow = [el, ...followers()].filter(n => !n.hidden);
+            for (let i = 1; i < shownBelow.length; i++) {
+                assert.isFalse(shownBelow[i - 1].localName === "menuseparator" && shownBelow[i].localName === "menuseparator",
+                    "no double separator line from our entry down");
+            }
             const was = followers().map(n => n.hidden);
             try {
                 followers().forEach(n => { n.hidden = true; });
@@ -308,7 +319,7 @@ describe("Weavero — open a collection in a new window; right-click keeps the s
             }
             finally { followers().forEach((n, i) => { n.hidden = was[i]; }); }
             sep._wvDecide();
-            assert.strictEqual(sep.hidden, !followed(), "back to the DOM's verdict");
+            assert.strictEqual(sep.hidden, !sepWanted(sep), "back to the DOM's verdict");
         }
         finally { try { menu.hidePopup(); } catch (e) {} await new Promise(r => win.setTimeout(r, 200)); }
         // another plugin's entry after ours: the separator shows
@@ -320,7 +331,8 @@ describe("Weavero — open a collection in a new window; right-click keeps the s
             await Promise.race([shown3, new Promise(r => win.setTimeout(r, 3000))]);
             const el = menu.querySelector("[data-wv-collection-open]"), sep = menu.querySelector("[data-wv-collection-open-sep]");
             assert.strictEqual(el.nextElementSibling, sep, "still right under the entry");
-            assert.isFalse(sep.hidden, "shown when an entry follows");
+            assert.isFalse(fake.hidden, "the other plugin's entry is visible");
+            assert.strictEqual(sep.hidden, !sepWanted(sep), "shown when an entry follows (a visible separator below already draws the line)");
             assert.strictEqual(menu.querySelectorAll("[data-wv-collection-open-sep]").length, 1, "reused, not duplicated");
             assert.strictEqual(menu.firstElementChild.id, "sync", "Zotero's block still intact");
         }

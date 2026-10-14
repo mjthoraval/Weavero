@@ -20,14 +20,14 @@ import { wvLivePlugin } from "./lib/live";
 import { wvTimeout, wvClearTimeout, wvSleep } from "./lib/timers";
 import { wvInjectStyle, wvRemoveStyle } from "./lib/style";
 import { wvWrap, wvUnwrap, wvWrapLayers } from "./lib/wrap";
-import { wvWhenWindowLoaded, wvBoolAttrOn, wvReaderMenuEvent } from "./lib/dom";
+import { wvWhenWindowLoaded, wvBoolAttrOn, wvReaderMenuEvent, wvWithin } from "./lib/dom";
 import { wvListen, wvUnlisten, wvUnlistenAll, wvListenKeys, wvUnlistenAllOn, wvSweepTagOnChrome } from "./lib/listen";
 import { wvStoreDir, wvStorePath, wvStoreChain, wvStoreWrite, wvStoreRead, wvStoreRemove } from "./lib/store";
 
 /** The shared helpers, published as `Zotero.Weavero.lib` so the suite can
  *  exercise them directly (they are bundled, not otherwise reachable). */
 const WV_LIB = { wvLivePlugin, wvTimeout, wvClearTimeout, wvSleep, wvInjectStyle, wvRemoveStyle, wvWrap, wvUnwrap, wvWrapLayers,
-    wvWhenWindowLoaded, wvBoolAttrOn, wvReaderMenuEvent,
+    wvWhenWindowLoaded, wvBoolAttrOn, wvReaderMenuEvent, wvWithin,
     wvListen, wvUnlisten, wvUnlistenAll, wvListenKeys,
     wvStoreDir, wvStorePath, wvStoreChain, wvStoreWrite, wvStoreRead, wvStoreRemove };
 import { URL_SCHEMES, urlMethods } from "./modules/url";
@@ -2424,6 +2424,9 @@ class WeaveroPlugin {
         // memory cache yet (Zotero.Items.exists === false during early load;
         // cost a note tab in restart-protocol runs 1/2/5).
         try { (this as any)._wvWireEarlyRestoreTracing(); } catch (e) {}
+        // The anchor / colour marks follow the window count when a window
+        // CLOSES too, on every platform (Linux kept a stale ⚓, 2026-10-14).
+        try { (this as any)._wvWireWindowCloseIndicators(); } catch (e) {}
         // Stash last quit's session file NOW, before anything overwrites it —
         // feeds the anchor-window verify-and-repair pass in the uiReady chain.
         try { (this as any)._wvStashBootSession(); } catch (e) {}
@@ -4933,6 +4936,7 @@ class WeaveroPlugin {
             (this as any)._wvWindowStoreFrozen = true;
         } catch (e) {}
         try { (this as any)._wvUnwireEarlyRestoreTracing(); } catch (e) {}
+        try { (this as any)._wvUnwireWindowCloseIndicators(); } catch (e) {}
         // Restore the per-window <item-details> tab-select filter.
         try {
             for (const w of (Zotero.getMainWindows() || [])) {

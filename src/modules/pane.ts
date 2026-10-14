@@ -30,7 +30,7 @@ import {
     BTN_SIDEBAR_CLASS, MENU_LABEL_PREFIXES, SCHEME_SVG_TEMPLATE,
 } from "./constants";
 import { BBT_BIBTEX_TRANSLATOR_ID, BBT_BIBLATEX_TRANSLATOR_ID } from "./url";
-import { winOf, wvSetBoolAttr, wvWhenWindowLoaded } from "../lib/dom";
+import { winOf, wvSetBoolAttr, wvWhenWindowLoaded, wvWithin } from "../lib/dom";
 import { wvInjectStyle, wvRemoveStyle } from "../lib/style";
 import { wvTimeout } from "../lib/timers";
 import { wvListen, wvUnlisten } from "../lib/listen";
@@ -6886,7 +6886,8 @@ class _PaneMixin {
             const onPointerDown = (e) => {
                 // Don't dismiss when the press lands inside our own menu —
                 // that would cancel the menu-item click before it fires.
-                if (ms.el && ms.el.contains(e.target)) return;
+                // wvWithin: its scrollbar's anonymous thumb too (#55).
+                if (ms.el && wvWithin(ms.el, e.target)) return;
                 hideMenu();
             };
             // Click stays as a fallback for keyboard-synthesised activations
@@ -9049,14 +9050,25 @@ class _PaneMixin {
                     "  .menubar-container > .titlebar-buttonbox { position: absolute;",
                     "    top: 0; right: 0; height: 100%; z-index: 5; margin-inline-start: 0; }",
                     "  #toolbar-menubar { margin: 0 !important; min-width: 0 !important; }",
-                    // No Z icon on Linux (the skin hides .titlebar-icon-container),
-                    // so the name gets the indent the icon gives it on Windows.
-                    "  .menubar-container > .wv-pm-title { margin-inline-start: 12px; }",
+                    // The name as GTK's own title bar draws it (MJT 2026-10-14:
+                    // "formatted same as without Weavero"): centred on the
+                    // WINDOW, in the system UI font, bold. Measured on Ubuntu /
+                    // Yaru: `font: caption` is GNOME's interface font (Sans 10 =
+                    // 13.33px), and bold "Plugins Manager" in it is 112.9px wide,
+                    // the native title's width (Cantarell, the WM title font, gives
+                    // 99px). Absolute, so the hamburger and the buttons cannot push
+                    // it off centre; the max-width keeps it clear of them on both
+                    // sides, for either button placement (reserve + 40px spacer +
+                    // 28px hamburger + 12px gap), ellipsized below that.
+                    "  .menubar-container > .wv-pm-title { position: absolute; left: 50%; top: 50%;",
+                    "    transform: translate(-50%, -50%); margin: 0;",
+                    "    max-width: calc(100% - 2 * (var(--wv-ctl-reserve, 138px) + 80px));",
+                    "    font: caption; font-weight: bold; }",
                     "}",
                     // Window buttons on the LEFT (GTK reversed placement): the
                     // main window's mirror -- buttons at the left edge, the 40px
-                    // drag spacer right after them, the name after that, the
-                    // hamburger at the right end (2026-10-01).
+                    // drag spacer right after them, the hamburger at the right
+                    // end (2026-10-01); the name stays centred (Linux rule above).
                     // Staleness probe for _wvWireCsdRefresh.
                     ":root { --wv-csd-rev: 0; }",
                     "@media (-moz-gtk-csd-reversed-placement) { :root { --wv-csd-rev: 1; } }",
@@ -9064,7 +9076,6 @@ class _PaneMixin {
                     "  .menubar-container > .titlebar-buttonbox { right: auto; left: 0; margin-inline: 10px 0; }",
                     "  .menubar-container { padding-right: 10px; padding-left: var(--wv-ctl-reserve, 138px); }",
                     "  .menubar-container > .wv-pm-drag-spacer { order: -1; }",
-                    "  .menubar-container > .wv-pm-title { margin-inline-start: 4px; }",
                     "}",
                     ".wv-pm-title { align-self: center; margin-inline-start: 4px;",
                     "  font-size: 12px; white-space: nowrap; overflow: hidden;",

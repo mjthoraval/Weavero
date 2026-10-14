@@ -34,7 +34,7 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via
 // defineProperties.
 
-import { winOf, wvPopupHost, wvDismissTooltip, wvSetBoolAttr } from "../lib/dom";
+import { winOf, wvPopupHost, wvDismissTooltip, wvSetBoolAttr, wvWithin } from "../lib/dom";
 import { wvLivePlugin } from "../lib/live";
 import { wvWrap, wvUnwrap } from "../lib/wrap";
 import { wvTimeout } from "../lib/timers";
@@ -5884,10 +5884,11 @@ class _FilterMixin {
                     if (panelAny.state !== "open" && panelAny.state !== "showing") return;
                     const t = e.target;
                     if (!t) return;
-                    if (panel.contains(t)) return;
-                    if (tbBtn && tbBtn.contains(t)) return;
+                    // wvWithin: a press on the panel's scrollbar targets its anonymous thumb (#55).
+                    if (wvWithin(panel, t)) return;
+                    if (tbBtn && wvWithin(tbBtn, t)) return;
                     const sb = docTop.getElementById("zotero-tb-search");
-                    if (sb && sb.contains(t)) return;
+                    if (sb && wvWithin(sb, t)) return;
                     // Also let clicks on Zotero's quick-search popups
                     // (mode selector dropdown) pass through.
                     if (t.closest && t.closest("menupopup")) return;
@@ -6780,7 +6781,8 @@ class _FilterMixin {
         }
         this._pillOrder = [];
         this._renderFilterBar();
-        this._applyItemsListFilter();
+        // Deliberate: a bounce must retry it, not drop it (_wvScheduleCascadeRetry).
+        this._applyItemsListFilter({ deliberate: true });
         // Clear any leftover Selection Target dimming from the old
         // state — _applyItemsListFilter doesn't touch wv-not-target.
         try { this._applySelectionTargetVisuals(); } catch (e) {}
@@ -6834,7 +6836,8 @@ class _FilterMixin {
             e.stopPropagation();
             opts.onRemove();
             this._renderFilterBar();
-            this._applyItemsListFilter();
+            // Deliberate: a bounce must retry it, not drop it (_wvScheduleCascadeRetry).
+            this._applyItemsListFilter({ deliberate: true });
         });
         chip.appendChild(removeSeg);
 
@@ -8498,8 +8501,9 @@ class _FilterMixin {
             box.style.display = "";
             if (!onDocMouseDown) {
                 onDocMouseDown = (e) => {
-                    if (box.contains(e.target)) return;
-                    if (topRow.contains(e.target)) return;
+                    // wvWithin: a press on the list's scrollbar targets its anonymous thumb (#55).
+                    if (wvWithin(box, e.target)) return;
+                    if (wvWithin(topRow, e.target)) return;
                     try { search.blur(); } catch (err) {}
                     hideBox();
                 };
@@ -9509,12 +9513,16 @@ class _FilterMixin {
                     // capture mistakenly saw "outside", ran
                     // `hideList`, then `popupshowing` re-fired
                     // `showList`. `composedPath().includes()`
-                    // correctly walks across shadow boundaries.
+                    // correctly walks across shadow boundaries. But
+                    // NOT into a scrollbar: a real press on the
+                    // list's scrollbar has a path without the box
+                    // -- wvWithin covers it (issue #55).
                     const path = (e.composedPath && e.composedPath()) || [];
                     const inTrigger = t === trigger
                         || path.indexOf(trigger) >= 0;
                     const inBox = t === box
-                        || path.indexOf(box) >= 0;
+                        || path.indexOf(box) >= 0
+                        || wvWithin(box, t);
                     const onChip = path.some((n: any) =>
                         n && n.classList
                         && n.classList.contains("wv-filter-itype-chip"));
@@ -10181,8 +10189,9 @@ class _FilterMixin {
             }
         };
         onDoc = (e) => {
-            if (pop.contains(e.target)) return;
-            if (anchor.contains(e.target)) return;
+            // wvWithin: a press on the popup's scrollbar targets its anonymous thumb (#55).
+            if (wvWithin(pop, e.target)) return;
+            if (wvWithin(anchor, e.target)) return;
             close();
         };
         const win = winOf(doc);
@@ -11654,12 +11663,19 @@ class _FilterMixin {
      *       count + row data.
      *
      *  On filter clear, restore the saved originals and re-invalidate. */
-    /** Retry a cascade-carrying apply that a guard bounced. Coalesced (one
-     *  pending timer), bounded (gives up ~3s after the LAST bounce), and
-     *  reload-proof: the callback resolves the live plugin and re-checks the
-     *  guards, re-arming while they still block. */
-    _wvScheduleCascadeRetry() {
+    /** Retry a DELIBERATE apply that a guard bounced: a cascade one (a chip
+     *  added) or a plain one the user asked for (Clear all, a chip's x --
+     *  `opts.deliberate`). Coalesced (one pending timer), bounded (gives up
+     *  ~3s after the LAST bounce), and reload-proof: the callback resolves the
+     *  live plugin and re-checks the guards, re-arming while they still block.
+     *  The retry cascades if ANY bounced request did (no opts = cascade, the
+     *  original callers). Plain deliberate applies were simply dropped until
+     *  2026-10-13: a Clear all within ~1 s of clearing a quick search left the
+     *  list filtered under an empty filter state (Ubuntu campaign, 2 of 6 runs
+     *  at 0.3-0.7 s; first seen 2026-10-02). */
+    _wvScheduleCascadeRetry(opts?: any) {
         try {
+            if (!opts || opts.cascade) (this as any)._wvRetryCascade = true;
             (this as any)._wvCascadeRetryUntil = Date.now() + 3000;
             if ((this as any)._wvCascadeRetryTimer) return;   // already pending
             const setT = wvTimeout;
@@ -11672,10 +11688,12 @@ class _FilterMixin {
                 if (this._filterApplying
                     || ((this as any)._suppressTreeObserverUntil
                         && Date.now() < (this as any)._suppressTreeObserverUntil)) {
-                    this._wvScheduleCascadeRetry();            // still blocked
+                    this._wvScheduleCascadeRetry({ cascade: false });   // still blocked; keeps the cascade request
                     return;
                 }
-                try { this._applyItemsListFilter({ cascade: true }); } catch (e) {}
+                const cascade = !!(this as any)._wvRetryCascade;
+                (this as any)._wvRetryCascade = false;
+                try { this._applyItemsListFilter({ cascade, deliberate: true }); } catch (e) {}
             }, 150);
         } catch (e) {}
     }
@@ -11724,8 +11742,8 @@ class _FilterMixin {
             // matching children stay collapsed -- two chips clicked in quick
             // succession showed 2 closed book rows instead of the expanded
             // annotations (2026-08-04). Park the intent and retry shortly.
-            wvTrace("bounce-suppress", { cascade: !!(opts && opts.cascade) });
-            if (opts && opts.cascade) this._wvScheduleCascadeRetry();
+            wvTrace("bounce-suppress", { cascade: !!(opts && opts.cascade), deliberate: !!(opts && opts.deliberate) });
+            if (opts && (opts.cascade || opts.deliberate)) this._wvScheduleCascadeRetry(opts);
             return;
         }
         // Guard — `tree.invalidate()` re-renders rows, which fires the
@@ -11755,8 +11773,8 @@ class _FilterMixin {
             //
             // But a deliberate CASCADE apply must not be silently
             // swallowed — same reasoning as the suppression guard above.
-            wvTrace("bounce-applying", { cascade: !!(opts && opts.cascade) });
-            if (opts && opts.cascade) this._wvScheduleCascadeRetry();
+            wvTrace("bounce-applying", { cascade: !!(opts && opts.cascade), deliberate: !!(opts && opts.deliberate) });
+            if (opts && (opts.cascade || opts.deliberate)) this._wvScheduleCascadeRetry(opts);
             // A NON-cascade bounce is usually safe to drop (the comment
             // above), but not when it was the only apply that would have
             // seen the settled row count: `keep` then keeps a watermark

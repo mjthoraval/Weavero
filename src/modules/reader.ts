@@ -27,13 +27,14 @@ import {
     PANEL_ID, BTN_CLASS, BTN_SIDEBAR_CLASS, BTN_POPUP_CLASS,
     WV_FUNNEL_DATA_URI,
 } from "./constants";
-import { winOf, wvIsHiddenOrCollapsed, wvSetBoolAttr, wvBoolAttrOn } from "../lib/dom";
+import { winOf, wvIsHiddenOrCollapsed, wvSetBoolAttr, wvBoolAttrOn, wvWithin } from "../lib/dom";
 import { wvRemoveStyle } from "../lib/style";
 import { wvLivePlugin } from "../lib/live";
 import { wvStoreWrite, wvStoreRead, wvStoreRemove } from "../lib/store";
 import { wvTimeout } from "../lib/timers";
 import { wvListen, wvListener, wvUnlisten, wvEventOpts } from "../lib/listen";
 import { wvWrap } from "../lib/wrap";
+import { urlPattern } from "../lib/links";
 import { wvStageNativeUndo } from "./undo";
 
 class _ReaderMixin {
@@ -157,17 +158,16 @@ class _ReaderMixin {
         const handler = (e) => {
             if (panel.style.display === "none" || !panel.isConnected) { teardown(); return; }
             try {
-                if (e.target && (e.target === panel || panel.contains(e.target))) return;
+                // wvWithin, not contains(): a press on the popup's own
+                // scrollbar targets its anonymous thumb (issue #55).
+                if (wvWithin(panel, e.target)) return;
                 // Don't dismiss when the mousedown is on the SAME anchor
                 // that opened this popup — the anchor's own click handler
                 // will run next and toggle the popup closed. Without this
                 // skip, dismiss-on-mousedown closes the popup, then the
                 // click event re-opens it (net effect: nothing happens).
                 const opener = panel._wvOpenedFor;
-                if (opener && (e.target === opener
-                        || (opener.contains && opener.contains(e.target)))) {
-                    return;
-                }
+                if (opener && wvWithin(opener, e.target)) return;
             } catch (er) {}
             onOutside(e);
         };
@@ -274,11 +274,11 @@ class _ReaderMixin {
             + "|``([\\s\\S]+?)``"
             + "|`([^`\\n]+?)`"
             + "|\\[([^\\]\\n]+?)\\]\\(([^)\\s]+)\\)"
-            + "|((?:" + this.URL_SCHEME_ALT + ")[^\\s<>\"\')\\]]*)",
+            + "|(" + urlPattern(this.URL_SCHEME_ALT) + ")",
             "g"
         ) : new RegExp(
             "\\[([^\\]\\n]+?)\\]\\(([^)\\s]+)\\)"
-            + "|((?:" + this.URL_SCHEME_ALT + ")[^\\s<>\"\')\\]]*)",
+            + "|(" + urlPattern(this.URL_SCHEME_ALT) + ")",
             "g"
         );
 
@@ -530,8 +530,8 @@ class _ReaderMixin {
             + "|``([\\s\\S]+?)``"
             // 7: code content (single backtick)
             + "|`([^`\\n]+?)`"
-            // 8: bare URL
-            + "|((?:" + this.URL_SCHEME_ALT + ")[^\\s<>\"')\\]]*)",
+            // 8: bare URL (lib/links.ts urlPattern: the badge's rule)
+            + "|(" + urlPattern(this.URL_SCHEME_ALT) + ")",
             "g"
         );
         let last = 0, m;
@@ -1208,7 +1208,17 @@ class _ReaderMixin {
             // applies the `selected` class to the .annotation div on
             // click (mirrors its own expand-on-click behaviour).
             + ".annotation.selected .wv-md-preview { -webkit-line-clamp: unset; }"
-            + ".annotation-popup .wv-md-preview { -webkit-line-clamp: unset; }"
+            // In-PDF annotation popup: no clamp; grow, then scroll, like the
+            // comment box it replaces (reader _view-popup.scss:
+            // `.annotation-popup .content { max-height: 10 * 16px + 8px;
+            // overflow-y: auto }`). Four classes: the old two-class unclamp
+            // lost to the three-class clamp above, so every popup preview
+            // was cut to 3 lines and could not scroll (issue #59, 2026-10-14).
+            + ".annotation-popup .comment.wv-comment-preview .wv-md-preview {"
+            + "  display: block; -webkit-line-clamp: unset;"
+            + "  max-height: 168px; overflow-y: auto;"
+            + "  content-visibility: visible;"
+            + "}"
             // Hide the overflow-only icon when the row is selected
             // (clamp lifted, full content shown inline).
             + ".annotation.selected .wv-btn-sidebar[data-wv-icon-reason='overflow'] { display: none; }"
@@ -7171,8 +7181,8 @@ class _ReaderMixin {
             wrapper.appendChild(popup);
 
             const onOutside = (e: any) => {
-                if (popup.contains(e.target)) return;
-                if (anchor.contains(e.target)) return;
+                if (wvWithin(popup, e.target)) return; // scrollbar presses too (#55)
+                if (wvWithin(anchor, e.target)) return;
                 popup.remove();
                 doc.removeEventListener("mousedown", onOutside, true);
                 delete win._wvWTFileTypeOutsideClose;
@@ -7250,8 +7260,8 @@ class _ReaderMixin {
             wrapper.appendChild(popup);
 
             const onOutside = (e: any) => {
-                if (popup.contains(e.target)) return;
-                if (anchor.contains(e.target)) return;
+                if (wvWithin(popup, e.target)) return; // scrollbar presses too (#55)
+                if (wvWithin(anchor, e.target)) return;
                 popup.remove();
                 doc.removeEventListener("mousedown", onOutside, true);
                 delete win._wvWTSettingsOutsideClose;
@@ -9344,7 +9354,22 @@ class _ReaderMixin {
      *  note's parent's best attachment, else any reader-able attachment in the
      *  note's library. Returns an itemID or null. */
     async _wvPickNoteDeckAnchor(note: any) {
-        const notOpen = (id: any) => { try { return !this._wvReaderWindowForNative(id); } catch (e) { return true; } };
+        // Also a reader Zotero has REGISTERED for `id` outside a main window: a
+        // ReaderWindow is in Zotero.Reader._readers, its `_window` set, from the
+        // moment Reader.open creates it, long before its _wvWT comes up. Without
+        // this a note window opened <200 ms after a reader window took that PDF as
+        // its throwaway anchor and then closed the anchor's tab -- the user's PDF
+        // window was gone (Ubuntu campaign 2026-10-13, 3/3 at 0 ms; a session
+        // restore reopening a PDF window and its child note's deck back to back is
+        // the real-world trigger, as the parent's attachment is the PREFERRED anchor).
+        const inReaderWindow = (id: any) => {
+            try {
+                return ((Zotero.Reader as any)._readers || []).some((r: any) => r && r.itemID === id
+                    && r._window && !r._window.closed && !r._window.ZoteroPane);
+            }
+            catch (e) { return false; }
+        };
+        const notOpen = (id: any) => { try { return !this._wvReaderWindowForNative(id) && !inReaderWindow(id); } catch (e) { return true; } };
         try {
             const parent: any = note.parentID ? Zotero.Items.get(note.parentID) : null;
             if (parent) {
@@ -10934,6 +10959,46 @@ class _ReaderMixin {
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // TEMPORARY WORKAROUND — REMOVE WHEN FIXED UPSTREAM  (grep tag: WV-TEMP-134233)
+    // Reported: https://forums.zotero.org/discussion/134233 (MJT, 2026-10-13)
+    //
+    // The reader cancels every pointerdown in reader.html outside a short
+    // exemption list (FocusManager._handlePointerDown, zotero/reader
+    // src/common/focus-manager.js), and a press on a scroll box's native
+    // scrollbar reaches it with the scroll box as the target -- so the press
+    // is cancelled and the scrollbar never gets :active. A Windows 11 overlay
+    // scrollbar is wide only while :hover or :active, so it shrank back
+    // mid-drag as soon as the pointer left it: the annotation list, Weavero's
+    // reader popups (Zotero 10.0.6 and 11, measured 2026-10-13). A cancelled
+    // press also kept its mousedown/mouseup from reaching reader.html at all.
+    //
+    // Only privileged code can tell a scrollbar press apart -- for the
+    // reader's own code `originalTarget` is the scroll box -- so this capture
+    // listener on the reader's window shadows `preventDefault` on THAT event
+    // alone: every reader listener still runs, only its cancel of a scrollbar
+    // press is dropped.
+    //
+    // RETIRE WHEN a scrollbar press in reader.html is no longer cancelled
+    // with this listener off: test/reader-scrollbar-press.spec.js checks that
+    // and fails the day upstream fixes it. Then delete this method and its
+    // call in _setupReaderObserver.
+    // ─────────────────────────────────────────────────────────────────────────
+    _wvReaderScrollbarPressFix(iwin: any) {
+        try {
+            const parts = new Set(["scrollbar", "scrollbarbutton", "slider", "thumb", "scrollcorner"]);
+            const Cu: any = (Components as any).utils;
+            wvListen(iwin, "readerScrollbarPress:pointerdown", "pointerdown", (e: any) => {
+                try {
+                    const o = e.originalTarget;
+                    if (!o || !parts.has(o.localName)) return;
+                    Object.defineProperty(Cu.waiveXrays(e), "preventDefault",
+                        { value: Cu.exportFunction(() => {}, iwin), configurable: true });
+                } catch (er) {}
+            }, true, (this as any)._wvWireTag());
+        } catch (e) { Zotero.debug("[Weavero] _wvReaderScrollbarPressFix err: " + e); }
+    }
+
     async _setupReaderObserver(reader) {
         if (this._readerObservers.has(reader)) return;
         // CLAIM THE SLOT BEFORE THE FIRST AWAIT. The guard above used to be
@@ -10975,6 +11040,8 @@ class _ReaderMixin {
 
             // Inject scoped CSS into the iframe so URL spans are styled there too.
             this._injectReaderStyles(idoc);
+            // WV-TEMP-134233: scrollbar presses are not cancelled.
+            (this as any)._wvReaderScrollbarPressFix(iwin);
             // Tag the outer reader iframe with .wv-ui-dark when needed
             // — the sidebar lives here and follows the UI theme.
             this._applyUIThemeClass();

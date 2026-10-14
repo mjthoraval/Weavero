@@ -384,7 +384,14 @@ export const PLUGIN_CSS = [
     // `selected` class to the .annotation row on click, mirroring its own
     // expand-on-click behaviour. (Verified via the v0.0.141 sel-diag log.)
     ".annotation.selected .wv-md-preview { -webkit-line-clamp: unset; }",
-    ".annotation-popup .wv-md-preview { -webkit-line-clamp: unset; }",
+    // In-PDF annotation popup: unclamped, grows then scrolls like Zotero's
+    // own popup comment box (max 10 * 16px + 8px). Must out-rank the
+    // three-class clamp above -- the two-class unclamp lost (issue #59).
+    ".annotation-popup .comment.wv-comment-preview .wv-md-preview {",
+    "  display: block; -webkit-line-clamp: unset;",
+    "  max-height: 168px; overflow-y: auto;",
+    "  content-visibility: visible;",
+    "}",
     // The overflow-only icon is the user's escape hatch when the clamp
     // hides part of the comment. Once the row is selected (clamp lifted,
     // full content visible), the icon would just clutter — hide it.

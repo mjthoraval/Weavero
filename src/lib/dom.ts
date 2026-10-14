@@ -130,6 +130,28 @@ export function wvReaderMenuEvent(event: any): any {
     }
 }
 
+/** True if `node` is `container` or lies inside it, INCLUDING native
+ *  anonymous content such as the element's own scrollbar. `contains()` stops
+ *  at that boundary: a real press on a popup's scrollbar arrives with the XUL
+ *  `thumb`/`slider`/`scrollbar` as `e.target` (not retargeted -- for a popup
+ *  in the reader's iframe it was seen only in the main window's document),
+ *  and neither `contains()` nor `composedPath()` includes the popup, so the
+ *  click-outside dismisser closed the comment popup on every scrollbar press
+ *  (issue #55, real presses on 11.0-beta.1, 2026-10-13; scripted events are
+ *  retargeted and never showed it). The anonymous nodes' `parentNode` chain
+ *  does reach the host (thumb -> slider -> scrollbar -> scroller). A shadow
+ *  root continues to its host. */
+export function wvWithin(container: any, node: any): boolean {
+    try {
+        if (!container || !node) return false;
+        for (let n = node; n; n = n.parentNode || (n.nodeType === 11 ? n.host : null)) {
+            if (n === container) return true;
+        }
+    }
+    catch (e) {}
+    return false;
+}
+
 /** True if a XUL element is hidden or collapsed, on every Zotero we support.
  *
  *  Firefox 153 made `hidden`/`collapsed` (and `selected`/`disabled`/`checked`)

@@ -25,6 +25,12 @@ name to a Zotero object, window, or document.
   (see the `filterMethods` comment in index.ts).
 - Reusable multi-instance widgets follow upstream's `XULElementBase` pattern
   (init()/destroy()/content getter, customElements.define) — not build-by-hand.
+- ONE URL rule: anything that finds links in text uses `lib/links.ts` --
+  `this.URL_REGEX` (buildUrlRegex) for a test or a match, `urlPattern(alt)`
+  inside a tokenizer's alternation. Never rebuild `URL_SCHEME_ALT + body`
+  by hand: the two comment renderers had their own copies, so a rule added
+  to one surface left the others showing links the badge did not count
+  (issue #56, xmlns values, 2026-10-14).
 
 ## Survival rules (each paid for with a regression)
 
@@ -72,6 +78,28 @@ name to a Zotero object, window, or document.
   reader iframe), not in about:blank ones. Read it with
   `InspectorUtils.getMatchingCSSRules(el)`. Found 2026-10-12 (the undo
   menu's toolbar no-drag was dead on 11); guard compat.spec.js.
+- A CLICK-OUTSIDE DISMISSER TESTS "INSIDE" WITH `wvWithin(el, e.target)`
+  (lib/dom.ts), never `el.contains(e.target)` or `composedPath()`. A real
+  press on the element's own scrollbar targets the scrollbar's
+  native-anonymous `thumb`/`slider`/`scrollbar`. It is not retargeted, and
+  for a popup in the reader's iframe it arrives only in the main window's
+  document. Neither `contains()` nor `composedPath()` includes the popup,
+  so every press on its scrollbar closed it (issue #55, 2026-10-13).
+  `closest()` does cross that boundary. A scripted mousedown dispatched at
+  the thumb IS retargeted, so the bug never shows in a spec that dispatches
+  events: hand the thumb to the check or the handler directly
+  (test/outside-dismiss-scrollbar.spec.js).
+- THE READER CANCELS PRESSES IN `reader.html`. FocusManager calls
+  `preventDefault()` on every pointerdown outside its exemption list
+  (inputs, `.annotation`, `.thumbnails-view`, `.outline-view`, `.preview-popup`,
+  ... -- zotero/reader src/common/focus-manager.js). So anything Weavero
+  injects there gets no `:active` on press (Zotero's own buttons get
+  the `active-pseudo-class-fix` class instead), and the press's
+  mousedown/mouseup never reach `reader.html` -- only the main window's
+  document sees them. Wire a press handler on `pointerdown`, or listen in
+  the main window. Presses on native scrollbars are exempted by Weavero's
+  WV-TEMP-134233 (`_wvReaderScrollbarPressFix`, reader.ts) until upstream
+  fixes forum 134233 (2026-10-13).
 - XUL `popupshowing`/`popuphidden` BUBBLE: every handler on a menu that can
   contain a submenu (native Move To / Copy To, Weavero's own Copy As / Add
   Bookmark) early-returns unless `ev.target === menu`, and a cleanup
@@ -213,6 +241,15 @@ name to a Zotero object, window, or document.
   everything-mode search landing under a chip lost a full-text-only
   parent (search-modes 86/88, 2026-09-10). Guard:
   `test/setfilter-order.spec.js` + live `search-modes` scope-menu cases.
+- An items-list filter apply the USER asked for passes `{ deliberate: true }`
+  (or `{ cascade: true }`): `_applyItemsListFilter` DROPS a plain apply that
+  lands inside the post-apply suppression window or while another apply runs
+  -- by design, those are the tree observer's own re-applies, whose retry
+  would loop -- and retries only flagged ones (`_wvScheduleCascadeRetry`).
+  Clear all and a chip's x applied plainly: within ~1 s of clearing a quick
+  search they were dropped, and the list stayed filtered under an empty
+  filter state (seen 2026-10-02, fixed 2026-10-13; guard
+  `test/filter-deliberate-retry.spec.js`).
 - NOTIFIER OBSERVERS registered on the Zotero global are long-lived
   hooks like the wraps: stamp them with `this._wvWireTag()` and
   re-register on a mismatch. `_wvWireFilterCacheInvalidator` guarded on
@@ -327,7 +364,27 @@ name to a Zotero object, window, or document.
   on BEFORE the window is first shown (DOMContentLoaded of the chrome
   document, as upstream's titlebar.js does at script time): set ~270ms
   after the show, GTK re-maps the window and it visibly opens, closes and
-  reopens (2026-10-01). Guard: `test/plugins-chrome-platform.spec.js`.
+  reopens (2026-10-01). Its window NAME looks like the platform's own
+  title: GTK centres it on the window in the system UI font (`font:
+  caption`), bold; Windows keeps it left-aligned. A 12px regular name at
+  the left read as a foreign bar on Ubuntu (MJT 2026-10-14). Guard:
+  `test/plugins-chrome-platform.spec.js`.
+- "Is this document open in a reader window?" also asks ZOTERO, not only
+  Weavero's window state: a `ReaderWindow` is in `Zotero.Reader._readers`
+  (its `_window` set by the constructor) the moment `Reader.open` creates it,
+  while `_wvWT` comes up only after the window loads. The note-deck anchor
+  picker read `_wvWT` alone and took a just-opened PDF window as its
+  throwaway anchor -- then closed it (2026-10-13; guard
+  `test/note-deck-anchor.spec.js`).
+- A mark that follows the WINDOW COUNT (the anchor ⚓ and the colour dots,
+  `_wvAnchorDecorVisible`) is re-evaluated when a main or reader window
+  opens AND when one closes, on every platform. The close side leaned on
+  the Windows taskbar overlay's close-repair pass (`_wvOvSetBadge` returns
+  at once elsewhere) and on onMainWindowUnload's managed-window branch: on
+  Linux a lone main window kept its ⚓ after a reader window or a natively
+  opened main window closed (2026-10-14). A Windows-only subsystem never
+  carries a cross-platform side effect. Guard:
+  `test/anchor-mark-close.spec.js`.
 - A pass that PERSISTS what it derives (a load-time migration or repair, a
   label sync) decides only from state that is there: "cannot tell" keeps
   the stored value, never takes a default. A group library's items are not
@@ -352,6 +409,17 @@ Match upstream Zotero for upstream-destined code: tabs; `let` over `const`
 their own line); `--` in comments, not em-dashes; new user-visible strings in
 Fluent `.ftl` only. Comments state constraints and hard-won invariants (with
 date/incident when non-obvious), never narration of the next line.
+
+## CSS overrides must out-rank what they override
+
+An override rule needs at least the specificity of the rule it undoes and
+must come after it. `.annotation-popup .wv-md-preview { -webkit-line-clamp:
+unset }` (2 classes) silently lost to the sidebar clamp
+`.comment.wv-comment-preview .wv-md-preview` (3), so every in-PDF popup
+preview was cut to 3 lines and could not scroll (issue #59, 2026-10-14).
+When adding a clamp / hide / overflow rule, grep for the rules meant to
+undo it and check their specificity; a spec reading the computed style in
+both contexts is the guard (test/annotation-popup-preview.spec.js).
 
 ## Editing mechanics
 

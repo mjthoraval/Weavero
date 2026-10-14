@@ -59,6 +59,16 @@ paths:
   the header-containment guard passed on dev (12 columns) and failed at 3
   on both `npm test` and CI (2026-09-14). Assert the INVARIANT, and derive
   the comparison from what the run itself measures.
+- A RECORDED characterization (an EXPECTED literal from a WV_*_RECORD run)
+  is recorded on the maintainer's machine -- Windows, French locale, dark
+  theme -- and compared in the release CI on Linux, English, light. Record
+  nothing locale-, platform- or theme-dependent: strip Zotero's localized
+  strings (the chip bar's item-type tooltips, "Livre" vs "Book"), and
+  compare wiring snapshots through `wvT.wiringNormalize` (Windows-only
+  wiring dropped off Windows, `wv-ui-dark` dropped, the Exit item named
+  one way). The 0.22.0 release CI failed on exactly these three, all
+  recorded after the last CI run (2026-10-13). A new isWin-gated wiring
+  key goes into wiringNormalize's Windows-only pattern.
 - A NEW or changed spec is run in the runner BEFORE it is committed, and
   the full-suite gate ("after the user validates") does not excuse it:
   `WV_TEST_ENTRIES=test/foo.spec.js[,test/bar.spec.js] npm test` runs only
@@ -104,6 +114,16 @@ paths:
   the main window first (`win.focus()` until `Services.focus.activeWindow
   === win`; collections-pane-toggle.spec.js `beforeEach`). Do not use the
   scaffold's `test.headless` locally: it `sudo apt install`s Xvfb.
+- WINDOW SIZES after a maximize -> restore on Linux: Firefox 153 (Zotero 11)
+  on GTK reports one TRANSIENT resize after every restore, 52 px (the CSD
+  margin) short of the final size, and corrects it by itself -- 2-17 ms in the
+  Plugins Manager, 100-150 ms in Zotero's own main window, with no Weavero
+  code involved (Ubuntu 2026-10-13). A spec must not treat every resize event
+  as a shown size: assert the final size, the absence of a corrective
+  `resizeBy`, and no wrong size HELD (>= 100 ms). MozAfterPaint cannot settle
+  whether a size was drawn (dispatched after the fact). Headless runs never
+  see it (no CSD): run such specs with `WV_TEST_HEADED=1` too
+  (test/plugins-chrome-platform.spec.js).
 - A spec's MutationObserver that checks what the plugin's own observer
   leaves in the DOM (the collections-tree paint guard) must be REGISTERED
   AFTER the plugin's -- observers are notified in registration order, so
@@ -137,3 +157,10 @@ paths:
   focused window passed alone and failed in the suite
   (window-wiring.spec.js, 2026-10-09: the filter's patch installers used
   `Zotero.getMainWindow()`; the spec now keeps focus on the first window).
+  And never CLOSE it before it has finished loading (`readyState` complete,
+  `ZoteroPane.itemsView` and `collectionsView` set): a main window closed
+  mid-initialization leaves its context-pane and tab notifier observers
+  registered on the dead window, and the next item event never finishes
+  dispatching -- an `eraseTx` in a later hook hung past its timeout
+  (anchor-mark-close.spec.js, 2026-10-14, where a wait that returned at
+  once closed the window within milliseconds).

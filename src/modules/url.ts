@@ -143,10 +143,10 @@ export const urlMethods = {
         } catch (e) { return false; }
     },
 
-    /** Single-match regex for a URL in plain text. The body class
-     *  `[^\s<>"')\]]+` stops at whitespace and the punctuation that's
-     *  most commonly trailing punctuation. Cached and invalidated
-     *  with `URL_SCHEME_ALT`. */
+    /** Single-match regex for a URL in plain text (rules in
+     *  src/lib/links.ts buildUrlRegex: the body stops at whitespace and
+     *  common trailing punctuation; never inside an `xmlns` value, #56).
+     *  Cached and invalidated with `URL_SCHEME_ALT`. */
     get URL_REGEX() {
         if (this._urlRegexCache) return this._urlRegexCache;
         this._urlRegexCache = buildUrlRegex(this.URL_SCHEME_ALT);

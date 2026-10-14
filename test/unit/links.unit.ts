@@ -3,7 +3,7 @@
 // check (URL_REGEX assembly is pref-driven there; here we test the pure
 // assembly and classification directly).
 import { expect } from "chai";
-import { MD_REGEX, schemeAltPart, joinSchemeAlt, buildUrlRegex, urlLinkClass } from "../../src/lib/links";
+import { MD_REGEX, schemeAltPart, joinSchemeAlt, buildUrlRegex, urlLinkClass, urlPattern } from "../../src/lib/links";
 
 describe("lib/links — urlLinkClass()", () => {
     it("zotero:// → wv-link-zotero", () => {
@@ -61,6 +61,45 @@ describe("lib/links — buildUrlRegex()", () => {
     it("URL body stops at whitespace and quote characters", () => {
         const m = 'x https://x.org/a"quoted'.match(re());
         expect(m && m[0]).to.equal("https://x.org/a");
+    });
+});
+
+// Issue #56: a namespace declaration's value is not a link.
+describe("lib/links — never a link inside an xmlns value (#56)", () => {
+    const ALT = joinSchemeAlt(["https?:\\/\\/", "\\bwww\\.", "zotero:\\/\\/"]);
+    const all = (t: string) => Array.from(t.matchAll(new RegExp(buildUrlRegex(ALT).source, "gi")), m => m[0]);
+    const viaPattern = (t: string) => Array.from(t.matchAll(new RegExp("(" + urlPattern(ALT) + ")", "g")), m => m[1]);
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">\n'
+        + '  <rect x="10" y="10" width="80" height="80" fill="#fed7aa"/>\n</svg>';
+
+    it("bare SVG source: no link (nor its www. tail)", () => {
+        expect(all(svg)).to.deep.equal([]);
+        expect(buildUrlRegex(ALT).test(svg)).to.equal(false);
+    });
+    it("fenced SVG source: no link", () => {
+        expect(all("```svg\n" + svg + "\n```")).to.deep.equal([]);
+    });
+    it("prefixed, single-quoted, spaced and unquoted declarations", () => {
+        expect(all("<svg xmlns:xlink='http://www.w3.org/1999/xlink'>")).to.deep.equal([]);
+        expect(all('<x xmlns = "https://example.org/ns">')).to.deep.equal([]);
+        expect(all("<x xmlns=http://example.org/ns>")).to.deep.equal([]);
+    });
+    it("real links around and inside the same markup stay links", () => {
+        expect(all(svg + "\nSee https://example.com/figure for the source."))
+            .to.deep.equal(["https://example.com/figure"]);
+        expect(all('<a href="https://example.com/a">x</a>')).to.deep.equal(["https://example.com/a"]);
+        expect(all('<use xlink:href="https://example.com/s.svg#i"/>')).to.deep.equal(["https://example.com/s.svg#i"]);
+        expect(all('<svg xmlns="http://www.w3.org/2000/svg"> www.example.org')).to.deep.equal(["www.example.org"]);
+    });
+    it("prose mentioning xmlns keeps its link", () => {
+        expect(all("the xmlns attribute: see https://www.w3.org/TR/xml-names/"))
+            .to.deep.equal(["https://www.w3.org/TR/xml-names/"]);
+    });
+    it("urlPattern (the renderers' tokenizer piece) follows the same rule", () => {
+        expect(viaPattern(svg)).to.deep.equal([]);
+        expect(viaPattern(svg + " https://example.com/x")).to.deep.equal(["https://example.com/x"]);
+        // The renderers number their groups around it: it must add none.
+        expect(new RegExp("(?:" + urlPattern(ALT) + ")|").exec("")!.length - 1).to.equal(0);
     });
 });
 

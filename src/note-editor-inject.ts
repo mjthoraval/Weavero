@@ -17,6 +17,7 @@
 // colours `.wv-note-linkified` via CSS and launches `[data-wv-href]` on click.
 import { Decoration, DecorationSet } from "prosemirror-view";
 import { Plugin, PluginKey } from "prosemirror-state";
+import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
 
 (function () {
     const KEY = new PluginKey("wvNoteLinkify");
@@ -218,7 +219,7 @@ import { Plugin, PluginKey } from "prosemirror-state";
     // source; all-off yields the never-matching \b\B sentinel). Fallback below
     // only if chrome never set it. `decorations` reads it fresh each call, so a
     // toggle change + a re-decorate (empty tx from chrome) re-scopes live.
-    const FALLBACK = "(https?:\\/\\/|zotero:\\/\\/|\\bwww\\.)[^\\s<>\"')\\]]*";
+    const FALLBACK = buildUrlRegex(joinSchemeAlt(["https?:\\/\\/", "zotero:\\/\\/", "\\bwww\\."])).source;
     function currentRe(): RegExp {
         const src = (window as any).__wvLinkifyRegexSrc || FALLBACK;
         return new RegExp(src, "gi");

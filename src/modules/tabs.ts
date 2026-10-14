@@ -16,7 +16,7 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via
 // defineProperties (see modules/annotation.ts for the pattern).
 
-import { winOf, wvSetBoolAttr } from "../lib/dom";
+import { winOf, wvSetBoolAttr, wvWithin } from "../lib/dom";
 import { wvLivePlugin } from "../lib/live";
 import { wvInjectStyle, wvRemoveStyle } from "../lib/style";
 import { wvWrap, wvUnwrap } from "../lib/wrap";
@@ -11712,6 +11712,52 @@ class _TabsMixin {
         } catch (e) {}
     }
 
+    /** Re-evaluate the in-window marks when a main or reader window CLOSES,
+     *  on every platform. Opening was covered (the "main-window-indicators"
+     *  wire; _wvWireReaderWindowIdentity for a reader window), closing was
+     *  not: onMainWindowUnload re-evaluates only when managed windows are in
+     *  play, and on Windows the taskbar overlay's close-repair pass did it as
+     *  a side effect (_wvOvSetBadge, Windows-only). On Linux the ⚓ and its
+     *  "(anchor)" tooltip stayed on a lone main window after a reader window
+     *  or a natively opened second main window closed (MJT, Ubuntu
+     *  2026-10-14). The closing window is still enumerated while the
+     *  listeners run (measured on Zotero 11: listed, `closed` already true;
+     *  gone one tick later), so the pass is deferred, on the sandbox clock --
+     *  a timer on the closing window would die with it. */
+    _wvWireWindowCloseIndicators() {
+        try {
+            this._wvUnwireWindowCloseIndicators();
+            const listener: any = {
+                onOpenWindow() {},
+                onCloseWindow(xul: any) {
+                    try {
+                        const w: any = xul && xul.docShell && xul.docShell.domWindow;
+                        const wt = w && w.document && w.document.documentElement
+                            && w.document.documentElement.getAttribute("windowtype");
+                        if (wt !== "navigator:browser" && wt !== "zotero:reader") return;
+                        wvTimeout(() => {
+                            try {
+                                const lp: any = wvLivePlugin();
+                                if (lp) lp._wvUpdateAllMainWindowIndicators();
+                            } catch (e) {}
+                        }, 50);
+                    } catch (e) {}
+                },
+            };
+            Services.wm.addListener(listener);
+            this._wvWindowCloseIndicatorsListener = listener;
+        } catch (e) { Zotero.debug("[Weavero] _wvWireWindowCloseIndicators err: " + e); }
+    }
+
+    _wvUnwireWindowCloseIndicators() {
+        try {
+            if (this._wvWindowCloseIndicatorsListener) {
+                Services.wm.removeListener(this._wvWindowCloseIndicatorsListener);
+                this._wvWindowCloseIndicatorsListener = null;
+            }
+        } catch (e) {}
+    }
+
     /** Undo _setupTabBarWiring: the observer and the pinned-tab visuals.
      *  Separate from the glyph teardown so that turning the glyph off (or
      *  starting with it off) leaves pins/groups/DnD wired (#15). */
@@ -12627,8 +12673,8 @@ class _TabsMixin {
         // anything else dismisses. Listen on capture so chained
         // handlers can't swallow the event before us.
         const onOutside = (e) => {
-            if (popup.contains(e.target)) return;
-            if (anchor.contains(e.target)) return;
+            if (wvWithin(popup, e.target)) return; // scrollbar presses too (#55)
+            if (wvWithin(anchor, e.target)) return;
             popup.remove();
             doc.removeEventListener("mousedown", onOutside, true);
             delete this._wvFileTypeOutsideClose;
@@ -12705,8 +12751,8 @@ class _TabsMixin {
         panel.appendChild(popup);
 
         const onOutside = (e) => {
-            if (popup.contains(e.target)) return;
-            if (anchor.contains(e.target)) return;
+            if (wvWithin(popup, e.target)) return; // scrollbar presses too (#55)
+            if (wvWithin(anchor, e.target)) return;
             popup.remove();
             doc.removeEventListener("mousedown", onOutside, true);
             delete this._wvSettingsOutsideClose;

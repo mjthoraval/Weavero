@@ -24,7 +24,7 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
 import { BOOKMARK_PATH, BOOKMARK_PATH_14, BOOKMARK_PATH_20, SCHEME_SVG_TEMPLATE, URL_GLOBE_SVG, URL_EXTERNAL_SVG, WV_FUNNEL_DATA_URI, WV_FUNNEL_PATH, WV_FUNNEL_STEM_COLOR } from "./constants";
-import { wvPopupHost, wvDismissTooltip, wvSetBoolAttr, wvBoolAttrOn, wvReaderMenuEvent } from "../lib/dom";
+import { wvPopupHost, wvDismissTooltip, wvSetBoolAttr, wvBoolAttrOn, wvReaderMenuEvent, wvWithin } from "../lib/dom";
 import { wvLivePlugin } from "../lib/live";
 import { wvStoreWrite, wvStoreRead } from "../lib/store";
 import { wvTimeout, wvClearTimeout } from "../lib/timers";
@@ -2943,7 +2943,7 @@ class _ReaderPanelsMixin {
             // which must survive to the ctx/aux handler for the toggle-close.
             const onDown = (ev: any) => {
                 try {
-                    if (ev.target && menu.contains && menu.contains(ev.target)) return;
+                    if (wvWithin(menu, ev.target)) return;
                     if (ev.button === 2 && ev.target && ev.target.closest
                         && ev.target.closest(".sidebar-toolbar")) return;
                     close();
@@ -13080,7 +13080,7 @@ class _ReaderPanelsMixin {
      *  ignored (the anchor toggles/handles itself). Stored on
      *  `_wvReaderBmCtxDismiss` so `_wvCloseReaderBmContextMenu` unhooks it. */
     _wvOutlineWireMenuDismiss(reader: any, idoc: any, menu: any, anchor: any, close: () => void) {
-        const onDown = (ev: any) => { try { if (ev.target && menu.contains && menu.contains(ev.target)) return; if (ev.target === anchor || (anchor && anchor.contains && anchor.contains(ev.target))) return; close(); } catch (_) {} };
+        const onDown = (ev: any) => { try { if (wvWithin(menu, ev.target)) return; if (wvWithin(anchor, ev.target)) return; close(); } catch (_) {} };
         const onKey = (ev: any) => { if (ev.key === "Escape") close(); };
         const { docs, wins } = this._wvReaderReachableDocs(reader, idoc);
         for (const d of docs) { try { d.addEventListener("pointerdown", onDown, true); } catch (_) {} }
@@ -15137,8 +15137,8 @@ class _ReaderPanelsMixin {
                     // over the element goes stale if this listener is ever
                     // orphaned, and a stale guard closes every future popup.
                     const cur = idoc.getElementById(RP_FILTER_POPUP_ID);
-                    if (cur && t && cur.contains && cur.contains(t)) return;
-                    if (anchorBtn && (anchorBtn === t || (anchorBtn.contains && anchorBtn.contains(t)))) return;
+                    if (cur && wvWithin(cur, t)) return; // scrollbar presses too (#55)
+                    if (anchorBtn && wvWithin(anchorBtn, t)) return;
                     this._wvCloseReaderFilterPopup(idoc);
                 } catch (_) {}
             };
@@ -15902,7 +15902,7 @@ class _ReaderPanelsMixin {
                     // One-shot outside-dismiss (capture so it wins the race).
                     const closer = (ev: any) => {
                         try {
-                            if (menu.contains(ev.target) || ev.target === ub) return;
+                            if (wvWithin(menu, ev.target) || ev.target === ub) return;
                             menu.remove();
                         } catch (_) {}
                         idoc.removeEventListener("pointerdown", closer, true);
@@ -15957,7 +15957,7 @@ class _ReaderPanelsMixin {
                 pop.style.top = (br.bottom - pr.top + 3) + "px";
                 const closer = (ev: any) => {
                     try {
-                        if (pop.contains(ev.target) || ev.target === inp) return;
+                        if (wvWithin(pop, ev.target) || ev.target === inp) return;
                         pop.remove();
                         inp.removeAttribute("data-open");
                         calFor = null;
@@ -19206,8 +19206,8 @@ class _ReaderPanelsMixin {
             const onDown = (ev: any) => {
                 try {
                     const t = ev.target;
-                    if (t && popup.contains && popup.contains(t)) return;
-                    if (anchor && (anchor === t || (anchor.contains && anchor.contains(t)))) return;
+                    if (wvWithin(popup, t)) return; // scrollbar presses too (#55)
+                    if (anchor && wvWithin(anchor, t)) return;
                     this._wvReaderCloseBmChipPopup(idoc);
                 } catch (_) {}
             };
@@ -22383,11 +22383,11 @@ class _ReaderPanelsMixin {
 
             const onDown = (ev: any) => {
                 try {
-                    if (ev.target && menu.contains && menu.contains(ev.target)) return;
-                    // contains(), not ===: a real click's pointerdown lands on the
+                    if (wvWithin(menu, ev.target)) return;
+                    // wvWithin, not ===: a real click's pointerdown lands on the
                     // anchor's CHILD (svg/arrow span), and dismissing here made the
                     // following click REOPEN the menu -- the toggle looked broken.
-                    if (ev.target === anchor || (anchor && anchor.contains && anchor.contains(ev.target))) return;
+                    if (wvWithin(anchor, ev.target)) return;
                     close();
                 } catch (_) {}
             };
@@ -22474,11 +22474,11 @@ class _ReaderPanelsMixin {
 
             const onDown = (ev: any) => {
                 try {
-                    if (ev.target && menu.contains && menu.contains(ev.target)) return;
-                    // contains(), not ===: a real click's pointerdown lands on the
+                    if (wvWithin(menu, ev.target)) return;
+                    // wvWithin, not ===: a real click's pointerdown lands on the
                     // anchor's CHILD (svg/arrow span), and dismissing here made the
                     // following click REOPEN the menu -- the toggle looked broken.
-                    if (ev.target === anchor || (anchor && anchor.contains && anchor.contains(ev.target))) return;
+                    if (wvWithin(anchor, ev.target)) return;
                     close();
                 } catch (_) {}
             };
@@ -23197,7 +23197,7 @@ class _ReaderPanelsMixin {
                 try { menu.querySelectorAll(".wv-ctx-submenu").forEach((s: any) => s.classList.add("wv-ctx-submenu-left")); } catch (_) {}
             }
             // Dismiss on click-outside / Escape across reachable docs.
-            const onDown = (ev: any) => { try { if (ev.target && menu.contains && menu.contains(ev.target)) return; this._wvCloseReaderBmContextMenu(idoc); } catch (_) {} };
+            const onDown = (ev: any) => { try { if (wvWithin(menu, ev.target)) return; this._wvCloseReaderBmContextMenu(idoc); } catch (_) {} };
             const onKey = (ev: any) => { if (ev.key === "Escape") this._wvCloseReaderBmContextMenu(idoc); };
             const { docs, wins } = this._wvReaderReachableDocs(reader, idoc);
             for (const d of docs) { try { d.addEventListener("pointerdown", onDown, true); } catch (_) {} }
@@ -25506,7 +25506,7 @@ class _ReaderPanelsMixin {
                 // persistent pin is never permanently in the way.
                 const away = (ev: any) => {
                     try {
-                        if (ev.target && pin.contains && pin.contains(ev.target)) return;
+                        if (wvWithin(pin, ev.target)) return;
                         doc.removeEventListener("pointerdown", away, true);
                         pin.remove();
                         try { if (caret) caret.remove(); } catch (_) {}

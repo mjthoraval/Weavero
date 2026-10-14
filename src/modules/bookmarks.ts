@@ -35,7 +35,7 @@
 
 import { BOOKMARK_PATH, BOOKMARK_PATH_20, URL_GLOBE_SVG, URL_EXTERNAL_SVG, WV_FUNNEL_PATH, WV_FUNNEL_STEM_COLOR } from "./constants";
 import { BM_HOVERCARD_CSS, WV_PIN_ICON_URI } from "./reader-panels";
-import { wvPopupHost, wvDismissTooltip, wvSetBoolAttr } from "../lib/dom";
+import { wvPopupHost, wvDismissTooltip, wvSetBoolAttr, wvWithin } from "../lib/dom";
 import { wvLivePlugin } from "../lib/live";
 import { wvStoreWrite, wvStoreRead } from "../lib/store";
 import { wvTimeout } from "../lib/timers";
@@ -3776,16 +3776,16 @@ class _BookmarksMixin {
         const onDown = (e: any) => {
             try {
                 const t = e.target;
-                if (panel.contains && panel.contains(t)) return;
+                // wvWithin: a press on the list's scrollbar targets its anonymous thumb (#55).
+                if (wvWithin(panel, t)) return;
                 // Clicks inside the side chip-filter popup (a sibling XUL
                 // panel, not a child of the bookmarks panel) shouldn't
                 // dismiss the bookmarks popup.
                 const chipPanel = doc.getElementById(BM_CHIP_POPUP_ID);
-                if (chipPanel && chipPanel.contains && chipPanel.contains(t)) return;
+                if (chipPanel && wvWithin(chipPanel, t)) return;
                 if (t && t.closest && (t.closest(".wv-bm-flyout")
                     || t.closest("#" + BM_ROW_MENU_ID))) return;
-                if (anchorBtn && (t === anchorBtn
-                    || (anchorBtn.contains && anchorBtn.contains(t)))) return;
+                if (anchorBtn && wvWithin(anchorBtn, t)) return;
                 this._bmHidePopup(win);
             } catch (err) {}
         };

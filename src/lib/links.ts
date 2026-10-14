@@ -27,11 +27,36 @@ export function joinSchemeAlt(parts: string[]): string {
     return parts.length ? parts.join("|") : "\\b\\B";
 }
 
-/** Single-match URL regex over plain text. The body class
- *  `[^\s<>"')\]]+` stops at whitespace and the most common trailing
+/** A URL body: it stops at whitespace and the most common trailing
  *  punctuation. */
+const URL_BODY = "[^\\s<>\"')\\]]*";
+
+/** A URL never STARTS inside the value of an XML namespace declaration --
+ *  `xmlns="…"`, `xmlns:xlink='…'`, quoted or not. A namespace name only
+ *  identifies a vocabulary; nothing is meant to be opened there. SVG
+ *  source in a comment got a link badge and a clickable namespace from
+ *  `xmlns="http://www.w3.org/2000/svg"`, fenced or bare (issue #56,
+ *  2026-10-14). The `[^\s"'<>]*` run covers every position inside the
+ *  value, so a match cannot restart at the value's `www.` either. */
+const NOT_IN_XMLNS_VALUE = "(?<!\\bxmlns(?::[\\w.-]+)?\\s*=\\s*[\"']?[^\\s\"'<>]*)";
+
+/** The lookahead runs first so the lookbehind is only tried where a scheme
+ *  actually starts, not at every position of every comment. */
+function urlStart(schemeAlt: string): string {
+    return "(?=" + schemeAlt + ")" + NOT_IN_XMLNS_VALUE;
+}
+
+/** The URL pattern with NO capture groups, for tokenizers that embed it in
+ *  their own alternation (the comment renderers in modules/reader.ts) --
+ *  the same rule as buildUrlRegex, so the badge and the rendered links
+ *  never disagree. */
+export function urlPattern(schemeAlt: string): string {
+    return urlStart(schemeAlt) + "(?:" + schemeAlt + ")" + URL_BODY;
+}
+
+/** Single-match URL regex over plain text; group 1 is the scheme. */
 export function buildUrlRegex(schemeAlt: string): RegExp {
-    return new RegExp("(" + schemeAlt + ")[^\\s<>\"')\\]]*");
+    return new RegExp(urlStart(schemeAlt) + "(" + schemeAlt + ")" + URL_BODY);
 }
 
 /** Classify a URL into one of three CSS class buckets so each kind is

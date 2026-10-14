@@ -126,6 +126,26 @@ describe("Weavero -- Plugins Manager title bar is one row on every platform", ()
 			// Order along the row: name ... hamburger ... caption buttons.
 			assert.isBelow(rect(title).left, rect(burger).left, "the name sits left of the hamburger");
 			assert.isAtMost(rect(burger).right, rect(bb).left, "the hamburger sits left of the caption buttons");
+			// Linux: the name as GTK's own title bar draws it (MJT 2026-10-14) --
+			// centred on the window, in the system UI font, bold. Windows keeps
+			// its native left-aligned name.
+			if (Zotero.isLinux) {
+				const tr = rect(title);
+				assert.closeTo((tr.left + tr.right) / 2, win.innerWidth / 2, 1.5, "the name is centred on the window");
+				const probe = doc.createElementNS("http://www.w3.org/1999/xhtml", "span");
+				probe.style.font = "caption";
+				doc.documentElement.appendChild(probe);
+				const sys = win.getComputedStyle(probe);
+				const tcs = win.getComputedStyle(title);
+				try {
+					assert.equal(tcs.fontFamily, sys.fontFamily, "the system UI font");
+					assert.equal(tcs.fontSize, sys.fontSize, "at the system UI size");
+				}
+				finally {
+					probe.remove();
+				}
+				assert.isAtLeast(Number(tcs.fontWeight), 700, "bold");
+			}
 			// The 40px drag spacer meets the buttons -- the reservation is the
 			// measured box, not the Windows 138px (a 38px band on Linux before).
 			const dragSpacer = doc.querySelector(".wv-pm-drag-spacer");
@@ -170,19 +190,42 @@ describe("Weavero -- Plugins Manager title bar is one row on every platform", ()
 			await sleep(600);
 			// Every size the window takes after the restore, while NORMAL: the
 			// first fix corrected after the fact and the window visibly went
-			// 1920 -> 1052 -> 1000 (MJT: "flickers", 2026-10-01). It must land
-			// on the old size in one step.
-			const seen = [];
-			const rec = () => { if (win.windowState === win.STATE_NORMAL) seen.push(win.innerWidth + "x" + win.innerHeight); };
+			// 1920 -> 1052 -> 1000, the wrong size held ~200 ms until the fallback
+			// resizeBy (MJT: "flickers", 2026-10-01). It must land on the old size
+			// in one step: no correction, and no wrong size that HOLDS.
+			// Not "no wrong size at all": Firefox 153 (Zotero 11) on GTK reports one
+			// transient resize after every restore, 52 px short of the final size,
+			// corrected by Gecko itself -- 2-17 ms in the manager, 100-150 ms in
+			// Zotero's own main window, with Weavero's fix torn down too (Ubuntu
+			// 2026-10-13). Paint events could not tell whether it is ever drawn
+			// (MozAfterPaint is dispatched after the fact), so the test counts a
+			// wrong size only when it lasts >= 100 ms.
+			const seen = [];   // [size, at] per resize while NORMAL
+			const cur = () => win.innerWidth + "x" + win.innerHeight;
+			const rec = () => { if (win.windowState === win.STATE_NORMAL) seen.push([cur(), win.performance.now()]); };
+			const nativeResizeBy = win.resizeBy;
+			let corrections = 0;
+			win.resizeBy = function (...a) { corrections++; return nativeResizeBy.apply(this, a); };
 			win.addEventListener("resize", rec);
-			win.restore();
-			for (let i = 0; i < 30 && win.windowState !== win.STATE_NORMAL; i++) await sleep(100);
-			await sleep(1200);   // past the fallback correction and the minimum's return
-			win.removeEventListener("resize", rec);
+			try {
+				win.restore();
+				for (let i = 0; i < 30 && win.windowState !== win.STATE_NORMAL; i++) await sleep(100);
+				await sleep(1200);   // past the fallback correction and the minimum's return
+			}
+			finally {
+				win.removeEventListener("resize", rec);
+				delete win.resizeBy;
+			}
+			const end = win.performance.now();
+			const log = seen.map(([sz, at]) => sz + "@" + Math.round(at)).join(", ");
 			assert.closeTo(win.innerWidth, w0, 1, "width back to " + w0);
 			assert.closeTo(win.innerHeight, h0, 1, "height back to " + h0);
-			const detours = seen.filter((sz) => { const [w, h] = sz.split("x").map(Number); return Math.abs(w - w0) > 1 || Math.abs(h - h0) > 1; });
-			assert.deepEqual(detours, [], "no intermediate size after the restore (sizes seen: " + seen.join(", ") + ")");
+			assert.equal(corrections, 0, "the restore landed without a corrective resizeBy (resizes: " + log + ")");
+			const off = (sz) => { const [w, h] = sz.split("x").map(Number); return Math.abs(w - w0) > 1 || Math.abs(h - h0) > 1; };
+			// How long a size stayed: until the next DIFFERENT size (Gecko repeats one).
+			const lasted = (i) => { let j = i + 1; while (j < seen.length && seen[j][0] === seen[i][0]) j++; return (j < seen.length ? seen[j][1] : end) - seen[i][1]; };
+			const held = seen.filter(([sz], i) => off(sz) && lasted(i) >= 100).map(([sz], i) => sz);
+			assert.deepEqual(held, [], "no wrong size held after the restore (resizes: " + log + ")");
 			assert.equal(win.document.documentElement.style.minWidth, "1000px", "the declared minimum is back");
 		}
 		finally {

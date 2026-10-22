@@ -1335,13 +1335,18 @@ describe("Weavero — hidden collections (per window)", () => {
             // branch reads isContainerEmpty): deterministic, paint or no paint.
             const rendered = L.renderItem(iLA, L.selection, null, L.tree && L.tree.props ? L.tree.props.columns : undefined);
             assert.isOk(rendered && rendered.querySelector(".spacer-twisty") && !rendered.querySelector(".twisty"), "the manager renders no arrow for A: " + (rendered ? rendered.className : "no div"));
-            // The live row follows on a later frame -- only while the manager's
-            // window is visible. The CI's Windows runner keeps that second
-            // window unpainted (its rows stayed on the arrow for 5 s while the
-            // pane's row above repainted, 2026-10-22, test.yml on feb95875);
-            // the xvfb runner paints it late (null when read at once).
+            // The live row: after an explicit repaint request (what the manager's
+            // build does after its wraps), the rows the table has rendered are
+            // rebuilt synchronously (windowed-list.js invalidate ->
+            // rerenderItem). Both CI runners had left the arrow on that row for
+            // 5 s with the window reporting visible (2026-10-22, test.yml on
+            // feb95875 and 9432ee07) while this machine, Zotero 10.0.6 and one
+            // xvfb run repainted it -- the repaint is asked for here, and the
+            // message carries what the row holds if it still disagrees.
             const mgrArrow = () => { const el = rowEl(mw, "left", iLA); return el ? (el.querySelector(".twisty") ? "arrow" : (el.querySelector(".spacer-twisty") ? "spacer" : "none")) : "no row"; };
-            if (!mw.document.hidden) assert.isTrue(await wvT.waitFor(() => mgrArrow() === "spacer", 5000), "no arrow there: " + mgrArrow() + " (window visible)");
+            const mgrDiag = () => { try { const el = rowEl(mw, "left", iLA); const t = L.tree; return JSON.stringify({ row: el ? (el.querySelector(".cell-text") || {}).textContent : null, cls: el ? el.className : null, rows: L.rowCount, mounted: !!t, jsWindow: !!(t && t._jsWindow), rendered: t && t._jsWindow && t._jsWindow._renderedRows ? t._jsWindow._renderedRows.size : null, hidden: mw.document.hidden, w: mw.outerWidth, h: mw.outerHeight }); } catch (e) { return "diag err " + e; } };
+            try { if (L.tree) L.tree.invalidate(); } catch (e) {}
+            assert.isTrue(await wvT.waitFor(() => mgrArrow() === "spacer", 5000), "no arrow there: " + mgrArrow() + " " + mgrDiag());
             assert.isFalse(R.isContainerEmpty(idxOf(R, A)), "on the Hidden side A is the context row holding A1: an arrow");
             await wv._wvHidShow(win, LIB(), [wv._wvHidKey(A1)]);
             await cv.expandToCollection(A1.id);

@@ -4430,6 +4430,13 @@ class _PaneMixin {
                 await tr.ref.saveTx({ undoAction: "undo-action-rename-collection" });
             };
             await reloadTree(t);
+            // The wraps above (isContainerEmpty, isSelectable) feed renderItem:
+            // rows the table painted before them are rebuilt by an explicit
+            // repaint request (windowed-list.js invalidate -> rerenderItem,
+            // synchronous). Both CI runners showed a stale arrow on such a row
+            // for seconds after the build (2026-10-22); the reload's own
+            // invalidate depends on the table being mounted by then.
+            try { if (t.tree) t.tree.invalidate(); } catch (_) {}
             // Zotero's init selected the initial folder (My Library) before
             // the rows above could refuse it, and a refresh keeps the selection
             // set: drop a selection the tree would refuse now.

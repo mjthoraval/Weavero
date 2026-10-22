@@ -1331,12 +1331,17 @@ describe("Weavero — hidden collections (per window)", () => {
             const { left: L, right: R } = mw._wvHidMgrTrees;
             const iLA = idxOf(L, A);
             assert.isTrue(L.isContainerEmpty(iLA), "empty on the manager's Shown side too");
-            // The row's DOM follows the manager's reload on a later frame: on
-            // the release CI's xvfb runner it still carried the arrow when
-            // read at once (2026-10-22, v0.22.2's first run) -- wait as the
-            // pane checks above do.
+            // The rule itself, through the tree's own renderItem (its twisty
+            // branch reads isContainerEmpty): deterministic, paint or no paint.
+            const rendered = L.renderItem(iLA, L.selection, null, L.tree && L.tree.props ? L.tree.props.columns : undefined);
+            assert.isOk(rendered && rendered.querySelector(".spacer-twisty") && !rendered.querySelector(".twisty"), "the manager renders no arrow for A: " + (rendered ? rendered.className : "no div"));
+            // The live row follows on a later frame -- only while the manager's
+            // window is visible. The CI's Windows runner keeps that second
+            // window unpainted (its rows stayed on the arrow for 5 s while the
+            // pane's row above repainted, 2026-10-22, test.yml on feb95875);
+            // the xvfb runner paints it late (null when read at once).
             const mgrArrow = () => { const el = rowEl(mw, "left", iLA); return el ? (el.querySelector(".twisty") ? "arrow" : (el.querySelector(".spacer-twisty") ? "spacer" : "none")) : "no row"; };
-            assert.isTrue(await wvT.waitFor(() => mgrArrow() === "spacer", 5000), "no arrow there: " + mgrArrow());
+            if (!mw.document.hidden) assert.isTrue(await wvT.waitFor(() => mgrArrow() === "spacer", 5000), "no arrow there: " + mgrArrow() + " (window visible)");
             assert.isFalse(R.isContainerEmpty(idxOf(R, A)), "on the Hidden side A is the context row holding A1: an arrow");
             await wv._wvHidShow(win, LIB(), [wv._wvHidKey(A1)]);
             await cv.expandToCollection(A1.id);

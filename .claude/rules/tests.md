@@ -90,7 +90,13 @@ paths:
   build) is a race: the row paints on a later frame, and the CI's xvfb
   runner is slower than this machine (the manager's "no arrow" check read
   the arrow still there, same red run). Read it through `wvT.waitFor`
-  with the observed state in the message, as the pane checks do.
+  with the observed state in the message, as the pane checks do. And a
+  SECOND window (the manager, a reader window) may never paint on the
+  CI's Windows runner at all: that same check still showed the arrow
+  after 5 s there while the pane's row repainted (test.yml on feb95875,
+  2026-10-22). Guard a RENDER RULE through the tree's own `renderItem`
+  (deterministic, paint or no paint) and gate a live-DOM check of a
+  secondary window on `!win.document.hidden`.
 - A change that leaves something new on a main window (a `_wv*` expando,
   a wrap on ZoteroPane / Zotero_Tabs / the views, a keyed listener)
   re-records `test/window-wiring.spec.js` in the same commit, and the

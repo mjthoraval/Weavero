@@ -1765,7 +1765,7 @@ class _FilterMixin {
             const ctrs: any[] = (rp && Array.isArray(rp.collectionTreeRows))
                 ? rp.collectionTreeRows
                 : (rp && rp.collectionTreeRow ? [rp.collectionTreeRow] : []);
-            for (const ctr of ctrs) this._patchOneCtrGetItems(ctr);
+            for (const ctr of ctrs) this._patchOneCtrGetItems(ctr, win);
             this._patchRefreshForChevrons(rp);
             this._patchNotifyForFilter(rp);
         } catch (e) { dbg("[Weavero] _patchRefreshForReveals err: " + e); }
@@ -1775,7 +1775,7 @@ class _FilterMixin {
      *  Split out of `_patchRefreshForReveals` when beta.21 turned the single
      *  row into a list (a multi-collection selection has one per collection,
      *  and every one of them feeds `_refresh`). */
-    _patchOneCtrGetItems(ctr: any) {
+    _patchOneCtrGetItems(ctr: any, winFor?: any) {
         try {
             if (!ctr || typeof ctr.getItems !== "function") return;
             // Peel any prior-version wrap before installing the
@@ -1816,7 +1816,12 @@ class _FilterMixin {
                         // place until the next refresh. With this in
                         // place, the toggle phase filters against the
                         // genuine current search set immediately.
-                        const win = Zotero.getMainWindow();
+                        // The window whose row this is (captured at the
+                        // patch), not the focused main window: a search in
+                        // a BACKGROUND main window used to feed the focused
+                        // window's provider and leave its own parents stale
+                        // (per-main-window invariant, CLAUDE.md; 2026-10-22).
+                        const win = winFor || Zotero.getMainWindow();
                         const ivLocal: any = win && win.ZoteroPane
                             && win.ZoteroPane.itemsView;
                         const rpLocal: any = ivLocal && ivLocal.rowProvider;
@@ -13112,14 +13117,6 @@ class _FilterMixin {
             }
         }
         this._wvFilterWasActive = false;
-        // Even with no Weavero filter, populate the chevron maps
-        // from Zotero's quick-search state so the indicator
-        // renders on first visible children of quick-search-
-        // hiding containers. Empty maps if no search either.
-        // The compute memoizes on its inputs (2026-10-22): the post-search
-        // apply and the observer's reapply both landed here with the same
-        // ones, so the second walk and its repaint were pure cost (~0.2 s).
-        const chevronFresh = this._wvComputeChevronMapsForQuickSearch(rp);
         // The keep watermark describes a TRANSLATED view. With the
         // patches gone `getRow` is Zotero's own again and indices
         // mean what they say, so a leftover watermark would keep
@@ -13131,6 +13128,7 @@ class _FilterMixin {
         // since 2026-08-07 the untrusted path CLEARS the selection,
         // so it became a visible "my selection keeps vanishing" bug.
         delete rp._wvKeepRowsLen;
+        let cleared = false;
         if (rp._wvOrigGetRow) {
             // The translation off whole (layers, natives, count getter,
             // v9 props, view) -- the manual-expand tracker is its own
@@ -13140,18 +13138,22 @@ class _FilterMixin {
             // filter clear until a reload (survey 2026-10-06).
             this._wvFilterPatchRemove(rp, itemsView);
             this._partialCollapseOnFilterClear(rp, itemsView);
-            try { itemsView.tree.invalidate(); } catch (e) {}
+            cleared = true;
         }
-        // Repaint so chevrons (just computed by the helper above
-        // for quick-search-only mode) actually appear on the rows
-        // the tree painted BEFORE the MutationObserver ran the
-        // apply pass. Without this, the first paint after a quick
-        // search has empty maps and skips the chevron path; the
-        // user sees no indicator until something else mutates the
-        // tree. Pure paint invalidate — doesn't add/remove rows —
-        // so it can't loop through the MutationObserver. Only when the
-        // maps were just recomputed: unchanged maps were painted already.
-        if (chevronFresh) { try { itemsView.tree.invalidate(); } catch (e) {} }
+        // Even with no Weavero filter, populate the chevron maps from
+        // Zotero's quick-search state so the indicator renders on the
+        // first visible children of quick-search-hiding containers. Empty
+        // maps if no search either. The compute memoizes on its inputs
+        // (2026-10-22), and it runs AFTER the collapse above so the one
+        // repaint below paints the final rows with the final maps: until
+        // 2026-10-22 the clear repainted twice (once after the collapse,
+        // once after the maps), ~50 ms each on a 48k library.
+        const chevronFresh = this._wvComputeChevronMapsForQuickSearch(rp);
+        // One repaint: after a clear (rows and translation changed), or when
+        // the maps were just recomputed so chevrons appear on rows the tree
+        // painted BEFORE the observer ran this pass. A pure paint invalidate
+        // adds or removes no row, so it cannot loop through the observer.
+        if (cleared || chevronFresh) { try { itemsView.tree.invalidate(); } catch (e) {} }
         // Re-render the item pane count on the CLEAR path too. The
         // count getter has just been unpatched, but the message
         // itself is only refreshed from `itemsView.onRefresh`
@@ -14132,6 +14134,15 @@ class _FilterMixin {
             try { row = origGetRow(j); } catch (e) { continue; }
             if (!row || !row.ref) continue;
             const it = row.ref;
+            // Only containers with a child row on screen can carry the
+            // chevron (it hangs on the first visible child), and only those
+            // are toggled by it: a closed container's tally has no reader.
+            // Until 2026-10-22 every kept parent was tallied -- getAttachments,
+            // getNotes and the predicate per child -- 94 ms for the 15,348
+            // closed journal articles of one chip, for nothing drawn.
+            const openHere = row.isOpen === true
+                || !!(this._userRevealedAllIDs && this._userRevealedAllIDs.has(it.id));
+            if (!openHere) continue;
             let childIds: number[] = [];
             if (it.isRegularItem && it.isRegularItem()) {
                 childIds = [
@@ -14346,6 +14357,17 @@ class _FilterMixin {
                     ? rp.toggleOpenState.bind(rp)
                     : null));
         if (!toggle) return;
+        // Fast path (2026-10-22): a clear after a chip that opened nothing
+        // still walked every row through isContainer() / isContainerOpen(),
+        // 83-105 ms on 17,948 rows. `isOpen` is the row's own flag on both
+        // row shapes: one pass over it, and the toggle walk only when a
+        // container is open.
+        let anyOpen = false;
+        for (let i = 0, n = rp._rows.length; i < n; i++) {
+            const r = rp._rows[i];
+            if (r && r.isOpen === true) { anyOpen = true; break; }
+        }
+        if (!anyOpen) return;
         // V9-COMPAT: row.isContainer() / isContainerOpen() are
         // v10-only methods on row instances; v9 rows are plain
         // {ref, level, isOpen} objects. Use rp.isContainer(i) and

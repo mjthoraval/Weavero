@@ -1331,7 +1331,12 @@ describe("Weavero — hidden collections (per window)", () => {
             const { left: L, right: R } = mw._wvHidMgrTrees;
             const iLA = idxOf(L, A);
             assert.isTrue(L.isContainerEmpty(iLA), "empty on the manager's Shown side too");
-            assert.isOk(rowEl(mw, "left", iLA).querySelector(".spacer-twisty"), "no arrow there");
+            // The row's DOM follows the manager's reload on a later frame: on
+            // the release CI's xvfb runner it still carried the arrow when
+            // read at once (2026-10-22, v0.22.2's first run) -- wait as the
+            // pane checks above do.
+            const mgrArrow = () => { const el = rowEl(mw, "left", iLA); return el ? (el.querySelector(".twisty") ? "arrow" : (el.querySelector(".spacer-twisty") ? "spacer" : "none")) : "no row"; };
+            assert.isTrue(await wvT.waitFor(() => mgrArrow() === "spacer", 5000), "no arrow there: " + mgrArrow());
             assert.isFalse(R.isContainerEmpty(idxOf(R, A)), "on the Hidden side A is the context row holding A1: an arrow");
             await wv._wvHidShow(win, LIB(), [wv._wvHidKey(A1)]);
             await cv.expandToCollection(A1.id);

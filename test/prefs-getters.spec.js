@@ -93,7 +93,11 @@ describe("Weavero — pref getters (characterization)", () => {
         }
         const defaults = {};
         const branch = Services.prefs.getDefaultBranch("extensions.zotero.");
-        const allKeys = [...new Set(Object.values(res).flatMap((r) => r.keys))].sort();
+        // Every key a getter read here, plus every key EXPECTED knows a default
+        // for: a platform-gated getter reads nothing off its platform, and its
+        // key's registered default must still hold there.
+        const known = (typeof EXPECTED !== "undefined" && EXPECTED && EXPECTED.defaults) ? Object.keys(EXPECTED.defaults) : [];
+        const allKeys = [...new Set([...Object.values(res).flatMap((r) => r.keys), ...known])].sort();
         for (const k of allKeys) {
             const t = branch.getPrefType(k);
             defaults[k] = t === branch.PREF_BOOL ? branch.getBoolPref(k)
@@ -119,12 +123,21 @@ describe("Weavero — pref getters (characterization)", () => {
         const got = measure();
         try { await IOUtils.writeUTF8(PathUtils.join(PathUtils.tempDir, "wv-prefs-characterization.json"), JSON.stringify(got, null, 1)); } catch (_) {}
         assert.isOk(EXPECTED, "EXPECTED is recorded (see the file the run just wrote)");
-        assert.deepEqual(got.values, EXPECTED.values, "the value set");
-        for (const L of Object.keys(EXPECTED.getters)) {
-            assert.deepEqual(got.getters[L], EXPECTED.getters[L], L);
+        // Rows marked `win: true` in the table (windowIcons,
+        // separateTaskbarButtons) answer false off Windows before any read
+        // (_wvPref). EXPECTED was recorded on Windows; elsewhere -- the
+        // release CI runs on Ubuntu (2026-10-22, v0.22.2's first run) --
+        // those two getters expect the closed gate. Their keys' registered
+        // defaults are checked on every platform all the same.
+        const WIN_ONLY = ["_getEnableWindowIcons", "_getEnableSeparateTaskbarButtons"];
+        const expected = JSON.parse(JSON.stringify(EXPECTED));
+        if (!Zotero.isWin) for (const L of WIN_ONLY) expected.getters[L] = { unset: "false", keys: [], byKey: {} };
+        assert.deepEqual(got.values, expected.values, "the value set");
+        for (const L of Object.keys(expected.getters)) {
+            assert.deepEqual(got.getters[L], expected.getters[L], L);
         }
-        assert.deepEqual(Object.keys(got.getters).sort(), Object.keys(EXPECTED.getters).sort(), "the getter set");
-        assert.deepEqual(got.defaults, EXPECTED.defaults, "registered defaults");
+        assert.deepEqual(Object.keys(got.getters).sort(), Object.keys(expected.getters).sort(), "the getter set");
+        assert.deepEqual(got.defaults, expected.defaults, "registered defaults");
     });
 
     // eslint-disable-next-line no-var

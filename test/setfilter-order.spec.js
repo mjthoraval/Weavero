@@ -3,10 +3,11 @@
 // Order guard for the items-view `setFilter` wrapper, asserted against the
 // SHIPPED BUNDLE (same technique as compat.spec.js).
 //
-// After a quick search lands, the wrapper re-refreshes every open container
-// so `getChildItems` runs against the NEW search state. That loop calls
-// Zotero's index-based `_refreshContainer(i, true)` with raw `_rows`
-// indices — and `_toggleOpenState` reads `isContainerOpen` / `getLevel` /
+// After a quick search lands, the wrapper re-refreshes the open containers
+// whose shown children disagree with the NEW search state (every open
+// container until 2026-10-22; `_wvRefreshStaleOpenParents` since). That
+// loop calls Zotero's index-based `_refreshContainer(i, true)` with raw
+// `_rows` indices — and `_toggleOpenState` reads `isContainerOpen` / `getLevel` /
 // `getRow` through whatever sits on the row provider while splicing `_rows`
 // directly. With the filter's keep[] translation installed those reads
 // resolve a DIFFERENT row than the one being spliced: the close loop eats
@@ -34,12 +35,12 @@ describe("Weavero — setFilter wrapper mutates rows before re-applying", () => 
 
     function region() {
         const start = bundle.indexOf("origSetFilter(type, data)");
-        const loop = bundle.indexOf("_refreshContainer(i, true)");
+        const loop = bundle.indexOf("_wvRefreshStaleOpenParents(rp2)");
         const end = bundle.indexOf("_wvScheduleStaleKeepRetry()", loop);
         expect(start, "setFilter wrapper not found in bundle").to.be.above(-1);
-        expect(loop, "container re-refresh loop not found").to.be.above(start);
-        expect(bundle.indexOf("_refreshContainer(i, true)", loop + 1),
-            "container loop marker must be unique").to.equal(-1);
+        expect(loop, "container re-refresh call not found").to.be.above(start);
+        expect(bundle.indexOf("_wvRefreshStaleOpenParents(rp2)", loop + 1),
+            "container re-refresh marker must be unique").to.equal(-1);
         expect(end, "stale-keep retry arm not found after the loop").to.be.above(loop);
         return {
             before: bundle.slice(start, loop),

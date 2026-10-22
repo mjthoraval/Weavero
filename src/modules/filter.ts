@@ -2360,14 +2360,37 @@ class _FilterMixin {
      *  search is hiding children. Mirrors the logic in the
      *  `_applyItemsListFilter` apply pass, but reads `rp.searchItemIDs`
      *  / `searchParentIDs` instead of Weavero's `hasMatch` cache. */
-    _wvComputeChevronMapsForQuickSearch(rp: any) {
+    _wvComputeChevronMapsForQuickSearch(rp: any): boolean {
         const hiddenCounts = new Map<number, number>();
         const firstVisibleChild = new Map<number, number>();
+        // Once per input set (2026-10-22): the maps are a function of the
+        // search's ID sets, the reveal baseline, the rows array (identity
+        // and length) and the refresh count. After a quick search this ran
+        // three times on the same inputs -- the `_refresh` wrap, the
+        // post-search apply, the observer's reapply -- a walk of 38k rows
+        // each (~0.1 s a walk on the 48k library). Same inputs, same maps.
+        // Returns true when it computed, false when the maps already held.
+        const inputs = {
+            sIDs: (rp && (rp.searchItemIDs || rp._searchItemIDs)) || null,
+            sParents: (rp && (rp.searchParentIDs || rp._searchParentIDs)) || null,
+            base: this._wvBaseSearchIDs || null,
+            sm: !!(rp && (rp.searchMode || rp._searchMode)),
+            rows: (rp && rp._rows) || null,
+            rowsLen: (rp && rp._rows) ? rp._rows.length : -1,
+            seq: (this as any)._wvRefreshSeq || 0,
+        };
+        const last: any = (this as any)._wvChevronIn;
+        if (last && last.sIDs === inputs.sIDs && last.sParents === inputs.sParents
+            && last.base === inputs.base && last.sm === inputs.sm
+            && last.rows === inputs.rows && last.rowsLen === inputs.rowsLen
+            && last.seq === inputs.seq) {
+            return false;
+        }
+        (this as any)._wvChevronIn = inputs;
         try {
-            const sm = !!(rp && (rp.searchMode || rp._searchMode));
-            const liveIDs = rp && (rp.searchItemIDs || rp._searchItemIDs);
-            const sParents = rp && (rp.searchParentIDs
-                || rp._searchParentIDs);
+            const sm = inputs.sm;
+            const liveIDs = inputs.sIDs;
+            const sParents = inputs.sParents;
             // Prefer the snapshot of the genuine search match set
             // captured by `_patchRefreshForReveals` before our reveal-
             // injection. Falling back to the live set is fine when no
@@ -2378,7 +2401,7 @@ class _FilterMixin {
             if (!sm || !sIDs) {
                 this._wvHiddenCounts = hiddenCounts;
                 this._wvFirstVisibleAnnUnderAtt = firstVisibleChild;
-                return;
+                return true;
             }
             const rows = (rp && rp._rows) || [];
             // First pass: hidden-DB-child counts per container in _rows.
@@ -2427,6 +2450,7 @@ class _FilterMixin {
         }
         this._wvHiddenCounts = hiddenCounts;
         this._wvFirstVisibleAnnUnderAtt = firstVisibleChild;
+        return true;
     }
 
     /** The manual-expand tracker on the target window's row source. */
@@ -2646,6 +2670,78 @@ class _FilterMixin {
         } catch (e) {
             Zotero.debug("[Weavero] _patchIsSelectable err: " + e);
         }
+    }
+
+    /** After a quick search, re-refresh the open regular-item parents whose
+     *  shown children disagree with what `getChildItems` answers NOW: the
+     *  hide-context-attachments rule reads the search state that Zotero
+     *  stores only after it has rebuilt its open containers
+     *  (collectionViewItemTree.jsx `_refresh`: open parents refreshed at
+     *  563, `_searchItemIDs` set at 575), so the first build filtered the
+     *  children against the previous search, or not at all. In the
+     *  refreshing window the getItems hook (`_patchOneCtrGetItems`) hands
+     *  that phase the new set in advance, so nothing is stale there and
+     *  this pass finds nothing; a search in a BACKGROUND main window (the
+     *  hook writes to the focused window's provider) still leaves stale
+     *  parents, and those it fixes. Until 2026-10-22 EVERY open parent was
+     *  refreshed: on an Everything search of a 48k-item library ~17,500
+     *  close+open splices (0.7 s warm, 1.7 s cold) for no change.
+     *  The test is the refresh's own answer -- `getChildItems` through the
+     *  same hot-path context the refresh would read -- compared with the
+     *  direct children on screen, so the rows after the pass are the rows a
+     *  full refresh would give. Returns the number refreshed; the caller
+     *  rebuilds the row map and re-runs the match-parent expansion only
+     *  then (a refresh collapses the parent's descendants). */
+    _wvRefreshStaleOpenParents(rp: any): number {
+        let refreshed = 0;
+        if (!rp || !rp._rows || typeof rp._refreshContainer !== "function") return 0;
+        const rows: any[] = rp._rows;
+        const ctx = {
+            showCtxAtt: (() => {
+                try { return !!Zotero.Prefs.get("weavero.showContextAttachmentRows"); }
+                catch (e) { return false; }
+            })(),
+            liveSM: !!(rp.searchMode || rp._searchMode || this._currentQuickSearchValue),
+            liveSIDs: rp.searchItemIDs || rp._searchItemIDs || null,
+            liveParents: rp.searchParentIDs || rp._searchParentIDs || null,
+        };
+        // What Zotero's own `_openContainer` hands the row (itemTree.jsx
+        // 269-274); the search fields are read live by the wrapper.
+        const opts = {
+            searchMode: rp._searchMode,
+            searchItemIDs: rp._searchItemIDs,
+            includeTrashed: rp._includeTrashed,
+            filterChildItems: rp.itemTree && rp.itemTree.props
+                ? rp.itemTree.props.filterChildItems : undefined,
+        };
+        const prevCtx = WV_GCI_CTX;
+        WV_GCI_CTX = ctx;
+        try {
+            for (let i = rows.length - 1; i >= 0; i--) {
+                const r = rows[i];
+                if (!r || !r.isOpen || !r.ref || !r.ref.isRegularItem || !r.ref.isRegularItem()) continue;
+                let stale = true;
+                try {
+                    const lvl = r.level;
+                    const shown = new Set<number>();
+                    for (let j = i + 1; j < rows.length; j++) {
+                        const c = rows[j];
+                        if (!c || !(c.level > lvl)) break;
+                        if (c.level === lvl + 1 && c.ref) shown.add(c.ref.id);
+                    }
+                    const want: any[] = (typeof r.getChildItems === "function" && r.getChildItems(opts)) || [];
+                    if (want.length === shown.size) {
+                        stale = false;
+                        for (const it of want) {
+                            if (!it || !shown.has(it.id)) { stale = true; break; }
+                        }
+                    }
+                } catch (e) { stale = true; }
+                if (!stale) continue;
+                try { rp._refreshContainer(i, true); refreshed++; } catch (e) {}
+            }
+        } finally { WV_GCI_CTX = prevCtx; }
+        return refreshed;
     }
 
     /** Mirror Zotero's built-in `hideContextAnnotationRows` behaviour
@@ -6182,18 +6278,14 @@ class _FilterMixin {
                                     this._pauseFilterPatches();
                                     const rp2: any = itemsView
                                         && itemsView.rowProvider;
-                                    if (rp2 && rp2._rows
-                                        && typeof rp2._refreshContainer === "function") {
-                                        for (let i = rp2._rows.length - 1; i >= 0; i--) {
-                                            const r = rp2._rows[i];
-                                            if (r && r.isOpen
-                                                && r.ref
-                                                && r.ref.isRegularItem
-                                                && r.ref.isRegularItem()) {
-                                                try { rp2._refreshContainer(i, true); }
-                                                catch (e) {}
-                                            }
-                                        }
+                                    // Only the parents whose shown children
+                                    // disagree with getChildItems' answer now
+                                    // (2026-10-22; every open parent before:
+                                    // ~17,500 close+open splices on an
+                                    // Everything search, 0.7-1.7 s, for the
+                                    // ~2,400 that needed one).
+                                    const refreshed = this._wvRefreshStaleOpenParents(rp2);
+                                    if (refreshed > 0) {
                                         try { rp2.refreshRowMap(); } catch (e) {}
                                         // Refreshing a parent collapses every
                                         // descendant — so any attachment that
@@ -13024,7 +13116,10 @@ class _FilterMixin {
         // from Zotero's quick-search state so the indicator
         // renders on first visible children of quick-search-
         // hiding containers. Empty maps if no search either.
-        this._wvComputeChevronMapsForQuickSearch(rp);
+        // The compute memoizes on its inputs (2026-10-22): the post-search
+        // apply and the observer's reapply both landed here with the same
+        // ones, so the second walk and its repaint were pure cost (~0.2 s).
+        const chevronFresh = this._wvComputeChevronMapsForQuickSearch(rp);
         // The keep watermark describes a TRANSLATED view. With the
         // patches gone `getRow` is Zotero's own again and indices
         // mean what they say, so a leftover watermark would keep
@@ -13054,8 +13149,9 @@ class _FilterMixin {
         // search has empty maps and skips the chevron path; the
         // user sees no indicator until something else mutates the
         // tree. Pure paint invalidate — doesn't add/remove rows —
-        // so it can't loop through the MutationObserver.
-        try { itemsView.tree.invalidate(); } catch (e) {}
+        // so it can't loop through the MutationObserver. Only when the
+        // maps were just recomputed: unchanged maps were painted already.
+        if (chevronFresh) { try { itemsView.tree.invalidate(); } catch (e) {} }
         // Re-render the item pane count on the CLEAR path too. The
         // count getter has just been unpatched, but the message
         // itself is only refreshed from `itemsView.onRefresh`

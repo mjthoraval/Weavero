@@ -73,9 +73,19 @@ is allowed; plain `--force` and `reset --hard` are not.
 ## 5. Publish
 
 ```bash
-git push origin main && git push origin vX.Y.Z
+git push origin main                      # test.yml runs the Mocha suite on Ubuntu
+gh run watch <that test.yml run id> --exit-status
+git push origin vX.Y.Z
 gh workflow run release.yml -f tag=vX.Y.Z
 ```
+
+Main goes up FIRST and the tag only once test.yml is green: the suite on
+Ubuntu is the first CI run of every spec recorded or timed on the
+maintainer's machine since the last push, and in the release run itself a
+red gate means a moved tag (v0.22.2, 2026-10-22: two such specs, a `test:`
+commit on top of the bump, the tag re-pointed with `--force-with-lease`;
+same shape as v0.22.0). A red test.yml is fixed that way too -- the `test:`
+commit after the bump, the tag set on it -- never by a new version.
 
 Monitor the run to conclusion (typecheck + tests + build + publish). Then
 verify: release exists with `weavero.xpi` attached, and the rolling

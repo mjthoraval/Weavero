@@ -80,7 +80,17 @@ paths:
   wiring dropped off Windows, `wv-ui-dark` dropped, the Exit item named
   one way). The 0.22.0 release CI failed on exactly these three, all
   recorded after the last CI run (2026-10-13). A new isWin-gated wiring
-  key goes into wiringNormalize's Windows-only pattern.
+  key goes into wiringNormalize's Windows-only pattern. The same for a
+  PREFS table row marked `win: true`: its getter answers false off Windows
+  before any read, so the pref-getter characterization expects the closed
+  gate there (v0.22.2's first release CI run went red on exactly that,
+  2026-10-22; prefs-getters.spec.js WIN_ONLY). A new `win: true` row goes
+  into that list.
+- A DOM read right after an async reload (a tree's `reload()`, a manager
+  build) is a race: the row paints on a later frame, and the CI's xvfb
+  runner is slower than this machine (the manager's "no arrow" check read
+  the arrow still there, same red run). Read it through `wvT.waitFor`
+  with the observed state in the message, as the pane checks do.
 - A change that leaves something new on a main window (a `_wv*` expando,
   a wrap on ZoteroPane / Zotero_Tabs / the views, a keyed listener)
   re-records `test/window-wiring.spec.js` in the same commit, and the

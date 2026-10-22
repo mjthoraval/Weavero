@@ -190,6 +190,37 @@ export function wvIsHiddenOrCollapsed(el: any): boolean {
  *  wiring went dead on Zotero 11. A load listener added at that moment
  *  still fires for the real document; a load that arrives while the window
  *  is still blank re-arms. Guard: test/window-load-timing.spec.js. */
+export const WV_XHTML_NS = "http://www.w3.org/1999/xhtml";
+
+/** An HTML element in `doc` -- a chrome (XUL) document, a reader or note
+ *  frame, a content page -- with its class and text when given, appended to
+ *  `parent` when given. Seventy-nine local namespace constants in a dozen
+ *  spellings preceded some 660 such calls (survey 2026-10-06 §4 #10). */
+export function wvHtmlEl(doc: any, tag: string, cls?: string, text?: string, parent?: any): any {
+    const el: any = doc.createElementNS(WV_XHTML_NS, tag);
+    if (cls) el.className = cls;
+    if (text != null) el.textContent = text;
+    if (parent) parent.appendChild(el);
+    return el;
+}
+
+/** True when `el` takes typed text -- an editable region, an input, a
+ *  textarea or a select (keys there belong to the control). Five key
+ *  handlers spelled the check out, one of them with `select`, four
+ *  without; all take it now. The reader panels' Undo/Redo focus test keeps
+ *  its own, finer rule (read-only controls, input types). */
+export function wvIsTextEntry(el: any): boolean {
+    try {
+        if (!el) return false;
+        if (el.isContentEditable) return true;
+        const ln = String(el.localName || "").toLowerCase();
+        return ln === "input" || ln === "textarea" || ln === "select";
+    }
+    catch (e) {
+        return false;
+    }
+}
+
 export function wvWhenWindowLoaded(w: any, fn: (w: any) => void): void {
     const isBlank = () => {
         try { return !w.document || String(w.location && w.location.href) === "about:blank"; }

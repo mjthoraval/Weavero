@@ -19,6 +19,7 @@
  *  prefs.js and the grid in prefs.html. */
 import { schemeAltPart, joinSchemeAlt, buildUrlRegex, urlLinkClass } from "../lib/links";
 import { wvTimeout } from "../lib/timers";
+import { wvCloneFor } from "../lib/xray";
 
 export const URL_SCHEMES = [
     // ---- Tier 1: bare-colon schemes (name:) -------------------------------
@@ -73,6 +74,39 @@ export const WV_CMDLINE_WIRE_V = 1;
 
 export const BBT_BIBTEX_TRANSLATOR_ID = "ca65189f-8815-4afe-8c8b-8c7c15f0edca";
 export const BBT_BIBLATEX_TRANSLATOR_ID = "f895aa0d-f28e-47fe-b247-2ea77c6ed583";
+
+/** One "Copy As" entry. WV_COPY_AS is the ONE source for the main window's
+ *  tab menu (MenuManager children, `_wvCopyAsMenuManagerEntries`) and the
+ *  reader window's tab menu (XUL, `_wvBuildCopyAsSubmenu`) since 2026-10-21
+ *  (survey 2026-10-06 §4, main / reader twins; the items-list menu keeps
+ *  its richer variant: collection scoping, per-item link entries, accel
+ *  hints). `cite` entries act on the cite-able items (`_wvCiteItemsOf`),
+ *  the others on the target items themselves; a separator carries only
+ *  `visible`. Every predicate runs at show time, so enabling or disabling
+ *  Better BibTeX adds or removes its formats at the next open. */
+export interface WvCopyAsEntry {
+    key: string;
+    sep?: boolean;
+    cite?: boolean;
+    label?: (p: any, items: any[]) => string;
+    visible: (p: any, items: any[]) => boolean;
+    run?: (p: any, items: any[]) => void;
+}
+
+export const WV_COPY_AS: WvCopyAsEntry[] = [
+    { key: "citation", cite: true, label: () => "Citation", visible: (p, c) => c.length > 0, run: (p, c) => p._copyCitationOrBibliography(c, true) },
+    { key: "bibliography", cite: true, label: () => "Bibliography", visible: (p, c) => c.length > 0, run: (p, c) => p._copyCitationOrBibliography(c, false) },
+    // Zotero does not auto-generate citation keys: shown only when one exists.
+    { key: "citationKey", cite: true, label: () => "Citation Key", visible: (p, c) => p._anyHasCitationKey(c), run: (p, c) => p._copyCitationKeys(c) },
+    { key: "sep1", sep: true, visible: (p, items) => items.length > 0 },
+    // ONE link selecting the whole set (`.../items?itemKey=K1,K2` for several).
+    { key: "selectLink", label: () => "Select Link", visible: (p, items) => items.some((it: any) => !!p._buildSelectLink(it)), run: (p, items) => p._copyCombinedSelectLink(items, {}) },
+    { key: "openLink", label: (p, items) => "Open Link" + (items.length === 1 && p._isExternalOpenTarget(items[0]) ? " (external app)" : ""), visible: (p, items) => items.some((it: any) => !!p._buildOpenLink(it)), run: (p, items) => p._copyItemLinks(items, "open") },
+    { key: "onlineLink", cite: true, label: () => "Online Library Link", visible: (p, c) => p._anyHasWebURL(c), run: (p, c) => p._copyOnlineLibraryLinks(c) },
+    { key: "sepBbt", sep: true, visible: (p) => p._isBetterBibTeXActive() },
+    { key: "bibtex", cite: true, label: () => "[BBT] BibTeX", visible: (p, c) => p._isBetterBibTeXActive() && c.length > 0, run: (p, c) => p._copyExportToClipboard(c, BBT_BIBTEX_TRANSLATOR_ID) },
+    { key: "biblatex", cite: true, label: () => "[BBT] BibLaTeX", visible: (p, c) => p._isBetterBibTeXActive() && c.length > 0, run: (p, c) => p._copyExportToClipboard(c, BBT_BIBLATEX_TRANSLATOR_ID) },
+];
 
 export const urlMethods = {
     /** Source string for the alternation between the always-on schemes
@@ -864,7 +898,7 @@ export const urlMethods = {
                             const Cu: any = (Components as any).utils;
                             if (iw && Cu) {
                                 app.pdfViewer.scrollPageIntoView(
-                                    Cu.cloneInto({ pageNumber: pageIndex + 1 }, iw));
+                                    wvCloneFor({ pageNumber: pageIndex + 1 }, iw));
                             }
                         } catch (e3) {}
                     }
@@ -895,8 +929,7 @@ export const urlMethods = {
                     this._wvPlacePinWhenRendered(reader, pv, pageIndex, rects, 0);
                     return;
                 }
-                const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
-                try { this._wvClearStalePin(pv); } catch (e) {}
+                const gen = this._wvHlNext(pv);
                 this._wvOutlineHighlightInPlace(pv, pageIndex, rects, gen, 0);
                 return;
             }
@@ -1137,15 +1170,30 @@ export const urlMethods = {
         } catch (e) { return false; }
     },
 
-    /** Populate a <menupopup> `sub` with the "Copy As" entries (Citation /
-     *  Bibliography / Citation Key / Select Link / Open Link / Online Library
-     *  Link / BBT) for the item(s) returned by `getItems()` — one item or an
-     *  array — the same set the items-list "Copy As" submenu builds, reused for
-     *  the reader-/note-window tab menus so every window's tab menu matches.
-     *  Multi-selected tabs pass the whole selection (2026-09-03: copies acted
-     *  on the clicked tab only while Move/Close/Pin took the selection).
-     *  Citation-style entries operate on each item's top-level parent (citing
-     *  an attachment cites its parent), duplicates collapsed. */
+    /** The cite-able items behind `items`: an attachment's or a child note's
+     *  regular parent (citing an attachment cites its parent), else the item
+     *  itself; duplicates (two attachments of one parent) collapsed. */
+    _wvCiteItemsOf(items: any): any[] {
+        const out: any[] = []; const seen = new Set();
+        for (const it of (Array.isArray(items) ? items : [items]).filter(Boolean)) {
+            let ci: any = it;
+            try {
+                if (it.parentID && ((it.isAttachment && it.isAttachment()) || (it.isNote && it.isNote()))) ci = Zotero.Items.get(it.parentID) || it;
+            } catch (e) {}
+            if (ci && !seen.has(ci.id)) { seen.add(ci.id); out.push(ci); }
+        }
+        return out;
+    },
+
+    /** The "Copy As" entry list (for the guard). */
+    _wvCopyAsEntries(): WvCopyAsEntry[] { return WV_COPY_AS; },
+
+    /** Populate a <menupopup> `sub` with the "Copy As" entries for the item(s)
+     *  returned by `getItems()` -- one item or an array -- from WV_COPY_AS: the
+     *  reader- and note-window tab menus (XUL). Multi-selected tabs pass the
+     *  whole selection (2026-09-03: copies acted on the clicked tab only while
+     *  Move/Close/Pin took the selection). The targets are re-read at command
+     *  time. */
     _wvBuildCopyAsSubmenu(doc: any, sub: any, getItems: () => any) {
         const self: any = this;
         const targetItems = (): any[] => {
@@ -1154,51 +1202,64 @@ export const urlMethods = {
                 return (Array.isArray(r) ? r : [r]).filter(Boolean);
             } catch (e) { return []; }
         };
-        // The "cite-able" items: the regular parent for an attachment, else the
-        // item itself; duplicates (two attachments of one parent) collapsed.
-        const citeItems = (): any[] => {
-            const out: any[] = []; const seen = new Set();
-            for (const it of targetItems()) {
-                let ci: any = it;
-                try {
-                    if (it.isAttachment && it.isAttachment() && it.parentID) ci = Zotero.Items.get(it.parentID);
-                } catch (e) {}
-                if (ci && !seen.has(ci.id)) { seen.add(ci.id); out.push(ci); }
-            }
-            return out;
-        };
-        const add = (label: string, action: (arr: any[]) => void, itemsFn?: () => any[]) => {
-            const mi = doc.createXULElement("menuitem");
-            mi.setAttribute("label", label);
-            mi.addEventListener("command", (e: any) => {
-                try { e.stopPropagation(); } catch (er) {}
-                try { const arr = (itemsFn || targetItems)(); if (arr && arr.length) action(arr); } catch (er) { Zotero.debug("[Weavero] reader copy-as cmd err: " + er); }
-            });
-            sub.appendChild(mi);
-            return mi;
-        };
-        const sep = () => sub.appendChild(doc.createXULElement("menuseparator"));
         try {
-            add("Citation", (a) => self._copyCitationOrBibliography(a, true), citeItems);
-            add("Bibliography", (a) => self._copyCitationOrBibliography(a, false), citeItems);
-            const cis = citeItems();
-            if (cis.length && self._anyHasCitationKey && self._anyHasCitationKey(cis)) {
-                add("Citation Key", (a) => self._copyCitationKeys(a), citeItems);
-            }
-            sep();
-            add("Select Link", (a) => self._copyCombinedSelectLink(a, {}));
-            if (targetItems().some((it: any) => self._buildOpenLink && self._buildOpenLink(it))) {
-                add("Open Link", (a) => self._copyItemLinks(a, "open"));
-            }
-            if (cis.length && self._anyHasWebURL && self._anyHasWebURL(cis)) {
-                add("Online Library Link", (a) => self._copyOnlineLibraryLinks(a), citeItems);
-            }
-            if (self._isBetterBibTeXActive && self._isBetterBibTeXActive()) {
-                sep();
-                add("[BBT] BibTeX", (a) => self._copyExportToClipboard(a, BBT_BIBTEX_TRANSLATOR_ID), citeItems);
-                add("[BBT] BibLaTeX", (a) => self._copyExportToClipboard(a, BBT_BIBLATEX_TRANSLATOR_ID), citeItems);
+            const items = targetItems();
+            const cites = self._wvCiteItemsOf(items);
+            for (const en of WV_COPY_AS) {
+                const set = en.cite ? cites : items;
+                if (!en.visible(self, set)) continue;
+                if (en.sep) { sub.appendChild(doc.createXULElement("menuseparator")); continue; }
+                const mi = doc.createXULElement("menuitem");
+                mi.setAttribute("label", en.label!(self, set));
+                mi.setAttribute("data-wv-key", en.key);
+                mi.addEventListener("command", (e: any) => {
+                    try { e.stopPropagation(); } catch (er) {}
+                    try {
+                        const now = targetItems();
+                        const arr = en.cite ? self._wvCiteItemsOf(now) : now;
+                        if (arr.length) en.run!(self, arr);
+                    } catch (er) { Zotero.debug("[Weavero] copy-as cmd err: " + er); }
+                });
+                sub.appendChild(mi);
             }
         } catch (e) { Zotero.debug("[Weavero] _wvBuildCopyAsSubmenu err: " + e); }
+    },
+
+    /** The "Copy As" entries as Zotero MenuManager children (the main window's
+     *  tab menu): each child sets its own label and visibility in onShowing
+     *  (MenuManager builds submenu children lazily on hover, with the same
+     *  context). `itemsOf(ctx)` resolves the target items -- the whole tab
+     *  multi-selection when the clicked tab is part of it. */
+    _wvCopyAsMenuManagerEntries(itemsOf: (ctx: any) => any[]): any[] {
+        const self: any = this;
+        const setOf = (en: WvCopyAsEntry, ctx: any): any[] => {
+            let items: any[] = [];
+            try { items = itemsOf(ctx) || []; } catch (e) {}
+            return en.cite ? self._wvCiteItemsOf(items) : items;
+        };
+        return WV_COPY_AS.map((en) => {
+            if (en.sep) {
+                return {
+                    menuType: "separator",
+                    onShowing: (_ev: any, ctx: any) => { try { ctx.setVisible(en.visible(self, setOf(en, ctx))); } catch (e) {} },
+                };
+            }
+            return {
+                menuType: "menuitem",
+                onShowing: (_ev: any, ctx: any) => {
+                    try {
+                        const set = setOf(en, ctx);
+                        if (!en.visible(self, set)) { ctx.setVisible(false); return; }
+                        ctx.setVisible(true);
+                        ctx.menuElem.setAttribute("label", en.label!(self, set));
+                    } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
+                },
+                onCommand: (_ev: any, ctx: any) => {
+                    try { const set = setOf(en, ctx); if (set.length) en.run!(self, set); }
+                    catch (e) { Zotero.debug("[Weavero] copy-as cmd err: " + e); }
+                },
+            };
+        });
     },
 
     /** Online (web) library URL for an item — the page on zotero.org:
@@ -1310,8 +1371,10 @@ export const urlMethods = {
             }
             const cls = this._urlLinkClass(url);
             if (cls === "wv-link-app") {
+                // An option of Links & Relations (Settings greys it with that
+                // master): off with it (prefs.4, MJT 2026-10-17).
                 let skip = false;
-                try { skip = !!Zotero.Prefs.get(
+                try { skip = !!(this as any)._getEnableLinksAndRelations() && !!Zotero.Prefs.get(
                     "weavero.enableAppLinksSkipConfirm"); }
                 catch (e) {}
                 if (skip) {
@@ -1414,7 +1477,10 @@ export const urlMethods = {
      *  takes effect for any scheme we don't manage. */
     _applyAppLinkConfirmPref() {
         try {
-            const masterAppLinks = !!Zotero.Prefs.get("weavero.enableAppLinks");
+            // App links through its getter: Links & Relations gates it, so
+            // with that master off Firefox's prompt comes back for every
+            // scheme (prefs.4; the raw read left it suppressed).
+            const masterAppLinks = !!(this as any)._getEnableIconAppLinks();
             const skip = !!Zotero.Prefs.get("weavero.enableAppLinksSkipConfirm");
 
             // Modern Firefox shows TWO different dialogs depending on

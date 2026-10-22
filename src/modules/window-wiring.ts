@@ -39,6 +39,7 @@
 
 import { PANEL_ID } from "./constants";
 import { wvUnlisten } from "../lib/listen";
+import { wvWinType } from "../lib/windows";
 
 declare const Zotero: any;
 
@@ -101,12 +102,38 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     { id: "new-window-shortcut", on: "both", wire: (p, win) => p._wvWireNewWindowShortcut(win) },
     { id: "advsearch-new-window", on: "both", wire: (p, win) => p._wvWireAdvSearchNewWindow(win) },
     { id: "collections-pane-toggle", on: "both", wire: (p, win) => p._wvApplyCollectionsPaneToggle(win) },
+    // The Tag Selector's handle (issue #58): its filter mark follows the
+    // items view's refresh signal, hence `views`.
+    { id: "tag-selector-handle", on: "both", views: true, wire: (p, win) => p._wvApplyTagSelectorHandle(win) },
+    // Each window's own Tag Selector class, handed back to the shared
+    // `Zotero.TagSelector` when the window that owns it closes (onMainWindowUnload;
+    // a Zotero bug with more than one main window, 2026-10-17).
+    { id: "tag-selector-class", on: "both", wire: (p, win) => p._wvTagSelectorClassKeep(win) },
+    // WV-TEMP-134330: the Tag Selector scoped to the rows the items view
+    // shows, until Zotero's setTagScope does it itself (then it installs nothing).
+    { id: "tag-scope-rows", on: "both", wire: (p, win) => p._wvWireTagScopeRowsFix(win) },
+    // WV-TEMP-134357: Zotero 11's "New Item Note" greyed by a stringified boolean
+    // `disabled` (upstream register #34; installs nothing once fixed there).
+    { id: "new-note-menu", on: "both", wire: (p, win) => p._wvWireNewNoteMenuFix(win) },
+    // WV-TEMP-134361: the collection whose id equals its library's id may be
+    // dropped on the library row (upstream register #35; installs nothing once
+    // Zotero compares the dragged id against collection rows only).
+    { id: "collection-drop-lib", on: "both", wire: (p, win) => p._wvWireCollectionDropFix(win) },
+    // WV-TEMP-133039: Zotero 896a3f829's stuck drop-row clear, backported
+    // until a Zotero carries it (then it installs nothing).
+    { id: "stuck-drop-row", on: "both", views: true, wire: (p, win) => p._wvWireStuckDropRowFix(win) },
     { id: "pane-drag-no-collapse", on: "both", wire: (p, win) => p._wvApplyPaneDragNoCollapse(win) },
     { id: "collections-tree-aids", on: "both", views: true, wire: (p, win) => p._wvApplyCollectionsTreeAids(win) },
     // Hidden collections: per window (the store loads once, then refreshes
     // every window that has something hidden). Retries on its own until the
     // collections tree exists.
     { id: "hidden-collections", on: "both", wire: (p, win) => { p._wvHidApply(win); p._wvHidLoad(); } },
+    // The open Collections and Libraries Managers name their window once
+    // there are several: a window opening changes the count (the title is
+    // re-read). Load-only: init's window was open already. (Lived in
+    // onMainWindowLoad beside the table from dev.112 to dev.117; the table
+    // spec caught it in the release gate, 2026-10-21.)
+    { id: "hid-mgr-titles", on: "load", wire: (p) => p._wvHidMgrRefreshTitles() },
     // Legacy by-position window titles -> each window's own state, once,
     // after the startup restore has rebuilt the windows.
     { id: "title-migration", on: "load", wire: (p, win) => {
@@ -125,6 +152,9 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     // Edit > Undo hook + the reader's Ctrl+Y (until 0.21.7 only the init loop
     // wired them: a window opened later had neither).
     { id: "edit-undo-menu", on: "both", wire: (p, win) => p._wvWireEditUndoMenu(win) },
+    // View -> Layout follows the tab (zotero#2814): the reader's panes in a
+    // reader / note tab, Zotero's library items there hidden.
+    { id: "layout-menu", on: "both", wire: (p, win) => p._wvWireLayoutMenu(win) },
     // Per-window taskbar identity (pref-gated, default off). Init:
     // _wvRefreshWindowTaskbarIdentities.
     { id: "taskbar-identity", on: "load", wire: (p, win) => p._wvApplyWindowTaskbarIdentity(win) },
@@ -315,6 +345,10 @@ export const WV_READER_WIRES: WvReaderWire[] = [
     { id: "tab-strip", on: ["render", "init", "pref"], wire: (p, _win, r) => p._ensureReaderWindowTabStrip(r) },
     // AFTER the strip (see ORDER MATTERS).
     { id: "edit-undo-menu", on: ["render", "init", "pref"], wire: (p, win) => p._wvWireEditUndoMenu(win) },
+    // A Layout submenu of its own at the end of the window's View menu
+    // (zotero#2814): Sidebar, Context Pane (while the item pane below
+    // exists), Colour and Tag Selector.
+    { id: "layout-menu", on: ["render", "init"], anyReader: true, wire: (p, win) => p._wvWireLayoutMenu(win) },
     { id: "item-pane", on: ["render", "init"], wire: (p, _win, r) => p._ensureReaderWindowItemPane(r) },
     // The render path appends the button through the event's own `append`
     // (_toolbarHandlerImpl); the other paths add or remove it in the page.
@@ -396,7 +430,7 @@ class _WindowWiringMixin {
     _wvWireReaderWindow(win: any, r: any, path: WvReaderWirePath, native = true) {
         if (!win || win.closed || !win.document) return;
         try {
-            if (win.document.documentElement.getAttribute("windowtype") !== "zotero:reader") return;
+            if (wvWinType(win) !== "zotero:reader") return;
         } catch (e) { return; }
         const p: any = this;
         if (p._wvDestroyed) return;   // as _wvWireMainWindow

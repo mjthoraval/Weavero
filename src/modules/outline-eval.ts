@@ -26,6 +26,7 @@
 // this store together with outlines.json.
 
 import { wvStoreWrite, wvStoreRead } from "../lib/store";
+import { wvMainWins } from "../lib/windows";
 
 declare const Zotero: any;
 declare const PathUtils: any;
@@ -90,7 +91,7 @@ class _OutlineEvalMixin {
                 }
             };
             if (!enabled) {
-                const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+                const wins = wvMainWins();
                 for (const w of wins) { try { scrub((w as any)._wvFilterState); } catch (_) {} }
                 try { scrub(this._wvFilterStateNoWin); } catch (_) {}
             }

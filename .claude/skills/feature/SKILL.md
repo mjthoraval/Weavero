@@ -17,7 +17,13 @@ cover whichever of these the request leaves open:
   pane, notes)? Main window only or every window?
 - **Interaction design** — where does the control sit, what does a click do,
   what does Alt+click do? Offer 2–3 concrete alternatives with previews when
-  the answer isn't obvious from the request.
+  the answer isn't obvious from the request. An option that says "the way
+  Firefox / Zotero does it" is a claim about upstream: grep the mirror for
+  that behaviour BEFORE writing the option, and name the file in it. The
+  user's pick of a mis-described option approves the description, not the
+  real thing (2026-10-16: a "Firefox cluster" option described multi-tab
+  drag as a side-by-side block; Firefox stacks the moving tabs; the build
+  was rejected and reverted).
 - **Persistence** — does state survive restart? Synced (Extra field) or local
   (weavero/*.json)? Remember: no plugin-only features — links and data must
   degrade gracefully without Weavero (flag any exception explicitly BEFORE

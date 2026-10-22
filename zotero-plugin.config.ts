@@ -114,6 +114,15 @@ export default defineConfig({
     // asserting that the plugin had loaded at all).
     startupDelay: 3_000,
     waitForPlugin: "() => Zotero._weaveroReady === true",
+    // The runner keeps rendering when its window is not in front. Windows
+    // reports a covered window (or every window, once the display sleeps)
+    // as occluded and Gecko then throttles or stops its frames: Zotero's
+    // collection selectWait never settled and specs timed out in their
+    // setup, five runs on 2026-10-16, each with the runner out of sight.
+    prefs: {
+      "widget.windows.window_occlusion_tracking.enabled": false,
+      "widget.windows.window_occlusion_tracking_display_state.enabled": false,
+    },
     abortOnFail: false,
     // One-shot run: exit after a single pass instead of staying in
     // watch mode (the scaffold's local default). This is the

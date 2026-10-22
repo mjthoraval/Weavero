@@ -576,6 +576,15 @@
         preference="extensions.zotero.weavero.enableItemsTreeFilter"/>
       <html:p class="wv-desc">The toolbar &#9662; button next to the search box, plus the filter popup (colour/type/file-type, tags, authors, collections, saved searches).</html:p>
   </vbox>
+  <!-- The Read Status row lives IN the items-tree filter popup, and the code
+       gates it by that pane (prefs.4, MJT 2026-10-17): nested under it. -->
+  <vbox class="wv-block" data-gated-by="enableFilters enableItemsTreeFilter" data-wv-in="filters">
+      <vbox class="wv-dep" data-gated-by="enableItemsTreeFilter">
+        <checkbox label="Read Status filter (Zotero Reading List)" native="true"
+          preference="extensions.zotero.weavero.enableReadStatusFilter"/>
+        <html:p class="wv-desc">Adds a Read Status toggle row to the items-tree filter popup when the Zotero Reading List plugin is installed &#8212; filter by &#11088; New / &#128217; To Read / &#128214; In Progress / &#128215; Read / &#8230; (Alt+click to exclude).</html:p>
+      </vbox>
+  </vbox>
   <vbox class="wv-block" data-gated-by="enableFilters" data-wv-in="filters">
       <checkbox label="Detailed item count" native="true"
         preference="extensions.zotero.weavero.itemCountBreakdown"/>
@@ -585,11 +594,6 @@
       <checkbox label="Selection Target tri-state" native="true"
         preference="extensions.zotero.weavero.enableSelectionTarget"/>
       <html:p class="wv-desc">Parent / Attachment / Annotation tickboxes that scope Ctrl+A and dim out-of-scope rows.</html:p>
-  </vbox>
-  <vbox class="wv-block" data-gated-by="enableFilters" data-wv-in="filters">
-      <checkbox label="Read Status filter (Zotero Reading List)" native="true"
-        preference="extensions.zotero.weavero.enableReadStatusFilter"/>
-      <html:p class="wv-desc">Adds a Read Status toggle row to the items-tree filter popup when the Zotero Reading List plugin is installed &#8212; filter by &#11088; New / &#128217; To Read / &#128214; In Progress / &#128215; Read / &#8230; (Alt+click to exclude).</html:p>
   </vbox>
   <vbox class="wv-block" data-gated-by="enableFilters" data-wv-in="filters">
       <checkbox label="Collapse Advanced Search back to Quick Search" native="true"
@@ -724,7 +728,9 @@
           preference="extensions.zotero.weavero.compactTitleBarPluginsManager"/>
       </html:div>
   </vbox>
-  <vbox class="wv-block wv-subblock wv-block-end" data-gated-by="enableTabsAndWindows compactTitleBar" data-wv-in="tabs titlebar">
+  <!-- It needs the reader window's title bar replaced (the code checks the
+       "Reader window" tick too): greyed with it (prefs.4, MJT 2026-10-17). -->
+  <vbox class="wv-block wv-subblock wv-block-end" data-gated-by="enableTabsAndWindows compactTitleBar compactTitleBarReader" data-wv-in="tabs titlebar">
       <checkbox label="Open notes in a tab-hosting window" native="true"
         preference="extensions.zotero.weavero.noteOpenInDeckWindow"/>
       <html:p class="wv-desc">Opening a note in a new window uses a reader-style window that can accept dragged-in PDF / note tabs. Needs the reader window&#8217;s title bar replaced above. A standalone note (no parent) briefly shows a placeholder document as the window opens.</html:p>
@@ -815,6 +821,11 @@
         preference="extensions.zotero.weavero.selectedTabRing"/>
       <html:p class="wv-desc">Pill-shaped tabs, and a thin violet-to-orange outline around the selected tab, like Firefox&#8217;s new tab design. Uncheck for Zotero&#8217;s own tabs: square corners and a raised selected tab.</html:p>
   </vbox>
+  <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-in="extras x-tabs">
+      <checkbox label="View &#8594; Layout follows the tab" native="true"
+        preference="extensions.zotero.weavero.readerLayoutMenu"/>
+      <html:p class="wv-desc">Zotero&#8217;s <html:em>View &#8594; Layout</html:em> items toggle the library&#8217;s panes whatever tab is in front. In a reader tab the submenu shows the reader&#8217;s own panes instead &#8212; <html:em>Sidebar</html:em>, <html:em>Context Pane</html:em> and the <html:em>Colour and Tag Selector</html:em> at the foot of the annotations pane &#8212; with their real state as check marks; a note tab shows <html:em>Context Pane</html:em> (and <html:em>Outline Pane</html:em> with Better Notes); the library tab keeps Zotero&#8217;s items. A separate reader window gets a Layout submenu of its own. Off, the menu is Zotero&#8217;s as it is.</html:p>
+  </vbox>
 
   <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-head="x-collections" data-wv-in="extras">
       <separator class="thin"/>
@@ -824,6 +835,11 @@
       <checkbox label="Collapse / expand button for the collections pane" native="true"
         preference="extensions.zotero.weavero.collectionsPaneToggle"/>
       <html:p class="wv-desc">A button at the left end of the toolbar, like the item pane&#8217;s and the reader&#8217;s. <html:em>View &#8594; Layout</html:em> keeps working alongside it.</html:p>
+  </vbox>
+  <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-in="extras x-collections">
+      <checkbox label="Handle on the Tag Selector: click to collapse or expand it" native="true"
+        preference="extensions.zotero.weavero.tagSelectorHandle"/>
+      <html:p class="wv-desc">A small pill on the Tag Selector&#8217;s top edge. One click folds the selector to that edge, the next brings it back; dragging the edge still resizes it. A selected tag keeps filtering the list while the selector is folded, and the pill turns blue to say so. <html:em>View &#8594; Layout &#8594; Tag Selector</html:em> shows the same state.</html:p>
   </vbox>
   <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-in="extras x-collections">
       <checkbox label="Resizing a side pane stops at its minimum width" native="true"
@@ -836,7 +852,7 @@
       <html:div class="wv-dep" data-gated-by="collectionsStickyParents">
         <html:label>Up to <html:input id="wv-coll-sticky-max" type="number" min="1" max="10" step="1" style="width:4em"/> levels</html:label>
       </html:div>
-      <html:p class="wv-desc">The parents of the collections at the top of the pane stay pinned above them, as in VS Code&#8217;s file tree. Click a pinned parent to go to it; its arrow collapses it.</html:p>
+      <html:p class="wv-desc">The parents of the collections at the top of the pane stay pinned above them, as in VS Code&#8217;s file tree. Click a pinned parent to go to it; its arrow collapses it. The two trees of the Collections and Libraries Manager pin the same way.</html:p>
   </vbox>
   <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-in="extras x-collections">
       <checkbox label="Show a collection&#8217;s full path when hovering it" native="true"
@@ -976,9 +992,9 @@
     <html:p class="wv-desc">Unlike the funnel above the reader, which hides annotations from the page as well, this one narrows the annotations pane only &#8212; by colour, type, tag, comment, person or date &#8212; and the page keeps every annotation. Same chips and gestures. Each document keeps its own filter; the types below are the starting point for all of them. With the funnel off, the pane simply follows the types below.</html:p>
   </vbox>
   <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-in="extras annpane">
-      <checkbox label="Hide Zotero&#8217;s colour and tag selector at the foot of the pane" native="true"
-        preference="extensions.zotero.weavero.hideNativeAnnSelector"/>
-      <html:p class="wv-desc">Zotero&#8217;s own selector filters the pane and the document together. Untick to keep it.</html:p>
+      <checkbox label="Handle on Zotero&#8217;s colour and tag selector at the foot of the pane" native="true"
+        preference="extensions.zotero.weavero.annSelectorHandle"/>
+      <html:p class="wv-desc">A small pill on the selector&#8217;s top edge: one click folds the selector to that edge, the next brings it back &#8212; one state for every document, kept across restarts (shown to begin with). <html:em>View &#8594; Layout &#8594; Colour and Tag Selector</html:em> hides the selector entirely, pill included, as the library&#8217;s Tag Selector item does. Open, the selector filters the pane and the document together, and an annotation dropped on a colour or tag takes it (Shift to remove). A selection stays in force while folded; the pill turns blue to say so. Off, the selector is always shown, as in Zotero.</html:p>
   </vbox>
   <vbox class="wv-block wv-block-end" data-gated-by="enableVisualExtras" data-wv-in="extras annpane">
     <vbox class="wv-anntypes-block">

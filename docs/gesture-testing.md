@@ -28,7 +28,34 @@ touching drag/drop, window moves, or focus code.
 - [ ] Multi-select (Ctrl+click) several tabs, drag the selection to
       another window → all move; the **dragged** tab (not the first) is
       active in the target.
-- [ ] Drop a tab into the **pinned region** → auto-pins.
+- [ ] Drop a tab into the **pinned region** → auto-pins (icon mirror,
+      leftmost cluster).
+- [ ] Drag a **pinned icon** left or right of another pin → the pins
+      reorder, both stay pinned (Firefox); the icon settles where it was
+      dropped with no snap-back to its old place. Drag it past the pinned
+      region → it unpins and lands at the slot; right after a group's
+      chip → it joins as the group's first (pinned) tab.
+- [ ] Press a pinned icon and release with a tiny wobble (a drag with
+      no drop) → nothing changes: same place, still pinned.
+- [ ] Press and HOLD a pinned icon → its tab is selected at once (mouse
+      down, like a normal tab), before any release.
+- [ ] Ctrl+click two pinned icons → both highlighted (the multi-selection
+      outline), no tab switch; drag one of them out past the pins → the
+      other folds away and the held one shows Firefox's card stack behind
+      it (one card for two tabs, two cards for more); on the drop both
+      unpin and land together, the follower right behind the dragged one.
+      Ctrl+click two normal tabs and drag them into the pinned region →
+      same stack while dragging, both pinned side by side on the drop.
+- [ ] Drag a pinned icon out past the pins → while dragged it grows into
+      a full tab (icon + title); drag a normal tab into the pinned region
+      → while dragged it shrinks to the icon. Neighbours make room for the
+      previewed size, and the pointer stays on the dragged element. With
+      the Firefox-style design on, NO blue anywhere in a drag: the
+      previews keep the selected tab's fill with no outline, a tab dragged
+      in from a reader window shows a selected-fill pill with the violet
+      focus outline, and a tab held over another tab (group creation)
+      rings in the colour the new group will get. Design off: Weavero's
+      accent-blue outline and tint on all of them.
 - [ ] ESC / drop back on the source strip mid-drag → nothing moves,
       no ghost window.
 
@@ -39,6 +66,14 @@ touching drag/drop, window moves, or focus code.
       window closes if that was its last tab.
 - [ ] Drag a main-window reader tab onto a reader window → mounts into
       its strip (move semantics — source tab closes).
+- [ ] Ctrl+click two tabs and drag them to another window (main → reader
+      window, reader window → main, reader window → reader window) →
+      while dragging, the preview in the other window's bar carries the
+      same card stack as a same-window multi-drag (one card for two
+      tabs, two for more) and, with the Firefox-style design on, the
+      same 1px ring as the held tab, no outline; on the drop both land
+      there, both still multi-selected, the dragged one active (Firefox:
+      the selection is re-ranged over the moved tabs after a drop).
 - [ ] Drag a **group chip** onto another window → the whole group
       travels; onto the desktop → group pops into its own window.
 - [ ] After each move: scroll the document — position/zoom/selection
@@ -360,13 +395,73 @@ stroke, Annotations tab active.
       showing everything. Alt+click **Use as Default** ADDS this document's
       chips to the existing default instead of replacing it.
 - [ ] **Zotero's own selector** (colours / tags at the foot of the pane) is
-      GONE by default while the funnel is enabled. Settings -> Reader
-      annotations pane -> untick "Hide Zotero's colour and tag selector" brings it
-      back live.
+      SHOWN with a handle by default while Filters are enabled: a centred
+      pill in its top padding, the colours and tags under it exactly where
+      Zotero puts them. Click the pill -> folded to a thin strip with the
+      pill, nothing else; click again -> unfolded. Every open document
+      follows, and a restart keeps the state (up to 0.22.1 the default hid
+      the selector outright). Select
+      a colour, fold -> the pill turns blue and its tooltip says a
+      selection is active; the page stays filtered. Unfold, deselect, fold
+      -> grey again. Drop an annotation card on a colour while unfolded ->
+      recoloured (Zotero's own drop). Settings -> Reader annotations pane
+      -> untick "Handle on Zotero's colour and tag selector" -> no handle,
+      the selector always shown, as in Zotero (the box ENABLES the handle,
+      it is not the toggle; MJT 2026-10-14); tick again -> the handle, in
+      the state it was left in. Filters master off -> the same native look.
+- [ ] **Tag Selector handle** (library tab): a pill centred on the Tag
+      Selector's top edge. Click -> the selector folds shut (only the
+      divider line stays); click the pill again -> back at its previous
+      height, same tags highlighted. With a tag selected, fold -> the list
+      stays filtered and the pill turns blue (tooltip names the tag).
+      View -> Layout -> Tag Selector shows the matching check mark in both
+      states, and hiding it from the menu then clicking the pill brings the
+      selector back WITH the filtering tag highlighted (Zotero's own re-show
+      leaves it unhighlighted). Drag the edge beside the pill -> still
+      resizes, and the pill stays where it was (12 px under the divider,
+      never 0 px tall: the splitter's drag used to write a height on it).
+      Restart with it folded -> still folded, and the pill unfolds it.
+      Settings -> Extras -> Collections pane -> untick "Handle on the Tag
+      Selector" -> plain splitter.
 - [ ] **Settings -> uncheck "Filter the annotations pane"** -> the funnel
       disappears, the pane shows every annotation again, Zotero's selector
       comes back. Re-checking restores the funnel and the document's own
       filter.
+
+## View → Layout follows the tab (after touching the menubar wiring)
+
+zotero#2814: Zotero's Layout items toggle the library's panes whatever the
+tab. Weavero shows the reader's panes there instead.
+
+- [ ] **Library tab** → View → Layout: Zotero's *Collections Pane / Item
+      Pane / Tag Selector*, nothing else, check marks as Zotero sets them.
+- [ ] **Reader tab** → View → Layout: *Sidebar*, *Context Pane*,
+      *Colour and Tag Selector*; Zotero's three are gone. Check marks match
+      what is on screen: toggle the sidebar with its toolbar button, reopen
+      the menu -> the mark followed; same for the context pane (sidenav
+      toggle). Click each item -> the real thing toggles: the sidebar; the
+      context pane; the selector goes ENTIRELY, pill included, in EVERY
+      open reader (one state, kept across restarts) -- the pill only folds
+      it, this hides it, as the library's Tag Selector item does. Unticked
+      and the pill's fold state are independent: hide, show -> folded or
+      not as it was.
+- [ ] **Note tab** (a note opened as a tab) → View → Layout: *Context
+      Pane*, toggling the context pane -- and, with Better Notes
+      installed, *Outline Pane* above it, toggling Better Notes' outline
+      (its mark follows the outline's own close button and the editor
+      toolbar's reopen button).
+- [ ] **Back to the library tab**: Zotero's three items are there again
+      (nothing stays hidden after a reader-tab open).
+- [ ] **Separate reader window** → View: a *Layout* submenu at the end
+      (same label as the main window's), with *Sidebar*, *Context Pane*
+      (only while Tabs & Windows → "item pane in separate reader windows"
+      is on; it toggles THAT pane) and *Colour and Tag Selector*. With
+      "Hide title bar" on, the same through the hamburger's View cascade.
+- [ ] **Keyboard**: Alt+V, L (Layout), then the first letter of an item
+      -- the reader's items answer to letter navigation like Zotero's.
+- [ ] **Settings → Extras → untick "View → Layout follows the tab"** →
+      reader tab shows Zotero's three again; the reader window's Layout
+      submenu is gone; tick → back.
 
 ## Annotation card dates (after touching the sort menu or the card rendering)
 
@@ -469,17 +564,187 @@ Real right-click menus; the spec builds them without opening.
 - [ ] Right-click a collection → **Hide**, with Zotero's crossed-eye icon
       as on Unfiled Items (at the end of the menu); it
       and its sub-collections vanish, a **blue dot** appears at the end of
-      the My Library line (hover: "In this window: 1 hidden …").
+      the My Library line (hover: "In this window: 1 hidden …"); select
+      My Library → the dot turns white on the blue selection (the row's
+      text colour, so it stays visible on the grey unfocused one too).
 - [ ] Ctrl+click two collections and a saved search, right-click inside the
       selection → **Hide 3 Collections and Saved Searches**.
-- [ ] Right-click **My Library** → **Show Hidden Collections ▸** (after
-      Zotero's own Show items) → **Show All (n)**, then each by path; pick
-      one → it is back, the dot goes when none are left.
-- [ ] Right-click a group library → **Hide**; dots on the
-      **Group Libraries** line and My Library. Right-click the Group
-      Libraries line → **Show Hidden Group Libraries ▸**. Hide every group →
-      the line goes; My Library's Show menu lists them under "Group
-      Libraries".
+- [ ] Right-click **My Library** → **Show Hidden Collections ▸** sits in
+      Zotero's Show group (its own *Show Unfiled Items*… fold into it) →
+      **Manage Hidden…**, **Show All (n)**, then each by path, **with its
+      row's icon** (collection, saved search, Unfiled…, group, My Library),
+      **in the pane's order** (Recently Read, collections, saved searches,
+      My Publications, Duplicate, Unfiled, Retracted — the *(all windows)*
+      entries at their own places), the Recently Read clock **purple** as in
+      the tree; pick one → it is back, the dot goes when none are left. With
+      nothing hidden there is no submenu: a plain **Manage Hidden…** item
+      sits in that same place.
+- [ ] Right-click a collection and a saved search: **Hide** sits right
+      above Zotero's **Delete Collection…** / **Delete Saved Search…** (on a
+      special collection, in place of Zotero's own Hide). On My Library or a
+      group library: right above **Show Hidden Collections ▸** (or above
+      **Manage Hidden…** with nothing hidden), both in Zotero's Show group.
+- [ ] **Manage Hidden…** → its own window, with the usual minimize /
+      maximize / close buttons and resizable: two of Zotero's own
+      collection trees, **Shown** on the left and **Hidden**
+      on the right, drawn exactly as the collections pane (icons and their
+      colours, fonts, row height, twisties, selection colours, Weavero's
+      indent guides when they are on), without the virtual rows (Unfiled,
+      Duplicates, My Publications, Bin…). It opens about 760×560, centred
+      on its main window, whatever size the Plugins Manager last had. The
+      left tree opens and closes as the pane shows it right now; opening or
+      closing branches in the manager leaves the pane's remembered
+      expansion alone. What you open or close in the manager is remembered
+      for its main window: close a hidden collection on the right, close
+      the manager, open it again → still closed (a shown row starts as the
+      pane shows it at that moment).
+- [ ] Rows that cannot move are grey italics with a tooltip saying why: My
+      Library and the Group Libraries heading on the left; on the right the
+      library rows and parents that only give a hidden entry its place.
+      Selecting only such rows leaves **Hide →** / **← Show** off. What a
+      hidden collection, library or section hides with it CAN be selected
+      (2026-10-21): its tooltip says what **← Show** brings back ("Hidden
+      with its parent collection: Show brings the parent back"), and Show
+      does that -- drop a collection onto a hidden collection's row (it
+      becomes its child, Zotero's move), select it on the right, **← Show**
+      → the parent and it are back in the pane.
+- [ ] **One selection** (2026-10-21): select on the left → **Hide →** on;
+      then select on the right → the left's selection is gone, **Hide →**
+      off, **← Show** on; and back. Only the pane you work in holds a
+      selection.
+- [ ] Select on the left (Ctrl+click, Shift+click, every collections-tree
+      key: arrows, Left/Right, +/-, Home/End, type-to-find) → **Hide →**,
+      Enter or double-click: the entries leave the collections pane at
+      once, a parent takes its sub-collections, they appear on the right
+      (brought into view), and the selection moves to the next row; the
+      same back with **← Show**. Delete and F2 do nothing here.
+      **← Show All** (under the pair) brings back everything on the right
+      at once — this window's set and the *(all windows)* rows — and greys
+      out when nothing is left.
+- [ ] **Right-click** a row (or inside a multi-selection; the Menu key /
+      Shift+F10 too) → Zotero's collection menu on the manager's own rows:
+      **New Subcollection…** (Zotero's dialog), **Rename** (inline, as F2),
+      **Move To ▸** (this library's root and collections, never into itself
+      or a child), **Copy To ▸** (every library), **Hide →** on the left
+      (**Hide 3 →** for three) / **← Show** on the right, **Delete
+      Collection…** / **Delete Collection and Items…** (Zotero's
+      confirmation; the Delete key, Shift+Delete for the items), **Export…**.
+      A saved search gets Hide/Show and Delete Search…; a library, section
+      or special row Hide/Show alone; a read-only group's editing items are
+      greyed. On a row outside the selection the row becomes the selection
+      first; on a grey row with nothing movable selected the item is
+      disabled. **Expansion follows a move**: open a
+      collection on the left, hide it → it arrives open on the right (its
+      sub-collections visible); close it there, show it → it comes back
+      closed on the left. The rows around it keep their state.
+- [ ] The **Filter Collections** box (Zotero's own, Ctrl+F) filters both
+      trees as the pane's filter does: matches with their parents as grey
+      context rows, branches opened, the earlier layout back when cleared
+      (Escape clears it; Escape again closes the window). A selected row
+      that stops matching never arms a button.
+- [ ] Escape, Ctrl+W or the close box end the manager; a second Manage
+      Hidden… focuses the open window; closing the main window closes it.
+      Resize it, close it, then open the Plugins Manager: it keeps its own
+      size. The Group Libraries line's menu has the same item.
+- [ ] Right-click a group library → **Hide**; a dot on the **Group
+      Libraries** line only (My Library's dot and menu stay about its own
+      collections). Right-click the Group Libraries line → **Show Hidden
+      Group Libraries ▸** (with nothing hidden there, a plain **Manage
+      Hidden…**). Hide every group → the line goes; only then does
+      My Library's dot count them and its Show menu list them under "Group
+      Libraries", with a label that says what it holds: **Show Hidden
+      Collections and Libraries ▸** with both kinds hidden, **Show Hidden
+      Group Libraries ▸** with only groups hidden. Show one group → the
+      line is back and My Library's menu drops them again.
+- [ ] **Whole sections** (2026-10-20): right-click the **Group Libraries**
+      heading → **Hide** is its first item (Zotero's crossed-eye icon;
+      absent while My Library is hidden) → the heading and every group go;
+      join or create a group → it stays hidden. Right-click the **Feeds**
+      row → **Hide** → the row and every feed go. My Library's dot counts "the Group Libraries
+      section, the Feeds section"; its **Show Hidden Libraries ▸** lists
+      *Group Libraries* and *Feeds* with the rows' own icons; each entry
+      (or *Show All*) brings its section back. In the manager the heading
+      and the Feeds row can be selected and **Hide →** hides their section;
+      on the right **← Show** brings it back; the groups / feeds under them
+      can be selected too and **← Show** on one brings the whole section
+      back ("Hidden with the Group Libraries section: Show brings the
+      section back").
+      With the Group Libraries section hidden, My Library cannot be hidden
+      (the last library shown).
+- [ ] **Single feeds** (2026-10-21): right-click a feed → **Hide** (right
+      above *Unsubscribe from Feed…*) → its row goes, the Feeds row stays
+      and gets the blue dot ("1 hidden feed"); right-click the Feeds row →
+      **Show Hidden Feeds ▸** (right under its own *Hide*) lists the feed
+      with its icon, *Show All (n)* and *Manage Hidden…*; one click brings
+      it back. In the manager a feed can be selected on either side and
+      **Hide →** / **← Show** move it; on the right it sits under the Feeds
+      row, which stays grey (it is not hidden itself). With the whole Feeds
+      section hidden too, the feeds hidden one by one stay hidden when the
+      section comes back.
+- [ ] **No arrow over nothing** (2026-10-21): hide the only sub-collection
+      of a collection → the parent's expand arrow goes (collections pane and
+      the manager's *Shown* side alike; on the *Hidden* side the parent is
+      the context row holding it and keeps its arrow); show the child → the
+      arrow is back.
+- [ ] **Drag and drop in the manager**: drag a collection onto another
+      collection's row (either pane) → it becomes its subcollection (Zotero's
+      own move, its rules: never into itself or a child); onto a library row
+      → back to that library's root; onto another library's row → a copy
+      there. The pane the row is in decides the rest (2026-10-21): a drop on
+      a row of the *Hidden* pane — a grey context row included — also hides
+      the collection in this window, a drop on a row of the *Shown* pane
+      shows it; the target row opens and the moved collection is selected
+      there, as the collections pane does. Hovering a closed collection for
+      a second while dragging opens it (Zotero's own). Drag a collection, a
+      saved search, a library row, the Group
+      Libraries heading or the Feeds row onto the **free area or the caption**
+      of the *Hidden* pane (the pane's border and caption
+      light up) → hidden; the same onto the *Shown* pane → shown. A
+      collection dragged from the **collections pane of the main window**
+      onto the right pane's free area is hidden too.
+- [ ] **Pinned parents in the manager** (2026-10-21): with *Keep parent
+      collections pinned at the top while scrolling* on (Preferences →
+      Weavero → Extras → Collections pane), expand a deep branch and scroll
+      either tree of the manager → the parents of the rows at the top stay
+      pinned above them, outermost first, as in the collections pane (same
+      level cap). Click a pinned row → its own row comes back under the
+      remaining pinned rows and is selected; its arrow collapses it.
+      Right-click a pinned row → the manager's own menu for it, the row
+      selected as from its own row (a grey context row pinned is grey and
+      cannot be selected). A drag over the pinned rows lights no zone and
+      drops nothing. Switch the setting off → the pinned rows go from the
+      collections pane and the open manager alike; on again → back.
+- [ ] **Special collections** (2026-10-19): right-click **Unfiled Items**
+      (or Duplicate Items, My Publications, Retracted Items, Recently Read)
+      → **Hide** is Weavero's: this window only, the row goes, and Zotero's
+      own Hide (its setting, every window) is not offered. Right-click **My
+      Library** → Zotero's separate *Show Unfiled Items*… entries are gone;
+      **Show Hidden Collections ▸** lists *Unfiled Items* among the
+      collections. Hide *Duplicate Items* the Zotero way (switch Weavero's
+      Extras off, right-click → Hide, Extras on again): the dot stays OFF
+      — the special collections never light it, hidden here or by Zotero's
+      setting (hide a real collection too: the dot counts that one alone,
+      its tooltip names Zotero's as "hidden in every window") — the
+      submenu lists it as *Duplicate Items (all windows)*, and that entry
+      (or *Show All*) brings it back in every window. The **Bin** never
+      appears in any of this.
+- [ ] **Manager, special collections**: Unfiled Items, Duplicate Items, My
+      Publications and Retracted Items (Recently Read on Zotero 11) sit under
+      their library on the left; Hide → moves one to the right like a
+      collection. **My Library** can be hidden like a group library — while
+      another library is shown: with it and a group shown, select it → Hide
+      → it moves to the right, the pane shows the group alone, and the
+      *Group Libraries* line's dot and menu list *My Library*; ← Show brings
+      it back. The **last library shown**, the Group Libraries heading and
+      the grey context rows **cannot be selected** (a click leaves them
+      unselected, the arrow keys skip them; the tooltip says why).
+      **Ctrl+A** takes the rows of the selection's level, as the collections
+      pane does, but with the saved searches and the special collections of
+      that level included (from a collection, a saved search or *Unfiled
+      Items* alike: every movable row under the same parent; from a library
+      every library root; nothing deeper, never the library). On the right
+      a row hidden by Zotero's setting carries *(all windows)* and a
+      tooltip; ← Show brings it back in every window.
 - [ ] A second main window (Ctrl+N) shows everything: the set is per
       window. Restart → each window gets its own set back, the first window
       included even with only its library tab open.

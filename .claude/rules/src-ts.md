@@ -31,6 +31,17 @@ name to a Zotero object, window, or document.
   by hand: the two comment renderers had their own copies, so a rule added
   to one surface left the others showing links the badge did not count
   (issue #56, xmlns values, 2026-10-14).
+- ONE undo rule: the bookmark and outline stores record their steps at
+  their write choke point (`_bmPersist`, `_wvOutlinePersist`). A new edit
+  goes through the store's setter or persist and records itself; never
+  push a step by hand (it would count twice). A gesture that writes
+  several times runs inside `_wvUndoBatch` -- never held open across a
+  dialog, the batch depth is global. A write that is NOT the user's
+  (repair, migration, a box navigation establishes, a label sync) goes
+  through the store's silent persist and patches the pending baseline
+  with what it changed, or a gesture in progress takes it for its own.
+  Until survey §3.7 (2026-10-17) the outline recorded only add and delete
+  by hand, and Ctrl+Z after a rename or reorder undid an older step.
 
 ## Survival rules (each paid for with a regression)
 
@@ -297,6 +308,23 @@ name to a Zotero object, window, or document.
   on the assumption that it wraps native content. The collections-tree
   pinned rows were dumped into the tree on every reload that way
   (2026-09-25). Guard: `test/collections-tree-aids.spec.js`.
+- A synchronous DOM walk never interleaves a style WRITE with a layout
+  READ (scrollHeight, clientHeight, getBoundingClientRect, getComputedStyle):
+  each write invalidates layout and the next read reflows the whole
+  document. Reads first (collect), writes last; and walk only what the
+  operation needs (the drag scroll-lock wrote on 6,709 elements of a
+  snapshot -- every inline element "overflows" its 0 clientHeight -- and
+  froze Zotero at every tab-drag start, 2026-10-15). Guard:
+  `test/drag-overlay-locks.spec.js`.
+- Tab-bar drags: the sliding gap never moves the real tab until the commit
+  (`_wvCommitGapDrop`), so nothing may read a dragged tab's LIVE index for
+  a verdict -- it is the pre-drag index (tabs.ts's pin/unpin verdict did,
+  and unpinned the last pin on a drag that ended without a drop,
+  2026-10-15). Pin/unpin and membership come from the previewed slot
+  (`win._wvGapResult`), in the commit, one owner. A loose pin's real tab is
+  display:none behind its mirror: mirrors are drag sources AND drop
+  elements in `_wvDragCacheGeom`; a group stamp counts only when its group
+  is live (`_wvTabGroupLiveStamp`). Guard: `test/pinned-drag.spec.js`.
 - `winOf(node)` from `src/lib/dom.ts`, never `node.ownerGlobal` (renamed in
   FF153/Zotero 11; works on the dev platform, breaks silently later —
   `test/compat.spec.js` enforces this on the bundle).
@@ -393,6 +421,37 @@ name to a Zotero object, window, or document.
   answered "global", or a fallback to the capture-time label, rewrote the
   bookmark store on every start and back on the next load (2026-10-13).
   Guard: `test/bookmark-store-flipflop.spec.js`.
+- A window opened on ANOTHER document as host (`ww.openWindow` on
+  basicViewer.xhtml for the hidden manager) inherits that document's
+  window behaviour: its `persist` attribute (xulStore keys on the document
+  URL, so the Plugins Manager's saved size is the same key) and its
+  `onload="window.sizeToContent()"`. Remove `persist` before the first
+  resize and size the window after the host's own load handler. An
+  `unload` listener added right after `openWindow` also hears the initial
+  about:blank document going away: add it inside the `load` listener and
+  check the event target. Without this the dev.43 manager lost its handle
+  at once (a second click opened a second window), grew to 8441px
+  (`flex: 1` = a 0% basis, which resolves to `content` in a column of
+  indefinite height), and wrote that size into the Plugins Manager's
+  (2026-10-16). Guard: `test/hidden-collections.spec.js`.
+- Zotero's own trees mount outside their pane: `win.require(
+  "zotero/collectionTree")` -> `CollectionTree.init(host, opts)`, as its
+  Select Items dialog does. The host must carry `#zotero-collections-tree`
+  (the collection-tree icons and sizes key on that id); an instance
+  `_includedInTree` decides the rows; `refresh()` / `reload()` leave
+  `selection.selectEventsSuppressed` TRUE -- set it false after every
+  reload or nothing hears the next selection; `_storeOpenStates` writes the
+  pane's `sourceList.persist` unless replaced; `unregister()` at the host
+  window's unload (a notifier observer otherwise outlives it). Zotero's
+  `customElements.js` registers LAZILY: `customElements.get("search-
+  textbox")` is undefined until one is created -- create it and check
+  `inputField`. Guard: `test/hidden-collections.spec.js`.
+- A tree's `getRowIndexByID` answers VISIBLE rows only: a row under a
+  collapsed parent is `false` however long you wait. Never poll it for a
+  row that may sit under a closed container -- `selectByID` /
+  `expandToCollection` expands to the row and is the pane's own path (a
+  manager drop under a closed collection waited its full 2 s before
+  expanding, 2026-10-21, dev.113).
 
 ## fix: commits name their guard
 
@@ -463,3 +522,43 @@ Settings / Plugins / Exit for good left Edit ending on a bare separator
 entries is fine and decided: File's New Tab / New Reader Window / New
 Main Window and Edit's Advanced Search in New Window stay in the menubar
 (MJT 2026-10-13, "It is good as it is") -- do not re-raise.
+
+An element Weavero adds to a NATIVE menu carries a `wv-` id, not just a
+`wv-` class: destroy's chrome sweep (`_wvStripWindowChrome`) removes id'd
+elements whole but UNWRAPS a class-only element whose descendants have
+other classes -- a rendered XUL menuitem's `img.menu-icon` / `label.menu-
+text` -- and the View -> Layout items left twelve stray img / label nodes
+in the popup on every reload (2026-10-14). The only hide of native
+menubar items is View -> Layout's library items in reader / note tabs
+(zotero#2814, MJT's call), restored on popuphidden.
+
+## Decorating a XUL `<splitter>`: never a child, never its neighbour
+
+The splitter captures the mouse on press (`PresShell::SetCapturingContent`),
+so a button placed INSIDE it gets no click of its own: mouseup and click
+land on the splitter. And it resizes / collapses its IMMEDIATE siblings
+(`collapse="after"` sets `collapsed` on the next sibling; `resizebefore /
+resizeafter="closest"` resize the nearest one), so a 0-height host next to
+it would be the thing collapsed or asked to grow. And it PAINTS NOTHING of
+its own: neither children nor `::before` / `::after` get a box (verified
+2026-10-14: a red `::after` and a blue child both invisible while a red
+background painted -- and `getComputedStyle(sp, "::after")` still reported
+the pseudo's width, so computed style is no proof of a box). Draw the
+decoration in a `position: fixed` host elsewhere in the pane (at its end),
+placed from the splitter's rect on a ResizeObserver of the splitter's
+neighbours. A drag resizes EVERY child of the pane box except XUL elements
+marked `fixed` / `hidden` (CollectChildInfos checks nsXULElement only):
+an HTML host got `height: 0px` written on it; make the host a XUL `box`
+with `fixed="true"` (it paints `::before`; a splitter does not), and give
+it an `!important` height anyway. Let the host take the click itself --
+a pill drawn half outside the 5 px band is not clickable through the
+splitter. The Tag Selector handle is the worked example (pane.ts
+`_wvApplyTagSelectorHandle`, 2026-10-14).
+
+A foreign node as the FIRST child of a React-rendered container survives
+React's reconciliation (React inserts and removes its own nodes around it,
+and drops the container whole on unmount -- re-add the node on the next
+ensure, with a MutationObserver that is mutation-quiet: compare before
+every attribute write). The reader selector handle is the worked example
+(`_wvAnnSelHandleEnsure`). Never put a class on a React element's `className`
+host: key CSS on the foreign child (`:has(> .wv-sel-handle)`) instead.

@@ -16,8 +16,12 @@
 // defineProperties.
 
 import { URL_SCHEMES } from "./url";
-import { wvWhenWindowLoaded } from "../lib/dom";
+import { wvWhenWindowLoaded, wvHtmlEl } from "../lib/dom";
+import { wvOutsideClick, wvReachableDocs, wvDismissOff } from "../lib/dismiss";
 import { wvListen, wvUnlisten } from "../lib/listen";
+import { wvMainWins } from "../lib/windows";
+import { wvCloneFor } from "../lib/xray";
+import { wvLinkVars } from "../lib/links";
 
 class _NoteEditorMixin {
     [k: string]: any;
@@ -32,7 +36,7 @@ class _NoteEditorMixin {
         // No doc → sweep EVERY main window (not just the focused one).
         if (!doc) {
             try {
-                const mains = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+                const mains = wvMainWins();
                 for (const w of mains) { if (w && w.document) this._processNoteRows(w.document); }
             } catch (e) {}
             return;
@@ -65,7 +69,7 @@ class _NoteEditorMixin {
         // No doc → sweep EVERY main window (not just the focused one).
         if (!doc) {
             try {
-                const mains = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+                const mains = wvMainWins();
                 for (const w of mains) { if (w && w.document) this._processNotesBoxes(w.document); }
             } catch (e) {}
             return;
@@ -97,13 +101,8 @@ class _NoteEditorMixin {
             // class, so we drive themed link colours from the OS
             // colour scheme instead. Same hex values as the rest
             // of Weavero's surfaces (PLUGIN_CSS / reader CSS).
-            ":root { --wv-link-http: #1a73e8;"
-                + " --wv-link-zotero: #8b4513;"
-                + " --wv-link-app: #9333ea; }",
-            "@media (prefers-color-scheme: dark) {"
-                + " :root { --wv-link-http: #8ab4f8;"
-                + " --wv-link-zotero: #cd853f;"
-                + " --wv-link-app: #c084fc; } }",
+            ":root { " + wvLinkVars("light") + " }",
+            "@media (prefers-color-scheme: dark) { :root { " + wvLinkVars("dark") + " } }",
             // Hide the note editor's built-in link popup in BOTH
             // modes. View mode (URL + Edit/Unlink buttons) is
             // replaced by Weavero's hover tooltip + right-click
@@ -362,7 +361,7 @@ class _NoteEditorMixin {
         const enabled = !!this._getEnableNotes();
         const docs: any[] = [];
         try {
-            const mains = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+            const mains = wvMainWins();
             for (const w of mains) { if (w && w.document) docs.push(w.document); }
         } catch (e) {}
         try {
@@ -890,7 +889,7 @@ class _NoteEditorMixin {
                 const rawAttrs = { href: trimmedUrl, title: null };
                 const attrs = (iwin && Components && Components.utils
                     && Components.utils.cloneInto)
-                    ? Components.utils.cloneInto(rawAttrs, iwin)
+                    ? wvCloneFor(rawAttrs, iwin)
                     : rawAttrs;
                 const linkMark = schema.marks.link.create(attrs);
                 // Replace the anchor's contents with an unmarked
@@ -1005,7 +1004,7 @@ class _NoteEditorMixin {
             const rawAttrs = { href: trimmedUrl, title: null };
             const attrs = (iwin && Components && Components.utils
                 && Components.utils.cloneInto)
-                ? Components.utils.cloneInto(rawAttrs, iwin)
+                ? wvCloneFor(rawAttrs, iwin)
                 : rawAttrs;
             const linkMark = schema.marks.link.create(attrs);
             const tr = view.state.tr;
@@ -1049,7 +1048,6 @@ class _NoteEditorMixin {
     _showLinkEditPanel(idoc, anchor, fromPos, toPos,
             initText, initUrl, onApply) {
         if (!idoc) return;
-        const HTML_NS = "http://www.w3.org/1999/xhtml";
         const win = Zotero.getMainWindow();
         if (!win) return;
         const chromeDoc = win.document;
@@ -1067,7 +1065,7 @@ class _NoteEditorMixin {
         // calls reuse the existing stylesheet.
         const STYLE_ID = "wv-link-edit-style";
         if (!idoc.getElementById(STYLE_ID)) {
-            const style = idoc.createElementNS(HTML_NS, "style");
+            const style = wvHtmlEl(idoc, "style");
             style.id = STYLE_ID;
             style.textContent = ""
                 + ".wv-link-edit-overlay{"
@@ -1137,15 +1135,14 @@ class _NoteEditorMixin {
             } catch(e) {}
         }
 
-        const overlay = idoc.createElementNS(HTML_NS, "div");
+        const overlay = wvHtmlEl(idoc, "div");
         overlay.className = "wv-link-edit-overlay";
 
         const makeRow = (labelText, value) => {
-            const row = idoc.createElementNS(HTML_NS, "div");
+            const row = wvHtmlEl(idoc, "div");
             row.className = "row";
-            const label = idoc.createElementNS(HTML_NS, "label");
-            label.textContent = labelText;
-            const input = idoc.createElementNS(HTML_NS, "input");
+            const label = wvHtmlEl(idoc, "label", undefined, labelText);
+            const input = wvHtmlEl(idoc, "input");
             input.type = "text";
             input.value = value || "";
             row.appendChild(label);
@@ -1158,12 +1155,9 @@ class _NoteEditorMixin {
         overlay.appendChild(textRow.row);
         overlay.appendChild(urlRow.row);
 
-        const btns = idoc.createElementNS(HTML_NS, "div");
-        btns.className = "buttons";
-        const cancelBtn = idoc.createElementNS(HTML_NS, "button");
-        cancelBtn.textContent = "Cancel";
-        const applyBtn = idoc.createElementNS(HTML_NS, "button");
-        applyBtn.textContent = "Apply";
+        const btns = wvHtmlEl(idoc, "div", "buttons");
+        const cancelBtn = wvHtmlEl(idoc, "button", undefined, "Cancel");
+        const applyBtn = wvHtmlEl(idoc, "button", undefined, "Apply");
         applyBtn.className = "apply";
         btns.appendChild(cancelBtn);
         btns.appendChild(applyBtn);
@@ -1229,29 +1223,16 @@ class _NoteEditorMixin {
         }
 
         let done = false;
+        let off: (() => void) | null = null;
         const close = () => {
             if (done) return;
             done = true;
             try { overlay.remove(); } catch(e) {}
-            try {
-                idoc.removeEventListener("mousedown", outsideHandler, true);
-            } catch(e) {}
-            try {
-                chromeDoc.removeEventListener(
-                    "mousedown", outsideHandler, true);
-            } catch(e) {}
+            if (off) { try { off(); } catch(e) {} off = null; }
         };
-        const outsideHandler = (e) => {
-            const t = e.target;
-            if (t && t.closest && t.closest(".wv-link-edit-overlay")) return;
-            close();
-        };
-        try {
-            idoc.addEventListener("mousedown", outsideHandler, true);
-        } catch(e) {}
-        try {
-            chromeDoc.addEventListener("mousedown", outsideHandler, true);
-        } catch(e) {}
+        // A press anywhere but the overlay -- in the note document or in the
+        // chrome around it -- closes it.
+        off = wvOutsideClick({ panel: overlay, docs: [idoc, chromeDoc], owner: this, onOutside: () => close() });
 
         // Stop event propagation INSIDE the overlay so we don't
         // re-trigger editor handlers (cursor moves, link click, …)
@@ -1437,7 +1418,7 @@ class _NoteEditorMixin {
             // editors in `zotero:note` windows.
             const docs = [];
             try {
-                const mains = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+                const mains = wvMainWins();
                 for (const w of mains) { if (w && w.document) docs.push(w.document); }
             } catch (e) {}
             try {
@@ -1478,7 +1459,7 @@ class _NoteEditorMixin {
         if (doc) mainDocs.push(doc);
         else {
             try {
-                const mains = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+                const mains = wvMainWins();
                 for (const w of mains) { if (w && w.document) mainDocs.push(w.document); }
             } catch (e) { try { mainDocs.push(Zotero.getMainWindow().document); } catch (e2) {} }
         }
@@ -1667,7 +1648,7 @@ class _NoteEditorMixin {
             // editors rendering Weavero links).
             const docs: any[] = [];
             try {
-                const mains = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+                const mains = wvMainWins();
                 for (const w of mains) { if (w && w.document) docs.push(w.document); }
             } catch (e) { try { docs.push(Zotero.getMainWindow().document); } catch (e2) {} }
             for (const wtype of ["zotero:note", "zotero:reader"]) {

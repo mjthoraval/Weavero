@@ -19,6 +19,7 @@
 // can run after its instance is gone (an event already being dispatched).
 
 import { winOf } from "./dom";
+import { wvWinType } from "./windows";
 
 interface WvListenRec { type: string; fn: any; capture: boolean; tag: string }
 
@@ -181,7 +182,7 @@ export function wvSweepTagOnChrome(tag: string): string[] {
             let d: any = null;
             try { d = w.document; } catch (e) {}
             let wt = "";
-            try { wt = (d && d.documentElement.getAttribute("windowtype")) || ""; } catch (e) {}
+            try { wt = (d && wvWinType(d)) || ""; } catch (e) {}
             sweep(w, wt + " window");
             if (!d) continue;
             sweep(d, wt + " document");

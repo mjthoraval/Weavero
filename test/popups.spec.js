@@ -31,10 +31,11 @@
 // the install / hot-reload workflow these tests run inside.
 
 describe("Weavero — popup infrastructure", () => {
-    let wv;
+    let wv, lib;
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv) wvT.absent('!wv');
+        lib = Zotero.Weavero && Zotero.Weavero.lib;
+        if (!wv || !lib) wvT.absent('!wv || !lib');
     });
 
     // -------- 1. _resolvePopupWin -----------------------------------
@@ -177,9 +178,11 @@ describe("Weavero — popup infrastructure", () => {
             // terminated immediately and PDF-iframe clicks didn't
             // dismiss the popup. The implementation now uses
             // nsIWindowMediator. Lock that contract by spot-checking
-            // the source.
-            const src = wv._attachOutsideClickDismiss.toString();
+            // the source -- since 2026-10-20 the walk is
+            // lib/dismiss.ts wvReachableDocs, which the method calls.
+            const src = lib.wvReachableDocs.toString();
             expect(src).to.include("nsIWindowMediator");
+            expect(wv._attachOutsideClickDismiss.toString()).to.include("wvReachableDocs");
         });
 
         it("uses a separate 'visited' set so collectDown recurses into already-added docs", () => {
@@ -188,7 +191,7 @@ describe("Weavero — popup infrastructure", () => {
             // recursion if the doc had been added by the walk-up
             // step. The fix tracks visited separately. Assert by
             // checking source for both `docs` and `visited` Sets.
-            const src = wv._attachOutsideClickDismiss.toString();
+            const src = lib.wvReachableDocs.toString();
             expect(src).to.include("visited");
             expect(src).to.include("docs");
         });
@@ -240,9 +243,11 @@ describe("Weavero — popup infrastructure", () => {
             // was: mousedown → outside-click handler closes popup →
             // click → toggle-check sees panel hidden → re-opens
             // popup. Net effect: no apparent change. The skip lets
-            // the click handler run cleanly and toggle-close.
-            const src = wv._attachOutsideClickDismiss.toString();
+            // the click handler run cleanly and toggle-close. The skip
+            // lives in lib/dismiss.ts wvOutsideClick since 2026-10-20.
+            const src = lib.wvOutsideClick.toString();
             expect(src).to.include("_wvOpenedFor");
+            expect(wv._attachOutsideClickDismiss.toString()).to.include("wvOutsideClick");
         });
     });
 });

@@ -35,10 +35,16 @@
 
 import { BOOKMARK_PATH, BOOKMARK_PATH_20, URL_GLOBE_SVG, URL_EXTERNAL_SVG, WV_FUNNEL_PATH, WV_FUNNEL_STEM_COLOR } from "./constants";
 import { BM_HOVERCARD_CSS, WV_PIN_ICON_URI } from "./reader-panels";
-import { wvPopupHost, wvDismissTooltip, wvSetBoolAttr, wvWithin } from "../lib/dom";
+import { wvPopupHost, wvDismissTooltip, wvSetBoolAttr, wvWithin, wvHtmlEl } from "../lib/dom";
+import { wvOutsideClick, wvReachableDocs, wvDismissOff } from "../lib/dismiss";
 import { wvLivePlugin } from "../lib/live";
 import { wvStoreWrite, wvStoreRead } from "../lib/store";
 import { wvTimeout } from "../lib/timers";
+import { wvMenuItem } from "../lib/menu";
+import { wvMainWins } from "../lib/windows";
+import { wvAccel, wvAccelAny } from "../lib/keys";
+import { wvSvgEl } from "../lib/svg";
+import { wvLinkColor, wvLinkClassRules } from "../lib/links";
 
 // Gecko globals — not in the project's TS lib set (cf. tabs.ts).
 declare const IOUtils: any;
@@ -52,8 +58,6 @@ const BM_CHIP_POPUP_ID = "wv-bookmarks-chip-popup";   // sibling XUL <panel>
 const BM_CHIP_INNER_ID = "wv-bookmarks-chip-inner";
 const BM_STYLE_ID = "wv-bookmarks-style";
 const BM_ROW_MENU_ID = "wv-bm-row-menu";
-const NS_HTML = "http://www.w3.org/1999/xhtml";
-
 // Annotation-type SVG glyphs — same paths the reader-sidebar chip popup
 // uses (kept in sync with RP_ANN_TYPE_SVG in reader-panels.ts).
 const BM_ANN_TYPE_SVG: { [k: string]: string } = {
@@ -350,14 +354,7 @@ const BM_POPUP_CSS = [
     // in notes / reader / item pane. Same hex values; self-contained
     // so the dropdown paints correctly without relying on a global
     // link-colour stylesheet.
-    ".wv-bm-label.wv-link-http{color:#1a73e8;}",
-    ".wv-bm-label.wv-link-zotero{color:#8b4513;}",
-    ".wv-bm-label.wv-link-app{color:#9333ea;}",
-    "@media (prefers-color-scheme: dark){",
-    " .wv-bm-label.wv-link-http{color:#8ab4f8;}",
-    " .wv-bm-label.wv-link-zotero{color:#cd853f;}",
-    " .wv-bm-label.wv-link-app{color:#c084fc;}",
-    "}",
+    ...wvLinkClassRules(".wv-bm-label"),
     ".wv-bm-empty{padding:8px 10px;opacity:.6;font-size:.9em;}",
     // Orphan bookmark (its Zotero target was deleted/purged): dim the row,
     // strike the label, and show a ⚠ badge. Clicking flashes the row (the
@@ -537,6 +534,8 @@ class _BookmarksMixin {
             if (!root) root = { producer: "weavero", schemaVersion: 1, outlines: {} };
             this._wvOutlineRoot = root;
             try { await this._wvOutlineMigrateFromBookmarks(); } catch (_) {}
+            // What the first user write diffs against (undo choke point).
+            this._wvOlUndoBaseline();
             return this._wvOutlineRoot;
         })();
         return this._wvOutlineInitPromise;
@@ -555,7 +554,7 @@ class _BookmarksMixin {
         for (const key of Object.keys(ro)) {
             if (!this._wvOutlineRoot.outlines[key]) { this._wvOutlineRoot.outlines[key] = ro[key]; migrated = true; }
         }
-        if (migrated) await this._wvOutlinePersist();
+        if (migrated) await this._wvOutlinePersistSilent();   /* load-time migration: never an undo step */
         // Drop readerOutlines from bookmarks.json (the normalizer already omits
         // it in memory; force a rewrite so the on-disk file is clean).
         try {
@@ -566,12 +565,200 @@ class _BookmarksMixin {
     }
 
     /** Atomic, serialized write of the outline root to outlines.json
-     *  (lib/store.ts: per-path chain on the Zotero global). */
+     *  (lib/store.ts: per-path chain on the Zotero global). The undo choke
+     *  point: every write records its step first (`_wvOlUndoCapture`). */
     _wvOutlinePersist() {
         if (!this._wvOutlineRoot) return Promise.resolve();
+        this._wvOlUndoCapture();
         if (this._wvOutlineReadOnly) { Zotero.debug("[Weavero] outlines persist skipped: store is read-only (unreadable at load)"); return Promise.resolve(); }
         this._wvOutlineWriteChain = wvStoreWrite(this._wvOutlineFilePath(), this._wvOutlineRoot);
         return this._wvOutlineWriteChain;
+    }
+
+    // ---- Outline undo: steps recorded at the write choke point ---------------
+    // (survey §3.7, 2026-10-17; until then only add and delete recorded, by
+    // hand, and Ctrl+Z after a reorder, rename, region edit or revert undid
+    // an older, unrelated step.) Every write of outlines.json diffs each
+    // document's curated outline against its last persisted state
+    // (`_wvOlUndoLast`, JSON per document key) and records ONE step per
+    // changed document: record-level changes with anchored positions, the
+    // bookmarks' diff over one flat section (`_wvBmUndoDiff`), plus the
+    // document itself appearing ("Create Weavero Outline", the empty state's
+    // button) or going away ("Delete Weavero Outline"). The copy a first edit
+    // makes of the document's own outline is NOT a step of its own (MJT
+    // 2026-10-19): it stays pending (`_wvOlUndoCurated`) and the edit's step
+    // starts from "no Weavero outline", so one Ctrl+Z goes back to the
+    // document's own outline. Automatic writes -- the href repair, the
+    // navigation box a click establishes, the load migration -- go through
+    // `_wvOutlinePersistSilent` and patch the baseline; per-document display
+    // settings live outside the documents and are never a step. A gesture
+    // that writes several times runs inside `_wvUndoBatch`.
+
+    /** The persist used by writes that are NOT user actions. `patches`
+     *  ([key, entry id, fields]) are applied to the baseline too, so a
+     *  gesture whose capture is pending never takes them for its own. */
+    _wvOutlinePersistSilent(patches?: Array<[string, string, any]>) {
+        for (const [key, id, fields] of (patches || [])) this._wvOlUndoBaselinePatch(key, id, fields);
+        this._wvOlUndoSilent = (this._wvOlUndoSilent || 0) + 1;
+        try { return this._wvOutlinePersist(); }
+        finally { this._wvOlUndoSilent--; }
+    }
+
+    /** The document key's undo scope (= `_wvOutlineUndoScope` of its att). */
+    _wvOlUndoScopeOf(key: string): string { return "outline:" + key; }
+
+    _wvOlUndoBaseline(keys?: string[]) {
+        const last = this._wvOlUndoLast || (this._wvOlUndoLast = {});
+        const store = this._wvOutlineRoot && this._wvOutlineRoot.outlines || {};
+        for (const key of (keys || Object.keys(store))) {
+            const d = store[key];
+            if (d && Array.isArray(d.entries)) last[key] = JSON.stringify(d); else delete last[key];
+            if (this._wvOlUndoCurated) delete this._wvOlUndoCurated[key];
+        }
+    }
+
+    _wvOlUndoBaselinePatch(key: string, id: string, fields: any) {
+        try {
+            const last = this._wvOlUndoLast;
+            if (!last || last[key] == null) return;
+            const d = JSON.parse(last[key]);
+            const e = (d.entries || []).find((x: any) => x && String(x.id) === String(id));
+            if (!e) return;
+            Object.assign(e, JSON.parse(JSON.stringify(fields)));
+            last[key] = JSON.stringify(d);
+        } catch (e) { Zotero.debug("[Weavero] _wvOlUndoBaselinePatch err: " + e); }
+    }
+
+    /** A document's fields other than its entries (importedFrom, ...). */
+    _wvOlUndoMeta(d: any): any {
+        if (!d) return null;
+        const m: any = {};
+        for (const k of Object.keys(d)) if (k !== "entries") m[k] = d[k];
+        return m;
+    }
+
+    /** "Add Outline Entry", "Delete 2 Outline Entries", "Rename Outline
+     *  Entry", "Move Outline Entry" (a reorder or re-indent), "Edit Outline
+     *  Entry" (region, kind, spacing mark); a mix reads "Edit Outline". */
+    _wvOlUndoLabel(changes: any[], docBefore: any, docAfter: any): string {
+        if (!docBefore && docAfter) return "Create Weavero Outline";
+        if (docBefore && !docAfter) return "Delete Weavero Outline";
+        let added = 0, removed = 0, renamed = 0, moved = 0, edited = 0;
+        const without = (r: any, drop: string[]) => { const o: any = {}; for (const k of Object.keys(r)) if (!drop.includes(k)) o[k] = r[k]; return JSON.stringify(o); };
+        for (const c of changes) {
+            if (!c.before) added++;
+            else if (!c.after) removed++;
+            else if (!c.moved && c.before.title !== c.after.title && without(c.before, ["title"]) === without(c.after, ["title"])) renamed++;
+            else if (without(c.before, ["indentLevel"]) === without(c.after, ["indentLevel"])) moved++;
+            else edited++;
+        }
+        const kinds = ([["Add", added], ["Delete", removed], ["Rename", renamed], ["Move", moved], ["Edit", edited]] as Array<[string, number]>).filter(k => k[1] > 0);
+        if (kinds.length !== 1) return "Edit Outline";
+        const [verb, n] = kinds[0];
+        return n === 1 ? verb + " Outline Entry" : verb + " " + n + " Outline Entries";
+    }
+
+    /** Called by `_wvOutlinePersist` before it writes: a step per document
+     *  that changed since the last capture. Inside a batch it waits for the
+     *  end of the gesture. */
+    _wvOlUndoCapture(flush?: boolean) {
+        try {
+            if (!this._wvOutlineRoot) return;
+            if (!this._wvOlUndoLast) { this._wvOlUndoBaseline(); return; }
+            if (!flush && typeof this._wvUndoInBatch === "function" && this._wvUndoInBatch()) {
+                this._wvUndoOnBatchEnd("outline", () => this._wvOlUndoCapture(true));
+                return;
+            }
+            const silent = (this._wvOlUndoSilent || 0) > 0;
+            const store = this._wvOutlineRoot.outlines || {};
+            for (const key of new Set<string>([...Object.keys(this._wvOlUndoLast), ...Object.keys(store)])) {
+                this._wvOlUndoCaptureKey(key, silent);
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvOlUndoCapture err: " + e); }
+    }
+
+    _wvOlUndoCaptureKey(key: string, silent?: boolean) {
+        const last = this._wvOlUndoLast || (this._wvOlUndoLast = {});
+        const store = (this._wvOutlineRoot && this._wvOutlineRoot.outlines) || {};
+        const d = store[key];
+        const cur = d && Array.isArray(d.entries) ? JSON.stringify(d) : null;
+        const prev = last[key] != null ? last[key] : null;
+        if (cur === prev) return;
+        // A pending copy (see `_wvOutlineEnsureCurated`): its own write, an
+        // automatic write on it, or its deletion leaves the baseline at "no
+        // Weavero outline"; the first user edit records from there, and is
+        // named after what it changed in the copy.
+        let copy: any = null;
+        const pending = this._wvOlUndoCurated ? this._wvOlUndoCurated[key] : undefined;
+        if (pending !== undefined && prev == null) {
+            if (cur == null) { delete this._wvOlUndoCurated[key]; return; }
+            if (cur === pending) return;
+            if (silent) { this._wvOlUndoCurated[key] = cur; return; }
+            delete this._wvOlUndoCurated[key];
+            copy = JSON.parse(pending);
+        }
+        if (cur == null) delete last[key]; else last[key] = cur;
+        if (silent) return;
+        const before = prev != null ? JSON.parse(prev) : null;
+        const after = cur != null ? JSON.parse(cur) : null;
+        const changes = this._wvBmUndoDiff({ entries: (before && before.entries) || [] }, { entries: (after && after.entries) || [] });
+        const docBefore = this._wvOlUndoMeta(before), docAfter = this._wvOlUndoMeta(after);
+        if (!changes.length && JSON.stringify(docBefore) === JSON.stringify(docAfter)) return;
+        const label = copy
+            ? this._wvOlUndoLabel(this._wvBmUndoDiff({ entries: copy.entries || [] }, { entries: (after && after.entries) || [] }),
+                this._wvOlUndoMeta(copy), docAfter)
+            : this._wvOlUndoLabel(changes, docBefore, docAfter);
+        this._wvUndoPush(this._wvOlUndoScopeOf(key), {
+            label,
+            type: "outline.doc",
+            data: { key, docBefore, docAfter, changes },
+        });
+    }
+
+    /** Put one document back to the `side` ("before" = undo, "after" = redo)
+     *  of a step, record by record on the CURRENT outline: entries the other
+     *  side added are removed, changed ones get their fields back, the ones
+     *  this side has elsewhere (or not at all) are placed after their
+     *  anchors, ascending -- so a run of neighbours re-chains on itself. A
+     *  document absent on `side` is deleted; one absent now is recreated.
+     *  Persists silently and re-baselines. Returns the ids present on `side`. */
+    async _wvOlUndoApply(data: any, side: "before" | "after"): Promise<string[]> {
+        await this._wvOutlineInit();
+        const store = this._wvOutlineStore();
+        const key = data.key;
+        const changes: any[] = data.changes || [];
+        const meta = side === "before" ? data.docBefore : data.docAfter;
+        const other = side === "before" ? "after" : "before";
+        const posOf = (c: any) => (side === "before" ? c.bpos : c.apos) || { prevId: null, index: 0 };
+        const clone = (r: any) => JSON.parse(JSON.stringify(r));
+        if (!meta) delete store[key];
+        else {
+            let d = store[key];
+            if (!d || !Array.isArray(d.entries)) d = store[key] = Object.assign(clone(meta), { entries: [] });
+            else { for (const k of Object.keys(d)) if (k !== "entries") delete d[k]; Object.assign(d, clone(meta)); }
+            const arr: any[] = d.entries;
+            const idx = (id: any) => arr.findIndex((x: any) => x && String(x.id) === String(id));
+            for (const c of changes) if (c[other] && !c[side]) { const i = idx(c.id); if (i >= 0) arr.splice(i, 1); }
+            const place: Array<{ node: any; pos: any }> = [];
+            for (const c of changes) {
+                if (!c[side]) continue;
+                const i = idx(c.id);
+                if (i < 0) { place.push({ node: clone(c[side]), pos: posOf(c) }); continue; }
+                const e = arr[i];
+                for (const k of Object.keys(e)) delete e[k];
+                Object.assign(e, clone(c[side]));
+                if (c.moved) { arr.splice(i, 1); place.push({ node: e, pos: posOf(c) }); }
+            }
+            place.sort((a, b) => (a.pos.index || 0) - (b.pos.index || 0));
+            for (const p of place) {
+                let at = 0;
+                if (p.pos.prevId != null) { const pi = idx(p.pos.prevId); at = pi >= 0 ? pi + 1 : Math.min(p.pos.index || 0, arr.length); }
+                arr.splice(at, 0, p.node);
+            }
+        }
+        await this._wvOutlinePersistSilent();
+        this._wvOlUndoBaseline([key]);
+        return meta ? changes.filter(c => c[side]).map(c => String(c.id)) : [];
     }
 
     /** The per-attachment map (sync; {} until `_wvOutlineInit` has loaded). */
@@ -626,8 +813,11 @@ class _BookmarksMixin {
      *  (copy-on-first-edit). Idempotent: returns the existing curated outline
      *  unchanged if one already exists. The tree ({title,url,position,items})
      *  is flattened depth-first into entries carrying `indentLevel`; each keeps
-     *  a frozen `source` snapshot for later re-enrichment / re-import. */
-    async _wvOutlineEnsureCurated(libraryID: number, itemKey: string, importedFrom: string, tree: any[]): Promise<any> {
+     *  a frozen `source` snapshot for later re-enrichment / re-import.
+     *  The copy joins the undo step of the edit that follows it; `ownStep`
+     *  (the "Create Weavero Outline" button) records it as a step of its own. */
+    async _wvOutlineEnsureCurated(libraryID: number, itemKey: string, importedFrom: string, tree: any[],
+            opts?: { ownStep?: boolean }): Promise<any> {
         await this._wvOutlineInit();
         const store = this._wvOutlineStore();
         const key = this._bmReaderKey(libraryID, itemKey);
@@ -654,6 +844,12 @@ class _BookmarksMixin {
         };
         walk(tree, 0);
         store[key] = { importedFrom, importedAt: new Date().toISOString(), entries };
+        if (opts && opts.ownStep) {
+            // Inside a gesture (an undo batch) it is recorded now, before the
+            // batch's diff, so it stays a step of its own under the gesture's.
+            if (this._wvUndoInBatch && this._wvUndoInBatch()) this._wvOlUndoCaptureKey(key);
+        }
+        else (this._wvOlUndoCurated || (this._wvOlUndoCurated = {}))[key] = JSON.stringify(store[key]);
         await this._wvOutlinePersist();
         return store[key];
     }
@@ -736,7 +932,7 @@ class _BookmarksMixin {
      *  A recovery that FAILS stores the coarse point itself, which still counts
      *  as established (so it isn't re-searched every click). */
     async _wvOutlineSetEntryPosition(libraryID: number, itemKey: string, id: string, position: any,
-            regionTitle?: string) {
+            regionTitle?: string, opts?: { auto?: boolean }) {
         await this._wvOutlineInit();
         const d = this._wvOutlineDoc(libraryID, itemKey);
         if (!d || !Array.isArray(d.entries)) return;
@@ -748,7 +944,14 @@ class _BookmarksMixin {
             // i.e. only when re-detecting could actually land somewhere new --
             // re-running it against the same text would just redo the same work.
             if (regionTitle != null) e.regionTitle = regionTitle;
-            await this._wvOutlinePersist();
+            // `auto`: the box a click establishes once (navigation), not a
+            // user edit -- never an undo step.
+            if (opts && opts.auto) {
+                const f: any = { resolvedPosition: position };
+                if (regionTitle != null) f.regionTitle = regionTitle;
+                await this._wvOutlinePersistSilent([[this._bmReaderKey(libraryID, itemKey), String(id), f]]);
+            }
+            else await this._wvOutlinePersist();
         }
     }
 
@@ -1193,20 +1396,31 @@ class _BookmarksMixin {
             if (!this._bmDoc) return;
             const doc = this._bmReaderDoc(libraryID, itemKey);
             let changed = false;
+            const patches: Array<[string, any]> = [];
             const walk = (nodes: any[]) => {
                 for (const n of (nodes || [])) {
                     if (!n) continue;
                     if (n.type === "folder") { walk(n.children || []); continue; }
+                    const patch: any = {};
                     const renamed = this._bmReaderIsRenamed(n);
-                    if (n.renamed == null) { n.renamed = renamed; changed = true; }   // migrate old records
+                    if (n.renamed == null) { n.renamed = patch.renamed = renamed; changed = true; }   // migrate old records
                     const derived = this._bmReaderDeriveSourceLabel(n, { liveOnly: true });
-                    if (derived == null) continue;                                    // no live source — keep stored
-                    if (n.originalLabel !== derived) { n.originalLabel = derived; changed = true; }
-                    if (!renamed && n.label !== derived) { n.label = derived; changed = true; }
+                    if (derived != null) {                                            // else no live source — keep stored
+                        if (n.originalLabel !== derived) { n.originalLabel = patch.originalLabel = derived; changed = true; }
+                        if (!renamed && n.label !== derived) { n.label = patch.label = derived; changed = true; }
+                    }
+                    if (Object.keys(patch).length && n.id != null) patches.push([String(n.id), patch]);
                 }
             };
             walk(doc.local); walk(doc.global);
-            if (changed) this._bmPersistSilent();   // automatic, not a user action
+            if (!changed) return;
+            // Inside a gesture the capture waits for the gesture's end and
+            // diffs against the baseline: put the synced values there too, or
+            // they count as the user's (survey §3.7, 2026-10-17).
+            if (this._wvUndoInBatch && this._wvUndoInBatch()) {
+                this._wvBmUndoBaselinePatch("rb:" + this._bmReaderKey(libraryID, itemKey), patches);
+            }
+            this._bmPersistSilent();   // automatic, not a user action
         } catch (_) {}
     }
 
@@ -1358,7 +1572,9 @@ class _BookmarksMixin {
     // expand / collapse) go through `_bmPersistSilent` and record nothing;
     // `expanded` is view state and never counts as a change. One gesture
     // that writes several times runs inside `_wvUndoBatch`, which defers
-    // the capture to the end of the gesture (one step per store, linked).
+    // the capture to the end of the gesture (one step per store, linked);
+    // an automatic change in between also patches the pending baseline
+    // (`_wvBmUndoBaselinePatch`), or it would count as the user's.
 
     /** The persist used by writes that are NOT user actions. */
     _bmPersistSilent() {
@@ -1407,6 +1623,24 @@ class _BookmarksMixin {
             const t = this._wvBmUndoTree(key);
             if (t) last[key] = JSON.stringify(t); else delete last[key];
         }
+    }
+
+    /** An AUTOMATIC change made while a gesture's capture is pending: apply
+     *  it to the baseline as well, so the end-of-gesture diff never sees it.
+     *  `patches` = [record id, fields]; a record the baseline does not hold
+     *  (added by the gesture itself) is left alone -- its add carries it. */
+    _wvBmUndoBaselinePatch(key: string, patches: Array<[string, any]>) {
+        try {
+            const last = this._wvBmUndoLast;
+            if (!last || last[key] == null || !patches.length) return;
+            const t = JSON.parse(last[key]);
+            const byId = new Map<string, any>();
+            const walk = (arr: any[]) => { for (const n of (arr || [])) { if (!n) continue; if (n.id != null) byId.set(String(n.id), n); if (Array.isArray(n.children)) walk(n.children); } };
+            for (const s of Object.keys(t)) walk(t[s]);
+            let hit = false;
+            for (const [id, fields] of patches) { const n = byId.get(id); if (n) { Object.assign(n, fields); hit = true; } }
+            if (hit) last[key] = JSON.stringify(t);
+        } catch (e) { Zotero.debug("[Weavero] _wvBmUndoBaselinePatch err: " + e); }
     }
 
     /** Fields Weavero DERIVES and maintains itself (the reading-order key
@@ -1883,7 +2117,7 @@ class _BookmarksMixin {
         panel.setAttribute("animate", "false");
         panel.setAttribute("noautohide", "true");
         panel.setAttribute("consumeoutsideclicks", "false");
-        const inner = doc.createElementNS(NS_HTML, "div");
+        const inner = wvHtmlEl(doc, "div");
         inner.id = BM_CHIP_INNER_ID;
         panel.appendChild(inner);
         const host = wvPopupHost(doc);
@@ -2029,7 +2263,7 @@ class _BookmarksMixin {
         };
         const anyFacets = facets.colors.size || facets.tags.size || facets.authors.size || facets.types.size;
         if (!anyFacets) {
-            const empty = doc.createElementNS(NS_HTML, "div");
+            const empty = wvHtmlEl(doc, "div");
             empty.className = "wv-bm-chip-bar-lib-empty";
             empty.textContent = "No filters available for the current bookmark list.";
             bar.appendChild(empty);
@@ -2041,8 +2275,7 @@ class _BookmarksMixin {
         // "pick any of these" set. CSS rule lives in constants.ts
         // (global in the chrome window).
         const mkRow = () => {
-            const r = doc.createElementNS(NS_HTML, "div");
-            r.className = "wv-bm-chip-row wv-filter-or-group";
+            const r = wvHtmlEl(doc, "div", "wv-bm-chip-row wv-filter-or-group");
             return r;
         };
         const toggle = (set: Set<string>, key: string) => { if (set.has(key)) set.delete(key); else set.add(key); };
@@ -2087,8 +2320,7 @@ class _BookmarksMixin {
                 // right edge after a thin vertical separator — same
                 // pattern the library filter uses in filter.ts.
                 if (c === "#000000") {
-                    const sep: any = doc.createElementNS(NS_HTML, "div");
-                    sep.className = "wv-filter-vertical-separator";
+                    const sep: any = wvHtmlEl(doc, "div", "wv-filter-vertical-separator");
                     sep.style.marginLeft = "auto";
                     row.appendChild(sep);
                 }
@@ -2096,7 +2328,7 @@ class _BookmarksMixin {
                 // 26×28 button holding the Zotero-native rounded-square
                 // swatch (filter.ts _wvNativeColorSwatch),
                 // `data-selected="true"` for the highlight state.
-                const btn: any = doc.createElementNS(NS_HTML, "button");
+                const btn: any = wvHtmlEl(doc, "button");
                 btn.type = "button";
                 btn.className = "wv-filter-opt wv-filter-opt-icon";
                 btn.setAttribute("title", c + " — " + facets.colors.get(c) + " annotation(s) — Alt+click to exclude");
@@ -2121,7 +2353,7 @@ class _BookmarksMixin {
                 // containing the 16×16 annotate-* SVG glyph. DOMParser
                 // import because innerHTML doesn't parse inline SVG
                 // correctly inside the XUL <panel> context.
-                const chip: any = doc.createElementNS(NS_HTML, "button");
+                const chip: any = wvHtmlEl(doc, "button");
                 chip.type = "button";
                 chip.className = "wv-filter-opt wv-filter-opt-icon";
                 chip.setAttribute("title", (TYPE_NAME[tp] || tp) + " — " + facets.types.get(tp) + " — Alt+click to exclude");
@@ -2159,19 +2391,17 @@ class _BookmarksMixin {
             row.classList.add("wv-bm-tags-row");
             for (const t of keys) {
                 const info = facets.tags.get(t)!;
-                const chip = doc.createElementNS(NS_HTML, "span");
+                const chip = wvHtmlEl(doc, "span");
                 chip.className = "wv-bm-chip" + (st.tags.has(t) ? " selected" : "")
                     + ((this as any)._wvBmChipExcl(st, "tags").has(t) ? " excluded" : "");
                 chip.setAttribute("title", t + " — " + info.count + " bookmark(s) — Alt+click to exclude");
                 if (info.color) {
-                    const dot = doc.createElementNS(NS_HTML, "span");
+                    const dot = wvHtmlEl(doc, "span");
                     dot.className = "wv-bm-chip-tag-dot";
                     dot.style.background = info.color;
                     chip.appendChild(dot);
                 }
-                const lbl = doc.createElementNS(NS_HTML, "span");
-                lbl.textContent = t;
-                chip.appendChild(lbl);
+                const lbl = wvHtmlEl(doc, "span", undefined, t, chip);
                 chip.addEventListener("click", (e: any) => { (this as any)._wvBmChipToggle(st, "tags", t, !!e.altKey); rerender(); });
                 row.appendChild(chip);
             }
@@ -2182,7 +2412,7 @@ class _BookmarksMixin {
             const row = mkRow();
             const keys = Array.from(facets.authors.keys()).sort((a, b) => a.localeCompare(b));
             for (const a of keys) {
-                const chip = doc.createElementNS(NS_HTML, "span");
+                const chip = wvHtmlEl(doc, "span");
                 chip.className = "wv-bm-chip" + (st.authors.has(a) ? " selected" : "")
                     + ((this as any)._wvBmChipExcl(st, "authors").has(a) ? " excluded" : "");
                 chip.setAttribute("title", a + " — " + facets.authors.get(a) + " annotation(s) — Alt+click to exclude");
@@ -2692,7 +2922,7 @@ class _BookmarksMixin {
         try {
             let style: any = doc.getElementById(BM_EDITDLG_STYLE_ID);
             if (!style) {
-                style = doc.createElementNS(NS_HTML, "style");
+                style = wvHtmlEl(doc, "style");
                 style.id = BM_EDITDLG_STYLE_ID;
                 (doc.documentElement || doc).appendChild(style);
             }
@@ -2720,12 +2950,9 @@ class _BookmarksMixin {
             panel.setAttribute("animate", "false");
             panel.setAttribute("noautohide", "true");
             panel.setAttribute("consumeoutsideclicks", "false");
-            const box = doc.createElementNS(NS_HTML, "div");
-            box.className = "wv-bm-editdlg";
+            const box = wvHtmlEl(doc, "div", "wv-bm-editdlg");
             const cap = (text: string) => {
-                const c = doc.createElementNS(NS_HTML, "div");
-                c.className = "wv-bm-editdlg-caption";
-                c.textContent = text;
+                const c = wvHtmlEl(doc, "div", "wv-bm-editdlg-caption", text);
                 return c;
             };
 
@@ -2735,7 +2962,7 @@ class _BookmarksMixin {
             // capture keeps the drag tracking even when the cursor leaves the
             // header (or the panel moves out from under it).
             const pos = { x: 0, y: 0 };
-            const header = doc.createElementNS(NS_HTML, "div");
+            const header = wvHtmlEl(doc, "div");
             header.className = "wv-bm-editdlg-header";
             header.textContent = opts.dialogTitle || "Edit Bookmark";
             box.appendChild(header);
@@ -2757,8 +2984,7 @@ class _BookmarksMixin {
             header.addEventListener("pointercancel", endDrag);
 
             box.appendChild(cap(opts.titleCaption || "Title"));
-            const titleInput = doc.createElementNS(NS_HTML, "input");
-            titleInput.className = "wv-bm-editdlg-input";
+            const titleInput = wvHtmlEl(doc, "input", "wv-bm-editdlg-input");
             titleInput.setAttribute("type", "text");
             titleInput.value = String(opts.titleValue || "");
             box.appendChild(titleInput);
@@ -2780,18 +3006,12 @@ class _BookmarksMixin {
                 origRow.style.display = changed ? "block" : "none";
             };
             if (originalTitle != null) {
-                origRow = doc.createElementNS(NS_HTML, "div");
+                origRow = wvHtmlEl(doc, "div");
                 origRow.className = "wv-bm-editdlg-origrow";
-                const ocap = doc.createElementNS(NS_HTML, "div");
-                ocap.className = "wv-bm-editdlg-origcap";
-                ocap.textContent = "Default title:";
-                const olbl = doc.createElementNS(NS_HTML, "div");
-                olbl.className = "wv-bm-editdlg-origlabel";
-                olbl.textContent = originalTitle;
+                const ocap = wvHtmlEl(doc, "div", "wv-bm-editdlg-origcap", "Default title:");
+                const olbl = wvHtmlEl(doc, "div", "wv-bm-editdlg-origlabel", originalTitle);
                 olbl.setAttribute("title", originalTitle);
-                const resetLink = doc.createElementNS(NS_HTML, "button");
-                resetLink.className = "wv-bm-editdlg-resetlink";
-                resetLink.textContent = "Reset to default";
+                const resetLink = wvHtmlEl(doc, "button", "wv-bm-editdlg-resetlink", "Reset to default");
                 resetLink.addEventListener("click", (e: any) => {
                     e.preventDefault();
                     titleInput.value = originalTitle;
@@ -2812,7 +3032,7 @@ class _BookmarksMixin {
             let urlInput: any = null;
             if (hasUrl) {
                 box.appendChild(cap(opts.urlCaption || "URL"));
-                urlInput = doc.createElementNS(NS_HTML, "input");
+                urlInput = wvHtmlEl(doc, "input");
                 urlInput.className = "wv-bm-editdlg-input";
                 urlInput.setAttribute("type", "text");
                 urlInput.setAttribute("spellcheck", "false");
@@ -2823,21 +3043,16 @@ class _BookmarksMixin {
             let commentInput: any = null;
             if (hasComment) {
                 box.appendChild(cap(opts.commentCaption || "Comment"));
-                commentInput = doc.createElementNS(NS_HTML, "textarea");
+                commentInput = wvHtmlEl(doc, "textarea");
                 commentInput.className = "wv-bm-editdlg-textarea";
                 commentInput.setAttribute("rows", "4");
                 commentInput.value = String(opts.commentValue || "");
                 box.appendChild(commentInput);
             }
 
-            const btns = doc.createElementNS(NS_HTML, "div");
-            btns.className = "wv-bm-editdlg-buttons";
-            const cancelBtn = doc.createElementNS(NS_HTML, "button");
-            cancelBtn.className = "wv-bm-editdlg-btn";
-            cancelBtn.textContent = "Cancel";
-            const saveBtn = doc.createElementNS(NS_HTML, "button");
-            saveBtn.className = "wv-bm-editdlg-btn wv-bm-editdlg-btn-primary";
-            saveBtn.textContent = "Save";
+            const btns = wvHtmlEl(doc, "div", "wv-bm-editdlg-buttons");
+            const cancelBtn = wvHtmlEl(doc, "button", "wv-bm-editdlg-btn", "Cancel");
+            const saveBtn = wvHtmlEl(doc, "button", "wv-bm-editdlg-btn wv-bm-editdlg-btn-primary", "Save");
             btns.appendChild(cancelBtn);
             btns.appendChild(saveBtn);
             box.appendChild(btns);
@@ -2860,7 +3075,7 @@ class _BookmarksMixin {
             panel.addEventListener("keydown", (e: any) => {
                 if (e.key === "Escape") { e.preventDefault(); close(); }
                 else if (e.key === "Enter" && (e.target === titleInput || e.target === urlInput)) { e.preventDefault(); doSave(); }
-                else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); doSave(); }
+                else if (e.key === "Enter" && wvAccel(e)) { e.preventDefault(); doSave(); }
             });
 
             const sx = win.screenX + Math.round(win.outerWidth / 2) - 180;
@@ -3108,7 +3323,7 @@ class _BookmarksMixin {
                 catch (e) { Zotero.debug("[Weavero] url-bm launch err: " + e); }
                 return;
             }
-            if (event && (event.ctrlKey || event.metaKey)) {
+            if (wvAccelAny(event)) {
                 await this._bmShowInLibrary(bm);
                 return;
             }
@@ -3325,7 +3540,7 @@ class _BookmarksMixin {
             if (!openInWindow && t.attachment && this._wvWTFindTabForItem) {
                 let inMainTab = false;
                 try {
-                    for (const mw of (Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()])) {
+                    for (const mw of wvMainWins()) {
                         const ZT: any = mw && (mw as any).Zotero_Tabs;
                         if (ZT && typeof ZT.getTabIDByItemID === "function" && ZT.getTabIDByItemID(t.attachment.id)) { inMainTab = true; break; }
                     }
@@ -3479,11 +3694,7 @@ class _BookmarksMixin {
             if (bm.type === "url") {
                 const cls = this._urlLinkClass(String(bm.url || ""));
                 const dark = this._bmIsDark(win);
-                const colorFor = (c: string) => {
-                    if (c === "wv-link-http")    return dark ? "#8ab4f8" : "#1a73e8";
-                    if (c === "wv-link-zotero")  return dark ? "#cd853f" : "#8b4513";
-                    return dark ? "#c084fc" : "#9333ea";          // app
-                };
+                const colorFor = (c: string) => wvLinkColor(c === "wv-link-http" ? "http" : c === "wv-link-zotero" ? "zotero" : "app", dark);
                 const svgFor = (c: string) => {
                     if (c === "wv-link-http")    return URL_GLOBE_SVG;
                     if (c === "wv-link-app")     return URL_EXTERNAL_SVG;
@@ -3672,7 +3883,7 @@ class _BookmarksMixin {
     _bmEnsurePopupStyles(doc: any) {
         let style: any = doc.getElementById(BM_STYLE_ID);
         if (!style) {
-            style = doc.createElementNS(NS_HTML, "style");
+            style = wvHtmlEl(doc, "style");
             style.id = BM_STYLE_ID;
             (doc.documentElement || doc).appendChild(style);
         }
@@ -3699,7 +3910,7 @@ class _BookmarksMixin {
         panel.setAttribute("noautohide", "true");          // we dismiss manually
         panel.setAttribute("consumeoutsideclicks", "false");
         panel.setAttribute("tooltip", "html-tooltip");
-        const inner = doc.createElementNS(NS_HTML, "div");
+        const inner = wvHtmlEl(doc, "div");
         inner.id = BM_INNER_ID;
         // Right-click on empty areas (row menus stopPropagation) → Add
         // Bookmark / New Folder, Firefox-bookmarks style.
@@ -3773,33 +3984,26 @@ class _BookmarksMixin {
         const onKey = (e: any) => {
             if (e.key === "Escape") { e.preventDefault(); this._bmHidePopup(win); }
         };
-        const onDown = (e: any) => {
-            try {
-                const t = e.target;
-                // wvWithin: a press on the list's scrollbar targets its anonymous thumb (#55).
-                if (wvWithin(panel, t)) return;
-                // Clicks inside the side chip-filter popup (a sibling XUL
-                // panel, not a child of the bookmarks panel) shouldn't
-                // dismiss the bookmarks popup.
-                const chipPanel = doc.getElementById(BM_CHIP_POPUP_ID);
-                if (chipPanel && wvWithin(chipPanel, t)) return;
-                if (t && t.closest && (t.closest(".wv-bm-flyout")
-                    || t.closest("#" + BM_ROW_MENU_ID))) return;
-                if (anchorBtn && wvWithin(anchorBtn, t)) return;
-                this._bmHidePopup(win);
-            } catch (err) {}
-        };
+        // Presses inside the side chip-filter popup (a sibling XUL panel,
+        // not a child of the bookmarks panel), a flyout or the row menu keep
+        // the popup; so does its anchor button.
+        const off = wvOutsideClick({
+            panel, owner: this,
+            isOpen: () => { try { return panel.state === "open" || panel.state === "showing"; } catch (e) { return false; } },
+            keep: () => [doc.getElementById(BM_CHIP_POPUP_ID), anchorBtn],
+            allow: (e: any) => !!(e.target && e.target.closest && (e.target.closest(".wv-bm-flyout") || e.target.closest("#" + BM_ROW_MENU_ID))),
+            onOutside: () => { try { this._bmHidePopup(win); } catch (err) {} },
+        });
         win.addEventListener("keydown", onKey, true);
-        doc.addEventListener("mousedown", onDown, true);
-        this._bmDismiss = { win, onKey, onDown };
+        this._bmDismiss = { win, onKey, off };
     }
 
     _bmRemoveDismiss() {
         if (!this._bmDismiss) return;
         try {
-            const { win, onKey, onDown } = this._bmDismiss;
+            const { win, onKey, off } = this._bmDismiss;
             win.removeEventListener("keydown", onKey, true);
-            win.document.removeEventListener("mousedown", onDown, true);
+            if (off) off();
         } catch (e) {}
         this._bmDismiss = null;
     }
@@ -3816,13 +4020,12 @@ class _BookmarksMixin {
 
         // Icon-only action row: "+" (add bookmarks) and folder-with-+
         // (new folder, the same glyph as Zotero's New Collection).
-        const actions = doc.createElementNS(NS_HTML, "div");
+        const actions = wvHtmlEl(doc, "div");
         actions.className = "wv-bm-actions";
         const mkIconBtn = (iconUrl: string, title: string, onClick: any) => {
-            const b = doc.createElementNS(NS_HTML, "button");
-            b.className = "wv-bm-iconbtn";
+            const b = wvHtmlEl(doc, "button", "wv-bm-iconbtn");
             b.setAttribute("title", title);
-            const img = doc.createElementNS(NS_HTML, "img");
+            const img = wvHtmlEl(doc, "img");
             img.setAttribute("src", iconUrl);
             img.setAttribute("width", "20");
             img.setAttribute("height", "20");
@@ -3847,7 +4050,7 @@ class _BookmarksMixin {
         // mirrors the reader button: accent tint + a FIELD + triangle label.
         const sortMode = this._wvReaderBmSortMode("library");
         const sortDir = this._wvReaderBmSortDir("library");
-        const sortBtn = doc.createElementNS(NS_HTML, "button");
+        const sortBtn = wvHtmlEl(doc, "button");
         sortBtn.className = "wv-bm-iconbtn wv-bm-lib-sortbtn"
             + (sortMode !== "manual" ? " wv-active" : "");
         sortBtn.setAttribute("title", sortMode === "manual"
@@ -3859,22 +4062,17 @@ class _BookmarksMixin {
         // collapse in XUL panels); same glyph as the reader's sort button.
         const sortSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">'
             + '<path fill="context-fill" d="M2 3H14V5H2ZM2 7H10V9H2ZM2 11H6V13H2Z"/></svg>';
-        const sortImg = doc.createElementNS(NS_HTML, "img");
+        const sortImg = wvHtmlEl(doc, "img");
         sortImg.setAttribute("src", "data:image/svg+xml;charset=utf-8," + encodeURIComponent(sortSvg));
         sortImg.setAttribute("width", "20");
         sortImg.setAttribute("height", "20");
         sortBtn.appendChild(sortImg);
         if (sortMode !== "manual") {
-            const lab = doc.createElementNS(NS_HTML, "span");
-            lab.className = "wv-bm-sortlabel";
-            lab.textContent = sortMode === "date" ? "Date" : "Name";
-            sortBtn.appendChild(lab);
+            const lab = wvHtmlEl(doc, "span", "wv-bm-sortlabel", sortMode === "date" ? "Date" : "Name", sortBtn);
             // The triangle is a DIRECT direction toggle (separate from the
             // menu-opening rest of the button) -- same split affordance as
             // the reader sections' sort button.
-            const dirEl = doc.createElementNS(NS_HTML, "span");
-            dirEl.className = "wv-bm-sortdir";
-            dirEl.textContent = sortDir === "asc" ? "▲" : "▼";
+            const dirEl = wvHtmlEl(doc, "span", "wv-bm-sortdir", sortDir === "asc" ? "▲" : "▼");
             dirEl.setAttribute("title", "Reverse sort order");
             dirEl.addEventListener("click", (e: any) => {
                 e.stopPropagation();
@@ -3892,8 +4090,7 @@ class _BookmarksMixin {
         // the +/folder add buttons. Uses the SAME hollow funnel SVG as
         // the reader sidebar so the affordance reads identically —
         // including the amber Weavero-identity stem.
-        const filterBtn = doc.createElementNS(NS_HTML, "button");
-        filterBtn.className = "wv-bm-iconbtn";
+        const filterBtn = wvHtmlEl(doc, "button", "wv-bm-iconbtn");
         filterBtn.setAttribute("title", "Filter bookmarks");
         // Render the funnel exactly like the +/folder icons: an <img>
         // pointing at a data:image/svg+xml URI. Inline SVG via
@@ -3908,7 +4105,7 @@ class _BookmarksMixin {
             + '<path fill="context-fill" fill-rule="evenodd" clip-rule="evenodd" d="' + WV_FUNNEL_PATH + '"/>'
             + '<path clip-path="url(#wvstem)" fill="' + WV_FUNNEL_STEM_COLOR + '" fill-rule="evenodd" clip-rule="evenodd" d="' + WV_FUNNEL_PATH + '"/>'
             + '</svg>';
-        const funnelImg = doc.createElementNS(NS_HTML, "img");
+        const funnelImg = wvHtmlEl(doc, "img");
         funnelImg.setAttribute("src", "data:image/svg+xml;charset=utf-8," + encodeURIComponent(funnelSvg));
         funnelImg.setAttribute("width", "20");
         funnelImg.setAttribute("height", "20");
@@ -3920,7 +4117,7 @@ class _BookmarksMixin {
         // -moz-context-properties on the image.
         const chevSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8" fill="context-fill">'
             + '<path d="M1 2.5h6L4 6z"/></svg>';
-        const chevImg = doc.createElementNS(NS_HTML, "img");
+        const chevImg = wvHtmlEl(doc, "img");
         chevImg.setAttribute("src", "data:image/svg+xml;charset=utf-8," + encodeURIComponent(chevSvg));
         chevImg.setAttribute("width", "8");
         chevImg.setAttribute("height", "8");
@@ -3954,7 +4151,7 @@ class _BookmarksMixin {
         // row. Sits between +/folder and the funnel (data:image/svg+xml
         // path mirrors the funnel approach so the icon picks up the
         // same `-moz-context-properties: fill,stroke` tint as +/folder).
-        const searchBtn = doc.createElementNS(NS_HTML, "button");
+        const searchBtn = wvHtmlEl(doc, "button");
         // First of the right-grouped buttons → carry the spacer so the
         // gap sits between the +/folder add-cluster and the search +
         // funnel filter-cluster (instead of between search and funnel).
@@ -3966,7 +4163,7 @@ class _BookmarksMixin {
         // chrome window can load chrome:// directly — no data URI
         // dance — and the existing `.wv-bm-iconbtn img` rule themes
         // it via `-moz-context-properties: fill, stroke`.
-        const searchImg = doc.createElementNS(NS_HTML, "img");
+        const searchImg = wvHtmlEl(doc, "img");
         searchImg.setAttribute("src", "chrome://zotero/skin/16/universal/magnifier.svg");
         searchImg.setAttribute("width", "20");
         searchImg.setAttribute("height", "20");
@@ -3989,18 +4186,15 @@ class _BookmarksMixin {
         // rebuilds the list, so the input keeps focus + caret on every
         // keystroke.
         if (this._bmLibSearchOpen) {
-            const searchRow = doc.createElementNS(NS_HTML, "div");
-            searchRow.className = "wv-bm-search";
-            const searchInput: any = doc.createElementNS(NS_HTML, "input");
-            searchInput.className = "wv-bm-search-input";
+            const searchRow = wvHtmlEl(doc, "div", "wv-bm-search");
+            const searchInput: any = wvHtmlEl(doc, "input", "wv-bm-search-input");
             searchInput.setAttribute("type", "text");
             searchInput.setAttribute("placeholder", "Search bookmarks…");
             searchInput.value = this._bmLibFilterText || "";
             // Clear ("x") button -- same grey-circle-white-x as the reader
             // search boxes and the native annotation search; visible only
             // while there's a query. Clears + keeps the field open/focused.
-            const clearBtn: any = doc.createElementNS(NS_HTML, "button");
-            clearBtn.className = "wv-bm-search-clear";
+            const clearBtn: any = wvHtmlEl(doc, "button", "wv-bm-search-clear");
             clearBtn.setAttribute("type", "button");
             clearBtn.setAttribute("title", "Clear search");
             clearBtn.setAttribute("aria-label", "Clear search");
@@ -4035,13 +4229,11 @@ class _BookmarksMixin {
             win.setTimeout(() => { try { searchInput.focus(); searchInput.select(); } catch (_) {} }, 0);
         }
 
-        const sep = doc.createElementNS(NS_HTML, "div");
+        const sep = wvHtmlEl(doc, "div");
         sep.className = "wv-bm-sep";
         inner.appendChild(sep);
 
-        const list = doc.createElementNS(NS_HTML, "div");
-        list.className = "wv-bm-scroll";
-        inner.appendChild(list);
+        const list = wvHtmlEl(doc, "div", "wv-bm-scroll", undefined, inner);
 
         this._bmRenderPopupBody(doc, win, list);
     }
@@ -4072,7 +4264,7 @@ class _BookmarksMixin {
         while (list.firstChild) list.firstChild.remove();
         const root = this._bmGetAll();
         if (!root.length) {
-            const empty = doc.createElementNS(NS_HTML, "div");
+            const empty = wvHtmlEl(doc, "div");
             empty.className = "wv-bm-empty";
             empty.textContent = "No bookmarks yet. Use ＋ Add Bookmarks…";
             list.appendChild(empty);
@@ -4104,7 +4296,7 @@ class _BookmarksMixin {
             };
             walk(displayRoot);
             if (!any) {
-                const empty = doc.createElementNS(NS_HTML, "div");
+                const empty = wvHtmlEl(doc, "div");
                 empty.className = "wv-bm-search-empty";
                 empty.textContent = q
                     ? "No bookmarks match \"" + (this._bmLibFilterText || "") + "\"."
@@ -4187,13 +4379,11 @@ class _BookmarksMixin {
             panel.setAttribute("noautohide", "true");
             panel.setAttribute("consumeoutsideclicks", "false");
             panel.setAttribute("tooltip", "html-tooltip");
-            const finner = doc.createElementNS(NS_HTML, "div");
-            finner.className = "wv-bm-flyout-inner";
-            panel.appendChild(finner);
+            const finner = wvHtmlEl(doc, "div", "wv-bm-flyout-inner", undefined, panel);
             if (kids.length) {
                 this._bmRenderInto(doc, win, finner, kids, depth);
             } else {
-                const empty = doc.createElementNS(NS_HTML, "div");
+                const empty = wvHtmlEl(doc, "div");
                 empty.className = "wv-bm-empty";
                 empty.textContent = "(empty)";
                 finner.appendChild(empty);
@@ -4283,11 +4473,11 @@ class _BookmarksMixin {
     }
 
     _bmRenderItemRow(doc: any, win: any, container: any, bm: any, _level: number) {
-        const row = doc.createElementNS(NS_HTML, "div");
+        const row = wvHtmlEl(doc, "div");
         row.className = "wv-bm-row";
 
         const ic = this._bmIconInfo(bm, win);
-        const icon = doc.createElementNS(NS_HTML, "img");
+        const icon = wvHtmlEl(doc, "img");
         icon.setAttribute("src", ic.image);
         icon.setAttribute("width", "16");
         icon.setAttribute("height", "16");
@@ -4302,7 +4492,7 @@ class _BookmarksMixin {
             } catch (e) {}
         });
 
-        const label = doc.createElementNS(NS_HTML, "div");
+        const label = wvHtmlEl(doc, "div");
         label.className = "wv-bm-label";
         // URL bookmarks inherit the same scheme-coloured link palette
         // Weavero uses in notes / reader / item pane.
@@ -4317,10 +4507,7 @@ class _BookmarksMixin {
         // row reads as "spot — in <doc>" without breaking row rhythm.
         const parentTitle = this._bmParentAttachmentTitle(bm);
         if (parentTitle) {
-            const sub = doc.createElementNS(NS_HTML, "span");
-            sub.className = "wv-bm-sublabel";
-            sub.textContent = " — in " + parentTitle;
-            label.appendChild(sub);
+            const sub = wvHtmlEl(doc, "span", "wv-bm-sublabel", " — in " + parentTitle, label);
             label.setAttribute("title", labelText + " — in " + parentTitle);
         } else {
             label.setAttribute("title", labelText);
@@ -4345,9 +4532,7 @@ class _BookmarksMixin {
         const missing = this._bmTargetMissing(bm);
         if (missing) {
             row.classList.add("wv-bm-missing");
-            const warn = doc.createElementNS(NS_HTML, "span");
-            warn.className = "wv-bm-missing-badge";
-            warn.textContent = "⚠";
+            const warn = wvHtmlEl(doc, "span", "wv-bm-missing-badge", "⚠");
             warn.setAttribute("title", "This bookmark's target no longer exists. Right-click → Delete Bookmark to remove it.");
             row.appendChild(warn);
             label.setAttribute("title", (label.getAttribute("title") || labelText) + " — target no longer exists");
@@ -4389,17 +4574,17 @@ class _BookmarksMixin {
     }
 
     _bmRenderFolderRow(doc: any, win: any, container: any, bm: any, level: number) {
-        const row = doc.createElementNS(NS_HTML, "div");
+        const row = wvHtmlEl(doc, "div");
         row.className = "wv-bm-row wv-bm-folder";
 
-        const folderIcon = doc.createElementNS(NS_HTML, "img");
+        const folderIcon = wvHtmlEl(doc, "img");
         folderIcon.setAttribute("src", BM_FOLDER_ICON);
         folderIcon.setAttribute("width", "16");
         folderIcon.setAttribute("height", "16");
         folderIcon.setAttribute("style",
             "flex:0 0 auto;-moz-context-properties:fill;fill:currentColor;");
 
-        const label = doc.createElementNS(NS_HTML, "div");
+        const label = wvHtmlEl(doc, "div");
         label.className = "wv-bm-label";
         label.textContent = bm.name || "Folder";
         label.setAttribute("title", label.textContent);
@@ -4409,19 +4594,10 @@ class _BookmarksMixin {
         // namespace in this XHTML/XUL context so a raw <svg> string wouldn't
         // render. 12px SVG, same shape as RP_CHEV_RIGHT, themed via
         // currentColor so it tracks the row's text colour.
-        const arrow = doc.createElementNS(NS_HTML, "span");
+        const arrow = wvHtmlEl(doc, "span");
         arrow.className = "wv-bm-arrow";
-        const NS_SVG = "http://www.w3.org/2000/svg";
-        const arrowSvg = doc.createElementNS(NS_SVG, "svg");
-        arrowSvg.setAttribute("viewBox", "0 0 16 16");
-        arrowSvg.setAttribute("fill", "none");
-        arrowSvg.setAttribute("stroke", "currentColor");
-        arrowSvg.setAttribute("stroke-width", "1.5");
-        arrowSvg.setAttribute("stroke-linecap", "round");
-        arrowSvg.setAttribute("stroke-linejoin", "round");
-        const arrowPath = doc.createElementNS(NS_SVG, "path");
-        arrowPath.setAttribute("d", "M6 4l4 4-4 4");
-        arrowSvg.appendChild(arrowPath);
+        const arrowSvg = wvSvgEl(doc, "svg", { viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", "stroke-width": "1.5", "stroke-linecap": "round", "stroke-linejoin": "round" });
+        const arrowPath = wvSvgEl(doc, "path", { d: "M6 4l4 4-4 4" }, arrowSvg);
         arrow.appendChild(arrowSvg);
 
         row.appendChild(folderIcon);
@@ -4533,14 +4709,7 @@ class _BookmarksMixin {
         parent.classList.add("menu-iconic");
         parent.setAttribute("image", BM_MENU_ADD_ICON);
         const popup = doc.createXULElement("menupopup");
-        const mk = (label: string, fn: any, image: string) => {
-            const mi = doc.createXULElement("menuitem");
-            mi.setAttribute("label", label);
-            mi.classList.add("menuitem-iconic");
-            mi.setAttribute("image", image);
-            mi.addEventListener("command", fn);
-            popup.appendChild(mi);
-        };
+        const mk = (label: string, fn: any, image: string) => { wvMenuItem(doc, { label, image, onCommand: fn }, popup); };
         mk("Pick item from library…", () => { this._bmHidePopup(win); this._bmAddBookmarksDialog(); }, BM_MENU_BOOKMARK_ICON);
         mk("Add Link…", () => { this._bmHidePopup(win); this._bmAddLinkDialog(win); }, BM_MENU_LINK_ICON);
         parent.appendChild(popup);

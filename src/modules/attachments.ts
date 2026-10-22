@@ -64,6 +64,7 @@
 // DEGRADES WITHOUT WEAVERO: uninstall and the tag is just an ordinary
 // automatic tag; Zotero opens its usual best attachment. Nothing to repair.
 
+import { wvMainWins } from "../lib/windows";
 declare const Zotero: any;
 
 /** The marker tag: an EMOJI plus a single HYPHEN-JOINED slug.
@@ -806,7 +807,7 @@ class _AttachmentsMixin {
             try { this._wvUnwireDerivedInvalidator(); } catch (e) {}
             // ▷ marker wrap on each window's ItemTree renderer prototype.
             try {
-                const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [];
+                const wins = wvMainWins();
                 for (const win of wins) {
                     try {
                         const view: any = (win as any).ZoteroPane && (win as any).ZoteroPane.itemsView;
@@ -1109,7 +1110,7 @@ class _AttachmentsMixin {
      *  per render; re-runnable (onMainWindowLoad calls it for new windows). */
     _wvWireDefattMarker(): void {
         try {
-            const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+            const wins = wvMainWins();
             for (const win of wins) {
                 try {
                     const view: any = (win as any).ZoteroPane && (win as any).ZoteroPane.itemsView;

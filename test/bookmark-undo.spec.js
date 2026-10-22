@@ -140,6 +140,33 @@ describe("Weavero — bookmark undo steps", () => {
         wv._wvUndoClear(scopeD);
     });
 
+    // Survey §3.7 (2026-10-17): a silent write DURING a gesture was deferred
+    // with the gesture's capture and recorded as part of the user's step --
+    // the sync runs on every list render, i.e. in the middle of drops and
+    // multi-adds. FAILED on 0.22.2-dev.51.
+    it("an automatic label sync DURING a gesture never becomes part of the user's step", async () => {
+        // A library bookmark derives its name from the live library, so the
+        // sync always has something to correct: a stale default name.
+        const s = await wv._bmReaderAdd(att.libraryID, att.itemKey, { type: "library", libraryID: Zotero.Libraries.userLibraryID, label: "S" });
+        const entryOf = (id) => { const d = wv._bmReaderDoc(att.libraryID, att.itemKey); return (wv._bmLocate(id, d.local) || wv._bmLocate(id, d.global)).entry; };
+        Object.assign(entryOf(s.id), { label: "stale", originalLabel: "stale", renamed: false });
+        await wv._bmPersistSilent();
+        wv._wvUndoClear(scopeD);
+        let w;
+        await wv._wvUndoBatch(async () => {
+            w = await add("W", 12);
+            wv._bmReaderSyncLabels(att.libraryID, att.itemKey);
+        });
+        assert.notStrictEqual(entryOf(s.id).label, "stale", "the sync corrected the name (the case this guards)");
+        const top = wv._wvUndoTop(scopeD, "undo");
+        assert.deepEqual(top.data.changes.map(c => c.id), [w.id], "the step holds the add alone");
+        assert.strictEqual(top.label, "Add Bookmark");
+        assert.strictEqual(await wv._wvUndo(scopeD), "Add Bookmark");
+        assert.notStrictEqual(entryOf(s.id).label, "stale", "and its undo leaves the synced name alone");
+        await wv._bmReaderRemove(att.libraryID, att.itemKey, s.id);
+        wv._wvUndoClear(scopeD);
+    });
+
     it("derived fields (the reading-order key) are never a step, and an undo keeps them", async () => {
         // MJT 2026-10-05: "Add selected text to bookmarks adds 2 entries:
         // Add and Edit" -- the second was the background sortIndex save.

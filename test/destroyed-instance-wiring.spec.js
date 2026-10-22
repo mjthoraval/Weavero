@@ -55,7 +55,12 @@ describe("Weavero — a destroyed instance wires nothing", () => {
     });
 
     it("init stops after each await once destroyed (source contract)", () => {
-        const n = (wvT.src("init").match(/_wvDestroyed\) return/g) || []).length;
-        assert.isAtLeast(n, 3, "after the readers loop, the icon encoding and the pref pane");
+        // Since the phase split (dev.109, test/init-phases.spec.js): the three
+        // phases that await check the flag after each of their awaits and
+        // return, and init stops after each of them.
+        const inPhases = ["_wvInitOpenReaders", "_wvInitMainWindows", "_wvInitPrefPane"]
+            .map(m => (wvT.src(m).match(/_wvDestroyed\) return/g) || []).length).reduce((a, b) => a + b, 0);
+        assert.isAtLeast(inPhases, 3, "after the readers loop, the icon encoding and the pref pane");
+        assert.strictEqual((wvT.src("init").match(/if \(gone\(\)\) return;/g) || []).length, 3, "init stops after each awaited phase");
     });
 });

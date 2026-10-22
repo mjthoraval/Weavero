@@ -61,10 +61,16 @@ Walk the high-risk surfaces (each has bitten before):
 
 Zotero ships 114 Mocha test files (`test/tests/`, runner `test/runtests.sh`
 targeting the `app/staging` binary — needs the source build at
-a local zotero/zotero clone you have built). Use it, always with `-f`:
+a local zotero/zotero clone you have built). Name the test files as
+positional arguments (`libraryTree`, without "Test.js"). `-f` is NOT a file
+flag: it stops at the first failure -- keep it (upstream's CLAUDE.md: failures
+cascade), and explain each failure before re-running. `-b` skips the bundled
+translator install, so translating tests fail -- never use it for a regression
+run (2026-10-19: a `-b` run showed a feed-translation failure that was the flag's).
 
 - after each source pull + column-sort patch re-apply:
-  `test/runtests.sh -f itemTreeTest collectionViewItemTreeTest itemTreeRowTest`
+  `test/runtests.sh -f collectionViewItemTree itemTreeRow libraryTree`
+  (there is no `itemTreeTest.js` on main since 2026-10)
 - to disambiguate "upstream regression vs Weavero interaction" when a beta
   changes filter/search/tabs behaviour: run the matching upstream tests on
   the bare build.

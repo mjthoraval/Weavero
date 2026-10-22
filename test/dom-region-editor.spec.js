@@ -160,7 +160,7 @@ describe("Weavero — DOM-view region editor", () => {
             wv._wvDomRegionEditorOpen(reader, d, range, {
                 editorId: "spec-6", noteWord: "title", onCommit: () => {},
             });
-            const knobs = /** @type {any[]} */ ([...d.querySelectorAll(".wv-epub-region-knob")]);
+            const knobs = /** @type {any[]} */ ([...d.querySelectorAll(".wv-region-knob")]);
             assert.lengthOf(knobs, 2, "one knob per handle");
             const bars = knobs.map((k) => /** @type {any} */ (k.parentElement));
             for (const b of bars) {

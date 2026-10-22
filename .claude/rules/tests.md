@@ -10,6 +10,14 @@ paths:
   monitor with bounded checks — the runner can stall silently at 0 bytes on a
   Zotero binary/profile lock. Kill orphaned temp-profile `zotero.exe`
   afterwards (the `--profile …/.scaffold/test/profile` one), never the user's.
+- A FAILED COUNT WITH NO ✖ LINE ("33 passed, 1 failed", every line ✔):
+  the scaffold's reporter drops the failed test's line altogether (it
+  printed neither ✔ nor ✖ for a 2026-10-20 failure; five runs were read as
+  "a hook or a stray rejection"). Find it by diffing the printed titles
+  against the spec's `it(` titles, or with a temporary per-test `afterEach`
+  that appends `this.currentTest.state + title` to a file
+  (`IOUtils.writeUTF8(PathUtils.join("D:\\tmp", …), …, { mode:
+  "appendOrCreate" })` — a forward-slash path writes nothing).
 - SKIP DISCIPLINE (survey 2026-10-06 §6, step 5): a missing plugin, method
   or constant is a FAILURE — `wvT.absent("plugin.x")` (or `wvT.method`,
   `wvT.src`), never `this.skip()`: 141 guards used to skip exactly when the
@@ -32,7 +40,11 @@ paths:
   openReaderTab / domViewOf (the Xray-waived DOM view once its document
   holds a text) / closeReaderTab, createItem/erase, purgeDeadReaders.
   Prefer them to a per-file copy; a targeted run always stages the 000-
-  files. A chrome-side position/selector handed to a DOM view must be
+  files. `wvT.waitFor(fn)` AWAITS what `fn` returns: a predicate that
+  returns a promise is satisfied by the promise's RESULT, not by the
+  promise existing -- return a boolean (`!!w._ready`), then await the
+  promise separately (2026-10-16: a ready-promise resolving to undefined
+  read as "never started" for three runs). A chrome-side position/selector handed to a DOM view must be
   `Cu.cloneInto(obj, pv._iframeWindow)` first or `toDisplayedRange`
   returns null (test/dom-view-fixture.spec.js runs the real views). The
   same for an EVENT built with a content window's constructor: its init
@@ -69,6 +81,19 @@ paths:
   one way). The 0.22.0 release CI failed on exactly these three, all
   recorded after the last CI run (2026-10-13). A new isWin-gated wiring
   key goes into wiringNormalize's Windows-only pattern.
+- A change that leaves something new on a main window (a `_wv*` expando,
+  a wrap on ZoteroPane / Zotero_Tabs / the views, a keyed listener)
+  re-records `test/window-wiring.spec.js` in the same commit, and the
+  re-record is then checked by a run WITHOUT `WV_WIRING_RECORD`: with it
+  set the test writes the file and passes without comparing. Its value is
+  a FILE PATH (`WV_WIRING_RECORD=/d/tmp/wiring.json`) that receives the
+  JSON recording -- the spec itself is never rewritten: copy the changed
+  marks into WIRING_EXPECTED by hand (a plain failing run prints the
+  received object, enough for a one-mark change). `=1` fails with
+  NS_ERROR_FILE_UNRECOGNIZED_PATH (2026-10-19). Two marks
+  (dev.21, dev.38) went in unrecorded and the full suite stayed red until
+  2026-10-17. Per-window state that must not show up there (or keep a
+  closed window alive) goes in a module-level WeakMap keyed by window.
 - A NEW or changed spec is run in the runner BEFORE it is committed, and
   the full-suite gate ("after the user validates") does not excuse it:
   `WV_TEST_ENTRIES=test/foo.spec.js[,test/bar.spec.js] npm test` runs only

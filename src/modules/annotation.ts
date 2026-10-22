@@ -2,6 +2,8 @@ import { MD_REGEX } from "../lib/links";
 import { wvListen } from "../lib/listen";
 import { normalize as wvNormalize } from "../lib/text";
 import { wvSetBoolAttr } from "../lib/dom";
+import { wvSvgEl } from "../lib/svg";
+import { WV_LINK_PALETTE } from "../lib/links";
 
 // Module: annotation comment text + URL detection + icon
 // rendering + annotation model access + related-item nav
@@ -208,11 +210,7 @@ class _AnnotationMixin {
      *  the same page, and at the 16-px size this icon is most
      *  often used the woven detail isn't legible anyway. */
     _makeLinkSvg(doc) {
-        const NS = "http://www.w3.org/2000/svg";
-        const svg = doc.createElementNS(NS, "svg");
-        svg.setAttribute("class", "wv-link-svg");
-        svg.setAttribute("viewBox", "0 0 24 24");
-        svg.setAttribute("aria-hidden", "true");
+        const svg = wvSvgEl(doc, "svg", { class: "wv-link-svg", viewBox: "0 0 24 24", "aria-hidden": "true" });
 
         // Theme detection per-doc, NOT per-UI:
         //  - Inner reader iframe (in-page badges) carries
@@ -238,19 +236,19 @@ class _AnnotationMixin {
             } catch (e) {}
             return false;
         })();
-        const bodyColor  = isDark ? "#8ab4f8" : "#253c97";
+        const bodyColor  = isDark ? WV_LINK_PALETTE.http.dark : "#253c97";   // the dark link colour; the light body is the icon's own
         const chainColor = isDark ? "#ffffff" : "#000000";
         const threadColor = chainColor;
 
         const path = (attrs) => {
-            const p = doc.createElementNS(NS, "path");
+            const p = wvSvgEl(doc, "path");
             for (const [k, v] of Object.entries(attrs)) {
                 p.setAttribute(k, v);
             }
             return p;
         };
         const ellipse = (attrs) => {
-            const e = doc.createElementNS(NS, "ellipse");
+            const e = wvSvgEl(doc, "ellipse");
             for (const [k, v] of Object.entries(attrs)) {
                 e.setAttribute(k, v);
             }
@@ -311,13 +309,8 @@ class _AnnotationMixin {
      *  annotation-header relations icon button (and matches the icon
      *  Zotero shows in the item pane's Related section). */
     _makeRelationsSvg(doc) {
-        const NS = "http://www.w3.org/2000/svg";
-        const svg = doc.createElementNS(NS, "svg");
-        svg.setAttribute("class", "wv-relations-svg");
-        svg.setAttribute("viewBox", "0 0 16 16");
-        svg.setAttribute("aria-hidden", "true");
-        const p = doc.createElementNS(NS, "path");
-        p.setAttribute("fill", "currentColor");
+        const svg = wvSvgEl(doc, "svg", { class: "wv-relations-svg", viewBox: "0 0 16 16", "aria-hidden": "true" });
+        const p = wvSvgEl(doc, "path", { fill: "currentColor" });
         p.setAttribute("d",
             "M12.5 13H8.5C7.57174 13 6.6815 12.6313 6.02513 11.9749"
             + "C5.36875 11.3185 5 10.4283 5 9.5C5 8.57174 5.36875 7.6815 6.02513 7.02513"
@@ -350,15 +343,8 @@ class _AnnotationMixin {
      *  relations popup). Same path data as the icon Zotero shows on the
      *  item pane's "Related" section add button, so the two match exactly. */
     _makePlusSvg(doc) {
-        const NS = "http://www.w3.org/2000/svg";
-        const svg = doc.createElementNS(NS, "svg");
-        svg.setAttribute("class", "wv-plus-svg");
-        svg.setAttribute("viewBox", "0 0 16 16");
-        svg.setAttribute("aria-hidden", "true");
-        const p = doc.createElementNS(NS, "path");
-        p.setAttribute("fill", "currentColor");
-        p.setAttribute("d", "M14 8H9V3H8V8H3V9H8V14H9V9H14V8Z");
-        svg.appendChild(p);
+        const svg = wvSvgEl(doc, "svg", { class: "wv-plus-svg", viewBox: "0 0 16 16", "aria-hidden": "true" });
+        const p = wvSvgEl(doc, "path", { fill: "currentColor", d: "M14 8H9V3H8V8H3V9H8V14H9V9H14V8Z" }, svg);
         return svg;
     }
 

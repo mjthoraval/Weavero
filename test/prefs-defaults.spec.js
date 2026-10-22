@@ -24,8 +24,8 @@ describe("Weavero — Settings prefs have registered defaults", () => {
     let db;
 
     // Mirrors prefs.html: grep -oE 'preference="extensions\.zotero\.weavero\.[A-Za-z.]+"'
-    const PANE = ["advSearchShortcutNewWindow", "advSearchWindowHidePanes", "collectionsPaneToggle", "annListShowHighlight", "annListShowImage", "annListShowInk", "annListShowNote",
-        "annListShowText", "annListShowUnderline", "enableAnnPaneFilter", "hideNativeAnnSelector",
+    const PANE = ["advSearchShortcutNewWindow", "advSearchWindowHidePanes", "collectionsPaneToggle", "tagSelectorHandle", "readerLayoutMenu", "annListShowHighlight", "annListShowImage", "annListShowInk", "annListShowNote",
+        "annListShowText", "annListShowUnderline", "enableAnnPaneFilter", "annSelectorHandle",
         "autoHideEmptyLibraryBookmarks", "autoHideEmptyReaderBookmarks", "bookmarkPageNumbers", "compactTitleBar",
         "compactTitleBarMain", "compactTitleBarNote", "compactTitleBarReader", "debug", "defattMarkAuto",
         "defattSortFirstAuto", "defattSortFirstDefault", "enableAddRelatedMenu", "enableAddedByColors",
@@ -48,9 +48,9 @@ describe("Weavero — Settings prefs have registered defaults", () => {
         "sessionAutoReopen", "showLibraryBookmarksInReader", "windowIcons", "windowTitleGlyphs"];
 
     // Getters written as `v === undefined ? true : !!v`.
-    const DEFAULT_TRUE = ["advSearchWindowHidePanes", "collectionsPaneToggle", "advSearchShortcutNewWindow",
+    const DEFAULT_TRUE = ["advSearchWindowHidePanes", "collectionsPaneToggle", "tagSelectorHandle", "readerLayoutMenu", "advSearchShortcutNewWindow",
         "annListShowHighlight", "annListShowImage", "annListShowInk", "annListShowNote",
-        "annListShowText", "annListShowUnderline", "enableAnnPaneFilter", "hideNativeAnnSelector", "bookmarkPageNumbers",
+        "annListShowText", "annListShowUnderline", "enableAnnPaneFilter", "annSelectorHandle", "bookmarkPageNumbers",
         "enableAddRelatedMenu", "enableAddedByColors", "enableAnnSort",
         "enableAnnotationAddedBy", "enableAnnotationsCountColumn", "enableBookmarks", "enableChainBadge",
         "enableCommentMarkdown", "enableCopyCollectionLink", "enableCopyItemLink", "enableDefaultChild",
@@ -127,9 +127,10 @@ describe("Weavero — Settings prefs have registered defaults", () => {
             wv._wvRegisterDefaultPrefs();
             assert.strictEqual(Zotero.Prefs.get("weavero.hideNativeAnnSelector"), false, "Keep carried over as Hide = off");
             assert.isFalse(PB.prefHasUserValue("showNativeAnnSelector"), "the old key is retired");
-            // The user ticks Hide back on -- its default, so the user value goes.
+            // The user folds the selector (a user value: the default is
+            // "shown" since 0.22.2, MJT 2026-10-14).
             Zotero.Prefs.set("weavero.hideNativeAnnSelector", true);
-            assert.isFalse(PB.prefHasUserValue("hideNativeAnnSelector"), "default value = no user value (Gecko)");
+            assert.isTrue(PB.prefHasUserValue("hideNativeAnnSelector"), "folded = a user value over the shown default");
             wv._wvRegisterDefaultPrefs();   // the next startup
             assert.strictEqual(Zotero.Prefs.get("weavero.hideNativeAnnSelector"), true, "stays on: the migration does not run again");
         }

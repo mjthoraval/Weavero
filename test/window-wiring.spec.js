@@ -27,7 +27,16 @@
 //     no window-name mode: not wired; wiring slice 2, 2026-10-12), and when
 //     listener stamps became keyed listeners (`listen <key>` entries in
 //     place of the `_wv*Wired` / `*Ver` stamps; wiring slice 3, 2026-10-13;
-//     `boot:` keys and the bg-restore choice are runtime state). Set
+//     `boot:` keys and the bg-restore choice are runtime state), and with
+//     the pinned-tab id list every window publishes (`_wvPinnedTabIDs`,
+//     0.22.2-dev.21) and the hidden-collections wrap of Zotero's collection
+//     menu builder (`buildCollectionContextMenu:wv-hid`, dev.38) -- both
+//     added without a re-record, red in the full suite until 2026-10-17 --
+//     and with WV-TEMP-133039's stuck drop-row clear (`stuckDropRow`: the
+//     tree mark and the items-view wrap since dev.53, the window's drag
+//     listeners since dev.55; they go when the workaround retires), and with
+//     WV-TEMP-134330's Tag Selector scope (`wrap setTagScope:tagScopeRows` on
+//     ZoteroPane, dev.59; it goes when that workaround retires). Set
 //     WV_WIRING_RECORD=<path> to dump a new recording instead of comparing.
 //     A deliberate change edits the affected lines here, in the same commit,
 //     with the reason.
@@ -175,7 +184,19 @@ describe("Weavero — per-main-window wiring, characterized", function () {
             return;
         }
         // Platform- and theme-neutral (recorded on Windows, dark): wvT.wiringNormalize.
-        assert.deepEqual(wvT.wiringNormalize(got), wvT.wiringNormalize(WIRING_EXPECTED));
+        // The first-apply marks (NOT_ON_SECOND) reach the SECOND window only
+        // when its filter applies within the wait, i.e. when earlier specs
+        // left rows in the library: absent in a targeted run, present deep in
+        // the full suite (dev.50, 2026-10-17). The parity check above covers
+        // them; the recording leaves them out of `loaded`.
+        const firstApplyOff = (rec) => {
+            const out = Object.assign({}, rec, { loaded: Object.assign({}, rec.loaded) });
+            for (const [host, marks] of Object.entries(NOT_ON_SECOND)) {
+                if (Array.isArray(out.loaded[host])) out.loaded[host] = out.loaded[host].filter(m => !marks.includes(m));
+            }
+            return out;
+        };
+        assert.deepEqual(wvT.wiringNormalize(firstApplyOff(got)), wvT.wiringNormalize(firstApplyOff(WIRING_EXPECTED)));
     });
 });
 
@@ -189,16 +210,18 @@ const WIRING_EXPECTED = {
             "_wvLibrariesBoxMo:object", "_wvMainNewTabKeyH:function", "_wvOvActivateHandler:function",
             "_wvOvBirthMon:string", "_wvOvFollowWired:number", "_wvOvMoveHandler:function",
             "_wvOvPollId:number", "_wvOvPosKey:string", "_wvOvSettled:boolean", "_wvPaneObs:object",
-            "_wvRedoKeyH:function", "_wvStrayObs:object", "_wvStrayObsVer:number", "_wvTabBarDecoMo:object",
+            "_wvPinnedTabIDs:object", "_wvRedoKeyH:function", "_wvStrayObs:object", "_wvStrayObsVer:number", "_wvTabBarDecoMo:object",
             "_wvTabExtRepositioner:object", "_wvTabGroupWinDnDOff:function", "_wvTabMultiSelOff:function",
             "_wvThemeMQ:object", "_wvTreeDelegate:object", "listen newWindowKey", "listen ovFollow:unload",
-            "listen reopenClosedKey", "listen tabGroupDnD:escKey", "listen tabGroupWinDnD:dragover",
+            "listen reopenClosedKey", "listen stuckDropRow:dragenter", "listen stuckDropRow:dragexit", "listen stuckDropRow:dragleave",
+            "listen stuckDropRow:dragover", "listen tabGroupDnD:escKey", "listen tabGroupWinDnD:dragover",
             "listen tabGroupWinDnD:drop", "listen xwinDrop:dragover", "listen xwinDrop:drop",
         ],
         ZoteroPane: [
             "_wvLoadURIWired", "_wvOrigCopySelectedToClipboard", "_wvOrigLoadURI",
             "_wvOrigToggleAdvancedSearchState", "_wvOrigViewItems", "_wvQuickCopyWired",
-            "_wvViewItemsWrapped",
+            "_wvViewItemsWrapped", "wrap buildCollectionContextMenu:wv-hid",
+            "wrap setTagScope:tagScopeRows", "wrap updateNewNoteMenu:newNoteMenu",
         ],
         Zotero_Tabs: [
             "wrap close:trace+lastView", "wrap getState:normalize", "wrap markAsLoaded:trace",
@@ -207,7 +230,7 @@ const WIRING_EXPECTED = {
         itemsView: [
             "_wvCacheStateWired", "_wvCollChangeWrapped", "_wvIsSelectableOrig", "_wvOrigResetColumns",
             "_wvResetColumnsWrapVer", "_wvSelChangeWired", "_wvSetFilterWrapped",
-            "wrap selectItems:filterParity",
+            "wrap handleRowModelUpdate:stuckDropRow", "wrap selectItems:filterParity",
         ],
         rowProvider: [
             "_wvExpandMatchParentsPatched", "_wvNotifyForFilterPatched", "_wvOrigNotifyForFilter",
@@ -215,7 +238,10 @@ const WIRING_EXPECTED = {
             "wrap toggleOpenState:userOpenTracking",
         ],
         collectionsView: [
-            "_wvOrigNotifyForSelectGuard",
+            // `_wvHidOrigContainerEmpty`: the hidden-collections rule over Zotero's
+            // isContainerEmpty (dev.107); `_wvOrigCanDropCheck`: WV-TEMP-134361 (dev.108,
+            // goes when that workaround retires).
+            "_wvHidOrigContainerEmpty", "_wvOrigCanDropCheck", "_wvOrigNotifyForSelectGuard",
         ],
         itemPane: [
             "_wvCountWired", "_wvOrigRenderBatchPrompt", "_wvOrigSetItemPaneMessage",
@@ -240,6 +266,9 @@ const WIRING_EXPECTED = {
         ],
         "#item-tree-main-default": [
             "listen urlTitle:mouseover",
+        ],
+        "#zotero-collections-tree": [
+            "listen stuckDropRow:collections",
         ],
         "#tab-bar-container": [
             "_wvTabGroupDnDOff", "listen itemDrop:dragleave", "listen itemDrop:dragover",
@@ -272,7 +301,8 @@ const WIRING_EXPECTED = {
             "wv-filter-tb-button", "wv-hamburger-popup", "wv-hid-sheet", "wv-pinned-tab-style",
             "wv-selected-tab-ring", "wv-tab-group-styles", "wv-tab-library-tooltip", "wv-tabs-menu-clear-btn",
             "wv-tabs-menu-filetype-btn", "wv-tabs-menu-settings-btn", "wv-tb-toggle-collections-pane",
-            "wv-win-name-tooltip",
+            "wv-view-menuitem-outline", "wv-view-menuitem-pane", "wv-view-menuitem-selector",
+            "wv-view-menuitem-sidebar", "wv-win-name-tooltip",
         ],
         rootClasses: [
             "wv-ui-dark",
@@ -288,11 +318,13 @@ const WIRING_EXPECTED = {
             "_wvItemDropOff:function", "_wvLibrariesBoxMo:object", "_wvMainNewTabKeyH:function",
             "_wvManagedWindow:boolean", "_wvOvActivateHandler:function", "_wvOvBirthMon:string",
             "_wvOvFollowWired:number", "_wvOvMoveHandler:function", "_wvOvPollId:number",
-            "_wvOvPosKey:string", "_wvOvSettled:boolean", "_wvPaneObs:object", "_wvPrevWinIcons:object",
+            "_wvOvPosKey:string", "_wvOvSettled:boolean", "_wvPaneObs:object", "_wvPinnedTabIDs:object",
+            "_wvPrevWinIcons:object",
             "_wvRedoKeyH:function", "_wvStrayObs:object", "_wvStrayObsVer:number", "_wvTabBarDecoMo:object",
             "_wvTabExtRepositioner:object", "_wvTabGroupWinDnDOff:function", "_wvTabMultiSelOff:function",
             "_wvThemeMQ:object", "_wvTitleGlyphIdx:number", "_wvTreeDelegate:object", "_wvWinIconName:string",
             "_wvWindowId:number", "listen newWindowKey", "listen ovFollow:unload", "listen reopenClosedKey",
+            "listen stuckDropRow:dragenter", "listen stuckDropRow:dragexit", "listen stuckDropRow:dragleave", "listen stuckDropRow:dragover",
             "listen tabGroupDnD:escKey", "listen tabGroupWinDnD:dragover", "listen tabGroupWinDnD:drop",
             "listen xwinDrop:dragover", "listen xwinDrop:drop",
         ],
@@ -300,6 +332,7 @@ const WIRING_EXPECTED = {
             "_wvLoadURIWired", "_wvOrigCopySelectedToClipboard", "_wvOrigLoadURI",
             "_wvOrigToggleAdvancedSearchState", "_wvOrigViewItems", "_wvPanePersistIsolated",
             "_wvPanePersistKey", "_wvQuickCopyWired", "_wvViewItemsWrapped",
+            "wrap buildCollectionContextMenu:wv-hid", "wrap setTagScope:tagScopeRows", "wrap updateNewNoteMenu:newNoteMenu",
         ],
         Zotero_Tabs: [
             "_wvSidebarIsolated", "_wvSidebarKey", "wrap close:trace+lastView", "wrap getState:normalize",
@@ -307,13 +340,16 @@ const WIRING_EXPECTED = {
         ],
         itemsView: [
             "_wvColIsolated", "_wvColKey", "_wvCollChangeWrapped", "_wvIsSelectableOrig",
-            "_wvSetFilterWrapped", "wrap selectItems:filterParity",
+            "_wvSetFilterWrapped", "wrap handleRowModelUpdate:stuckDropRow", "wrap selectItems:filterParity",
         ],
         rowProvider: [
             "_wvExpandMatchParentsPatched", "wrap toggleOpenState:userOpenTracking",
         ],
         collectionsView: [
-            "_wvOrigNotifyForSelectGuard",
+            // `_wvHidOrigContainerEmpty`: the hidden-collections rule over Zotero's
+            // isContainerEmpty (dev.107); `_wvOrigCanDropCheck`: WV-TEMP-134361 (dev.108,
+            // goes when that workaround retires).
+            "_wvHidOrigContainerEmpty", "_wvOrigCanDropCheck", "_wvOrigNotifyForSelectGuard",
         ],
         itemPane: [
             "_wvCountWired", "_wvOrigRenderBatchPrompt", "_wvOrigSetItemPaneMessage",
@@ -338,6 +374,9 @@ const WIRING_EXPECTED = {
         ],
         "#item-tree-main-default": [
             "listen urlTitle:mouseover",
+        ],
+        "#zotero-collections-tree": [
+            "listen stuckDropRow:collections",
         ],
         "#tab-bar-container": [
             "_wvTabGroupDnDOff", "listen itemDrop:dragleave", "listen itemDrop:dragover",
@@ -370,7 +409,8 @@ const WIRING_EXPECTED = {
             "wv-filter-tb-button", "wv-hamburger-popup", "wv-hid-sheet", "wv-pinned-tab-style",
             "wv-selected-tab-ring", "wv-tab-group-styles", "wv-tab-library-tooltip", "wv-tabs-menu-clear-btn",
             "wv-tabs-menu-filetype-btn", "wv-tabs-menu-settings-btn", "wv-tb-toggle-collections-pane",
-            "wv-win-name-tooltip", "wv-window-badge-dot-style",
+            "wv-view-menuitem-outline", "wv-view-menuitem-pane", "wv-view-menuitem-selector",
+            "wv-view-menuitem-sidebar", "wv-win-name-tooltip", "wv-window-badge-dot-style",
         ],
         rootClasses: [
             "wv-ui-dark",

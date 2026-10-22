@@ -7,6 +7,8 @@
 
 // ===========================================================================
 
+import { wvLinkVars } from "../lib/links";
+import { wvFilterTileRules } from "../lib/style";
 export const STYLE_ID = "weavero-styles";
 export const PANEL_ID = "weavero-panel";
 
@@ -321,16 +323,8 @@ export const PLUGIN_CSS = [
     // changes automatically without re-rendering. Light variants
     // hit ≥ 4.5:1 against white; dark variants ≥ 4.5:1 against
     // ~#1e1e1e.
-    ":root {",
-    "  --wv-link-http:   #1a73e8;",  // URL — Google blue
-    "  --wv-link-zotero: #8b4513;",  // Zotero internal — saddle brown
-    "  --wv-link-app:    #9333ea;",  // App link — violet-600
-    "}",
-    ":root.wv-ui-dark {",
-    "  --wv-link-http:   #8ab4f8;",  // lighter blue for dark bg
-    "  --wv-link-zotero: #cd853f;",  // lighter orange for dark bg
-    "  --wv-link-app:    #c084fc;",  // lighter violet for dark bg
-    "}",
+    ":root { " + wvLinkVars("light") + " }",
+    ":root.wv-ui-dark { " + wvLinkVars("dark") + " }",
     // URL-span styling is intentionally global so it applies everywhere we
     // mark URLs (items tree, right pane, reader sidebar, in-PDF popup).
     // !important defends against Zotero's own `.comment { color: ... }` rule.
@@ -848,6 +842,17 @@ export const PLUGIN_CSS = [
     "panel[id^=\"wv-\"]:not([type=\"arrow\"])::part(content) {",
     "  background: var(--material-sidepane, Menu);",
     "}",
+    // The tab surfaces are ARROW panels -- Zotero's own "List all tabs"
+    // (#zotero-tabs-menu-panel, rewritten to the reader windows' twin by
+    // ensureSharedMenuStylesIn) and Weavero's tab-group preview / editor,
+    // window editor and rename panel. FF153 paints them with Firefox's
+    // arrowpanel colour (#42414D in dark, a bluish grey), not Zotero's
+    // --panel-background (#303030), so they did not match Weavero's other
+    // popups (MJT 2026-10-19: "Do the colors match?"). One surface colour:
+    // the same material as the rule above.
+    "panel:is(#zotero-tabs-menu-panel, #wv-tab-group-preview, #wv-tab-group-editor, #wv-window-editor, #wv-rename-dialog)::part(content) {",
+    "  background: var(--material-sidepane, Menu);",
+    "}",
     // Popup-internal styles (the panel hosts an HTML subtree).
     ".wv-filter-popup-inner { padding: 6px; min-width: 200px; }",
     ".wv-filter-popup-header {",
@@ -1225,14 +1230,10 @@ export const PLUGIN_CSS = [
     "  flex: 1 1 auto;",
     "  display: flex; flex-wrap: wrap; gap: 3px;",
     "}",
-    ".wv-filter-opt {",
-    "  display: inline-flex; align-items: center; gap: 6px;",
-    "  padding: 2px 8px; border-radius: 4px; cursor: pointer;",
-    "  border: 1px solid rgba(127,127,127,0.4);",
-    "  background: transparent; color: inherit; font: inherit;",
-    "  font-size: 12px;",
-    "}",
-    ".wv-filter-opt:hover { background: rgba(127,127,127,0.08); }",
+    // The option tiles -- idle, hover, selected, excluded, the icon tile --
+    // are the shared set (lib/style.ts wvFilterTileRules); the rules below
+    // are the library popup's own.
+    ...wvFilterTileRules("", "class"),
     // Keyboard-highlighted suggestion (ArrowUp/Down). Accent-tinted so it
     // reads as the active row regardless of mouse hover.
     ".wv-filter-opt.wv-filter-opt-active { background: var(--color-accent-pale, rgba(64,114,229,0.18)); outline: 1px solid var(--color-accent, #4072e5); outline-offset: -1px; }",
@@ -1240,22 +1241,6 @@ export const PLUGIN_CSS = [
     // reinforced by an inset ring, so an active chip clearly stands out
     // from the idle ones (the old 18%-opacity wash read as barely-there,
     // especially on the dark popup background).
-    ".wv-filter-opt[data-selected=\"true\"] {",
-    "  background: rgba(94,106,210,0.34);",
-    "  border-color: rgba(94,106,210,0.95);",
-    "  box-shadow: inset 0 0 0 1px rgba(94,106,210,0.55);",
-    "}",
-    ":root.wv-ui-dark .wv-filter-opt[data-selected=\"true\"] {",
-    "  background: rgba(120,134,255,0.40);",
-    "  border-color: rgba(150,162,255,1);",
-    "  box-shadow: inset 0 0 0 1px rgba(150,162,255,0.6);",
-    "}",
-    ".wv-filter-opt[data-selected=\"true\"]:hover {",
-    "  background: rgba(94,106,210,0.45);",
-    "}",
-    ":root.wv-ui-dark .wv-filter-opt[data-selected=\"true\"]:hover {",
-    "  background: rgba(120,134,255,0.52);",
-    "}",
     // Inferred-default state (Selection Target chips only): no chip was
     // explicitly clicked, but the active filters pin one kind, so that's
     // what Ctrl+A targets — see _effectiveSelectionTargetKinds. Dashed
@@ -1279,39 +1264,9 @@ export const PLUGIN_CSS = [
     // wash, and a diagonal slash overlay (universal "prohibited"
     // glyph) drawn via a thin gradient so the icon underneath
     // stays visible.
-    ".wv-filter-opt[data-excluded=\"true\"] {",
-    "  border-color: rgba(220,72,72,0.7);",
-    "  background:",
-    "    linear-gradient(",
-    "      to top right,",
-    "      transparent calc(50% - 1px),",
-    "      rgba(220,72,72,0.85) calc(50% - 1px),",
-    "      rgba(220,72,72,0.85) calc(50% + 1px),",
-    "      transparent calc(50% + 1px)),",
-    "    rgba(220,72,72,0.10);",
-    "}",
-    ".wv-filter-opt[data-excluded=\"true\"]:hover {",
-    "  background:",
-    "    linear-gradient(",
-    "      to top right,",
-    "      transparent calc(50% - 1px),",
-    "      rgba(220,72,72,0.95) calc(50% - 1px),",
-    "      rgba(220,72,72,0.95) calc(50% + 1px),",
-    "      transparent calc(50% + 1px)),",
-    "    rgba(220,72,72,0.16);",
-    "}",
     ".wv-filter-opt-glyph {",
     "  display: inline-flex; width: 14px; justify-content: center;",
     "  font-size: 12px; opacity: 0.85;",
-    "}",
-    // Icon-only variant: compact square so 6-8 options fit on one row.
-    // 4 px around the 16-px glyph (Zotero's glyph-in-button ratio) -> 26x26.
-    // The height is PINNED: the main window's line-height gives the button
-    // an 18-px content box, which made the tile 26x28 next to the reader
-    // popups' 26x26 (measured 2026-09-21).
-    ".wv-filter-opt-icon {",
-    "  padding: 4px; min-width: 26px; height: 26px; box-sizing: border-box;",
-    "  justify-content: center; gap: 0;",
     "}",
     /* Text-labelled has-field chips (PMID / PMCID): two identical
        icons were indistinguishable (user report 2026-07-15), so these
@@ -2502,6 +2457,35 @@ export const PLUGIN_CSS = [
     "#zotero-collections-splitter[state=\"collapsed\"][wv-thin][data-wv-collapse] {",
     "  pointer-events: none !important;",
     "}",
+    // Issue #58: the Tag Selector's handle -- a pill just under Zotero's
+    // tags splitter (pane.ts _wvApplyTagSelectorHandle). A XUL <splitter>
+    // paints neither children nor generated content (verified 2026-10-14: a
+    // red ::after and a blue child both invisible while a red background
+    // painted; computed style for the pseudo still reads a box), so the pill
+    // is a position: fixed host at the END of the collections pane (never
+    // the splitter's neighbour, which it collapses; `fixed="true"` keeps the
+    // splitter's drag from writing a height on it, as it does on every
+    // other child of the pane -- MJT's first real drag left it 0 px tall
+    // and the pill 6 px up over the tree), placed from the splitter's rect
+    // on every relayout: in the selector's top padding while open, on the
+    // band once collapsed. The host takes the click itself (what you see is
+    // what you press; the band around it still drags); the sibling
+    // combinator paints the filter mark from the splitter's state. `hidden`
+    // while the splitter has no box (pane collapsed); the explicit rule
+    // because the display rule would outrank the UA's [hidden].
+    // height !important: the splitter's drag writes `height: 0px` INLINE on
+    // every child of the pane that is not a XUL element marked fixed /
+    // hidden (the host was an HTML div at first; MJT's drags, 2026-10-14,
+    // twice), and a 0 px host put the pill 6 px up over the tree. The host
+    // is a XUL box with fixed="true" now (pane.ts), and an important
+    // stylesheet rule outranks an inline write should anything else try.
+    ".wv-ts-handle { position: fixed; width: 48px; height: 12px !important; display: flex; align-items: center; justify-content: center;",
+    "  cursor: pointer; z-index: 10; margin: 0; padding: 0; }",
+    ".wv-ts-handle[hidden] { display: none; }",
+    ".wv-ts-handle::before { content: \"\"; width: 32px; height: 4px; border-radius: 2px; background: var(--fill-tertiary); }",
+    ".wv-ts-handle:hover::before { background: var(--fill-secondary); }",
+    // Collapsed with the list still filtered by a tag: nothing else says so.
+    "#zotero-tags-splitter[wv-handle][data-wv-mark=\"1\"] ~ .wv-ts-handle::before { background: var(--accent-blue); }",
     // The right-hand twins: the item pane's and the reader context pane's
     // collapsed splitters keep Zotero's 1 px strip (_splitter.scss), which
     // showed the resize cursor and did nothing on a drag once "stops at

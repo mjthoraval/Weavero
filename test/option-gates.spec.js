@@ -182,18 +182,91 @@ describe("Weavero — option contracts (source)", () => {
         assert.notInclude(wvT.src("_wvReaderEnsureOutlinePanel"), "_wvReaderWrapUndo(reader)");
     });
 
-    it("the annotations-pane funnel re-applies on its Sort & Filters master; sort teardown re-arms it", () => {
-        assert.include(wvT.src("_wvWireAnnListPrefWatch"), '"weavero.enableFilters"');
+    // Settings greys the "Reader annotations pane" boxes under EXTRAS; since
+    // prefs.4 that is also the master that switches the pane off (it was
+    // Sort & Filters: boxes live while their feature was off, and the other
+    // way round). MJT 2026-10-17.
+    it("the annotations pane follows its Extras master and re-applies on it; sort teardown re-arms it", async () => {
+        assert.include(wvT.src("_wvWireAnnListPrefWatch"), '"weavero.enableVisualExtras"');
         assert.include(wvT.src("_wvAnnSortTeardown"), "__wvAnnListSig = null");
+        await wvT.withPref("weavero.enableVisualExtras", false, async () => {
+            assert.isFalse(wv._wvAnnPaneEnabled(), "Extras off: the pane's filtering is off");
+        });
+        await wvT.withPref("weavero.enableFilters", false, async () => {
+            assert.isTrue(wv._wvAnnPaneEnabled(), "Sort & Filters off: the pane is not its business");
+        });
     });
 
     it("the Links & Relations master strips notes; the window-identity prefs have a live branch", () => {
-        const s = wvT.src("init");
-        const master = s.indexOf('weavero.enableLinksAndRelations") {');
-        assert.isAbove(master, -1);
-        assert.isAbove(s.indexOf("_stripNotes", master), -1);
-        assert.isBelow(s.indexOf("_stripNotes", master) - master, 2500, "inside the master branch");
-        assert.include(s, 'weavero.windowIcons"');
-        assert.include(s, "_wvRefreshWindowIcons(off)");
+        // The observer's branches live in the dispatch table since the
+        // PREFS consolidation (src/modules/prefs-observers.ts, slice 2).
+        const entries = wv._wvPrefObservers();
+        const runsFor = (key) => entries.filter(e => e.keys && e.keys.includes("extensions.zotero.weavero." + key)).map(e => String(e.run));
+        assert.isOk(runsFor("enableLinksAndRelations").some(s => s.includes("_stripNotes")), "the master's own entry strips notes");
+        assert.isOk(runsFor("windowIcons").some(s => s.includes("_wvRefreshWindowIcons(off)")), "windowIcons has a live entry");
+    });
+});
+
+// prefs.4 (MJT 2026-10-17, "Ok to fix as you suggest"): the master that
+// greys a box in Settings is the master that switches its feature off.
+// Each test FAILS on prefs.3. test/prefs-gates.spec.js holds Settings and the
+// table together; these check the runtime behind the rows.
+describe("Weavero — a box's section master switches its feature off", () => {
+    let wv, win;
+    before(function () {
+        wv = Zotero.Weavero && Zotero.Weavero.plugin;
+        if (!wv) wvT.absent("!wv");
+        win = Zotero.getMainWindow();
+    });
+
+    it("Extras switches off the reader outline options and the undo arrows", async () => {
+        await wvT.withPref("weavero.outlineKey.pin", JSON.stringify({ code: "KeyP", label: "P", ctrl: false, alt: true, shift: true, meta: false }), async () => {
+            assert.isTrue(wv._wvReaderUndoButtonsOn(), "Extras on: the arrows");
+            assert.notEqual(wv._wvOutlineKeyText("pin"), "", "Extras on: the shortcut is live");
+            await wvT.withPref("weavero.enableVisualExtras", false, async () => {
+                assert.isFalse(wv._wvReaderUndoButtonsOn(), "Extras off: no arrows");
+                assert.isFalse(wv._getEnableOutlineTextHighlight(), "no heading highlight");
+                assert.isFalse(wv._wvOutlinePagesShown(null), "no page numbers");
+                assert.equal(wv._wvOutlineTextSizeOf(null), "zotero", "Zotero's own outline size");
+                assert.equal(wv._wvOutlineKeyText("pin"), "", "the shortcut is inert");
+                assert.isFalse(wv._getEnableTagsCountAuto(), "and the Tags column's automatic-tag count goes too");
+            });
+        });
+    });
+
+    it("collapse-to-quick-search is its own Sort & Filters option, not the items-tree filter pane's", async () => {
+        const ZP = win.ZoteroPane;
+        if (!win.document.getElementById("zotero-advanced-search-pane-deck")) wvT.absent("no in-window Advanced Search");
+        await wvT.withPref("weavero.enableItemsTreeFilter", false, async () => {
+            wv._setupItemsListFilter(win);
+            assert.isOk(ZP._wvOrigToggleAdvancedSearchState, "the collapse wrapper stays with the pane off");
+        });
+        wv._setupItemsListFilter(win);
+        assert.isOk(ZP._wvOrigToggleAdvancedSearchState);
+    });
+
+    it("the tabs menu keeps its Sessions / Tab Groups / other-windows sections with the per-library filter off", async () => {
+        const panel = win.document.getElementById("zotero-tabs-menu-panel");
+        if (!panel) wvT.absent("no tabs menu panel");
+        await wvT.withPref("weavero.enableTabsLibraryFilter", false, async () => {
+            wv._teardownTabsMenuLibrarySort(win);
+            wv._setupTabsMenuLibrarySort(win);
+            assert.isTrue(!!panel._wvLibrarySortInstalled, "the sections patch is installed");
+        });
+    });
+
+    it("Links & Relations switches off the app links' skip-confirm (Firefox's prompt comes back)", async () => {
+        const W = "network.protocol-handler.warn-external.mailto";
+        await wvT.withPref("weavero.enableAppLinks", true, () =>
+            wvT.withPref("weavero.enableMailtoScheme", true, () =>
+                wvT.withPref("weavero.enableAppLinksSkipConfirm", true, async () => {
+                    wv._applyAppLinkConfirmPref();
+                    assert.isFalse(Services.prefs.getBoolPref(W, true), "all on: the prompt is skipped");
+                    await wvT.withPref("weavero.enableLinksAndRelations", false, async () => {
+                        wv._applyAppLinkConfirmPref();
+                        assert.isFalse(Services.prefs.prefHasUserValue(W), "Links & Relations off: Firefox's own prompt again");
+                    });
+                })));
+        wv._applyAppLinkConfirmPref();
     });
 });

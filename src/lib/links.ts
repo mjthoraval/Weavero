@@ -4,6 +4,42 @@
 // (test/unit/*.unit.ts). Re-exported onto the plugin class by thin
 // adapters — behavior in Zotero is byte-identical.
 
+/** The link colours, one set (survey 2026-10-06 §4 #10): URL links Google
+ *  blue, Zotero-internal links saddle brown, app links violet, each with a
+ *  lighter variant for a dark background (both at least 4.5:1). Six sheets
+ *  and one SVG builder spelled the six hex values out. */
+export const WV_LINK_PALETTE: { [kind: string]: { light: string; dark: string } } = {
+    http:   { light: "#1a73e8", dark: "#8ab4f8" },
+    zotero: { light: "#8b4513", dark: "#cd853f" },
+    app:    { light: "#9333ea", dark: "#c084fc" },
+};
+
+/** The `--wv-link-*` custom-property declarations for one scheme, to wrap
+ *  in the sheet's own selector (`:root`, `:root.wv-ui-dark`, a media query). */
+export function wvLinkVars(scheme: "light" | "dark"): string {
+    return Object.keys(WV_LINK_PALETTE).map((k) => "--wv-link-" + k + ": " + WV_LINK_PALETTE[k][scheme] + ";").join(" ");
+}
+
+/** One link colour as a hex string (an SVG built at data-URI time cannot
+ *  inherit currentColor). */
+export function wvLinkColor(kind: "http" | "zotero" | "app", dark: boolean): string {
+    const c = WV_LINK_PALETTE[kind] || WV_LINK_PALETTE.http;
+    return dark ? c.dark : c.light;
+}
+
+/** Self-contained colour rules for `<prefix>.wv-link-<kind>` labels, dark by
+ *  the OS scheme -- for a sheet that cannot count on the surface's
+ *  `--wv-link-*` variables being loaded. */
+export function wvLinkClassRules(prefix: string): string[] {
+    const kinds = Object.keys(WV_LINK_PALETTE);
+    return [
+        ...kinds.map((k) => prefix + ".wv-link-" + k + "{color:" + WV_LINK_PALETTE[k].light + ";}"),
+        "@media (prefers-color-scheme: dark){",
+        ...kinds.map((k) => " " + prefix + ".wv-link-" + k + "{color:" + WV_LINK_PALETTE[k].dark + ";}"),
+        "}",
+    ];
+}
+
 /** Inline-markdown detector: **bold**, *italic* (single-star, no
  *  space-hugging), ~~strikethrough~~, `code`, [label](url). Single-line
  *  by construction for the star form. No `g` flag — stateless shared

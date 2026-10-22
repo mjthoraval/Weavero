@@ -262,6 +262,85 @@ describe("Weavero — selected-tab outline (Firefox nova)", () => {
         } finally { box.remove(); bar.removeAttribute("wv-closebuttons"); }
     });
 
+    it("drag previews carry no accent blue with the design on (ghost: pill, selected fill, focus-colour outline; pin/unpin: no outline; group target: the new group's colour); Weavero's blue look off (gated)", () => {
+        // MJT 2026-10-15: dragging a tab out of a reader window showed a "blue
+        // square" -- the ghost forced its own pre-nova 4px corners and a 36px
+        // pin variant after the tabs became 24px pills with 28px pins. A
+        // lifted-tab look (the selected fill, no accent; dev.17) made the
+        // dropped tab invisible against a dark strip: "go back to the blue
+        // rounded focus". MJT 2026-10-16: "drop the blue in all drag cases
+        // when in the new Firefox design" -- Firefox marks nothing on a tab
+        // dragged into or out of the pins, outlines drag targets in its focus
+        // colour (tabs.css --tab-dragover-outline-color) and paints the
+        // group-create target with the colour the new group would get.
+        const bar = doc.getElementById("tab-bar-container");
+        const H = "http://www.w3.org/1999/xhtml";
+        const hexRgb = (h) => { const n = parseInt(String(h).replace("#", ""), 16); return "rgb(" + ((n >> 16) & 255) + ", " + ((n >> 8) & 255) + ", " + (n & 255) + ")"; };
+        const rootVar = (name) => win.getComputedStyle(doc.documentElement).getPropertyValue(name).trim();
+        const box = doc.createElementNS(H, "div"); box.className = "tabs"; box.style.cssText = "position:absolute;visibility:hidden;display:flex";
+        const ghost = doc.createElementNS(H, "div"); ghost.className = "tab wv-merge-ghost wv-merge-ghost-regular";
+        const pin = doc.createElementNS(H, "div"); pin.className = "tab wv-merge-ghost wv-merge-ghost-pin";
+        const sel = doc.createElementNS(H, "div"); sel.className = "tab selected";
+        const unpin = doc.createElementNS(H, "div"); unpin.className = "tab wv-pinned-tab selected"; unpin.setAttribute("data-wv-pin-preview", "unpin");
+        const toPin = doc.createElementNS(H, "div"); toPin.className = "tab selected"; toPin.setAttribute("data-wv-pin-preview", "pin");
+        const target = doc.createElementNS(H, "div"); target.className = "tab wv-group-create-target";
+        // Zotero transitions a tab's background-color: without this, a read
+        // right after a sheet change still returns the previous colour.
+        for (const el of [ghost, pin, sel, unpin, toPin, target]) el.style.transition = "none";
+        box.append(ghost, pin, sel, unpin, toPin, target); bar.appendChild(box);
+        bar.style.setProperty("--wv-gc-color", "#ff0000");   // what _wvTabGroupDwellTrack sets when a target arms
+        try {
+            Zotero.Prefs.set(PREF, true);
+            wv._ensureTabGroupStyles(doc);
+            const cg = win.getComputedStyle(ghost);
+            const fill = hexRgb(rootVar("--wv-ff-tab-selected")), focus = hexRgb(rootVar("--wv-ff-focus"));
+            assert.equal(cg.borderTopLeftRadius, "24px", "nova pill");
+            // The held tab's own ring (the stack's 1px inset in the focus
+            // colour), no outline: a 2px outline read as "a blue outline" beside
+            // the same-window look (MJT 2026-10-16).
+            assert.equal(cg.outlineStyle, "none", "no outline on the ghost");
+            assert.include(cg.boxShadow, focus, "the 1px inset ring in Firefox's drag outline colour: " + cg.boxShadow);
+            assert.include(cg.boxShadow, "inset", "...inset");
+            assert.equal(cg.backgroundColor, fill, "the selected fill");
+            assert.equal(cg.opacity, "1");
+            assert.equal(win.getComputedStyle(pin).width, "28px", "a pin-to-be is a 28px circle");
+            // A multi-tab drag from another window: the ghost carries the
+            // same card stack as a same-window multi-drag's held tab.
+            ghost.setAttribute("data-wv-stack", "small");
+            const shadowStack = win.getComputedStyle(ghost).boxShadow;
+            assert.isAtLeast(shadowStack.split(/,\s*(?=rgb)/).length, 3, "small stack: the ring plus a card and its edge: " + shadowStack);
+            ghost.removeAttribute("data-wv-stack");
+            for (const [el, what] of [[unpin, "unpin preview"], [toPin, "pin preview"]]) {
+                const c = win.getComputedStyle(el);
+                assert.equal(c.outlineStyle, "none", what + ": no accent outline");
+                assert.equal(c.backgroundColor, fill, what + ": the selected fill, not the blue tint");
+            }
+            const ct = win.getComputedStyle(target);
+            assert.include(ct.boxShadow, "rgb(255, 0, 0)", "the group-create target rings in the colour the new group would get");
+            assert.notInclude(ct.boxShadow, "rgb(64, 114, 229)", "...not the accent blue");
+            // Gated: off, everything is exactly Weavero's pre-design look.
+            Zotero.Prefs.set(PREF, false);
+            wv._wvEnsureSelectedTabRing(doc);
+            const co = win.getComputedStyle(ghost);
+            assert.equal(co.borderTopLeftRadius, "4px", "design off: Weavero's own 4px corners, untouched");
+            assert.equal(co.outlineStyle, "solid", "design off: the accent outline");
+            assert.equal(co.backgroundColor, "rgba(64, 114, 229, 0.12)", "design off: the blue fill");
+            assert.equal(co.opacity, "1");
+            assert.equal(win.getComputedStyle(pin).width, "36px", "design off: Weavero's 36px pins");
+            for (const [el, what] of [[unpin, "unpin preview"], [toPin, "pin preview"]]) {
+                const c = win.getComputedStyle(el);
+                assert.equal(c.outlineStyle, "solid", "design off: " + what + " keeps the accent outline");
+                assert.equal(c.backgroundColor, "rgba(64, 114, 229, 0.12)", "design off: " + what + " keeps the blue tint");
+            }
+            assert.notInclude(win.getComputedStyle(target).boxShadow, "rgb(255, 0, 0)", "design off: the group-create target ignores the group colour (accent ring)");
+        } finally {
+            box.remove();
+            bar.style.removeProperty("--wv-gc-color");
+            Zotero.Prefs.set(PREF, true);
+            try { wv._ensureTabGroupStyles(doc); } catch (_) {}
+        }
+    });
+
     it("the library tab never gets a close button", () => {
         // dev.6: the 20px close rule's display:flex out-ranked Zotero's
         // `.tab:first-child .tab-close { display: none }`.

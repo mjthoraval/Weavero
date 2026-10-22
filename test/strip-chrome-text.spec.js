@@ -42,6 +42,18 @@ describe("Weavero — teardown keeps the text inside link / markdown spans", () 
         assert.isOk(sdoc.getElementById("n1"), "native content inside a wv- shell is unwrapped, not removed");
     });
 
+    it("a node marked data-wv-owned goes whole, Zotero's classes or not (the collection menu's Hide item, 2026-10-20)", () => {
+        sdoc.body.innerHTML = '<div id="host">'
+            + '<span class="menuitem-iconic zotero-menuitem-hide-collection" data-wv-owned="hid">Hide</span>'
+            + '<span class="menu-iconic" data-wv-owned="hid"><span class="menuitem-iconic">Show All</span></span>'
+            + '<span class="native" id="n2">keep</span>'
+            + '</div>';
+        wv._wvStripWindowChrome({ document: sdoc });
+        assert.isNull(sdoc.querySelector("[data-wv-owned]"), "the marked nodes are gone");
+        assert.equal(sdoc.getElementById("host").textContent, "keep", "with their text");
+        assert.isOk(sdoc.getElementById("n2"), "the native sibling stays");
+    });
+
     it("a reload never leaks UI glyphs into native containers (the scope button's chevron, the tabs-menu twisties)", () => {
         // Form elements are built with createElement: the chrome-document
         // innerHTML sanitizer silently drops <input> / <button>.

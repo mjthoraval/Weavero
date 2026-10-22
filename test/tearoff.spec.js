@@ -274,7 +274,12 @@ describe("Weavero — reader tear-off / merge-back lifecycle", function () {
         tornWin = await p._wvSwapTearOffToWindow(win, S, itemB.id);
         expect(tornWin).to.be.ok;
         await wvT.sleep(400);
-        const stackBefore = (p._wvClosedStack || []).length;
+        // LIVE entries: earlier specs leave entries whose items they erased,
+        // and the peek below prunes those from the top by design (4 -> 1 in
+        // the full suite, 2026-10-17). What must hold is that no live entry
+        // is lost and the close adds one.
+        const live = () => (p._wvClosedStack || []).filter(e => p._wvClosedEntryLive(e)).length;
+        const stackBefore = live();
         tornWin.reader.close();
         const recorded = await wvT.waitFor(() => {
             const top = p._wvClosedPeek && p._wvClosedPeek();
@@ -282,7 +287,7 @@ describe("Weavero — reader tear-off / merge-back lifecycle", function () {
                 && (top.tabs || []).some(x => x.itemID === itemB.id) ? top : null;
         }, 5000);
         expect(recorded, "close was not pushed onto the closed-window stack").to.exist;
-        expect((p._wvClosedStack || []).length).to.be.greaterThan(stackBefore - 1);
+        expect(live()).to.equal(stackBefore + 1);
         // …and reopening restores it as a live reader window.
         const ok = p._wvClosedReopenLast(win);
         expect(ok).to.equal(true);

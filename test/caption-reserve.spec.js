@@ -59,6 +59,23 @@ describe("Weavero -- caption-button reservation", () => {
 		assert.match(r, /\.wv-window-drag-spacer\s*\{\s*order:\s*-1/, "then the drag spacer");
 	});
 
+	// 2026-10-15: the reader window's minimize / maximize / close buttons drew
+	// nothing on Zotero 11 -- their icons came from
+	// chrome://browser/skin/window-controls/*.svg, present on Zotero 10 (FF140),
+	// gone on FF153 (and never in the Linux build). The glyphs are Weavero's
+	// own data: SVGs now.
+	it("reader-window controls carry their own glyphs (no chrome://browser icon dependency)", function () {
+		if (typeof wv._ensureReaderWindowTabStripStyles !== "function") wvT.absent("_ensureReaderWindowTabStripStyles");
+		const mw = Zotero.getMainWindow();
+		const d = mw.document.implementation.createHTMLDocument("wv-window-controls-glyphs");
+		wv._ensureReaderWindowTabStripStyles(d);
+		const css = d.getElementById("wv-window-tabstrip-styles").textContent;
+		assert.notInclude(css, "chrome://browser/skin/window-controls", "no Firefox-theme icon path");
+		for (const sel of ["\\.wv-window-min", "\\.wv-window-max", "\\.wv-window-max\\[data-state='maximized'\\]", "\\.wv-window-close"]) {
+			assert.match(css, new RegExp(sel + "\\s*\\{[^}]*url\\(\"data:image/svg\\+xml"), sel + " has a data: SVG glyph");
+		}
+	});
+
 	it("_wvTrackCaptionReserve sets the box's width + right margin and follows resizes", async function () {
 		if (typeof wv._wvTrackCaptionReserve !== "function") wvT.absent('typeof wv._wvTrackCaptionReserve !== "function"');
 		const win = Zotero.getMainWindow(), doc = win.document;

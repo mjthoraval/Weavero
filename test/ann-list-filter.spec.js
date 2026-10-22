@@ -320,13 +320,14 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         const sc = idoc.getElementById("sidebarContainer");
         await setPane({ typesExcl: ["ink"] });
         await waitFor(() => cards(idoc).length === 1, 15000, "ink hidden");
-        assert.isTrue(sc.classList.contains("wv-al-nonative"),
-            "Zotero's own selector is hidden while the funnel replaces it");
+        // Fold the selector (its own state; shown by default since 0.22.2).
+        Zotero.Prefs.set("weavero.hideNativeAnnSelector", true);
+        await waitFor(() => sc.classList.contains("wv-al-nonative"), 15000, "the selector folded");
         try {
             Zotero.Prefs.set("weavero.enableAnnPaneFilter", false);
             await waitFor(() => !idoc.querySelector(".wv-al-actions"), 15000, "funnel gone");
             await waitFor(() => cards(idoc).length === 2, 15000, "the document's own filter is set aside");
-            assert.isTrue(sc.classList.contains("wv-al-nonative"), "the native selector stays hidden: its own switch");
+            assert.isTrue(sc.classList.contains("wv-al-nonative"), "the native selector stays folded: its own state");
             assert.sameMembers(pageKeys(), [hl.key, ink.key], "the page never changed");
             // Settings still filter the pane with the funnel off.
             Zotero.Prefs.set("weavero.annListShowInk", false);
@@ -338,6 +339,7 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         finally {
             Zotero.Prefs.set("weavero.enableAnnPaneFilter", true);
             Zotero.Prefs.set("weavero.annListShowInk", true);
+            Zotero.Prefs.set("weavero.hideNativeAnnSelector", false);
         }
         await waitFor(() => !!idoc.querySelector(".wv-al-actions"), 15000, "funnel back");
         // The document's own filter is still on record and applies again.
@@ -345,18 +347,20 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         await wv._wvAnnPaneClear(reader);
     });
 
-    it("the native selector can be kept on request", async function () {
+    it("the native selector is shown by default and folds on request (the handle's state)", async function () {
+        // Shown since 0.22.2 (MJT 2026-10-14; up to 0.22.1 the default hid
+        // it); the fold is the handle's own state, global.
         const idoc = reader._iframeWindow.document;
         const sc = idoc.getElementById("sidebarContainer");
-        assert.isTrue(sc.classList.contains("wv-al-nonative"), "hidden by default");
+        await waitFor(() => !sc.classList.contains("wv-al-nonative"), 15000, "shown by default");
         try {
-            Zotero.Prefs.set("weavero.hideNativeAnnSelector", false);
-            await waitFor(() => !sc.classList.contains("wv-al-nonative"), 15000, "selector shown");
+            Zotero.Prefs.set("weavero.hideNativeAnnSelector", true);
+            await waitFor(() => sc.classList.contains("wv-al-nonative"), 15000, "folded on request");
         }
         finally {
-            Zotero.Prefs.set("weavero.hideNativeAnnSelector", true);
+            Zotero.Prefs.set("weavero.hideNativeAnnSelector", false);
         }
-        await waitFor(() => sc.classList.contains("wv-al-nonative"), 15000, "hidden again");
+        await waitFor(() => !sc.classList.contains("wv-al-nonative"), 15000, "shown again");
     });
 
     it("the funnel's cues: green line = a filtering default exists, dot = this document departs from it", async function () {

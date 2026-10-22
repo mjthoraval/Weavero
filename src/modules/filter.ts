@@ -34,11 +34,14 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via
 // defineProperties.
 
-import { winOf, wvPopupHost, wvDismissTooltip, wvSetBoolAttr, wvWithin } from "../lib/dom";
+import { winOf, wvPopupHost, wvDismissTooltip, wvSetBoolAttr, wvWithin, wvHtmlEl } from "../lib/dom";
+import { wvOutsideClick, wvReachableDocs, wvDismissOff } from "../lib/dismiss";
 import { wvLivePlugin } from "../lib/live";
 import { wvWrap, wvUnwrap } from "../lib/wrap";
 import { wvTimeout } from "../lib/timers";
 import { wvListen, wvUnlisten } from "../lib/listen";
+import { wvMainWins } from "../lib/windows";
+import { wvSvgEl } from "../lib/svg";
 import { WV_FILTER_DIMS, wvDimSet, wvDimDefaults, wvDimLevels, wvDimChildFields } from "./filter-facets";
 import type { WvDim } from "./filter-facets";
 import { URL_SCHEMES } from "./url";
@@ -445,7 +448,6 @@ function wvDimRootOK(p: any, f: WvDim, root: any, isReg: boolean, g: any): boole
 // tri-state), whether it is the exclude chip, and the tri-state value.
 // Guard: test/filter-chipbar.spec.js (a characterization of the bar recorded
 // before the chips came from the table).
-const WV_NS_HTML = "http://www.w3.org/1999/xhtml";
 interface WvChipSpec {
     op?: (list: any[] | null, exclude: boolean, value: any) => string;
     fill?: (p: any, doc: any, seg: any, list: any[] | null, exclude: boolean, value: any) => void;
@@ -460,9 +462,7 @@ const WV_CHIPS: Record<string, WvChipSpec> = {
         fill: (p, doc, seg, l) => {
             // Native rounded-square swatch, chip-sized (12px), then the names.
             for (const c of l!) seg.appendChild(p._wvNativeColorSwatch(doc, c, 12));
-            const label = doc.createElementNS(WV_NS_HTML, "span");
-            label.textContent = wvChipLabels(l!, p._ANNOTATION_COLORS).join(", ");
-            seg.appendChild(label);
+            const label = wvHtmlEl(doc, "span", undefined, wvChipLabels(l!, p._ANNOTATION_COLORS).join(", "), seg);
         },
     },
     annotationType: { fill: (p, doc, seg, l) => { seg.textContent = wvChipLabels(l!, p._ANNOTATION_TYPES).join(", "); } },
@@ -476,7 +476,7 @@ const WV_CHIPS: Record<string, WvChipSpec> = {
     itemType: {
         fill: (p, doc, seg, l) => {
             for (const t of l!) {
-                const icon = doc.createElementNS(WV_NS_HTML, "span");
+                const icon = wvHtmlEl(doc, "span");
                 icon.className = "icon icon-css icon-item-type";
                 icon.dataset.itemType = t;
                 let label = t;
@@ -501,14 +501,12 @@ const WV_CHIPS: Record<string, WvChipSpec> = {
             if (!p._getEnableAddedByColors()) { seg.textContent = l!.join(", "); return; }
             l!.forEach((u, k) => {
                 if (k > 0) {
-                    const sep = doc.createElementNS(WV_NS_HTML, "span");
+                    const sep = wvHtmlEl(doc, "span");
                     sep.className = "wv-chip-value-sep";
                     sep.textContent = ", ";
                     seg.appendChild(sep);
                 }
-                const pill = doc.createElementNS(WV_NS_HTML, "span");
-                pill.className = "wv-chip-value-user";
-                pill.textContent = u;
+                const pill = wvHtmlEl(doc, "span", "wv-chip-value-user", u);
                 const colour = p._colorForUser(u);
                 pill.style.color = colour;
                 pill.style.backgroundColor = p._withAlpha(colour, 0.18);
@@ -3004,17 +3002,8 @@ class _FilterMixin {
                 // (20-line floods), without one it FLATTENED the svg (wrong
                 // namespace; both seen 2026-08-04). Direct DOM construction
                 // involves no parser and no sanitizer.
-                const SVG_NS = "http://www.w3.org/2000/svg";
-                const svg = span.ownerDocument.createElementNS(SVG_NS, "svg");
-                svg.setAttribute("viewBox", "0 0 24 24");
-                svg.setAttribute("fill", "none");
-                svg.setAttribute("stroke", "currentColor");
-                svg.setAttribute("stroke-width", "2");
-                svg.setAttribute("stroke-linecap", "round");
-                svg.setAttribute("stroke-linejoin", "round");
-                const path = span.ownerDocument.createElementNS(SVG_NS, "path");
-                path.setAttribute("d", PATHS);
-                svg.appendChild(path);
+                const svg = wvSvgEl(span.ownerDocument, "svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round" });
+                const path = wvSvgEl(span.ownerDocument, "path", { d: PATHS }, svg);
                 chev.appendChild(svg);
                 chev.setAttribute("data-wv-item-id", String(parentID));
                 chev.title = revealed
@@ -3246,20 +3235,10 @@ class _FilterMixin {
      *  inner stroke so near-white swatches stay legible. Matches the
      *  annotation-popup colour picker exactly. */
     _wvNativeColorSwatch(doc: any, color: string, size?: number) {
-        const SVG_NS = "http://www.w3.org/2000/svg";
-        const svg = doc.createElementNS(SVG_NS, "svg");
-        svg.setAttribute("width", String(size || 16));
-        svg.setAttribute("height", String(size || 16));
-        svg.setAttribute("viewBox", "0 0 16 16");
-        svg.setAttribute("fill", "none");
+        const svg = wvSvgEl(doc, "svg", { width: size || 16, height: size || 16, viewBox: "0 0 16 16", fill: "none" });
         svg.classList.add("wv-swatch-native");
-        const fill = doc.createElementNS(SVG_NS, "path");
-        fill.setAttribute("d", "M1 3C1 1.89543 1.89543 1 3 1H13C14.1046 1 15 1.89543 15 3V13C15 14.1046 14.1046 15 13 15H3C1.89543 15 1 14.1046 1 13V3Z");
-        fill.setAttribute("fill", color);
-        const ring = doc.createElementNS(SVG_NS, "path");
-        ring.setAttribute("d", "M1.5 3C1.5 2.17157 2.17157 1.5 3 1.5H13C13.8284 1.5 14.5 2.17157 14.5 3V13C14.5 13.8284 13.8284 14.5 13 14.5H3C2.17157 14.5 1.5 13.8284 1.5 13V3Z");
-        ring.setAttribute("stroke", "black");
-        ring.setAttribute("stroke-opacity", "0.1");
+        const fill = wvSvgEl(doc, "path", { d: "M1 3C1 1.89543 1.89543 1 3 1H13C14.1046 1 15 1.89543 15 3V13C15 14.1046 14.1046 15 13 15H3C1.89543 15 1 14.1046 1 13V3Z", fill: color });
+        const ring = wvSvgEl(doc, "path", { d: "M1.5 3C1.5 2.17157 2.17157 1.5 3 1.5H13C13.8284 1.5 14.5 2.17157 14.5 3V13C14.5 13.8284 13.8284 14.5 13 14.5H3C2.17157 14.5 1.5 13.8284 1.5 13V3Z", stroke: "black", "stroke-opacity": "0.1" });
         svg.appendChild(fill);
         svg.appendChild(ring);
         return svg;
@@ -3857,7 +3836,6 @@ class _FilterMixin {
             // THIS header's window (the filter is per main window).
             const ids = lib != null && win && this._wvCollSetGroupsFor(win).get(lib);
             if (!ids) return;
-            const NS = "http://www.w3.org/1999/xhtml";
             // The intersection's size, readable before any click (MJT
             // 2026-09-28), just left of the button. Absent while a saved
             // search's first run is pending (it re-renders when done).
@@ -3870,7 +3848,7 @@ class _FilterMixin {
             const cell = div.querySelector(".cell.library-header") || div;
             const text = cell.querySelector(".cell-text");
             if (text && mode) text.textContent += mode === "all" ? " — in all" : " — not in all";
-            const btn = doc.createElementNS(NS, "button");
+            const btn = wvHtmlEl(doc, "button");
             btn.type = "button";
             btn.className = "wv-collset-btn";
             btn.textContent = "∩";
@@ -3887,10 +3865,7 @@ class _FilterMixin {
                 // Inside the button, "∩: 2" (MJT 2026-09-28): the count is
                 // the intersection's in every mode, so toggling never
                 // changes the button's width -- it stays under the mouse.
-                const c = doc.createElementNS(NS, "span");
-                c.className = "wv-collset-count";
-                c.textContent = ": " + counts.all;
-                btn.appendChild(c);
+                const c = wvHtmlEl(doc, "span", "wv-collset-count", ": " + counts.all, btn);
             }
             // The header row must not take the press (no selection move), and
             // the press must not take FOCUS: a focused list paints Zotero's
@@ -4083,10 +4058,7 @@ class _FilterMixin {
         if (old) old.remove();
         const colour = cell.getAttribute("data-wv-added-by-color");
         const doc = cell.ownerDocument;
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-        const badge = doc.createElementNS(NS_HTML, "span");
-        badge.className = "wv-annotation-added-by";
-        badge.textContent = name;
+        const badge = wvHtmlEl(doc, "span", "wv-annotation-added-by", name);
         badge.title = "Added by " + name;
         if (colour && this._getEnableAddedByColors()) {
             badge.style.color = colour;
@@ -4113,10 +4085,7 @@ class _FilterMixin {
         const old = rowDiv.querySelector(":scope > .wv-annotation-added-by");
         if (old) old.remove();
         const doc = rowDiv.ownerDocument;
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-        const badge = doc.createElementNS(NS_HTML, "span");
-        badge.className = "wv-annotation-added-by";
-        badge.textContent = name;
+        const badge = wvHtmlEl(doc, "span", "wv-annotation-added-by", name);
         badge.title = "Added by " + name;
         if (this._getEnableAddedByColors()) {
             const colour = this._colorForUser(name);
@@ -4257,7 +4226,7 @@ class _FilterMixin {
             // itemTree module loads per window scope) — peel each of them, not
             // just the focused window's (the anchor's prototype stayed wrapped
             // after a disable when a managed window happened to be focused).
-            const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+            const wins = wvMainWins();
             for (const win of wins) {
                 try {
                     const rp: any = win && win.ZoteroPane
@@ -5499,6 +5468,15 @@ class _FilterMixin {
      *  duration of the synchronous setup pass, so installing into a
      *  background window doesn't write the focused window's slots. */
     _setupItemsListFilter(targetWin?: any) {
+        // Collapse-to-quick-search is a Sort & Filters option of its own, not
+        // part of the filter pane: installed whatever the pane's switch (its
+        // wrapper checks the Filters master and its pref when it runs). It
+        // used to ride on the pane's setup, so turning the PANE off silently
+        // turned it off too (prefs.4, MJT 2026-10-17).
+        try {
+            const w0 = (targetWin && !targetWin.closed) ? targetWin : Zotero.getMainWindow();
+            if (w0 && w0.ZoteroPane) this._wvInstallCollapseToQuickSearch(w0);
+        } catch (e) {}
         // Pref gate (Filters group → Items-tree filter pane).
         if (!this._getEnableItemsTreeFilter()) {
             try { this._teardownItemsListFilter(); } catch (e) {}
@@ -5666,10 +5644,7 @@ class _FilterMixin {
         // `.wv-rf-active` dot. Always present; shown only when the
         // button carries `.wv-filter-tb-active` (toggled by
         // `_updateFilterToolbarActiveState` on every filter change).
-        const activeDot = doc.createElementNS(
-            "http://www.w3.org/1999/xhtml", "span");
-        activeDot.className = "wv-filter-tb-dot";
-        tbBtn.appendChild(activeDot);
+        const activeDot = wvHtmlEl(doc, "span", "wv-filter-tb-dot", undefined, tbBtn);
 
         // The panel must be a CHILD of the toolbar button for
         // type="menu" toggle behaviour. We create it once here and
@@ -5722,8 +5697,7 @@ class _FilterMixin {
         // `_wvArmTooltipRing` shows/hides a dedicated tooltip
         // element deterministically. Retire when Gecko's page
         // tooltips recover (restore the attribute, drop the arm).
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-        const inner = doc.createElementNS(NS_HTML, "div");
+        const inner = wvHtmlEl(doc, "div");
         inner.className = "wv-filter-popup-inner wv-filter-panel-inner";
         panel.appendChild(inner);
         // Any CLICK inside the popup retires a lingering hover
@@ -5805,7 +5779,7 @@ class _FilterMixin {
         // popup only when the click lands outside both the popup
         // AND the whitelisted "extended" areas (the toolbar quick
         // search and the filter button itself).
-        let dismissHandler = null;
+        let dismissOff: any = null;
         panel.addEventListener("popupshown", () => {
             const docTop = panel.ownerDocument;
             const panelAny = panel as any;
@@ -5879,23 +5853,16 @@ class _FilterMixin {
             };
             if (win && win.setTimeout) win.setTimeout(alignPanel, 0);
             else alignPanel();
-            dismissHandler = (e) => {
-                try {
-                    if (panelAny.state !== "open" && panelAny.state !== "showing") return;
-                    const t = e.target;
-                    if (!t) return;
-                    // wvWithin: a press on the panel's scrollbar targets its anonymous thumb (#55).
-                    if (wvWithin(panel, t)) return;
-                    if (tbBtn && wvWithin(tbBtn, t)) return;
-                    const sb = docTop.getElementById("zotero-tb-search");
-                    if (sb && wvWithin(sb, t)) return;
-                    // Also let clicks on Zotero's quick-search popups
-                    // (mode selector dropdown) pass through.
-                    if (t.closest && t.closest("menupopup")) return;
-                    panelAny.hidePopup();
-                } catch (er) {}
-            };
-            docTop.addEventListener("mousedown", dismissHandler, true);
+            // While the panel is open: the filter button, the toolbar quick
+            // search and Zotero's quick-search popups (the mode dropdown)
+            // pass through; anything else closes it.
+            dismissOff = wvOutsideClick({
+                panel, docs: [docTop], owner: this,
+                isOpen: () => panelAny.state === "open" || panelAny.state === "showing",
+                keep: () => [tbBtn, docTop.getElementById("zotero-tb-search")],
+                allow: (e: any) => !!(e.target && e.target.closest && e.target.closest("menupopup")),
+                onOutside: () => { try { panelAny.hidePopup(); } catch (er) {} },
+            });
         });
         panel.addEventListener("popuphidden", () => {
             // The Collection tree's expansion lives only while the panel is
@@ -5913,10 +5880,7 @@ class _FilterMixin {
                 // was open.
                 this._refreshQuickSearchScopeButtonVisibility();
             } catch (e) {}
-            if (dismissHandler) {
-                try { panel.ownerDocument.removeEventListener("mousedown", dismissHandler, true); } catch (e) {}
-                dismissHandler = null;
-            }
+            if (dismissOff) { try { dismissOff(); } catch (e) {} dismissOff = null; }
         });
 
         // Swallow lone-Alt key events. On Windows, tapping Alt
@@ -6024,7 +5988,7 @@ class _FilterMixin {
         // Hidden when no filters are active so the items tree gets its
         // full vertical space back; appears only when at least one chip
         // exists.
-        const bar = doc.createElementNS(NS_HTML, "div");
+        const bar = wvHtmlEl(doc, "div");
         bar.id = "wv-filter-bar";
         bar.className = "wv-filter-bar";
         bar.style.display = "none";
@@ -6474,10 +6438,8 @@ class _FilterMixin {
     }
 
     _teardownItemsListFilterIn(targetWin: any) {
-        // Give the collapse button back to Zotero before anything else: a
-        // disabled plugin must not leave the native control routed through
-        // our wrapper.
-        this._wvUninstallCollapseToQuickSearch(targetWin);
+        // The collapse button's wrapper is NOT the pane's: it stays while the
+        // pane goes (prefs.4); the plugin's destroy() gives it back to Zotero.
         // Close the filter popup FIRST. Its contents are built on
         // `popupshowing`, so a popup still open when the plugin is
         // torn down keeps the outgoing build's DOM -- after an update
@@ -6672,8 +6634,6 @@ class _FilterMixin {
             return;
         }
         bar.style.display = "";
-
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
         const groups = state.groups || [];
 
         // Render each ACTIVE group inline. Groups are visually
@@ -6684,10 +6644,7 @@ class _FilterMixin {
             const group = groups[gi];
             if (!this._isGroupActive(group)) continue;
             if (!firstActive) {
-                const orSep = doc.createElementNS(NS_HTML, "span");
-                orSep.className = "wv-filter-or";
-                orSep.textContent = "OR";
-                bar.appendChild(orSep);
+                const orSep = wvHtmlEl(doc, "span", "wv-filter-or", "OR", bar);
             }
             firstActive = false;
 
@@ -6709,7 +6666,7 @@ class _FilterMixin {
         }
 
         // Trailing "+ Filter" — adds a chip to the LAST active group.
-        const addBtn = doc.createElementNS(NS_HTML, "button");
+        const addBtn = wvHtmlEl(doc, "button");
         addBtn.type = "button";
         addBtn.className = "wv-filter-add";
         addBtn.textContent = "+ Filter";
@@ -6733,7 +6690,7 @@ class _FilterMixin {
         // panel scoped to it. The user can pick filters in the panel
         // and they go into the new group, OR'd with the existing
         // ones.
-        const addGroupBtn = doc.createElementNS(NS_HTML, "button");
+        const addGroupBtn = wvHtmlEl(doc, "button");
         addGroupBtn.type = "button";
         addGroupBtn.className = "wv-filter-add wv-filter-add-group";
         addGroupBtn.textContent = "+ OR Group";
@@ -6749,7 +6706,7 @@ class _FilterMixin {
         // "Clear all" — wipes every group and resets to a single
         // empty group. Pushed to the right via `margin-left: auto`
         // in `.wv-filter-bar .wv-filter-clear`.
-        const clearBtn = doc.createElementNS(NS_HTML, "button");
+        const clearBtn = wvHtmlEl(doc, "button");
         clearBtn.type = "button";
         clearBtn.className = "wv-filter-clear";
         clearBtn.textContent = "Clear all";
@@ -6808,29 +6765,19 @@ class _FilterMixin {
     /** Generic chip builder. Each chip is `Field | op | value(s) | ×`,
      *  with click-on-non-× re-opening the value picker. */
     _buildFilterChip(doc, opts) {
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-        const chip = doc.createElementNS(NS_HTML, "div");
+        const chip = wvHtmlEl(doc, "div");
         chip.className = "wv-filter-chip";
         chip.title = "Click to edit — opens the filter popup focused on this group.";
 
-        const fieldSeg = doc.createElementNS(NS_HTML, "span");
-        fieldSeg.className = "wv-chip-seg wv-chip-field";
-        fieldSeg.textContent = opts.field;
-        chip.appendChild(fieldSeg);
+        const fieldSeg = wvHtmlEl(doc, "span", "wv-chip-seg wv-chip-field", opts.field, chip);
 
-        const opSeg = doc.createElementNS(NS_HTML, "span");
-        opSeg.className = "wv-chip-seg wv-chip-op";
-        opSeg.textContent = opts.op;
-        chip.appendChild(opSeg);
+        const opSeg = wvHtmlEl(doc, "span", "wv-chip-seg wv-chip-op", opts.op, chip);
 
-        const valSeg = doc.createElementNS(NS_HTML, "span");
-        valSeg.className = "wv-chip-seg wv-chip-value";
+        const valSeg = wvHtmlEl(doc, "span", "wv-chip-seg wv-chip-value");
         opts.fillValue(valSeg);
         chip.appendChild(valSeg);
 
-        const removeSeg = doc.createElementNS(NS_HTML, "span");
-        removeSeg.className = "wv-chip-seg wv-chip-remove";
-        removeSeg.textContent = "×";
+        const removeSeg = wvHtmlEl(doc, "span", "wv-chip-seg wv-chip-remove", "×");
         removeSeg.title = "Remove filter";
         removeSeg.addEventListener("click", (e) => {
             e.stopPropagation();
@@ -6909,15 +6856,8 @@ class _FilterMixin {
      *  an integer-edge fill avoids that entirely.) Outer ribbon spans
      *  x 3→13, y 1→15 with the bottom V-notch apex centred at x=8. */
     _makeBookmarkSvg(doc) {
-        const NS = "http://www.w3.org/2000/svg";
-        const svg = doc.createElementNS(NS, "svg");
-        svg.setAttribute("class", "wv-filter-svg");
-        svg.setAttribute("viewBox", "0 0 16 16");
-        svg.setAttribute("aria-hidden", "true");
-        svg.setAttribute("fill", "currentColor");
-        const path = doc.createElementNS(NS, "path");
-        path.setAttribute("fill-rule", "evenodd");
-        path.setAttribute("clip-rule", "evenodd");
+        const svg = wvSvgEl(doc, "svg", { class: "wv-filter-svg", viewBox: "0 0 16 16", "aria-hidden": "true", fill: "currentColor" });
+        const path = wvSvgEl(doc, "path", { "fill-rule": "evenodd", "clip-rule": "evenodd" });
         // Outer contour (M3 1…) + inner contour inset 1 px (M4 2…),
         // single-sourced from constants so every bookmark icon matches.
         path.setAttribute("d", BOOKMARK_PATH);
@@ -7000,28 +6940,23 @@ class _FilterMixin {
         }
         section.style.display = "";
         section.className = "wv-filter-section wv-filter-or-group";
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-        const opts = doc.createElementNS(NS_HTML, "div");
-        opts.className = "wv-filter-options";
-        section.appendChild(opts);
+        const opts = wvHtmlEl(doc, "div", "wv-filter-options", undefined, section);
         const g0 = this._activeGroup();
         const selected = new Set((g0 && g0.readStatus) || []);
         const excluded = new Set((g0 && g0.readStatusExclude) || []);
         const entries = [...this._wvReadStatuses(), { name: "", icon: "\u2205" }];
         for (const st of entries) {
-            const btn = doc.createElementNS(NS_HTML, "button");
+            const btn = wvHtmlEl(doc, "button");
             btn.type = "button";
             btn.className = "wv-filter-opt";
             btn.title = (st.name || "No Status") + " \u2014 Alt+click to exclude";
             if (selected.has(st.name)) btn.dataset.selected = "true";
             if (excluded.has(st.name)) btn.dataset.excluded = "true";
-            const glyph = doc.createElementNS(NS_HTML, "span");
+            const glyph = wvHtmlEl(doc, "span");
             glyph.className = "wv-filter-opt-glyph";
             glyph.textContent = st.icon || "";
             btn.appendChild(glyph);
-            const lbl = doc.createElementNS(NS_HTML, "span");
-            lbl.textContent = st.name || "No Status";
-            btn.appendChild(lbl);
+            const lbl = wvHtmlEl(doc, "span", undefined, st.name || "No Status", btn);
             btn.addEventListener("click", (e) => {
                 e.stopPropagation();
                 const next = this._toggleIncludeExclude(
@@ -7250,15 +7185,12 @@ class _FilterMixin {
     _renderOutlineScanSection(doc, section, refreshAll) {
         while (section.firstChild) section.removeChild(section.firstChild);
         section.className = "wv-filter-section";
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
         // Load the store once so `_outlineMatchesList` and the counts have data.
         if (!this._wvOeRoot) { this._wvOeInit().then(() => { try { refreshAll(); } catch (e) {} }); }
-        const row = doc.createElementNS(NS_HTML, "div");
-        row.className = "wv-filter-options";
-        section.appendChild(row);
+        const row = wvHtmlEl(doc, "div", "wv-filter-options", undefined, section);
         const st = this._wvOeScanState;
         const running = !!(st && st.running);
-        const btn = doc.createElementNS(NS_HTML, "button");
+        const btn = wvHtmlEl(doc, "button");
         btn.type = "button";
         btn.className = "wv-filter-opt";
         let btnText = "Scan library";
@@ -7287,7 +7219,7 @@ class _FilterMixin {
         const r = this._wvOeRoot;
         const nClass = r && r.classifications ? Object.keys(r.classifications).length : 0;
         const nCase = r && r.cases ? Object.keys(r.cases).length : 0;
-        const lbl = doc.createElementNS(NS_HTML, "span");
+        const lbl = wvHtmlEl(doc, "span");
         lbl.style.opacity = "0.6";
         lbl.style.fontSize = "12px";
         lbl.style.alignSelf = "center";
@@ -7357,8 +7289,7 @@ class _FilterMixin {
      *  `_renderAttachmentFileTypeSection` (icon tiles + tooltip), with the label +
      *  store count in the tooltip and include/exclude via `_toggleIncludeExclude`. */
     _renderOutlineFacetGrid(doc, container, refreshAll, title, catalogue, incField, excField, grouped) {
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-        const section = doc.createElementNS(NS_HTML, "div");
+        const section = wvHtmlEl(doc, "div");
         // `wv-filter-or-group` = the grouped-category tint the OR facets use
         // (Source / Verdict, "pick any of these"). The Flags facet is AND
         // (independent conditions, "has all"), so it is NOT grouped -- pass
@@ -7373,27 +7304,23 @@ class _FilterMixin {
         // left of the tinted rows. 2026-07-24.
         section.style.padding = "5px 6px";
         container.appendChild(section);
-        const lbl = doc.createElementNS(NS_HTML, "span");
-        lbl.textContent = title;
+        const lbl = wvHtmlEl(doc, "span", undefined, title);
         lbl.style.cssText = "font-size:11px;opacity:.6;min-width:52px;flex:0 0 auto;text-align:right;";
         section.appendChild(lbl);
-        const opts = doc.createElementNS(NS_HTML, "div");
-        opts.className = "wv-filter-options";
-        section.appendChild(opts);
+        const opts = wvHtmlEl(doc, "div", "wv-filter-options", undefined, section);
         const g0 = this._activeGroup();
         const selected = new Set((g0 && g0[incField]) || []);
         const excluded = new Set((g0 && g0[excField]) || []);
         const counts = this._wvOutlineTokenCounts();
         for (const def of catalogue) {
-            const btn = doc.createElementNS(NS_HTML, "button");
+            const btn = wvHtmlEl(doc, "button");
             btn.type = "button";
             btn.className = "wv-filter-opt wv-filter-opt-icon";
             const n = counts.get(def.value) || 0;
             btn.title = def.label + (n ? " (" + n + ")" : "") + " — click to include, Alt+click to exclude";
             if (selected.has(def.value)) btn.dataset.selected = "true";
             if (excluded.has(def.value)) btn.dataset.excluded = "true";
-            const icon = doc.createElementNS(NS_HTML, "img");
-            icon.className = "wv-filter-svg";
+            const icon = wvHtmlEl(doc, "img", "wv-filter-svg");
             icon.src = "data:image/svg+xml;utf8,"
                 + "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'>"
                 + this._wvOutlineTokenIcon(def.value) + "</svg>";
@@ -7402,8 +7329,7 @@ class _FilterMixin {
             // the store has entries for this token; the tooltip still carries it too.
             btn.style.position = "relative";
             if (n) {
-                const badge = doc.createElementNS(NS_HTML, "span");
-                badge.textContent = String(n);
+                const badge = wvHtmlEl(doc, "span", undefined, String(n));
                 badge.setAttribute("style", "position:absolute;right:0;bottom:-2px;font:600 8px/1 sans-serif;"
                     + "opacity:.85;pointer-events:none;padding:0 1px;border-radius:2px;"
                     + "background:color-mix(in srgb, Canvas 65%, transparent);");
@@ -7560,38 +7486,35 @@ class _FilterMixin {
 
         // Clear any prior content (this fires every popupshowing).
         while (inner.firstChild) inner.removeChild(inner.firstChild);
-
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-
-        const colorSection = doc.createElementNS(NS_HTML, "div");
-        const typeSection = doc.createElementNS(NS_HTML, "div");
+        const colorSection = wvHtmlEl(doc, "div");
+        const typeSection = wvHtmlEl(doc, "div");
         // The Attachment File Type section also hosts the Item Note
         // tile (right of the file-type icons, after a vertical bar).
-        const attachmentFileTypeSection = doc.createElementNS(NS_HTML, "div");
-        const notesSection = doc.createElementNS(NS_HTML, "div");
+        const attachmentFileTypeSection = wvHtmlEl(doc, "div");
+        const notesSection = wvHtmlEl(doc, "div");
         // Has Annotations tri-state — Attachment group, below the
         // file-type / item-note row.
-        const hasAnnotationsSection = doc.createElementNS(NS_HTML, "div");
+        const hasAnnotationsSection = wvHtmlEl(doc, "div");
         // Item Type row — sits ABOVE the unified search section.
         // Has its own trigger + selected-icon chips. The Standalone
         // Note tile is also rendered inline at the right end of
         // this row (after a vertical separator).
-        const itemTypeRowSection = doc.createElementNS(NS_HTML, "div");
+        const itemTypeRowSection = wvHtmlEl(doc, "div");
         // Parent-targeting Has-* row (Has DOI / Has URL / Has
         // Abstract / Has Attachment File) — Parent group.
-        const parentHasFieldsSection = doc.createElementNS(NS_HTML, "div");
+        const parentHasFieldsSection = wvHtmlEl(doc, "div");
         // Unified search section — one search input + suggestion box
         // with a mode dropdown that switches between Tag, Author,
         // Added By, Collection, Saved Search.
-        const searchSection = doc.createElementNS(NS_HTML, "div");
+        const searchSection = wvHtmlEl(doc, "div");
         // Cross-level icon-trigger group (Has Related, Has Link).
-        const crossLevelSection = doc.createElementNS(NS_HTML, "div");
+        const crossLevelSection = wvHtmlEl(doc, "div");
 
         // DEV outline-eval group (shown only when `weavero.devOutlineEval` is
         // on): a "Scan library" control plus the outlineClass / outlineVerdict
         // label grids. Attachment-resolving facets over the eval store.
-        const outlineScanSection = doc.createElementNS(NS_HTML, "div");
-        const outlineClassSection = doc.createElementNS(NS_HTML, "div");
+        const outlineScanSection = wvHtmlEl(doc, "div");
+        const outlineClassSection = wvHtmlEl(doc, "div");
 
         // Selection Target uses include/exclude semantics like every
         // other filter group: empty include + empty exclude means
@@ -7620,7 +7543,7 @@ class _FilterMixin {
         // "Clear" — text button, clears all filters but keeps the
         // popup open so the user can rebuild from scratch without
         // re-opening the panel.
-        const clearTextBtn = doc.createElementNS(NS_HTML, "button");
+        const clearTextBtn = wvHtmlEl(doc, "button");
         clearTextBtn.type = "button";
         clearTextBtn.className = "wv-filter-clear-btn";
         clearTextBtn.textContent = "Clear";
@@ -7630,7 +7553,7 @@ class _FilterMixin {
             e.stopPropagation();
             this._clearAllFilters();
         });
-        const clearBtn = doc.createElementNS(NS_HTML, "button");
+        const clearBtn = wvHtmlEl(doc, "button");
         clearBtn.type = "button";
         clearBtn.className = "wv-filter-clear-icon";
         // The × glyph is drawn via CSS pseudo-elements (two rotated
@@ -7676,8 +7599,7 @@ class _FilterMixin {
         // `_wvRenderReaderFilterPopup` / `addRow` for the flat-row pattern.
         let _wvFirstGroupHeader = true;
         const addGroupHeader = (label: string) => {
-            const hdr = doc.createElementNS(NS_HTML, "div");
-            hdr.className = "wv-filter-group-header";
+            const hdr = wvHtmlEl(doc, "div", "wv-filter-group-header");
             hdr.setAttribute("data-section", label);
             // The first header sits at the top of the panel — drop its
             // divider line (an empty quick-search anchor div precedes
@@ -7721,12 +7643,8 @@ class _FilterMixin {
         // top). Clear / × move out of the cross-level row's right end
         // so the new home is unambiguous. `renderHeader` (defined above)
         // toggles their visibility in lockstep with `_isFilterActive`.
-        const headBar = doc.createElementNS(NS_HTML, "div");
-        headBar.className = "wv-filter-popup-headbar";
-        const headTitle = doc.createElementNS(NS_HTML, "div");
-        headTitle.className = "wv-filter-popup-headtitle";
-        headTitle.textContent = "Filter Library";
-        headBar.appendChild(headTitle);
+        const headBar = wvHtmlEl(doc, "div", "wv-filter-popup-headbar");
+        const headTitle = wvHtmlEl(doc, "div", "wv-filter-popup-headtitle", "Filter Library", headBar);
         headBar.appendChild(clearTextBtn);
         headBar.appendChild(clearBtn);
         inner.appendChild(headBar);
@@ -7743,8 +7661,7 @@ class _FilterMixin {
         addGroupHeader("Parent");
         // Read Status (Zotero Reading List) — renders only while that
         // plugin is active; sits below the Tag search, above Item Type.
-        const readStatusSection = doc.createElementNS(NS_HTML, "div");
-        inner.appendChild(readStatusSection);
+        const readStatusSection = wvHtmlEl(doc, "div", undefined, undefined, inner);
         inner.appendChild(itemTypeRowSection);
         // Item Type row already hosts the Standalone Note tile at
         // its right end (after a vertical separator), so the only
@@ -7788,16 +7705,14 @@ class _FilterMixin {
               tip: "Annotation rows will be selectable in Ctrl+A." },
         ];
         const buildToggleBar = (label, labelTip, stateInc, stateExc, choices, onToggle, extraClass, autoState?) => {
-            const bar = doc.createElementNS(NS_HTML, "div");
+            const bar = wvHtmlEl(doc, "div");
             bar.className = "wv-filter-scope-bar"
                 + (extraClass ? " " + extraClass : "");
-            const lbl = doc.createElementNS(NS_HTML, "span");
-            lbl.className = "wv-filter-scope-bar-label";
-            lbl.textContent = label;
+            const lbl = wvHtmlEl(doc, "span", "wv-filter-scope-bar-label", label);
             if (labelTip) lbl.title = labelTip;
             bar.appendChild(lbl);
             for (const t of choices) {
-                const btn = doc.createElementNS(NS_HTML, "button");
+                const btn = wvHtmlEl(doc, "button");
                 btn.type = "button";
                 btn.className = "wv-filter-opt wv-filter-scope-toggle";
                 btn.textContent = t.label;
@@ -7865,9 +7780,8 @@ class _FilterMixin {
         // Bottom row — just the Alt+Click hint, centered. Clear /
         // × moved up to the right end of the cross-level row (see
         // refreshAll below) so they don't push the hint off-center.
-        const bottomBar = doc.createElementNS(NS_HTML, "div");
-        bottomBar.className = "wv-filter-bottom-controls";
-        const hint = doc.createElementNS(NS_HTML, "span");
+        const bottomBar = wvHtmlEl(doc, "div", "wv-filter-bottom-controls");
+        const hint = wvHtmlEl(doc, "span");
         hint.className = "wv-filter-bottom-hint";
         hint.textContent = "Alt+Click to Exclude";
         bottomBar.appendChild(hint);
@@ -7879,9 +7793,8 @@ class _FilterMixin {
         // can also be flipped from the View menu; the attachment
         // toggle is a Weavero pref enforced by the apply pass
         // below (Zotero has no built-in equivalent).
-        const annOpt = doc.createElementNS(NS_HTML, "label");
-        annOpt.className = "wv-filter-display-opt";
-        const annCb: any = doc.createElementNS(NS_HTML, "input");
+        const annOpt = wvHtmlEl(doc, "label", "wv-filter-display-opt");
+        const annCb: any = wvHtmlEl(doc, "input");
         annCb.type = "checkbox";
         try {
             annCb.checked = !Zotero.Prefs.get("hideContextAnnotationRows");
@@ -7902,14 +7815,11 @@ class _FilterMixin {
             this._refreshForDisplayToggle();
         });
         annOpt.appendChild(annCb);
-        const annLbl = doc.createElementNS(NS_HTML, "span");
-        annLbl.textContent = " Show Non-Matching Annotations";
-        annOpt.appendChild(annLbl);
+        const annLbl = wvHtmlEl(doc, "span", undefined, " Show Non-Matching Annotations", annOpt);
         annOpt.title = "Mirrors Zotero's 'Hide Non-Matching Annotations' (View menu). When off, only annotations matching the current search/filter appear under matched files.";
 
-        const attOpt = doc.createElementNS(NS_HTML, "label");
-        attOpt.className = "wv-filter-display-opt";
-        const attCb: any = doc.createElementNS(NS_HTML, "input");
+        const attOpt = wvHtmlEl(doc, "label", "wv-filter-display-opt");
+        const attCb: any = wvHtmlEl(doc, "input");
         attCb.type = "checkbox";
         try {
             // Weavero pref — default false (= hide). The apply
@@ -7927,9 +7837,7 @@ class _FilterMixin {
             this._refreshForDisplayToggle();
         });
         attOpt.appendChild(attCb);
-        const attLbl = doc.createElementNS(NS_HTML, "span");
-        attLbl.textContent = " Show Non-Matching Attachments";
-        attOpt.appendChild(attLbl);
+        const attLbl = wvHtmlEl(doc, "span", undefined, " Show Non-Matching Attachments", attOpt);
         attOpt.title = "When off, only attachments matching the current search/filter appear under matched parents. Hidden attachments take their annotation children with them.";
         // Attachment first (higher in the tree), annotation second
         // — matches the convention used by the Selection Target row
@@ -8011,11 +7919,7 @@ class _FilterMixin {
     _renderUnifiedSearchSection(doc, section, refreshAll, ctx) {
         while (section.firstChild) section.removeChild(section.firstChild);
         section.className = "wv-filter-section";
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-
-        const opts = doc.createElementNS(NS_HTML, "div");
-        opts.className = "wv-filter-options wv-filter-options-stacked";
-        section.appendChild(opts);
+        const opts = wvHtmlEl(doc, "div", "wv-filter-options wv-filter-options-stacked", undefined, section);
 
         const libraryID = ctx.libraryID;
         const isGroupLibrary = ctx.isGroupLibrary;
@@ -8060,9 +7964,7 @@ class _FilterMixin {
             // ("tags": var(--accent-orange))`), so the chip reads as
             // visually consistent with that section.
             renderIcon: (parent, id) => {
-                const NS = "http://www.w3.org/1999/xhtml";
-                const icon = parent.ownerDocument.createElementNS(NS, "img");
-                icon.className = "wv-filter-svg";
+                const icon = wvHtmlEl(parent.ownerDocument, "img", "wv-filter-svg");
                 icon.src = "chrome://zotero/skin/16/universal/tag.svg";
                 let color = "var(--accent-orange)";
                 try {
@@ -8256,11 +8158,10 @@ class _FilterMixin {
                     this._wvCollTreeVisible(all, q, matches, this._wvCollTreeExpanded(libraryID)),
                 decorate: (btn: any, v: any, q: string, isMatch: boolean, rerender: () => void) => {
                     const d = btn.ownerDocument;
-                    const NS = "http://www.w3.org/1999/xhtml";
                     btn.dataset.wvId = String(v.id);
                     btn.style.paddingInlineStart = (4 + 16 * v.depth) + "px";
                     if (q && !isMatch) btn.classList.add("wv-coll-context");
-                    const tw = d.createElementNS(NS, "span");
+                    const tw = wvHtmlEl(d, "span");
                     tw.className = "wv-coll-tw";
                     if (v.hasChildren) {
                         const open = q ? true : this._wvCollTreeExpanded(libraryID).has(v.id);
@@ -8311,8 +8212,7 @@ class _FilterMixin {
             // shipped under chrome://zotero/skin/collection-tree/...
             // (same image as the collections pane, theme-aware).
             renderIcon: (parent, id) => {
-                const NS = "http://www.w3.org/1999/xhtml";
-                const icon = parent.ownerDocument.createElementNS(NS, "span");
+                const icon = wvHtmlEl(parent.ownerDocument, "span");
                 icon.className = "icon icon-css icon-collection";
                 parent.insertBefore(icon, parent.firstChild);
             },
@@ -8368,8 +8268,7 @@ class _FilterMixin {
             // chrome://zotero/skin/collection-tree/... — same as
             // the collections pane.
             renderIcon: (parent, id) => {
-                const NS = "http://www.w3.org/1999/xhtml";
-                const icon = parent.ownerDocument.createElementNS(NS, "span");
+                const icon = wvHtmlEl(parent.ownerDocument, "span");
                 icon.className = "icon icon-css icon-search";
                 parent.insertBefore(icon, parent.firstChild);
             },
@@ -8403,19 +8302,15 @@ class _FilterMixin {
         // Zotero's quick-search dropmarker. Selected mode is read
         // off the search input's placeholder; tooltip on hover gives
         // the affordance.
-        const topRow = doc.createElementNS(NS_HTML, "div");
-        topRow.className = "wv-filter-search-row";
-        opts.appendChild(topRow);
+        const topRow = wvHtmlEl(doc, "div", "wv-filter-search-row", undefined, opts);
 
         // Search wrap — a single rounded box that holds BOTH the
         // ▾ trigger and the text input, mirroring Zotero's quick
         // search field (where the dropmarker is embedded inside
         // the search field rather than sitting beside it).
-        const searchWrap = doc.createElementNS(NS_HTML, "div");
-        searchWrap.className = "wv-filter-search-wrap";
-        topRow.appendChild(searchWrap);
+        const searchWrap = wvHtmlEl(doc, "div", "wv-filter-search-wrap", undefined, topRow);
 
-        const trigger = doc.createElementNS(NS_HTML, "button");
+        const trigger = wvHtmlEl(doc, "button");
         trigger.type = "button";
         trigger.className = "wv-filter-mode-trigger";
         trigger.textContent = "▾"; // ▾
@@ -8453,7 +8348,7 @@ class _FilterMixin {
         menuPopup.className = "wv-filter-mode-menupopup";
         popupHost.appendChild(menuPopup);
 
-        const search = doc.createElementNS(NS_HTML, "input");
+        const search = wvHtmlEl(doc, "input");
         search.type = "search";
         search.className = "wv-filter-search-input";
         search.placeholder = mode.label;
@@ -8464,22 +8359,19 @@ class _FilterMixin {
         // (only when the input has focus). Stacked above the
         // selected-pills list so picks fall down into the chip
         // area, mirroring the visual flow.
-        const box = doc.createElementNS(NS_HTML, "div");
-        box.className = "wv-filter-tag-list";
+        const box = wvHtmlEl(doc, "div", "wv-filter-tag-list");
         box.style.display = "none";
         opts.appendChild(box);
 
         // Selected-pills list — sits below the suggestion box,
         // always visible when there's at least one selection.
-        const selectedList = doc.createElementNS(NS_HTML, "div");
-        selectedList.className = "wv-filter-selected-list";
-        opts.appendChild(selectedList);
+        const selectedList = wvHtmlEl(doc, "div", "wv-filter-selected-list", undefined, opts);
 
         // Inline focus wiring — wired on the SEARCH INPUT only so
         // clicking the mode trigger doesn't pop the suggestion box.
         // Outside-clicks (anywhere not in topRow / box) collapse the
         // box and blur the input.
-        let onDocMouseDown = null;
+        let dismissOff: any = null;
         const hideBox = () => {
             box.style.display = "none";
             // Drop the global "active suggestion" reference (used by the
@@ -8487,10 +8379,7 @@ class _FilterMixin {
             if (this._wvActiveSuggest && this._wvActiveSuggest.box === box) {
                 this._wvActiveSuggest = null;
             }
-            if (onDocMouseDown) {
-                doc.removeEventListener("mousedown", onDocMouseDown, true);
-                onDocMouseDown = null;
-            }
+            if (dismissOff) { dismissOff(); dismissOff = null; }
         };
         const showBox = () => {
             // Register this box as the active suggestion list so a document-
@@ -8499,15 +8388,9 @@ class _FilterMixin {
             this._wvActiveSuggest = { box, hide: hideBox };
             if (box.style.display !== "none") return;
             box.style.display = "";
-            if (!onDocMouseDown) {
-                onDocMouseDown = (e) => {
-                    // wvWithin: a press on the list's scrollbar targets its anonymous thumb (#55).
-                    if (wvWithin(box, e.target)) return;
-                    if (wvWithin(topRow, e.target)) return;
-                    try { search.blur(); } catch (err) {}
-                    hideBox();
-                };
-                doc.addEventListener("mousedown", onDocMouseDown, true);
+            if (!dismissOff) {
+                dismissOff = wvOutsideClick({ panel: box, keep: [topRow], owner: this,
+                    onOutside: () => { try { search.blur(); } catch (err) {} hideBox(); } });
             }
         };
         search.addEventListener("focus", showBox);
@@ -8516,7 +8399,7 @@ class _FilterMixin {
             hideBox();
         });
 
-        const placeholder = doc.createElementNS(NS_HTML, "span");
+        const placeholder = wvHtmlEl(doc, "span");
         placeholder.style.opacity = "0.5";
         placeholder.style.fontSize = "12px";
         placeholder.textContent = "Loading…";
@@ -8576,7 +8459,7 @@ class _FilterMixin {
             const buildPill = (m, id, isExclude, into?, onKindLine?) => {
                 const label = m.getLabelById
                     ? m.getLabelById(id) : String(id);
-                const pill = doc.createElementNS(NS_HTML, "span");
+                const pill = wvHtmlEl(doc, "span");
                 pill.className = "wv-filter-selected-pill";
                 if (isExclude) pill.dataset.exclude = "true";
                 if (m.pillIconOnly) pill.dataset.iconOnly = "true";
@@ -8587,18 +8470,13 @@ class _FilterMixin {
                 } else if (!onKindLine) {
                     // (On an "Any <kind>" line the line label already names
                     // the kind -- MJT 2026-09-28.)
-                    const modeLbl = doc.createElementNS(
-                        NS_HTML, "span");
-                    modeLbl.className = "wv-filter-selected-pill-mode";
+                    const modeLbl = wvHtmlEl(doc, "span", "wv-filter-selected-pill-mode");
                     modeLbl.textContent = (isExclude ? "Not " : "")
                         + m.label + ":";
                     pill.appendChild(modeLbl);
                 }
                 if (!m.pillIconOnly) {
-                    const lbl = doc.createElementNS(NS_HTML, "span");
-                    lbl.className = "wv-filter-selected-pill-label";
-                    lbl.textContent = label;
-                    pill.appendChild(lbl);
+                    const lbl = wvHtmlEl(doc, "span", "wv-filter-selected-pill-label", label, pill);
                 }
                 // Tag pills get an "Apply to" scope arrow — the Tag
                 // filter is cross-level. Shares `hasTagScope` with
@@ -8616,7 +8494,7 @@ class _FilterMixin {
                         { key: "note",       label: "Note" },
                         { key: "annotation", label: "Annotation" },
                     ];
-                    const arrow = doc.createElementNS(NS_HTML, "button");
+                    const arrow = wvHtmlEl(doc, "button");
                     arrow.type = "button";
                     arrow.className = "wv-filter-selected-pill-scope";
                     arrow.textContent = "▾";
@@ -8636,7 +8514,7 @@ class _FilterMixin {
                     pill.appendChild(arrow);
                 }
 
-                const x = doc.createElementNS(NS_HTML, "button");
+                const x = wvHtmlEl(doc, "button");
                 x.type = "button";
                 x.className = "wv-filter-selected-pill-x";
                 x.textContent = "×";
@@ -8726,12 +8604,8 @@ class _FilterMixin {
             }
             for (const ln of lines.values()) {
                 if (!ln.entries.length) continue;
-                const row = doc.createElementNS(NS_HTML, "div");
-                row.className = "wv-filter-selected-line";
-                const lab = doc.createElementNS(NS_HTML, "span");
-                lab.className = "wv-filter-selected-line-label";
-                lab.textContent = ln.label;
-                row.appendChild(lab);
+                const row = wvHtmlEl(doc, "div", "wv-filter-selected-line");
+                const lab = wvHtmlEl(doc, "span", "wv-filter-selected-line-label", ln.label, row);
                 for (const e of ln.entries) buildPill(e.m, e.id, e.isExclude, row, !!e.m.anyOf);
                 selectedList.appendChild(row);
             }
@@ -8795,7 +8669,7 @@ class _FilterMixin {
             const overflow = capped ? Math.max(0, list.length - SUGGEST_LIMIT) : 0;
             list = capped ? list.slice(0, SUGGEST_LIMIT) : list;
             if (!list.length) {
-                const empty = doc.createElementNS(NS_HTML, "span");
+                const empty = wvHtmlEl(doc, "span");
                 empty.style.opacity = "0.5";
                 empty.style.fontSize = "12px";
                 empty.textContent = q ? mode.emptyFiltered : mode.emptyAll;
@@ -8804,14 +8678,12 @@ class _FilterMixin {
             }
             for (const v of list) {
                 if (v.separator) {
-                    const sep = doc.createElementNS(NS_HTML, "div");
-                    sep.className = "wv-filter-list-separator";
-                    box.appendChild(sep);
+                    const sep = wvHtmlEl(doc, "div", "wv-filter-list-separator", undefined, box);
                     continue;
                 }
                 const id = mode.valueId(v);
                 const label = mode.valueLabel(v);
-                const btn = doc.createElementNS(NS_HTML, "button");
+                const btn = wvHtmlEl(doc, "button");
                 btn.type = "button";
                 btn.className = "wv-filter-opt";
                 btn.title = label;
@@ -8822,10 +8694,7 @@ class _FilterMixin {
                 // (vertical-list) layout. The default pill layout
                 // already handles ellipsis via `display: inline-block`
                 // on the button, but the span is harmless there.
-                const lblSpan = doc.createElementNS(NS_HTML, "span");
-                lblSpan.className = "wv-filter-opt-label";
-                lblSpan.textContent = label;
-                btn.appendChild(lblSpan);
+                const lblSpan = wvHtmlEl(doc, "span", "wv-filter-opt-label", label, btn);
                 if (mode.styleButton) mode.styleButton(btn, id, selected);
                 if (mode.tree) {
                     if (selected.has(id)) btn.dataset.selected = "true";
@@ -8869,7 +8738,7 @@ class _FilterMixin {
                 box.appendChild(btn);
             }
             if (overflow > 0) {
-                const more = doc.createElementNS(NS_HTML, "span");
+                const more = wvHtmlEl(doc, "span");
                 more.style.opacity = "0.5";
                 more.style.fontSize = "12px";
                 more.style.alignSelf = "center";
@@ -8907,7 +8776,7 @@ class _FilterMixin {
                 selectedList.removeChild(selectedList.firstChild);
             }
             while (box.firstChild) box.removeChild(box.firstChild);
-            const ph = doc.createElementNS(NS_HTML, "span");
+            const ph = wvHtmlEl(doc, "span");
             ph.style.opacity = "0.5";
             ph.style.fontSize = "12px";
             ph.textContent = "Loading…";
@@ -9028,11 +8897,7 @@ class _FilterMixin {
     _renderItemTypeRow(doc, section, refreshAll, ctx) {
         while (section.firstChild) section.removeChild(section.firstChild);
         section.className = "wv-filter-section wv-filter-itype-row";
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-
-        const opts = doc.createElementNS(NS_HTML, "div");
-        opts.className = "wv-filter-options wv-filter-options-stacked";
-        section.appendChild(opts);
+        const opts = wvHtmlEl(doc, "div", "wv-filter-options wv-filter-options-stacked", undefined, section);
 
         // Trigger row — native XUL menulist (matches the "Search in
         // library" trigger in advanced search) + selected-icon chips
@@ -9044,9 +8909,7 @@ class _FilterMixin {
         // HTML grid below so picked types still appear with icons,
         // and so Alt+click-to-exclude works the way it does on every
         // other facet in the panel.
-        const triggerRow = doc.createElementNS(NS_HTML, "div");
-        triggerRow.className = "wv-filter-itype-trigger-row";
-        opts.appendChild(triggerRow);
+        const triggerRow = wvHtmlEl(doc, "div", "wv-filter-itype-trigger-row", undefined, opts);
 
         const trigger = doc.createXULElement("menulist");
         // XUL menulists size the CLOSED control to the widest menu
@@ -9074,8 +8937,7 @@ class _FilterMixin {
         // (no duplication). Selection state renders on the tiles
         // themselves; the selected-chips row keeps only types that are
         // NOT in the MRU.
-        const mruRow = doc.createElementNS(NS_HTML, "div");
-        mruRow.className = "wv-filter-itype-mru";
+        const mruRow = wvHtmlEl(doc, "div", "wv-filter-itype-mru");
         mruRow.style.display = "flex";
         mruRow.style.alignItems = "center";
         mruRow.style.gap = "2px";
@@ -9088,14 +8950,12 @@ class _FilterMixin {
         // (v1 gave them a separate always-below line; MJT: inline
         // first, wrap only on overflow. The original wrapper-with-
         // flex:1 stacked chips vertically in the leftover column.)
-        const selectedRow = doc.createElementNS(NS_HTML, "div");
-        selectedRow.className = "wv-filter-itype-selected";
-        triggerRow.appendChild(selectedRow);
+        const selectedRow = wvHtmlEl(doc, "div", "wv-filter-itype-selected", undefined, triggerRow);
 
 
         // Vertical 2-col suggestion list (hidden until trigger is
         // clicked).
-        const box = doc.createElementNS(NS_HTML, "div");
+        const box = wvHtmlEl(doc, "div");
         // `wv-itype-overlay`: the list floats OVER the later sections
         // (absolute, anchored under the trigger row) instead of expanding
         // inline. Inline expansion pushed the rest of the popup down, and
@@ -9177,10 +9037,10 @@ class _FilterMixin {
         };
 
         const buildSelectedChip = (id, isExclude) => {
-            const chip = doc.createElementNS(NS_HTML, "span");
+            const chip = wvHtmlEl(doc, "span");
             chip.className = "wv-filter-itype-chip";
             if (isExclude) chip.dataset.exclude = "true";
-            const icon = doc.createElementNS(NS_HTML, "span");
+            const icon = wvHtmlEl(doc, "span");
             icon.className = "icon icon-css icon-item-type";
             icon.dataset.itemType = id;
             let label = id;
@@ -9261,7 +9121,7 @@ class _FilterMixin {
                 lastWasItem = true;
             }
             if (!list.length) {
-                const empty = doc.createElementNS(NS_HTML, "span");
+                const empty = wvHtmlEl(doc, "span");
                 empty.style.opacity = "0.5";
                 empty.style.fontSize = "12px";
                 empty.textContent = "No item types available";
@@ -9270,23 +9130,18 @@ class _FilterMixin {
             }
             for (const v of list) {
                 if (v.separator) {
-                    const sep = doc.createElementNS(NS_HTML, "div");
-                    sep.className = "wv-filter-list-separator";
-                    box.appendChild(sep);
+                    const sep = wvHtmlEl(doc, "div", "wv-filter-list-separator", undefined, box);
                     continue;
                 }
-                const btn = doc.createElementNS(NS_HTML, "button");
+                const btn = wvHtmlEl(doc, "button");
                 btn.type = "button";
                 btn.className = "wv-filter-opt";
                 btn.title = v.name;
-                const icon = doc.createElementNS(NS_HTML, "span");
+                const icon = wvHtmlEl(doc, "span");
                 icon.className = "icon icon-css icon-item-type";
                 icon.dataset.itemType = v.id;
                 btn.appendChild(icon);
-                const lbl = doc.createElementNS(NS_HTML, "span");
-                lbl.className = "wv-filter-opt-label";
-                lbl.textContent = v.name;
-                btn.appendChild(lbl);
+                const lbl = wvHtmlEl(doc, "span", "wv-filter-opt-label", v.name, btn);
                 btn.addEventListener("click", (e) => {
                     e.stopPropagation();
                     const g2 = this._activeGroup();
@@ -9355,14 +9210,14 @@ class _FilterMixin {
                 let label = id;
                 try { label = Zotero.ItemTypes.getLocalizedString(id); }
                 catch (e) {}
-                const btn = doc.createElementNS(NS_HTML, "button");
+                const btn = wvHtmlEl(doc, "button");
                 btn.type = "button";
                 btn.className = "wv-filter-opt wv-filter-opt-icon wv-itype-mru-tile";
                 btn.title = label + " — recently used. Click to filter; "
                     + "Alt+click to exclude.";
                 if (sel.has(id)) btn.dataset.selected = "true";
                 else if (exc.has(id)) btn.dataset.excluded = "true";
-                const icon = doc.createElementNS(NS_HTML, "span");
+                const icon = wvHtmlEl(doc, "span");
                 icon.className = "icon icon-css icon-item-type";
                 icon.dataset.itemType = id;
                 btn.appendChild(icon);
@@ -9487,7 +9342,7 @@ class _FilterMixin {
 
         // Toggle list visibility — outside-click closes.
         let listOpen = false;
-        let onDocMouseDown = null;
+        let dismissOff: any = null;
         const showList = () => {
             if (listOpen) return;
             listOpen = true;
@@ -9499,49 +9354,23 @@ class _FilterMixin {
             // position made the MRU shortlist (the whole point of the top
             // rows) invisible on reopen (user request 2026-08-04).
             box.scrollTop = 0;
-            if (!onDocMouseDown) {
-                onDocMouseDown = (e) => {
-                    const t = e.target;
-                    // SHADOW-DOM-SAFE membership checks. Mozilla's
-                    // `Element.contains()` returns FALSE for the
-                    // trigger menulist itself when its shadow host
-                    // sits inside an HTML <slot> — verified by
-                    // instrumentation showing `target === trigger`
-                    // and `composedPath().includes(trigger)` both
-                    // true while `trigger.contains(target)` was
-                    // false. Result was a double-toggle: doc-level
-                    // capture mistakenly saw "outside", ran
-                    // `hideList`, then `popupshowing` re-fired
-                    // `showList`. `composedPath().includes()`
-                    // correctly walks across shadow boundaries. But
-                    // NOT into a scrollbar: a real press on the
-                    // list's scrollbar has a path without the box
-                    // -- wvWithin covers it (issue #55).
-                    const path = (e.composedPath && e.composedPath()) || [];
-                    const inTrigger = t === trigger
-                        || path.indexOf(trigger) >= 0;
-                    const inBox = t === box
-                        || path.indexOf(box) >= 0
-                        || wvWithin(box, t);
-                    const onChip = path.some((n: any) =>
-                        n && n.classList
-                        && n.classList.contains("wv-filter-itype-chip"));
-                    if (inTrigger) return;
-                    if (inBox) return;
-                    if (onChip) return;
-                    hideList();
-                };
-                doc.addEventListener("mousedown", onDocMouseDown, true);
+            if (!dismissOff) {
+                // Membership walks the parent chain across shadow hosts (the
+                // trigger menulist's shadow host sits in an HTML <slot>, where
+                // `Element.contains()` said "outside" and a double toggle
+                // followed) and into the list's scrollbar (issue #55); a press
+                // on an item-type chip keeps the list too.
+                dismissOff = wvOutsideClick({ panel: box, keep: [trigger], owner: this,
+                    isOpen: () => listOpen,
+                    allow: (e: any) => { for (let n = e.target; n; n = n.parentNode || (n.nodeType === 11 ? n.host : null)) { if (n.classList && n.classList.contains("wv-filter-itype-chip")) return true; } return false; },
+                    onOutside: () => hideList() });
             }
         };
         const hideList = () => {
             if (!listOpen) return;
             listOpen = false;
             box.style.display = "none";
-            if (onDocMouseDown) {
-                doc.removeEventListener("mousedown", onDocMouseDown, true);
-                onDocMouseDown = null;
-            }
+            if (dismissOff) { dismissOff(); dismissOff = null; }
         };
         // The menulist's empty popup is suppressed; toggling happens
         // here, in the popup-show sequence's earliest hook so the
@@ -9574,11 +9403,7 @@ class _FilterMixin {
     _renderColorSection(doc, section, refreshAll) {
         while (section.firstChild) section.removeChild(section.firstChild);
         section.className = "wv-filter-section";
-
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-        const opts = doc.createElementNS(NS_HTML, "div");
-        opts.className = "wv-filter-options";
-        section.appendChild(opts);
+        const opts = wvHtmlEl(doc, "div", "wv-filter-options", undefined, section);
 
         const g0 = this._activeGroup();
         const selected = new Set((g0 && g0.annotationColor) || []);
@@ -9591,12 +9416,11 @@ class _FilterMixin {
             // distinct status reads visually. Same `margin-left: auto`
             // pattern Item Note / Has Comment / Has Annotations use.
             if (def.value === "#000000") {
-                const sep = doc.createElementNS(NS_HTML, "div");
-                sep.className = "wv-filter-vertical-separator";
+                const sep = wvHtmlEl(doc, "div", "wv-filter-vertical-separator");
                 sep.style.marginLeft = "auto";
                 opts.appendChild(sep);
             }
-            const btn = doc.createElementNS(NS_HTML, "button");
+            const btn = wvHtmlEl(doc, "button");
             btn.type = "button";
             btn.className = "wv-filter-opt wv-filter-opt-icon";
             const inExc = excluded.has(def.value);
@@ -9628,24 +9452,18 @@ class _FilterMixin {
     _renderTypeSection(doc, section, refreshAll) {
         while (section.firstChild) section.removeChild(section.firstChild);
         section.className = "wv-filter-section";
-
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-        const opts = doc.createElementNS(NS_HTML, "div");
-        opts.className = "wv-filter-options";
-        section.appendChild(opts);
+        const opts = wvHtmlEl(doc, "div", "wv-filter-options", undefined, section);
 
         // The type icons are the Rule 1 OR set — wrap them in a tinted
         // pill. Has Comment (appended after, outside this pill) is a
         // separate filter, so it stays untinted.
-        const grp = doc.createElementNS(NS_HTML, "div");
-        grp.className = "wv-filter-or-inline";
-        opts.appendChild(grp);
+        const grp = wvHtmlEl(doc, "div", "wv-filter-or-inline", undefined, opts);
 
         const g0 = this._activeGroup();
         const selected = new Set((g0 && g0.annotationType) || []);
         const excluded = new Set((g0 && g0.annotationTypeExclude) || []);
         for (const def of this._ANNOTATION_TYPES) {
-            const btn = doc.createElementNS(NS_HTML, "button");
+            const btn = wvHtmlEl(doc, "button");
             btn.type = "button";
             btn.className = "wv-filter-opt wv-filter-opt-icon";
             const inExc = excluded.has(def.value);
@@ -9658,8 +9476,7 @@ class _FilterMixin {
             // `fill="context-fill"` AND `stroke="context-fill"` paths.
             // mask-image only renders filled regions, which makes the
             // stroke-only `annotate-note.svg` come out blank.
-            const icon = doc.createElementNS(NS_HTML, "img");
-            icon.className = "wv-filter-svg";
+            const icon = wvHtmlEl(doc, "img", "wv-filter-svg");
             icon.src = def.icon;
             btn.appendChild(icon);
 
@@ -9688,8 +9505,7 @@ class _FilterMixin {
         // Has Comment alone at the FAR RIGHT — a genuine Has-tile.
         // Thin vertical separator with `margin-left: auto` pushes it
         // to the right edge of the flex container.
-        const sep = doc.createElementNS(NS_HTML, "div");
-        sep.className = "wv-filter-vertical-separator";
+        const sep = wvHtmlEl(doc, "div", "wv-filter-vertical-separator");
         sep.style.marginLeft = "auto";
         opts.appendChild(sep);
         opts.appendChild(this._makeHasCommentTile(doc, refreshAll));
@@ -9754,8 +9570,7 @@ class _FilterMixin {
         // refreshAll changes nothing.
         let btn: any = wrapper.querySelector(".wv-qs-scope-btn");
         if (!btn) {
-            const NS_HTML = "http://www.w3.org/1999/xhtml";
-            btn = doc.createElementNS(NS_HTML, "button");
+            btn = wvHtmlEl(doc, "button");
             btn.type = "button";
             btn.className = "wv-qs-scope-btn";
             // Label moved entirely to tooltip — the button now shows
@@ -9764,7 +9579,7 @@ class _FilterMixin {
             // wrapping and crowding the input).
             btn.title = "Restrict Quick Search to: — choose which row kinds the toolbar quick-search may surface in the results. All-on (default) means no restriction.";
             btn.setAttribute("aria-label", "Restrict Quick Search to");
-            const arrow = doc.createElementNS(NS_HTML, "span");
+            const arrow = wvHtmlEl(doc, "span");
             arrow.className = "wv-qs-scope-btn-arrow";
             arrow.textContent = "▾";
             btn.appendChild(arrow);
@@ -9846,7 +9661,6 @@ class _FilterMixin {
      *  `.wv-filter-scope-popup-row`) apply unchanged. */
     _openQuickSearchScopeMenupopup(anchor, kinds, refreshAll) {
         const doc = anchor.ownerDocument;
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
         // Drop any stale popup from a previous click before opening
         // a new one.
         const stale = doc.querySelectorAll("panel.wv-qs-scope-panel");
@@ -9876,7 +9690,7 @@ class _FilterMixin {
 
         // HTML content — identical structure to the inline cross-
         // level scope popup so the shared CSS rules apply.
-        const inner = doc.createElementNS(NS_HTML, "div");
+        const inner = wvHtmlEl(doc, "div");
         inner.className = "wv-filter-scope-popup wv-qs-scope-popup-inner";
         try {
             const gq = this._activeGroup();
@@ -9889,15 +9703,11 @@ class _FilterMixin {
         // since here we're inside a XUL panel that positions itself.
         inner.style.position = "static";
 
-        const heading = doc.createElementNS(NS_HTML, "div");
-        heading.className = "wv-filter-scope-popup-head";
-        heading.textContent = "Apply to";
-        inner.appendChild(heading);
+        const heading = wvHtmlEl(doc, "div", "wv-filter-scope-popup-head", "Apply to", inner);
 
         for (const k of kinds) {
-            const lbl = doc.createElementNS(NS_HTML, "label");
-            lbl.className = "wv-filter-scope-popup-row";
-            const cb: any = doc.createElementNS(NS_HTML, "input");
+            const lbl = wvHtmlEl(doc, "label", "wv-filter-scope-popup-row");
+            const cb: any = wvHtmlEl(doc, "input");
             cb.type = "checkbox";
             cb.checked = scope[k.key] !== false;
             cb.addEventListener("change", () => {
@@ -9912,9 +9722,7 @@ class _FilterMixin {
                 try { refreshAll(); } catch (e) {}
             });
             lbl.appendChild(cb);
-            const txt = doc.createElementNS(NS_HTML, "span");
-            txt.textContent = k.label;
-            lbl.appendChild(txt);
+            const txt = wvHtmlEl(doc, "span", undefined, k.label, lbl);
             inner.appendChild(lbl);
         }
 
@@ -9963,11 +9771,7 @@ class _FilterMixin {
     _renderCrossLevelSection(doc, section, refreshAll) {
         while (section.firstChild) section.removeChild(section.firstChild);
         section.className = "wv-filter-section";
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-
-        const opts = doc.createElementNS(NS_HTML, "div");
-        opts.className = "wv-filter-options";
-        section.appendChild(opts);
+        const opts = wvHtmlEl(doc, "div", "wv-filter-options", undefined, section);
 
         const g0 = this._activeGroup();
         // Default kind list (Has Tag / Has Related) — three row-
@@ -10004,11 +9808,11 @@ class _FilterMixin {
         // click the arrow to choose which row kinds the filter
         // applies to.
         const buildBtn = (key, scopeKey, kindList, label, iconBuilder, tip, noScope?) => {
-            const slot = doc.createElementNS(NS_HTML, "div");
+            const slot = wvHtmlEl(doc, "div");
             slot.className = "wv-filter-cross-slot";
 
             const cur = g0 ? g0[key] : null;
-            const btn = doc.createElementNS(NS_HTML, "button");
+            const btn = wvHtmlEl(doc, "button");
             btn.type = "button";
             btn.className = "wv-filter-opt wv-filter-opt-icon wv-filter-cross-main";
             btn.title = tip;
@@ -10035,7 +9839,7 @@ class _FilterMixin {
             // narrowed below the all-on default. Skipped for scope-less
             // filters (e.g. Has Bookmarks), which apply to the whole item.
             if (!noScope) {
-                const arrow = doc.createElementNS(NS_HTML, "button");
+                const arrow = wvHtmlEl(doc, "button");
                 arrow.type = "button";
                 arrow.className = "wv-filter-cross-scope-arrow";
                 // "categories" = the four-type classification (parent
@@ -10064,8 +9868,7 @@ class _FilterMixin {
             "hasTag", "hasTagScope", KINDS_ROW,
             "Has Tag",
             (d) => {
-                const icon = d.createElementNS(NS_HTML, "img");
-                icon.className = "wv-filter-svg";
+                const icon = wvHtmlEl(d, "img", "wv-filter-svg");
                 icon.src = "chrome://zotero/skin/16/universal/tag.svg";
                 icon.alt = "Has Tag";
                 icon.style.color = "var(--accent-orange)";
@@ -10077,8 +9880,7 @@ class _FilterMixin {
             "hasRelated", "hasRelatedScope", KINDS_ROW,
             "Has Related",
             (d) => {
-                const icon = d.createElementNS(NS_HTML, "img");
-                icon.className = "wv-filter-svg";
+                const icon = wvHtmlEl(d, "img", "wv-filter-svg");
                 icon.src = "chrome://zotero/skin/16/universal/related.svg";
                 icon.alt = "Has Related";
                 icon.style.color = "var(--accent-wood)";
@@ -10102,7 +9904,6 @@ class _FilterMixin {
      *  scope checkboxes to render: `[{key, label}]`. */
     _openCrossLevelScopePopup(anchor, scopeKey, kinds, refreshAll) {
         const doc = anchor.ownerDocument;
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
         // Drop any existing popup before opening a new one — the
         // user just clicked an arrow, treat the previous popup as
         // dismissed regardless of which arrow it belonged to.
@@ -10137,20 +9938,15 @@ class _FilterMixin {
             scope.note = scope.parent !== false || scope.attachment !== false;
         }
 
-        const pop = doc.createElementNS(NS_HTML, "div");
-        pop.className = "wv-filter-scope-popup";
+        const pop = wvHtmlEl(doc, "div", "wv-filter-scope-popup");
         // Anchor stamp read by the toggle check above.
         (pop as any)._wvScopeAnchor = anchor;
 
-        const heading = doc.createElementNS(NS_HTML, "div");
-        heading.className = "wv-filter-scope-popup-head";
-        heading.textContent = "Apply to";
-        pop.appendChild(heading);
+        const heading = wvHtmlEl(doc, "div", "wv-filter-scope-popup-head", "Apply to", pop);
 
         for (const k of kinds) {
-            const lbl = doc.createElementNS(NS_HTML, "label");
-            lbl.className = "wv-filter-scope-popup-row";
-            const cb = doc.createElementNS(NS_HTML, "input");
+            const lbl = wvHtmlEl(doc, "label", "wv-filter-scope-popup-row");
+            const cb = wvHtmlEl(doc, "input");
             cb.type = "checkbox";
             cb.checked = scope[k.key] !== false;
             cb.addEventListener("change", () => {
@@ -10160,9 +9956,7 @@ class _FilterMixin {
                 refreshAll();
             });
             lbl.appendChild(cb);
-            const txt = doc.createElementNS(NS_HTML, "span");
-            txt.textContent = k.label;
-            lbl.appendChild(txt);
+            const txt = wvHtmlEl(doc, "span", undefined, k.label, lbl);
             pop.appendChild(lbl);
         }
 
@@ -10178,24 +9972,11 @@ class _FilterMixin {
             pop.style.top = (r.bottom - ir.top + 2) + "px";
         } catch (e) {}
 
-        // Close on outside-click. setTimeout so the click that
+        // Close on outside-click, attached a tick later so the click that
         // opened the popup doesn't immediately re-close it.
-        let onDoc = null;
-        const close = () => {
-            try { pop.remove(); } catch (e) {}
-            if (onDoc) {
-                doc.removeEventListener("mousedown", onDoc, true);
-                onDoc = null;
-            }
-        };
-        onDoc = (e) => {
-            // wvWithin: a press on the popup's scrollbar targets its anonymous thumb (#55).
-            if (wvWithin(pop, e.target)) return;
-            if (wvWithin(anchor, e.target)) return;
-            close();
-        };
-        const win = winOf(doc);
-        win.setTimeout(() => doc.addEventListener("mousedown", onDoc, true), 0);
+        let off: (() => void) | null = null;
+        const close = () => { try { pop.remove(); } catch (e) {} if (off) { off(); off = null; } };
+        off = wvOutsideClick({ panel: pop, keep: [anchor], defer: true, hostWin: winOf(doc), owner: this, onOutside: () => close() });
     }
 
     /** Render a row of parent-targeting "Has *" tri-state icon
@@ -10204,11 +9985,7 @@ class _FilterMixin {
     _renderParentHasFieldsSection(doc, section, refreshAll) {
         while (section.firstChild) section.removeChild(section.firstChild);
         section.className = "wv-filter-section";
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-
-        const optsBox = doc.createElementNS(NS_HTML, "div");
-        optsBox.className = "wv-filter-options";
-        section.appendChild(optsBox);
+        const optsBox = wvHtmlEl(doc, "div", "wv-filter-options", undefined, section);
 
         const g0 = this._activeGroup();
         // Optional `color` ties the icon's currentColor to one of
@@ -10217,15 +9994,14 @@ class _FilterMixin {
         // section header.
         const buildBtn = (key, label, iconSrc, tip, color?, afterChange?) => {
             const cur = g0 ? g0[key] : null;
-            const btn = doc.createElementNS(NS_HTML, "button");
+            const btn = wvHtmlEl(doc, "button");
             btn.type = "button";
             btn.className = "wv-filter-opt wv-filter-opt-icon";
             btn.title = tip;
             if (cur === true) btn.dataset.selected = "true";
             else if (cur === false) btn.dataset.excluded = "true";
             if (iconSrc) {
-                const icon = doc.createElementNS(NS_HTML, "img");
-                icon.className = "wv-filter-svg";
+                const icon = wvHtmlEl(doc, "img", "wv-filter-svg");
                 icon.src = iconSrc;
                 icon.alt = label;
                 if (color) icon.style.color = color;
@@ -10311,8 +10087,7 @@ class _FilterMixin {
             + "retraction notice in the item pane), within the current "
             + "collection or search. Alt+click to exclude them.",
             "var(--accent-red)");
-        const hasSep = doc.createElementNS(NS_HTML, "div");
-        hasSep.className = "wv-filter-vertical-separator";
+        const hasSep = wvHtmlEl(doc, "div", "wv-filter-vertical-separator");
         hasSep.style.marginLeft = "auto";
         optsBox.appendChild(hasSep);
         buildBtn("hasDOI", "Has DOI",
@@ -10354,11 +10129,7 @@ class _FilterMixin {
     _renderHasAnnotationsSection(doc, section, refreshAll) {
         while (section.firstChild) section.removeChild(section.firstChild);
         section.className = "wv-filter-section";
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-
-        const optsBox = doc.createElementNS(NS_HTML, "div");
-        optsBox.className = "wv-filter-options";
-        section.appendChild(optsBox);
+        const optsBox = wvHtmlEl(doc, "div", "wv-filter-options", undefined, section);
 
         const g0 = this._activeGroup();
 
@@ -10375,15 +10146,14 @@ class _FilterMixin {
         if (linkedDef) {
             const selected = new Set((g0 && g0.attachmentFileType) || []);
             const excluded = new Set((g0 && g0.attachmentFileTypeExclude) || []);
-            const lfBtn = doc.createElementNS(NS_HTML, "button");
+            const lfBtn = wvHtmlEl(doc, "button");
             lfBtn.type = "button";
             lfBtn.className = "wv-filter-opt wv-filter-opt-icon";
             lfBtn.title = "Linked File — attachments stored as links to "
                 + "external files (any content type). Alt+click to exclude.";
             if (selected.has("attachmentLinkedFile")) lfBtn.dataset.selected = "true";
             if (excluded.has("attachmentLinkedFile")) lfBtn.dataset.excluded = "true";
-            const lfIcon = doc.createElementNS(NS_HTML, "img");
-            lfIcon.className = "wv-filter-svg";
+            const lfIcon = wvHtmlEl(doc, "img", "wv-filter-svg");
             lfIcon.src = linkedDef.icon;
             lfIcon.alt = "Linked File";
             lfBtn.appendChild(lfIcon);
@@ -10414,15 +10184,14 @@ class _FilterMixin {
         // A RESTRICTION: intersects with Attachment File Type
         // (standalone + PDF = standalone PDFs), no OR pair.
         const saCur = g0 ? g0.standaloneAttachment : null;
-        const saBtn = doc.createElementNS(NS_HTML, "button");
+        const saBtn = wvHtmlEl(doc, "button");
         saBtn.type = "button";
         saBtn.className = "wv-filter-opt wv-filter-opt-icon";
         saBtn.title = "Standalone Attachment — show only top-level "
             + "(parentless) attachments. Alt+click to exclude.";
         if (saCur === true) saBtn.dataset.selected = "true";
         else if (saCur === false) saBtn.dataset.excluded = "true";
-        const saIcon = doc.createElementNS(NS_HTML, "img");
-        saIcon.className = "wv-filter-svg";
+        const saIcon = wvHtmlEl(doc, "img", "wv-filter-svg");
         // Standalone motif "E" (user pick 2026-08-20): left-margin bar
         // + paperclip, matching the Standalone Note tile — one shared
         // "standalone" language across both kinds. Stroke-drawn clip
@@ -10462,8 +10231,7 @@ class _FilterMixin {
         // Separator pushes the Has Bookmarks + Has Annotations pair
         // to the right edge — same `margin-left: auto` trick the
         // Item Note row uses.
-        const haSep = doc.createElementNS(NS_HTML, "div");
-        haSep.className = "wv-filter-vertical-separator";
+        const haSep = wvHtmlEl(doc, "div", "wv-filter-vertical-separator");
         haSep.style.marginLeft = "auto";
         optsBox.appendChild(haSep);
 
@@ -10472,7 +10240,7 @@ class _FilterMixin {
         // reader bookmarks (in-document or elsewhere). Sits just
         // left of Has Annotations.
         const hbCur = g0 ? g0.hasBookmarks : null;
-        const hbBtn = doc.createElementNS(NS_HTML, "button");
+        const hbBtn = wvHtmlEl(doc, "button");
         hbBtn.type = "button";
         hbBtn.className = "wv-filter-opt wv-filter-opt-icon";
         hbBtn.title = "Has Bookmarks — items whose attachment(s) have "
@@ -10496,15 +10264,14 @@ class _FilterMixin {
 
         // ── Has Annotations tile (tri-state) ────────────────────
         const cur = g0 ? g0.hasAnnotations : null;
-        const haBtn = doc.createElementNS(NS_HTML, "button");
+        const haBtn = wvHtmlEl(doc, "button");
         haBtn.type = "button";
         haBtn.className = "wv-filter-opt wv-filter-opt-icon";
         haBtn.title = "Has Annotations — file attachments with at least "
             + "one annotation. Alt+click to exclude.";
         if (cur === true) haBtn.dataset.selected = "true";
         else if (cur === false) haBtn.dataset.excluded = "true";
-        const haIcon = doc.createElementNS(NS_HTML, "img");
-        haIcon.className = "wv-filter-svg";
+        const haIcon = wvHtmlEl(doc, "img", "wv-filter-svg");
         haIcon.src = "chrome://zotero/skin/16/universal/attachment-annotations.svg";
         haIcon.alt = "Has Annotations";
         // Zotero maps `attachment-annotations` to `--tag-purple`
@@ -10530,7 +10297,7 @@ class _FilterMixin {
         // annotation. Unlike the annotation-level Source chip, it never
         // filters annotation ROWS.
         const curEmb = g0 ? g0.hasEmbeddedAnnotations : null;
-        const heBtn = doc.createElementNS(NS_HTML, "button");
+        const heBtn = wvHtmlEl(doc, "button");
         heBtn.type = "button";
         heBtn.className = "wv-filter-opt wv-filter-opt-icon";
         // Tooltip deliberately does NOT mention annotation rows: the
@@ -10560,7 +10327,7 @@ class _FilterMixin {
 
         // ── Has Weavero Outline tile (tri-state) ────────────────
         const curOl = g0 ? g0.hasOutline : null;
-        const olBtn = doc.createElementNS(NS_HTML, "button");
+        const olBtn = wvHtmlEl(doc, "button");
         olBtn.type = "button";
         olBtn.className = "wv-filter-opt wv-filter-opt-icon";
         olBtn.title = "Has Weavero Outline — attachments with an outline "
@@ -10608,11 +10375,7 @@ class _FilterMixin {
      *  paints (MJT 2026-08-20 -- "the icon should carry the information
      *  that it is a Weavero outline rather than a native one"). */
     _makeOutlineSourceSvg(doc) {
-        const NS_SVG = "http://www.w3.org/2000/svg";
-        const svg = doc.createElementNS(NS_SVG, "svg");
-        svg.setAttribute("viewBox", "0 0 16 16");
-        svg.setAttribute("width", "16");
-        svg.setAttribute("height", "16");
+        const svg = wvSvgEl(doc, "svg", { viewBox: "0 0 16 16", width: "16", height: "16" });
         svg.classList.add("wv-filter-svg");
         // EVERY edge on an integer coordinate, and `crispEdges` on the
         // bars: the viewBox is 16 and the icon renders at 16px, so a
@@ -10635,12 +10398,7 @@ class _FilterMixin {
         svg.style.stroke = "none";
         svg.setAttribute("shape-rendering", "crispEdges");
         const bar = (x, y, w) => {
-            const r = doc.createElementNS(NS_SVG, "rect");
-            r.setAttribute("x", String(x));
-            r.setAttribute("y", String(y));
-            r.setAttribute("width", String(w));
-            r.setAttribute("height", "1");
-            r.setAttribute("fill", "currentColor");
+            const r = wvSvgEl(doc, "rect", { x, y, width: w, height: "1", fill: "currentColor" });
             return r;
         };
         // Same shape language as the reader's own Outline tab button
@@ -10657,13 +10415,7 @@ class _FilterMixin {
         svg.appendChild(bar(4, 11, 1));   svg.appendChild(bar(6, 11, 2));
         // Weavero-source dot, bottom-right, in the panel's own colour.
         // Antialiased on purpose -- crispEdges would step the curve.
-        const dot = doc.createElementNS(NS_SVG, "circle");
-        dot.setAttribute("cx", "12");
-        dot.setAttribute("cy", "12");
-        dot.setAttribute("r", "3");
-        dot.setAttribute("fill", "var(--color-accent, #5e6ad2)");
-        dot.setAttribute("shape-rendering", "geometricPrecision");
-        svg.appendChild(dot);
+        const dot = wvSvgEl(doc, "circle", { cx: "12", cy: "12", r: "3", fill: "var(--color-accent, #5e6ad2)", "shape-rendering": "geometricPrecision" }, svg);
         return svg;
     }
 
@@ -10676,16 +10428,8 @@ class _FilterMixin {
      *  shrunk to a third of the icon is not that case, so it is drawn
      *  rather than scaled. */
     _wvAppendMiniLock(doc, svg) {
-        const NS = "http://www.w3.org/2000/svg";
         const bar = (x, y, w, h) => {
-            const r = doc.createElementNS(NS, "rect");
-            r.setAttribute("x", String(x));
-            r.setAttribute("y", String(y));
-            r.setAttribute("width", String(w));
-            r.setAttribute("height", String(h));
-            r.setAttribute("fill", "currentColor");
-            r.setAttribute("shape-rendering", "crispEdges");
-            svg.appendChild(r);
+            const r = wvSvgEl(doc, "rect", { x, y, width: w, height: h, fill: "currentColor", "shape-rendering": "crispEdges" }, svg);
         };
         // 5x7 overall (badge sizes tried: 6x9 too big, 5x6 too small
         // to read as a padlock -- MJT). The first version was 6x9, which forced a
@@ -10710,20 +10454,10 @@ class _FilterMixin {
      *  surfaces where the font size varies, so there is no single grid
      *  to snap it to. */
     _makeLinkTileSvg(doc) {
-        const NS = "http://www.w3.org/2000/svg";
-        const svg = doc.createElementNS(NS, "svg");
-        svg.setAttribute("class", "wv-filter-svg");
-        svg.setAttribute("viewBox", "0 0 16 16");
-        svg.setAttribute("width", "16");
-        svg.setAttribute("height", "16");
-        svg.setAttribute("fill", "none");
+        const svg = wvSvgEl(doc, "svg", { class: "wv-filter-svg", viewBox: "0 0 16 16", width: "16", height: "16", fill: "none" });
         svg.style.stroke = "none";   // children set their own stroke
         const link = (x) => {
-            const r = doc.createElementNS(NS, "rect");
-            r.setAttribute("x", String(x));
-            r.setAttribute("y", "5.5");
-            r.setAttribute("width", "7");
-            r.setAttribute("height", "5");
+            const r = wvSvgEl(doc, "rect", { x, y: "5.5", width: "7", height: "5" });
             // rx=1, measured: the straight runs then land on exactly
             // one pixel row/column each and only the four small corners
             // soften -- 45% antialiased pixels against 86% at rx=2.5
@@ -10745,25 +10479,14 @@ class _FilterMixin {
      *  space. The old cut used x=7.4 / y=-0.4 / rx=2, whose soft edges
      *  showed as a grey halo around the badge. */
     _wvLockKnockoutMask(doc, svg, id) {
-        const NS = "http://www.w3.org/2000/svg";
-        const defs = doc.createElementNS(NS, "defs");
-        const mask = doc.createElementNS(NS, "mask");
-        mask.setAttribute("id", id);
-        const keep = doc.createElementNS(NS, "rect");
-        keep.setAttribute("x", "0"); keep.setAttribute("y", "0");
-        keep.setAttribute("width", "16"); keep.setAttribute("height", "16");
-        keep.setAttribute("fill", "white");
-        mask.appendChild(keep);
+        const defs = wvSvgEl(doc, "defs");
+        const mask = wvSvgEl(doc, "mask", { id });
+        const keep = wvSvgEl(doc, "rect", { x: "0", y: "0", width: "16", height: "16", fill: "white" }, mask);
         // The badge's own footprint plus a 1px margin -- NOT a slab
         // across the corner. The old cut (7x10) removed a fifth of the
         // icon, so the stacked-notes glyph no longer matched its
         // lock-free sibling.
-        const cut = doc.createElementNS(NS, "rect");
-        cut.setAttribute("x", "9"); cut.setAttribute("y", "0");
-        cut.setAttribute("width", "7"); cut.setAttribute("height", "9");
-        cut.setAttribute("fill", "black");
-        cut.setAttribute("shape-rendering", "crispEdges");
-        mask.appendChild(cut);
+        const cut = wvSvgEl(doc, "rect", { x: "9", y: "0", width: "7", height: "9", fill: "black", "shape-rendering": "crispEdges" }, mask);
         defs.appendChild(mask);
         svg.appendChild(defs);
     }
@@ -10777,21 +10500,11 @@ class _FilterMixin {
      *  glyph = filter the attachments. Same mask-knockout + full-
      *  opacity-lock construction as `_makeAnnotationSourceSvg`. */
     _makeHasEmbeddedAnnotationsSvg(doc) {
-        const NS = "http://www.w3.org/2000/svg";
-        const svg = doc.createElementNS(NS, "svg");
-        svg.setAttribute("class", "wv-filter-svg");
-        svg.setAttribute("viewBox", "0 0 16 16");
-        svg.setAttribute("fill", "none");
+        const svg = wvSvgEl(doc, "svg", { class: "wv-filter-svg", viewBox: "0 0 16 16", fill: "none" });
         svg.style.color = "var(--tag-purple)";
         svg.style.stroke = "none";
         this._wvLockKnockoutMask(doc, svg, "wv-hasemb-lock-knockout");
-        const notes = doc.createElementNS(NS, "path");
-        notes.setAttribute("fill-rule", "evenodd");
-        notes.setAttribute("clip-rule", "evenodd");
-        notes.setAttribute("d", "M3 3V0H16V13H13V15.5V16H12.5H6.5H6.29289L6.14645 15.8536L0.146447 9.85355L0 9.70711V9.5V3.5V3H0.5H3ZM4 3H12.5H13V3.5V12H15V1H4V3ZM1 9V4H12V15H7V9.5V9H6.5H1ZM1.70711 10L6 14.2929V10H1.70711Z");
-        notes.setAttribute("fill", "currentColor");
-        notes.setAttribute("mask", "url(#wv-hasemb-lock-knockout)");
-        svg.appendChild(notes);
+        const notes = wvSvgEl(doc, "path", { "fill-rule": "evenodd", "clip-rule": "evenodd", d: "M3 3V0H16V13H13V15.5V16H12.5H6.5H6.29289L6.14645 15.8536L0.146447 9.85355L0 9.70711V9.5V3.5V3H0.5H3ZM4 3H12.5H13V3.5V12H15V1H4V3ZM1 9V4H12V15H7V9.5V9H6.5H1ZM1.70711 10L6 14.2929V10H1.70711Z", fill: "currentColor", mask: "url(#wv-hasemb-lock-knockout)" }, svg);
         this._wvAppendMiniLock(doc, svg);
         return svg;
     }
@@ -10802,10 +10515,9 @@ class _FilterMixin {
      *  renderer below is now a no-op — the tile lives on the type
      *  row instead of its own row. */
     _makeHasCommentTile(doc, refreshAll) {
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
         const g0 = this._activeGroup();
         const cur = g0 ? g0.annotationHasComment : null;
-        const btn = doc.createElementNS(NS_HTML, "button");
+        const btn = wvHtmlEl(doc, "button");
         btn.type = "button";
         btn.className = "wv-filter-opt wv-filter-opt-icon";
         // Has Comment sits in `.wv-filter-options` next to a
@@ -10849,10 +10561,9 @@ class _FilterMixin {
      *  comment had the two gestures INVERTED vs the code and the
      *  tooltip — caught 2026-08-20.] */
     _makeAnnotationSourceTile(doc, refreshAll) {
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
         const g0 = this._activeGroup();
         const cur = g0 ? g0.annotationSource : null;
-        const btn = doc.createElementNS(NS_HTML, "button");
+        const btn = wvHtmlEl(doc, "button");
         btn.type = "button";
         btn.className = "wv-filter-opt wv-filter-opt-icon";
         // Same row-alignment constraint as the Has Comment tile it
@@ -10894,23 +10605,13 @@ class _FilterMixin {
      *  (upstream's 0.5 is illegible at badge size). `--tag-purple`
      *  matches the annotation-section accent. */
     _makeAnnotationSourceSvg(doc) {
-        const NS = "http://www.w3.org/2000/svg";
-        const svg = doc.createElementNS(NS, "svg");
-        svg.setAttribute("class", "wv-filter-svg");
-        svg.setAttribute("viewBox", "0 0 16 16");
-        svg.setAttribute("fill", "none");
+        const svg = wvSvgEl(doc, "svg", { class: "wv-filter-svg", viewBox: "0 0 16 16", fill: "none" });
         svg.style.color = "var(--tag-purple)";
         svg.style.stroke = "none";
         this._wvLockKnockoutMask(doc, svg, "wv-annsrc-lock-knockout");
         // Base: annotate-note.svg path verbatim (fold bottom-left, so
         // the badge corner is clean).
-        const note = doc.createElementNS(NS, "path");
-        note.setAttribute("d", "M7.5 14.5H14.5V1.5H1.5V8.5M7.5 14.5L1.5 8.5M7.5 14.5V8.5H1.5");
-        note.setAttribute("stroke", "currentColor");
-        note.setAttribute("stroke-width", "1");
-        note.setAttribute("fill", "none");
-        note.setAttribute("mask", "url(#wv-annsrc-lock-knockout)");
-        svg.appendChild(note);
+        const note = wvSvgEl(doc, "path", { d: "M7.5 14.5H14.5V1.5H1.5V8.5M7.5 14.5L1.5 8.5M7.5 14.5V8.5H1.5", stroke: "currentColor", "stroke-width": "1", fill: "none", mask: "url(#wv-annsrc-lock-knockout)" }, svg);
         // Badge: the crisp mini-lock, TOP-RIGHT (MJT 2026-08-18; the
         // note's fold is bottom-left, so both right corners are clean
         // — top-right keeps the fold visible).
@@ -11036,13 +10737,9 @@ class _FilterMixin {
      *  annotation-pane accent. Inline SVG so we don't need to ship
      *  a separate file in `src/icons/`. */
     _makeHasCommentSvg(doc) {
-        const NS = "http://www.w3.org/2000/svg";
-        const svg = doc.createElementNS(NS, "svg");
-        svg.setAttribute("class", "wv-filter-svg");
-        svg.setAttribute("viewBox", "0 0 16 16");
-        svg.setAttribute("fill", "none");
+        const svg = wvSvgEl(doc, "svg", { class: "wv-filter-svg", viewBox: "0 0 16 16", fill: "none" });
         svg.style.color = "var(--tag-purple)";
-        const path = doc.createElementNS(NS, "path");
+        const path = wvSvgEl(doc, "path");
         // Coordinates aligned to the `.5` grid so the 1-px stroke
         // covers integer pixel rows (otherwise the stroke center
         // straddles two rows and anti-aliases to a blurry line —
@@ -11074,13 +10771,7 @@ class _FilterMixin {
         // bubble produces a crisp letter. Center (8, 6), radius 2.5,
         // endpoints at (9.5, 4) and (9.5, 8) — the long arc going
         // counter-clockwise leaves the opening on the right.
-        const c = doc.createElementNS(NS, "path");
-        c.setAttribute("d", "M9.5 4A2.5 2.5 0 1 0 9.5 8");
-        c.setAttribute("stroke", "currentColor");
-        c.setAttribute("stroke-width", "1");
-        c.setAttribute("stroke-linecap", "round");
-        c.setAttribute("fill", "none");
-        svg.appendChild(c);
+        const c = wvSvgEl(doc, "path", { d: "M9.5 4A2.5 2.5 0 1 0 9.5 8", stroke: "currentColor", "stroke-width": "1", "stroke-linecap": "round", fill: "none" }, svg);
         return svg;
     }
 
@@ -11198,11 +10889,7 @@ class _FilterMixin {
     _renderAttachmentFileTypeSection(doc, section, refreshAll) {
         while (section.firstChild) section.removeChild(section.firstChild);
         section.className = "wv-filter-section";
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-
-        const opts = doc.createElementNS(NS_HTML, "div");
-        opts.className = "wv-filter-options";
-        section.appendChild(opts);
+        const opts = wvHtmlEl(doc, "div", "wv-filter-options", undefined, section);
 
         const g0 = this._activeGroup();
         const selected = new Set((g0 && g0.attachmentFileType) || []);
@@ -11214,7 +10901,7 @@ class _FilterMixin {
             // strip — keeps the file-type strip aligned on content-
             // type kinds only.
             if (def.value === "attachmentLinkedFile") continue;
-            const btn = doc.createElementNS(NS_HTML, "button");
+            const btn = wvHtmlEl(doc, "button");
             btn.type = "button";
             btn.className = "wv-filter-opt wv-filter-opt-icon";
             const inExc = excluded.has(def.value);
@@ -11226,7 +10913,7 @@ class _FilterMixin {
             // light/dark SVG paths and resolve at runtime to the
             // correct one for the active theme. `def.value` is
             // already the camelCase form (attachmentPDF, …).
-            const icon = doc.createElementNS(NS_HTML, "span");
+            const icon = wvHtmlEl(doc, "span");
             icon.className = "icon icon-css icon-item-type";
             icon.setAttribute("data-item-type", def.value);
             btn.appendChild(icon);
@@ -11258,13 +10945,10 @@ class _FilterMixin {
     _renderNotesSection(doc, section, refreshAll) {
         while (section.firstChild) section.removeChild(section.firstChild);
         section.className = "wv-filter-section wv-filter-notes-section";
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-        const opts = doc.createElementNS(NS_HTML, "div");
-        opts.className = "wv-filter-options wv-filter-or-group";
-        section.appendChild(opts);
+        const opts = wvHtmlEl(doc, "div", "wv-filter-options wv-filter-or-group", undefined, section);
         const sg0 = this._activeGroup();
         const snCur = sg0 ? sg0.standaloneNote : null;
-        const snBtn = doc.createElementNS(NS_HTML, "button");
+        const snBtn = wvHtmlEl(doc, "button");
         snBtn.type = "button";
         snBtn.className = "wv-filter-opt wv-filter-opt-icon";
         snBtn.title = "Standalone Note — show only top-level "
@@ -11272,8 +10956,7 @@ class _FilterMixin {
             + "kind of note (OR). Alt+click to exclude.";
         if (snCur === true) snBtn.dataset.selected = "true";
         else if (snCur === false) snBtn.dataset.excluded = "true";
-        const snIcon = doc.createElementNS(NS_HTML, "img");
-        snIcon.className = "wv-filter-svg";
+        const snIcon = wvHtmlEl(doc, "img", "wv-filter-svg");
         // Standalone motif (user pick "E" of five rendered candidates,
         // 2026-08-20): a bare vertical bar at the LEFT MARGIN — "flush
         // at the tree's root level". Pairs with the Item Note icon,
@@ -11309,7 +10992,7 @@ class _FilterMixin {
         opts.appendChild(snBtn);
 
         const inCur = sg0 ? sg0.itemNote : null;
-        const inBtn = doc.createElementNS(NS_HTML, "button");
+        const inBtn = wvHtmlEl(doc, "button");
         inBtn.type = "button";
         inBtn.className = "wv-filter-opt wv-filter-opt-icon";
         inBtn.title = "Item Note — show only notes attached to a regular item. "
@@ -11317,8 +11000,7 @@ class _FilterMixin {
             + "Alt+click to exclude.";
         if (inCur === true) inBtn.dataset.selected = "true";
         else if (inCur === false) inBtn.dataset.excluded = "true";
-        const inIcon = doc.createElementNS(NS_HTML, "img");
-        inIcon.className = "wv-filter-svg";
+        const inIcon = wvHtmlEl(doc, "img", "wv-filter-svg");
         // Custom Item Note icon — Zotero's note glyph (rectangle
         // with a folded bottom-right corner) plus a small L-shaped
         // tree-branch on the left signalling "child of a parent
@@ -11845,6 +11527,20 @@ class _FilterMixin {
             // no longer matches leaves nothing selected.
             try { this._reconcileSelectionAfterFilter(prevSelectedIDs); }
             catch (e) {}
+            // The rows' dimming (`wv-not-target` / `wv-primary`) is painted
+            // by _markCellLinks, which the tree observer runs on row
+            // mutations -- and the post-apply window below makes it ignore
+            // this apply's own. A chip that changes the effective selection
+            // targets without changing the rows then left the old dimming:
+            // Annotation Source, then Has Embedded Annotations kept the
+            // attachment rows dim; the other order was fine because the
+            // annotation rows arrived fresh (MJT 2026-10-20). Paint now, and
+            // once more after the invalidate's asynchronous re-render.
+            try {
+                const paintWin = this._wvFilterTargetWin();
+                this._applySelectionTargetVisuals(paintWin);
+                wvTimeout(() => { try { if (!this._wvDestroyed) this._applySelectionTargetVisuals(this._wvFilterTargetWin()); } catch (e) {} }, 200);
+            } catch (e) {}
         }
         finally {
             // Set a post-apply observer-suppression window. The
@@ -12931,8 +12627,7 @@ class _FilterMixin {
     holder.style.padding = "6px 10px";
     holder.style.marginBlockStart = "0.8em";
 
-    const grid = doc.createElementNS(
-        "http://www.w3.org/1999/xhtml", "div");
+    const grid = wvHtmlEl(doc, "div");
     grid.style.display = "grid";
     // label | match | context — numbers right-aligned so
     // digits line up column-wise and can be compared by
@@ -12943,9 +12638,7 @@ class _FilterMixin {
     grid.style.rowGap = "2px";
     grid.style.opacity = "0.85";
     const cell = (text, opts?: any) => {
-        const c = doc.createElementNS(
-            "http://www.w3.org/1999/xhtml", "div");
-        c.textContent = text;
+        const c = wvHtmlEl(doc, "div", undefined, text);
         if (opts && opts.indent) {
             c.style.paddingInlineStart = opts.indent + "px";
         }
@@ -12976,8 +12669,7 @@ class _FilterMixin {
             + '<path fill="context-fill" fill-rule="evenodd"'
             + ' clip-rule="evenodd" d="' + WV_FUNNEL_PATH + '"/>'
             + '</svg>';
-        const fImg: any = doc.createElementNS(
-            "http://www.w3.org/1999/xhtml", "img");
+        const fImg: any = wvHtmlEl(doc, "img");
         fImg.setAttribute("src",
             "data:image/svg+xml;charset=utf-8,"
             + encodeURIComponent(fSvg));
@@ -14823,6 +14515,7 @@ class _FilterMixin {
             ZP.toggleAdvancedSearchState = async function (state: string) {
                 try {
                     if (state === "collapsed"
+                        && self._getEnableFilters()
                         && Zotero.Prefs.get(
                             "weavero.collapseAdvancedToQuickSearch") !== false
                         && await self._wvCollapseAdvancedToQuickSearch(win)) {

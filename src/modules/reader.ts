@@ -27,15 +27,21 @@ import {
     PANEL_ID, BTN_CLASS, BTN_SIDEBAR_CLASS, BTN_POPUP_CLASS,
     WV_FUNNEL_DATA_URI,
 } from "./constants";
-import { winOf, wvIsHiddenOrCollapsed, wvSetBoolAttr, wvBoolAttrOn, wvWithin } from "../lib/dom";
-import { wvRemoveStyle } from "../lib/style";
+import { winOf, wvIsHiddenOrCollapsed, wvSetBoolAttr, wvBoolAttrOn, wvWithin, wvHtmlEl } from "../lib/dom";
+import { wvRemoveStyle, wvFilterTileRules } from "../lib/style";
+import { wvOutsideClick, wvReachableDocs, wvDismissOff } from "../lib/dismiss";
 import { wvLivePlugin } from "../lib/live";
 import { wvStoreWrite, wvStoreRead, wvStoreRemove } from "../lib/store";
 import { wvTimeout } from "../lib/timers";
 import { wvListen, wvListener, wvUnlisten, wvEventOpts } from "../lib/listen";
 import { wvWrap } from "../lib/wrap";
-import { urlPattern } from "../lib/links";
+import { urlPattern, wvLinkVars } from "../lib/links";
+import { wvMainWins, wvWinType } from "../lib/windows";
+import { wvAccel } from "../lib/keys";
+import { wvCloneFor } from "../lib/xray";
+import { wvSvgEl } from "../lib/svg";
 import { wvStageNativeUndo } from "./undo";
+import { wvAltReveal } from "../lib/menubar";
 
 class _ReaderMixin {
     [k: string]: any;
@@ -66,9 +72,7 @@ class _ReaderMixin {
      *  cached data: URL takes over once fetched. The `_iconDataUriCache`
      *  lives on `this` and is GC'd at plugin unload. */
     _makeChromeIcon(doc, chromeUrl, className) {
-        const ns = "http://www.w3.org/1999/xhtml";
-        const img = doc.createElementNS(ns, "img");
-        img.className = className;
+        const img = wvHtmlEl(doc, "img", className);
         if (!this._iconDataUriCache) this._iconDataUriCache = Object.create(null);
         const cached = this._iconDataUriCache[chromeUrl];
         img.setAttribute("src", cached || chromeUrl);
@@ -104,97 +108,15 @@ class _ReaderMixin {
         return this._makeChromeIcon(doc, chromeUrl, "wv-rel-icon");
     }
 
-    /** Attach a mousedown listener to every document reachable from
-     *  the popup's host window — its own doc, every parent doc up
-     *  to top, and every nested iframe doc. Without this the popup
-     *  doesn't dismiss when the user clicks the PDF iframe (one
-     *  level INSIDE reader.html) or the main Zotero pane (one level
-     *  ABOVE reader.html), because mousedown events don't cross
-     *  document boundaries.
-     *
-     *  Returns a teardown function that removes every listener.
-     *  Defers attachment one tick so the click that opened the popup
-     *  doesn't immediately match.
-     *
-     *  One dismisser per panel, and it removes itself however the popup
-     *  closed: only the outside-click path called the teardown, so a popup
-     *  closed by its own anchor, a link, Escape or a reopen left its
-     *  listeners on every document for the session (the handler returned
-     *  early on the hidden panel). destroy() runs the live ones. */
+    /** Dismiss `panel` on a mousedown in ANY document reachable from the
+     *  chrome windows (the PDF iframe one level INSIDE reader.html, the
+     *  main pane one level ABOVE it: mousedown events cross no document
+     *  boundary), attached a tick later so the opening click does not
+     *  match. One dismisser per panel, self-removing however the popup
+     *  closed, destroy() runs the live ones: lib/dismiss.ts. Returns the
+     *  teardown. */
     _attachOutsideClickDismiss(panel, hostDoc, hostWin, onOutside) {
-        try { if (typeof panel._wvDismissOff === "function") panel._wvDismissOff(); } catch (e) {}
-        const docs: Set<any> = new Set();
-        const visited: Set<any> = new Set();
-        const collectDown = (doc) => {
-            if (!doc || visited.has(doc)) return;
-            visited.add(doc);
-            docs.add(doc);
-            try {
-                for (const f of doc.querySelectorAll("iframe, browser")) {
-                    let cd = null;
-                    try { cd = f.contentDocument; } catch (e) {}
-                    if (cd) collectDown(cd);
-                }
-            } catch (e) {}
-        };
-        // In Zotero 10's reader, the iframe's window has parent === self
-        // (process-isolated), so we can't walk UP from hostWin. Use the
-        // window-mediator instead to enumerate all top-level chrome
-        // windows, then recurse into their iframes from the top.
-        try {
-            const wm = Components.classes[
-                "@mozilla.org/appshell/window-mediator;1"]
-                .getService(Components.interfaces.nsIWindowMediator);
-            const en = wm.getEnumerator(null);
-            while (en.hasMoreElements()) {
-                const w: any = en.getNext();
-                try { if (w.document) collectDown(w.document); } catch (e) {}
-            }
-        } catch (e) {}
-        // Belt-and-braces: also walk down from the host doc directly
-        // in case the mediator missed it (e.g., a pref-pane subdoc).
-        collectDown(hostDoc);
-
-        const handler = (e) => {
-            if (panel.style.display === "none" || !panel.isConnected) { teardown(); return; }
-            try {
-                // wvWithin, not contains(): a press on the popup's own
-                // scrollbar targets its anonymous thumb (issue #55).
-                if (wvWithin(panel, e.target)) return;
-                // Don't dismiss when the mousedown is on the SAME anchor
-                // that opened this popup — the anchor's own click handler
-                // will run next and toggle the popup closed. Without this
-                // skip, dismiss-on-mousedown closes the popup, then the
-                // click event re-opens it (net effect: nothing happens).
-                const opener = panel._wvOpenedFor;
-                if (opener && wvWithin(opener, e.target)) return;
-            } catch (er) {}
-            onOutside(e);
-        };
-        // The teardown can run BEFORE the deferred attach (a popup opened and
-        // closed within one tick, or reopened at once): it removed nothing,
-        // the timer then attached anyway, and those listeners stayed on every
-        // document for the session -- found by the reload-listener audit
-        // (wiring slice 3, 2026-10-12). A torn-down dismisser never attaches.
-        let torn = false;
-        const live: Set<any> = (this as any)._wvDismissOffs || ((this as any)._wvDismissOffs = new Set());
-        const teardown = () => {
-            torn = true;
-            for (const d of docs) {
-                try { d.removeEventListener("mousedown", handler, true); } catch (e) {}
-            }
-            live.delete(teardown);
-            try { if (panel._wvDismissOff === teardown) panel._wvDismissOff = null; } catch (e) {}
-        };
-        live.add(teardown);
-        try { panel._wvDismissOff = teardown; } catch (e) {}
-        hostWin.setTimeout(() => {
-            if (torn) return;
-            for (const d of docs) {
-                try { d.addEventListener("mousedown", handler, true); } catch (e) {}
-            }
-        }, 0);
-        return teardown;
+        return wvOutsideClick({ panel, docs: wvReachableDocs(hostDoc), hostWin, defer: true, owner: this, onOutside });
     }
 
     /** Single source of truth for rendering "annotation comment text"
@@ -428,8 +350,7 @@ class _ReaderMixin {
             panel = null;
         }
         if (!panel) {
-            const ns = "http://www.w3.org/1999/xhtml";
-            panel = doc.createElementNS(ns, "div");
+            panel = wvHtmlEl(doc, "div");
             panel.id = PANEL_ID;
             panel.className = "wv-popup-overlay";
             panel.style.cssText = [
@@ -484,8 +405,7 @@ class _ReaderMixin {
     }
 
     _makeLink(doc, url, panel, label?) {
-        const ns = "http://www.w3.org/1999/xhtml";
-        const a = doc.createElementNS(ns, "a");
+        const a = wvHtmlEl(doc, "a");
         a.href = url;
         a.textContent = (label != null && label !== "") ? label : url;
         // Hover tooltip showing the full URL — uses the browser's native
@@ -512,7 +432,6 @@ class _ReaderMixin {
      * avoid duplicating them in the "Additional links" footer.
      */
     _renderInlineMarkdown(text, doc, panel, seen) {
-        const ns   = "http://www.w3.org/1999/xhtml";
         const frag = doc.createDocumentFragment();
         if (!text) return frag;
         // Order matters: longer markers first so **bold** beats *italic*,
@@ -544,27 +463,23 @@ class _ReaderMixin {
                 if (seen) seen.add(url);
                 frag.appendChild(this._makeLink(doc, url, panel, label));
             } else if (m[3] !== undefined) {
-                const el = doc.createElementNS(ns, "strong");
+                const el = wvHtmlEl(doc, "strong");
                 el.appendChild(this._renderInlineMarkdown(m[3], doc, panel, seen));
                 frag.appendChild(el);
             } else if (m[4] !== undefined) {
-                const el = doc.createElementNS(ns, "em");
+                const el = wvHtmlEl(doc, "em");
                 el.appendChild(this._renderInlineMarkdown(m[4], doc, panel, seen));
                 frag.appendChild(el);
             } else if (m[5] !== undefined) {
-                const el = doc.createElementNS(ns, "s");
+                const el = wvHtmlEl(doc, "s");
                 el.appendChild(this._renderInlineMarkdown(m[5], doc, panel, seen));
                 frag.appendChild(el);
             } else if (m[6] !== undefined) {
                 // ``code`` (double backtick).
-                const el = doc.createElementNS(ns, "code");
-                el.textContent = m[6];
-                frag.appendChild(el);
+                const el = wvHtmlEl(doc, "code", undefined, m[6], frag);
             } else if (m[7] !== undefined) {
                 // `code` (single backtick).
-                const el = doc.createElementNS(ns, "code");
-                el.textContent = m[7];
-                frag.appendChild(el);
+                const el = wvHtmlEl(doc, "code", undefined, m[7], frag);
             } else if (m[8] !== undefined) {
                 const raw   = m[8];
                 const url   = raw.replace(this.TRAILING_RE, "");
@@ -581,8 +496,7 @@ class _ReaderMixin {
     }
 
     _makeCopyBtn(doc, win, url) {
-        const ns = "http://www.w3.org/1999/xhtml";
-        const btn = doc.createElementNS(ns, "button");
+        const btn = wvHtmlEl(doc, "button");
         btn.className = "wv-copy-btn";
         btn.textContent = "Copy";
         btn.title = "Copy URL to clipboard";
@@ -594,7 +508,7 @@ class _ReaderMixin {
                 : Promise.reject()
             ).catch(() => {
                 // Fallback for restricted contexts
-                const ta = doc.createElementNS(ns, "textarea");
+                const ta = wvHtmlEl(doc, "textarea");
                 ta.value = url;
                 ta.style.cssText = "position:fixed;opacity:0;";
                 doc.documentElement.appendChild(ta);
@@ -613,7 +527,6 @@ class _ReaderMixin {
         if (!comment && !(opts.extraURLs && opts.extraURLs.length)) return;
         const win  = this._resolvePopupWin(opts);
         const doc  = win.document;
-        const ns   = "http://www.w3.org/1999/xhtml";
         const norm = this.normalize(String(comment || ""));
 
         // Toggle: a click on the same anchor that opened the current
@@ -632,7 +545,7 @@ class _ReaderMixin {
         while (panel.firstChild) panel.removeChild(panel.firstChild);
         panel._wvOpenedFor = opts.anchorNode || null;
 
-        const container = doc.createElementNS(ns, "div");
+        const container = wvHtmlEl(doc, "div");
         container.className = "wv-popup-container";
         // Give the container a tabindex so the XUL panel always has at
         // least one focusable descendant. Markdown-only comments produce
@@ -647,13 +560,10 @@ class _ReaderMixin {
         // Extra URLs (from <a href> in DOM) not already shown inline
         const extras = (opts.extraURLs || []).filter(u => u && !seen.has(u));
         if (extras.length) {
-            const sep = doc.createElementNS(ns, "div");
-            sep.className = "wv-separator";
-            sep.textContent = "Additional links in comment:";
-            container.appendChild(sep);
+            const sep = wvHtmlEl(doc, "div", "wv-separator", "Additional links in comment:", container);
         }
         for (const url of extras) {
-            const row = doc.createElementNS(ns, "div");
+            const row = wvHtmlEl(doc, "div");
             row.className = "wv-extra-row";
             row.appendChild(this._makeLink(doc, url, panel));
             row.appendChild(this._makeCopyBtn(doc, win, url));
@@ -833,7 +743,6 @@ class _ReaderMixin {
         if (!annotationItem) return;
         const win  = this._resolvePopupWin(opts);
         const doc  = win.document;
-        const ns   = "http://www.w3.org/1999/xhtml";
 
         // Toggle on re-click of the same anchor (mirror of openCommentPopup).
         const existing = doc.getElementById(PANEL_ID);
@@ -851,7 +760,7 @@ class _ReaderMixin {
         while (panel.firstChild) panel.removeChild(panel.firstChild);
         panel._wvOpenedFor = opts.anchorNode || null;
 
-        const container = doc.createElementNS(ns, "div");
+        const container = wvHtmlEl(doc, "div");
         // `wv-relations-popup` modifier — gives this popup the look of
         // the item pane's "Related" section (count header + a "+" add
         // button + a tight list of icon-titled rows) rather than the
@@ -862,7 +771,7 @@ class _ReaderMixin {
         container.setAttribute("tabindex", "-1");
 
         // Header: [related icon]  "<N> Related"  +  "+" (add related item).
-        const header = doc.createElementNS(ns, "div") as any;
+        const header = wvHtmlEl(doc, "div") as any;
         header.className = "wv-relations-header";
         let headIcon: any = null;
         try {
@@ -871,11 +780,11 @@ class _ReaderMixin {
             headIcon.setAttribute("aria-hidden", "true");
             header.appendChild(headIcon);
         } catch (e) {}
-        const headTitle = doc.createElementNS(ns, "span") as any;
+        const headTitle = wvHtmlEl(doc, "span") as any;
         headTitle.className = "wv-relations-header-title";
         headTitle.textContent = items.length + " Related";
         header.appendChild(headTitle);
-        const addBtn = doc.createElementNS(ns, "span") as any;
+        const addBtn = wvHtmlEl(doc, "span") as any;
         addBtn.className = "wv-relations-add";
         addBtn.setAttribute("role", "button");
         addBtn.setAttribute("tabindex", "0");
@@ -903,16 +812,16 @@ class _ReaderMixin {
         header.appendChild(addBtn);
         container.appendChild(header);
 
-        const list = doc.createElementNS(ns, "div");
+        const list = wvHtmlEl(doc, "div");
         list.className = "wv-relations-list";
         if (!items.length) {
-            const empty = doc.createElementNS(ns, "div");
+            const empty = wvHtmlEl(doc, "div");
             empty.className = "wv-rel-empty";
             empty.textContent = "No related items.";
             list.appendChild(empty);
         }
         for (const item of items) {
-            const row = doc.createElementNS(ns, "div");
+            const row = wvHtmlEl(doc, "div");
             row.className = "wv-rel-row";
             row.setAttribute("role", "button");
             row.setAttribute("tabindex", "0");
@@ -954,8 +863,7 @@ class _ReaderMixin {
                 iconEl = this._makeItemTypeIcon(doc, win, "document");
             }
 
-            const titleEl = doc.createElementNS(ns, "span");
-            titleEl.className = "wv-rel-title";
+            const titleEl = wvHtmlEl(doc, "span", "wv-rel-title");
             let titleText = "(untitled)";
             try { titleText = item.getDisplayTitle() || "(untitled)"; }
             catch (e) {}
@@ -982,7 +890,7 @@ class _ReaderMixin {
             // header's "+" (GitHub issue #9): removes the symmetric
             // dc:relation between this annotation and the row's item, then
             // rebuilds the popup in place.
-            const rmBtn = doc.createElementNS(ns, "span") as any;
+            const rmBtn = wvHtmlEl(doc, "span") as any;
             rmBtn.className = "wv-rel-remove";
             rmBtn.setAttribute("role", "button");
             rmBtn.setAttribute("tabindex", "0");
@@ -1271,10 +1179,8 @@ class _ReaderMixin {
             + "  font-size: 92%; padding: 0 3px; border-radius: 3px;"
             + "  background: rgba(127,127,127,0.15);"
             + "}"
-            + ":root { --wv-link-http: #1a73e8;"
-            +   " --wv-link-zotero: #8b4513; --wv-link-app: #9333ea; }"
-            + ":root.wv-ui-dark { --wv-link-http: #8ab4f8;"
-            +   " --wv-link-zotero: #cd853f; --wv-link-app: #c084fc; }"
+            + ":root { " + wvLinkVars("light") + " }"
+            + ":root.wv-ui-dark { " + wvLinkVars("dark") + " }"
             + ".wv-url-span { cursor: pointer !important; }"
             + ".wv-url-span.wv-link-http   { color: var(--wv-link-http); }"
             + ".wv-url-span.wv-link-zotero { color: var(--wv-link-zotero); }"
@@ -1314,7 +1220,6 @@ class _ReaderMixin {
         if (!this._getEnableReaderSidebar()) return;
         const { doc, append, params, reader } = event;
         const cmt = params.annotation.comment || "";
-        const ns = "http://www.w3.org/1999/xhtml";
 
         // Always inject the reader-iframe CSS up front. Both the
         // comment icon and the relations icon depend on it, and we
@@ -1335,7 +1240,7 @@ class _ReaderMixin {
         // feature, so it sits adjacent to the native menu button; the
         // comment icon is a Weavero-specific affordance and sits to
         // its left.
-        const group = doc.createElementNS(ns, "span");
+        const group = wvHtmlEl(doc, "span");
         group.className = "wv-icon-group";
         let appended = 0;
 
@@ -1343,8 +1248,7 @@ class _ReaderMixin {
         // Only emitted when there's something the icon should reveal that
         // isn't already rendered inline by the preview panel.
         if (this._iconWantedFor(cmt) && this._iconAddsValueBeyondInline(cmt)) {
-            const btn = doc.createElementNS(ns, "button");
-            btn.className = BTN_CLASS + " " + BTN_SIDEBAR_CLASS;
+            const btn = wvHtmlEl(doc, "button", BTN_CLASS + " " + BTN_SIDEBAR_CLASS);
             this._applyIconState(btn, cmt);
             btn.addEventListener("click", e => {
                 e.stopPropagation(); e.preventDefault();
@@ -1386,7 +1290,7 @@ class _ReaderMixin {
             const alreadyHasRelBtn = row
                 && row.querySelector(".wv-btn-relations");
             if (related.length && !alreadyHasRelBtn) {
-                const relBtn = doc.createElementNS(ns, "button");
+                const relBtn = wvHtmlEl(doc, "button");
                 relBtn.className = BTN_CLASS + " " + BTN_SIDEBAR_CLASS
                     + " wv-btn-relations";
                 relBtn.title = related.length + " Related";
@@ -1459,7 +1363,7 @@ class _ReaderMixin {
             const capturedKeys = annKeys.slice();
             // Capture `self` instead of relying on `this` inside the
             // closures: upstream Zotero clones our menu item objects via
-            // `Components.utils.cloneInto(..., { cloneFunctions: true })`
+            // `wvCloneFor(..., { cloneFunctions: true })`
             // when forwarding into the reader iframe, and although the
             // cloned function still executes in chrome when invoked,
             // resolving `this` through the cloned reflector has been
@@ -2005,7 +1909,7 @@ class _ReaderMixin {
             const rw: any = reader && reader._window;
             // Standalone reader windows only: a reader TAB lives in a main
             // window, wired there.
-            if (!rw || !rw.document || rw.document.documentElement.getAttribute("windowtype") !== "zotero:reader") return;
+            if (!rw || !rw.document || wvWinType(rw) !== "zotero:reader") return;
             // The window's own reader has no `tabID` (a re-homed one carries a
             // synthetic tabID; it gets the `anyReader` entries only).
             const native = !!(typeof append === "function" && doc && !reader.tabID && reader.itemID);
@@ -2035,9 +1939,7 @@ class _ReaderMixin {
      *  direct-DOM sync path (when the pref toggles back). */
     _buildReaderToTabButton(doc, itemID) {
         try {
-            const NS_HTML = "http://www.w3.org/1999/xhtml";
-            const btn = doc.createElementNS(NS_HTML, "button");
-            btn.className = "toolbar-button wv-reader-to-tab";
+            const btn = wvHtmlEl(doc, "button", "toolbar-button wv-reader-to-tab");
             btn.setAttribute("tabindex", "-1");
             btn.title = "Move this reader into a tab in the main Zotero window";
             // Tabbed-window glyph: an outlined window body with a tab strip
@@ -2113,7 +2015,7 @@ class _ReaderMixin {
             if (!win || !win.document) return;
             const doc = win.document;
             try {
-                if (doc.documentElement.getAttribute("windowtype") !== "zotero:reader") return;
+                if (wvWinType(doc) !== "zotero:reader") return;
             } catch (e) { return; }
             // Reader-window "Hide title bar (Firefox-style)": opt-in via the
             // reader child, off by default. When off, tear down BOTH the strip
@@ -2123,8 +2025,6 @@ class _ReaderMixin {
                 try { this._revertReaderCompactMenubar(reader); } catch (e) {}
                 return;
             }
-
-            const HTML = "http://www.w3.org/1999/xhtml";
             let strip = doc.querySelector(".wv-window-tabstrip");
             if (!strip) {
                 this._ensureReaderWindowTabStripStyles(doc);
@@ -2145,7 +2045,7 @@ class _ReaderMixin {
                     anchor = browserEl; anchorParent = vbox;
                 }
                 if (!anchorParent) return;
-                strip = doc.createElementNS(HTML, "div");
+                strip = wvHtmlEl(doc, "div");
                 strip.className = "wv-window-tabstrip";
                 if (anchor) anchorParent.insertBefore(strip, anchor);
                 else anchorParent.appendChild(strip);
@@ -2198,8 +2098,7 @@ class _ReaderMixin {
                     // Draggable filler between the "+" and the right-side
                     // buttons — the strip's big window-drag slack.
                     if (!strip2.querySelector(":scope > .wv-window-tabfill")) {
-                        const fill = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-                        fill.className = "wv-window-tabfill";
+                        const fill = wvHtmlEl(doc, "div", "wv-window-tabfill");
                         strip2.insertBefore(fill, tl || ham || ctlBox);
                     }
                     const nt = strip2.querySelector(":scope > .wv-window-newtab-btn");
@@ -2241,7 +2140,7 @@ class _ReaderMixin {
             const win = reader && reader._window;
             if (!win || !win.document) return;
             const doc = win.document;
-            if (doc.documentElement.getAttribute("windowtype") !== "zotero:reader") return;
+            if (wvWinType(doc) !== "zotero:reader") return;
             let on = false;
             try { const v = Zotero.Prefs.get("weavero.readerItemPane"); on = v === undefined ? true : !!v; } catch (e) {}
             // Cascades from the Tabs and Windows section master.
@@ -2466,7 +2365,7 @@ class _ReaderMixin {
             // Supply the sizing for the pane.
             try {
                 if (!doc.getElementById("wv-reader-pane-style")) {
-                    const st: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+                    const st: any = wvHtmlEl(doc, "style");
                     st.id = "wv-reader-pane-style";
                     st.textContent =
                         "#wv-reader-item-details .icon-css{display:inline-block;vertical-align:middle}"
@@ -2722,11 +2621,11 @@ class _ReaderMixin {
                     // a frame later.
                     const st = ir._state || {};
                     if (!st.showContextPaneToggle) {
-                        ir._updateState((Components as any).utils.cloneInto({ showContextPaneToggle: true, contextPaneOpen: !show }, iw));
+                        ir._updateState(wvCloneFor({ showContextPaneToggle: true, contextPaneOpen: !show }, iw));
                     }
                     else if (!!st.contextPaneOpen !== !show) {
                         if (typeof ir.setContextPaneOpen === "function") ir.setContextPaneOpen(!show);
-                        else ir._updateState((Components as any).utils.cloneInto({ contextPaneOpen: !show }, iw));
+                        else ir._updateState(wvCloneFor({ contextPaneOpen: !show }, iw));
                     }
                     const idoc = iw.document;
                     if (idoc) {
@@ -3154,7 +3053,6 @@ class _ReaderMixin {
      *  the main-window tab bar). Separate from the tab-drag GHOST preview. */
     _wvShowReaderStripItemDropIndicator(win: any, clientX: number) {
         try {
-            const HTML = "http://www.w3.org/1999/xhtml";
             const box = win.document.querySelector(".wv-window-tabstrip .wv-window-tabs");
             const strip = win.document.querySelector(".wv-window-tabstrip");
             const x = this._wvReaderStripIndicatorX(win, clientX);
@@ -3162,10 +3060,10 @@ class _ReaderMixin {
             let bar = (win as any)._wvStripItemDropInd;
             if (!bar || !bar.isConnected) {
                 const blue = (this as any)._detectUIDark && (this as any)._detectUIDark() ? "#5b9bf8" : "#4072e5";
-                bar = win.document.createElementNS(HTML, "div");
+                bar = wvHtmlEl(win.document, "div");
                 bar.style.cssText = "position:fixed;width:3px;background:" + blue
                     + ";pointer-events:none;z-index:2147483647;border-radius:1.5px;margin:0;padding:0;display:none;";
-                const dot = win.document.createElementNS(HTML, "div");
+                const dot = wvHtmlEl(win.document, "div");
                 dot.style.cssText = "position:absolute;left:50%;top:-3px;transform:translateX(-50%);"
                     + "width:9px;height:9px;border-radius:50%;background:" + blue + ";";
                 bar.appendChild(dot);
@@ -3311,7 +3209,7 @@ class _ReaderMixin {
                 overlay = null;
             }
             if (!overlay) {
-                overlay = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+                overlay = wvHtmlEl(doc, "div");
                 overlay.id = "wv-reader-drag-overlay";
                 overlay.setAttribute("data-wv-tag", tag);
                 // Positioning + appearance: transparent, fixed to the reader
@@ -3403,15 +3301,46 @@ class _ReaderMixin {
             const docs = this._wvCollectDocsFromRoot(rootDoc);
             for (const cd of docs) {
                 try {
+                    // ALL READS FIRST, WRITES LAST, and only real scroll
+                    // containers. The old walk wrote `overflow: hidden` on
+                    // every element whose scrollHeight beat its clientHeight
+                    // and read the next element's layout right after: in a
+                    // snapshot 6,709 of 8,624 elements matched (every inline
+                    // element does -- its clientHeight is 0), so each tab-drag
+                    // start reflowed the document thousands of times,
+                    // synchronously, and dragend repeated it on the restore.
+                    // That was "Zotero froze while reordering pinned tabs"
+                    // (MJT, three times on 2026-10-15); PDFs match a handful,
+                    // which is why only drags with a snapshot or EPUB loaded
+                    // hung, and why small fixtures never reproduced it. The OS
+                    // drag-autoscroll only moves elements that CAN scroll:
+                    // overflow auto/scroll, or the document's scroller.
+                    const win = cd.defaultView;
                     const all = cd.querySelectorAll("*");
+                    const sized: any[] = [];
                     for (const el of all) {
                         try {
-                            if (el.scrollHeight > el.clientHeight + 4
-                                || el.scrollWidth > el.clientWidth + 4) {
-                                const prev = (el.style && el.style.overflow) || "";
-                                locks.push({ el, prev });
-                                el.style.overflow = "hidden";
-                            }
+                            const ch = el.clientHeight, cw = el.clientWidth;
+                            if (!ch && !cw) continue;               // inline / not laid out: never a scroll container
+                            if (el.scrollHeight > ch + 4 || el.scrollWidth > cw + 4) sized.push(el);
+                        } catch (er) {}
+                    }
+                    const scroller = cd.scrollingElement || cd.documentElement;
+                    const keep: any[] = [];
+                    for (const el of sized) {
+                        try {
+                            if (el === scroller || el === cd.documentElement || el === cd.body) { keep.push(el); continue; }
+                            const cs = win && win.getComputedStyle(el);
+                            if (!cs) continue;
+                            const oy = cs.overflowY, ox = cs.overflowX;
+                            if (oy === "auto" || oy === "scroll" || ox === "auto" || ox === "scroll") keep.push(el);
+                        } catch (er) {}
+                    }
+                    for (const el of keep) {
+                        try {
+                            const prev = (el.style && el.style.overflow) || "";
+                            locks.push({ el, prev });
+                            el.style.overflow = "hidden";
                         } catch (er) {}
                     }
                 } catch (er) {}
@@ -3648,14 +3577,8 @@ class _ReaderMixin {
             // Remove the "list all tabs" panel (the button goes with the strip).
             try { const tlp = doc.getElementById("wv-window-tablist-panel"); if (tlp) tlp.remove(); } catch (e) {}
             try {
-                if (win._wvWTFileTypeOutsideClose) {
-                    doc.removeEventListener("mousedown", win._wvWTFileTypeOutsideClose, true);
-                    delete win._wvWTFileTypeOutsideClose;
-                }
-                if (win._wvWTSettingsOutsideClose) {
-                    doc.removeEventListener("mousedown", win._wvWTSettingsOutsideClose, true);
-                    delete win._wvWTSettingsOutsideClose;
-                }
+                wvDismissOff(win, "_wvWTFileTypeOutsideClose");
+                wvDismissOff(win, "_wvWTSettingsOutsideClose");
             } catch (e) {}
             // Restore the OS title bar (customtitlebar / drawtitle) we collapsed.
             try {
@@ -3688,7 +3611,7 @@ class _ReaderMixin {
             if (!win || !win.document) return;
             const doc = win.document;
             try {
-                if (doc.documentElement.getAttribute("windowtype") !== "zotero:note") return;
+                if (wvWinType(doc) !== "zotero:note") return;
             } catch (e) { return; }
             // Keyboard parity, whatever the title-bar option (MJT 2026-10-13,
             // survey §3.5): Ctrl+N (new main window) used to come only with
@@ -3705,7 +3628,6 @@ class _ReaderMixin {
             if (!menubar) return;
 
             const title = doc.title || "Note";
-            const HTML = "http://www.w3.org/1999/xhtml";
 
             // Read the note's itemID from the editor so we can wire
             // context-menu + drag-to-main-window without re-parsing
@@ -3722,30 +3644,25 @@ class _ReaderMixin {
 
             let strip: any = doc.querySelector(".wv-window-tabstrip");
             if (!strip) {
-                strip = doc.createElementNS(HTML, "div");
+                strip = wvHtmlEl(doc, "div");
                 strip.className = "wv-window-tabstrip";
 
-                const tab: any = doc.createElementNS(HTML, "div");
+                const tab: any = wvHtmlEl(doc, "div");
                 // Mark the single note tab active so it gets the tab background
                 // (it's the window's content) — without this it reads as plain
                 // text, not a tab.
                 tab.className = "wv-window-tab wv-active";
 
-                const iconEl: any = doc.createElementNS(HTML, "span");
-                iconEl.className = "wv-window-tab-icon";
+                const iconEl: any = wvHtmlEl(doc, "span", "wv-window-tab-icon");
                 iconEl.setAttribute("data-type", "note");
                 // Supply the note icon image via the .icon-css mechanism (same
                 // as reader tabs / the main window), not just data-type.
                 try { this._wvWTApplyTabIcon(iconEl, "note"); } catch (e) {}
                 tab.appendChild(iconEl);
 
-                const titleEl: any = doc.createElementNS(HTML, "span");
-                titleEl.className = "wv-window-tab-title";
-                titleEl.textContent = title;
-                tab.appendChild(titleEl);
+                const titleEl: any = wvHtmlEl(doc, "span", "wv-window-tab-title", title, tab);
 
-                const closeBtn: any = doc.createElementNS(HTML, "button");
-                closeBtn.className = "wv-window-tab-close";
+                const closeBtn: any = wvHtmlEl(doc, "button", "wv-window-tab-close");
                 closeBtn.setAttribute("title", "Close");
                 closeBtn.setAttribute("aria-label", "Close");
                 closeBtn.setAttribute("tabindex", "-1");
@@ -3783,7 +3700,7 @@ class _ReaderMixin {
                             };
                             // Suppress the OS drag-preview image.
                             try {
-                                const img = doc.createElementNS(HTML, "img");
+                                const img = wvHtmlEl(doc, "img");
                                 img.setAttribute("src",
                                     "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7");
                                 e.dataTransfer.setDragImage(img, 0, 0);
@@ -3826,7 +3743,7 @@ class _ReaderMixin {
                 if (tabEl) tabEl.style.flexGrow = "0";
                 let fill: any = strip.querySelector(":scope > .wv-window-strip-fill");
                 if (!fill) {
-                    fill = doc.createElementNS(HTML, "div");
+                    fill = wvHtmlEl(doc, "div");
                     fill.className = "wv-window-strip-fill";
                     fill.style.flex = "1 1 auto";
                     fill.style.minWidth = "0";
@@ -3873,7 +3790,7 @@ class _ReaderMixin {
             // Idempotent.
             try {
                 if (!menubar.querySelector(":scope > .wv-menubar-zicon")) {
-                    const zicon: any = doc.createElementNS(HTML, "div");
+                    const zicon: any = wvHtmlEl(doc, "div");
                     zicon.className = "wv-menubar-zicon";
                     zicon.style.cssText = "width:16px;height:16px;margin-inline:6px;flex:0 0 auto;"
                         + "align-self:center;background:url('chrome://zotero/skin/z.svg') no-repeat center/16px 16px;"
@@ -3961,7 +3878,7 @@ class _ReaderMixin {
     _ensureNoteWindowMenubarStyles(doc) {
         try {
             wvRemoveStyle(doc, "wv-note-menubar-styles");   // always replaced (src-ts.md sheet replace)
-            const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+            const style = wvHtmlEl(doc, "style");
             style.id = "wv-note-menubar-styles";
             style.textContent = [
                 "menubar[wv-compact-hidden='true'] {",
@@ -4004,93 +3921,20 @@ class _ReaderMixin {
         }
     }
 
-    /** Wire Alt-up to toggle the menubar visibility on a reader / note window.
-     *  Faithfully mirrors Firefox's native `MenuBarListener` (dom/xul/
-     *  MenuBarListener.cpp): the menubar is revealed on the *release* of the
-     *  Alt key, and only when Alt was pressed ALONE — no other modifier down
-     *  and no other key pressed in between. So Ctrl+Alt (and any Alt+key
-     *  shortcut) never reveals it accidentally.
-     *
-     *  Two-state machine, exactly like Firefox's `mAccessKeyDown` /
-     *  `mAccessKeyDownCanceled`:
-     *   - `altDown`  — a bare Alt press is in progress (nothing else was down).
-     *   - `canceled` — some other key/modifier intervened, so the pending
-     *                  reveal is voided; it stays voided until Alt is released.
-     *  The reveal fires on Alt keyup iff `altDown && !canceled`. (Firefox's
-     *  key comment: "No other modifiers can be down. Especially CTRL. CTRL+ALT
-     *  == AltGR"; and it cancels on any intervening key, keypress, or mouse
-     *  press.) */
+    /** Alt-up toggles the note window's menubar (Firefox's MenuBarListener
+     *  model: the machine and its rules are in src/lib/menubar.ts). */
     _wvWireNoteMenubarAltReveal(win, menubar) {
         try {
             if ((win as any)._wvNoteAltWired) return;
-            let altDown = false;      // ~ mAccessKeyDown
-            let canceled = false;     // ~ mAccessKeyDownCanceled
-            const hasOtherMod = (e: any) => !!(e.ctrlKey || e.shiftKey || e.metaKey);
-            const MBLOG = (m: string) => { try { Zotero.debug("[Weavero][menubar:reader] " + m); } catch (er) {} };
-            const onKeyDown = (e: any) => {
-                if (!altDown) {
-                    // Begin tracking only on a bare, non-repeat Alt press (no
-                    // other modifier). If the menubar is already visible, a
-                    // second Alt dismisses it IMMEDIATELY on keydown — nothing
-                    // to activate, so no reason to wait for the release.
-                    if (e.key === "Alt" && !e.repeat && !hasOtherMod(e)) {
-                        if (menubar.getAttribute("wv-compact-hidden") !== "true") {
-                            MBLOG("keydown Alt: COLLAPSE (already visible)");
-                            menubar.setAttribute("wv-compact-hidden", "true");
-                            return;
-                        }
-                        altDown = true; canceled = false; MBLOG("keydown Alt: tracking (bare)");
-                    }
-                    else if (e.key === "Alt" && !e.repeat) MBLOG("keydown Alt: ignored, other modifier down (ctrl=" + e.ctrlKey + " shift=" + e.shiftKey + " meta=" + e.metaKey + ")");
-                    return;
-                }
-                // Alt is already held. Once canceled, stay canceled until keyup.
-                if (canceled) return;
-                // Any key other than a bare Alt auto-repeat means Alt is part of a
-                // combo — void the reveal (this is the case the old code missed:
-                // Alt held, then Ctrl / a letter pressed).
-                const bareAltRepeat = e.key === "Alt" && !hasOtherMod(e);
-                if (!bareAltRepeat) { canceled = true; MBLOG("keydown '" + e.key + "' cancels pending Alt toggle"); }
-            };
-            const onKeyUp = (e: any) => {
-                try {
-                    if (e.key !== "Alt") return;   // only the access key toggles
-                    const reveal = altDown && !canceled && !hasOtherMod(e);
-                    if (!reveal) MBLOG("keyup Alt: no toggle (altDown=" + altDown + " canceled=" + canceled + ")");
-                    altDown = false;
-                    canceled = false;
-                    if (!reveal) return;
-                    const hidden = menubar.getAttribute("wv-compact-hidden") === "true";
-                    MBLOG("keyup Alt: " + (hidden ? "REVEAL" : "COLLAPSE (toggle off)"));
-                    if (hidden) menubar.removeAttribute("wv-compact-hidden");
-                    else menubar.setAttribute("wv-compact-hidden", "true");
-                } catch (er) {}
-            };
-            // A mouse press while Alt is held voids the reveal too (Firefox's
-            // MouseDown handler sets mAccessKeyDownCanceled).
-            const onMouseDown = () => { if (altDown) canceled = true; };
-            const onBlur = () => {
-                try {
-                    altDown = false;
-                    canceled = false;
-                    if (menubar.getAttribute("wv-compact-hidden") !== "true") {
-                        menubar.setAttribute("wv-compact-hidden", "true");
-                    }
-                } catch (er) {}
-            };
-            win.addEventListener("keydown", onKeyDown, true);
-            win.addEventListener("keyup", onKeyUp, true);
-            win.addEventListener("mousedown", onMouseDown, true);
-            win.addEventListener("blur", onBlur, true);
+            // lib/menubar.ts, the one machine for the three window types. Since
+            // 2026-10-21 Escape, a press outside and a menu command collapse it
+            // here too, as in the main and reader windows (before: Alt and blur
+            // only); the blur collapse stays. The note editor's iframe keeps its
+            // own keys and presses, as the reader's does.
+            const alt = wvAltReveal({ win, menubar, tag: "menubar:note", blur: true });
             (win as any)._wvNoteAltWired = true;
             (win as any)._wvNoteAltOff = () => {
-                try {
-                    win.removeEventListener("keydown", onKeyDown, true);
-                    win.removeEventListener("keyup", onKeyUp, true);
-                    win.removeEventListener("mousedown", onMouseDown, true);
-                    win.removeEventListener("blur", onBlur, true);
-                    (win as any)._wvNoteAltWired = false;
-                } catch (er) {}
+                try { alt.off(); (win as any)._wvNoteAltWired = false; } catch (er) {}
             };
         } catch (e) {
             Zotero.debug("[Weavero] _wvWireNoteMenubarAltReveal err: " + e);
@@ -4111,7 +3955,7 @@ class _ReaderMixin {
                 if (prev.getAttribute("data-wv-ver") === WV_STRIP_STYLE_VER) return;
                 try { prev.remove(); } catch (e) {}
             }
-            const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+            const style = wvHtmlEl(doc, "style");
             style.id = "wv-window-tabstrip-styles";
             style.setAttribute("data-wv-ver", WV_STRIP_STYLE_VER);
             style.textContent = [
@@ -4249,11 +4093,11 @@ class _ReaderMixin {
                 "  border-bottom: none;",
                 "}",
                 /* Window controls — matches the main-window
-                   `.titlebar-button` design: 46x36 buttons using
-                   chrome://browser/skin/window-controls/*.svg icons,
-                   themed via -moz-context-properties so the stroke
-                   inherits currentColor. Same hover colors as Win11
-                   title bar — neutral grey for min/max, red for close. */
+                   `.titlebar-button` design: 46x36 buttons with Weavero's
+                   own data: SVG glyphs (see below), themed via
+                   -moz-context-properties so the stroke inherits
+                   currentColor. Same hover colors as Win11 title bar —
+                   neutral grey for min/max, red for close. */
                 /* Scrollable tabs region: grows to fill the strip (pushing the
                    tab-list button + hamburger + window controls to the far
                    right, like the main window), shrinks to 0 (min-width:0) and
@@ -4316,10 +4160,18 @@ class _ReaderMixin {
                 "@media (prefers-color-scheme: dark) {",
                 "  .wv-window-control { color: rgba(255, 255, 255, 0.55); }",
                 "}",
-                ".wv-window-control.wv-window-min { background-image: url('chrome://browser/skin/window-controls/minimize.svg'); }",
-                ".wv-window-control.wv-window-max { background-image: url('chrome://browser/skin/window-controls/maximize.svg'); }",
-                ".wv-window-control.wv-window-max[data-state='maximized'] { background-image: url('chrome://browser/skin/window-controls/restore.svg'); }",
-                ".wv-window-control.wv-window-close { background-image: url('chrome://browser/skin/window-controls/close.svg'); }",
+                // The glyphs are Weavero's own (data: SVGs, stroke = currentColor
+                // through context-stroke): chrome://browser/skin/window-controls/
+                // *.svg existed on Zotero 10 (FF140) but is gone on Zotero 11
+                // (FF153: NetworkError for all four), and was never in the Linux
+                // build -- the three buttons were laid out and clickable but
+                // drew nothing in a reader window (MJT 2026-10-15). Same shapes
+                // as Firefox's 12px icons: a 10px bar, a 9px square, two offset
+                // squares, a 10px cross.
+                ".wv-window-control.wv-window-min { background-image: url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M1 6.5h10' stroke='context-stroke' stroke-width='1' fill='none'/%3E%3C/svg%3E\"); }",
+                ".wv-window-control.wv-window-max { background-image: url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Crect x='1.5' y='1.5' width='9' height='9' stroke='context-stroke' stroke-width='1' fill='none'/%3E%3C/svg%3E\"); }",
+                ".wv-window-control.wv-window-max[data-state='maximized'] { background-image: url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3.5 3.5V1.5h7v7h-2' stroke='context-stroke' stroke-width='1' fill='none'/%3E%3Crect x='1.5' y='3.5' width='7' height='7' stroke='context-stroke' stroke-width='1' fill='none'/%3E%3C/svg%3E\"); }",
+                ".wv-window-control.wv-window-close { background-image: url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M1 1l10 10M11 1L1 11' stroke='context-stroke' stroke-width='1' fill='none'/%3E%3C/svg%3E\"); }",
                 ".wv-window-control:hover { background-color: rgba(127,127,127,0.18); }",
                 ".wv-window-control:active { background-color: rgba(127,127,127,0.30); }",
                 /* Hamburger button — Firefox-style application menu trigger
@@ -4784,46 +4636,8 @@ class _ReaderMixin {
                 "#wv-wtl-filetype-popup .wv-filter-clear-icon::before { transform: translate(-50%, -50%) rotate(45deg); }",
                 "#wv-wtl-filetype-popup .wv-filter-clear-icon::after { transform: translate(-50%, -50%) rotate(-45deg); }",
                 "#wv-wtl-filetype-popup .wv-filter-clear-icon:hover { background: rgba(220,72,72,0.28); color: #fff; }",
-                /* File-type option tiles (mirror constants.ts .wv-filter-opt*). */
-                "#wv-wtl-filetype-popup .wv-filter-opt {",
-                "  display: inline-flex; align-items: center; gap: 6px;",
-                "  padding: 2px 8px; border-radius: 4px; cursor: pointer;",
-                "  border: 1px solid rgba(127,127,127,0.4);",
-                "  background: transparent; color: inherit; font: inherit; font-size: 12px;",
-                "}",
-                "#wv-wtl-filetype-popup .wv-filter-opt:hover { background: rgba(127,127,127,0.08); }",
-                "#wv-wtl-filetype-popup .wv-filter-opt-icon { padding: 4px; min-width: 26px; height: 26px; box-sizing: border-box; justify-content: center; gap: 0; }",
-                "#wv-wtl-filetype-popup .wv-filter-opt[data-selected=\"true\"] {",
-                "  background: rgba(94,106,210,0.34); border-color: rgba(94,106,210,0.95);",
-                "  box-shadow: inset 0 0 0 1px rgba(94,106,210,0.55);",
-                "}",
-                "#wv-wtl-filetype-popup .wv-filter-opt[data-selected=\"true\"]:hover { background: rgba(94,106,210,0.45); }",
-                "@media (prefers-color-scheme: dark) {",
-                "  #wv-wtl-filetype-popup .wv-filter-opt[data-selected=\"true\"] {",
-                "    background: rgba(120,134,255,0.40); border-color: rgba(150,162,255,1);",
-                "    box-shadow: inset 0 0 0 1px rgba(150,162,255,0.6);",
-                "  }",
-                "  #wv-wtl-filetype-popup .wv-filter-opt[data-selected=\"true\"]:hover { background: rgba(120,134,255,0.52); }",
-                "}",
-                "#wv-wtl-filetype-popup .wv-filter-opt[data-excluded=\"true\"] {",
-                "  border-color: rgba(220,72,72,0.7);",
-                "  background:",
-                "    linear-gradient(to top right,",
-                "      transparent calc(50% - 1px),",
-                "      rgba(220,72,72,0.85) calc(50% - 1px),",
-                "      rgba(220,72,72,0.85) calc(50% + 1px),",
-                "      transparent calc(50% + 1px)),",
-                "    rgba(220,72,72,0.10);",
-                "}",
-                "#wv-wtl-filetype-popup .wv-filter-opt[data-excluded=\"true\"]:hover {",
-                "  background:",
-                "    linear-gradient(to top right,",
-                "      transparent calc(50% - 1px),",
-                "      rgba(220,72,72,0.95) calc(50% - 1px),",
-                "      rgba(220,72,72,0.95) calc(50% + 1px),",
-                "      transparent calc(50% + 1px)),",
-                "    rgba(220,72,72,0.16);",
-                "}",
+                /* File-type option tiles: the shared set (lib/style.ts wvFilterTileRules). */
+                ...wvFilterTileRules("#wv-wtl-filetype-popup", "media"),
                 "#wv-wtl-filetype-popup .wv-attach-icon { display: inline-block; width: 16px; height: 16px; }",
                 "#wv-wtl-filetype-popup .wv-filter-svg {",
                 "  display: inline-block; width: 16px; height: 16px;",
@@ -6307,7 +6121,6 @@ class _ReaderMixin {
      *  Idempotent. */
     _wvWTRenderStrip(win: any) {
         try {
-            const HTML = "http://www.w3.org/1999/xhtml";
             const doc: any = win.document;
             const strip: any = doc.querySelector(".wv-window-tabstrip");
             if (!strip) return;
@@ -6321,7 +6134,7 @@ class _ReaderMixin {
             // strip (so everything pinned stays to its right).
             let tabsBox: any = strip.querySelector(":scope > .wv-window-tabs");
             if (!tabsBox) {
-                tabsBox = doc.createElementNS(HTML, "div");
+                tabsBox = wvHtmlEl(doc, "div");
                 tabsBox.className = "wv-window-tabs";
                 strip.insertBefore(tabsBox, strip.firstChild);
                 try { this._wvWTWireTabsWheelScroll(tabsBox); } catch (e) {}
@@ -6334,7 +6147,7 @@ class _ReaderMixin {
                 const ctlBox = strip.querySelector(":scope > .wv-window-controls");
                 let sp = strip.querySelector(":scope > .wv-window-drag-spacer");
                 if (!sp) {
-                    sp = doc.createElementNS(HTML, "div");
+                    sp = wvHtmlEl(doc, "div");
                     sp.className = "wv-window-drag-spacer";
                 }
                 if (ctlBox) {
@@ -6413,7 +6226,6 @@ class _ReaderMixin {
     _wvWTShowDropIndicator(win: any, clientX: any) {
         try {
             const doc = win.document;
-            const HTML = "http://www.w3.org/1999/xhtml";
             const tabsBox = doc.querySelector(".wv-window-tabs");
             if (!tabsBox) return;
             const plugin: any = (Zotero as any).Weavero.plugin;
@@ -6424,15 +6236,31 @@ class _ReaderMixin {
             const rtype = String(info.readerType || "").toLowerCase();
             let ghost: any = tabsBox.querySelector(":scope > .wv-window-tab-ghost");
             if (!ghost) {
-                ghost = doc.createElementNS(HTML, "div");
+                ghost = wvHtmlEl(doc, "div");
                 ghost.className = "wv-window-tab wv-window-tab-ghost";
-                const ic = doc.createElementNS(HTML, "span"); ic.className = "wv-window-tab-icon"; ghost.appendChild(ic);
-                const nm = doc.createElementNS(HTML, "span"); nm.className = "wv-window-tab-title"; ghost.appendChild(nm);
+                const ic = wvHtmlEl(doc, "span", "wv-window-tab-icon", undefined, ghost);
+                const nm = wvHtmlEl(doc, "span", "wv-window-tab-title", undefined, ghost);
             }
             const ic = ghost.querySelector(".wv-window-tab-icon");
             const nm = ghost.querySelector(".wv-window-tab-title");
             if (ic) this._wvWTApplyTabIcon(ic, rtype);
             if (nm) nm.textContent = title;
+            // The stack of a multi-tab drag (one card for two travelling tabs,
+            // two for more), from the source's selection: another reader
+            // window (mi.sourceTabId) or a main window (the dragged tab).
+            try {
+                let n = 1;
+                const srcR: any = plugin._wvMergeDragSourceWin;
+                const srcM: any = plugin._wvMainTabDragSourceWin;
+                if (srcR && srcR !== win && mi && mi.sourceTabId != null && typeof plugin._wvWTMultiSelTargets === "function") {
+                    n = (plugin._wvWTMultiSelTargets(srcR, mi.sourceTabId) || []).length || 1;
+                } else if (srcM && td && td.tabID != null && typeof plugin._wvTabMultiSelTargets === "function") {
+                    n = (plugin._wvTabMultiSelTargets(srcM, td.tabID) || []).length || 1;
+                }
+                const want = n >= 3 ? "big" : n === 2 ? "small" : null;
+                if (want) { if (ghost.getAttribute("data-wv-stack") !== want) ghost.setAttribute("data-wv-stack", want); }
+                else ghost.removeAttribute("data-wv-stack");
+            } catch (e) {}
             // Reflect drag-to-pin in the preview: a 36px icon-only ghost when the
             // drop would land in the pinned region (cursor left of the last pinned
             // tab's right edge), matching what the tab will become on drop.
@@ -6533,24 +6361,20 @@ class _ReaderMixin {
         try {
             if (!win || !win.document || !stripEl) return null;
             const doc = win.document;
-            const HTML = "http://www.w3.org/1999/xhtml";
-            const SVG_NS = "http://www.w3.org/2000/svg";
             let btn = stripEl.querySelector(":scope > .wv-window-newtab-btn");
             if (btn) return btn;
-            btn = doc.createElementNS(HTML, "button");
+            btn = wvHtmlEl(doc, "button");
             btn.className = "wv-window-newtab-btn";
             btn.setAttribute("title", "New tab — open a library item (Ctrl+T)");
             btn.setAttribute("tabindex", "-1");
             btn.setAttribute("aria-label", "New tab");
-            const svg: any = doc.createElementNS(SVG_NS, "svg");
+            const svg: any = wvSvgEl(doc, "svg");
             // Zotero's native plus icon, verbatim from
             // chrome://zotero/skin/16/universal/plus.svg (whole-pixel path,
             // inherits currentColor via the shared svg fill rule).
             svg.setAttribute("viewBox", "0 0 16 16");
             svg.setAttribute("aria-hidden", "true");
-            const path: any = doc.createElementNS(SVG_NS, "path");
-            path.setAttribute("d", "M14 8H9V3H8V8H3V9H8V14H9V9H14V8Z");
-            svg.appendChild(path);
+            const path: any = wvSvgEl(doc, "path", { d: "M14 8H9V3H8V8H3V9H8V14H9V9H14V8Z" }, svg);
             btn.appendChild(svg);
             const self = this;
             btn.addEventListener("click", (e: any) => {
@@ -6597,7 +6421,7 @@ class _ReaderMixin {
             if (!(win as any)._wvWTNewTabKeyWired) try {
                 wvListen(win, "readerNewTabKey", "keydown", (ke: any) => {
                     try {
-                        const accel = Zotero.isMac ? ke.metaKey : ke.ctrlKey;
+                        const accel = wvAccel(ke);
                         if (!accel || ke.shiftKey || ke.altKey
                             || String(ke.key).toLowerCase() !== "t") return;
                         const b = win.document.querySelector(".wv-window-newtab-btn");
@@ -6617,20 +6441,18 @@ class _ReaderMixin {
         try {
             if (!win || !win.document || !stripEl) return null;
             const doc = win.document;
-            const HTML = "http://www.w3.org/1999/xhtml";
-            const SVG_NS = "http://www.w3.org/2000/svg";
             let btn = stripEl.querySelector(":scope > .wv-window-tablist-btn");
             if (btn) return btn;
 
             // Button with a downward-chevron icon. Opens the rich tab-list
             // panel (the reader twin of the main window's enhanced tabs
             // menu) instead of the old plain XUL menupopup of radio items.
-            btn = doc.createElementNS(HTML, "button");
+            btn = wvHtmlEl(doc, "button");
             btn.className = "wv-window-tablist-btn";
             btn.setAttribute("title", "List all tabs");
             btn.setAttribute("tabindex", "-1");
             btn.setAttribute("aria-label", "List all tabs");
-            const svg: any = doc.createElementNS(SVG_NS, "svg");
+            const svg: any = wvSvgEl(doc, "svg");
             // Native Zotero tabs-menu chevron, verbatim from
             // chrome://zotero/skin/20/universal/chevron.svg — a FILLED wedge
             // (not a thin stroke), so it matches the main window's #zotero-tb-tabs-menu.
@@ -6638,9 +6460,7 @@ class _ReaderMixin {
             // `fill: currentColor` from the svg rule and tracks the button colour.
             svg.setAttribute("viewBox", "0 0 20 20");
             svg.setAttribute("aria-hidden", "true");
-            const path: any = doc.createElementNS(SVG_NS, "path");
-            path.setAttribute("d", "M17.1161 6L18 6.88389L10 14.8839L2 6.88388L2.88388 6L10 13.1161L17.1161 6Z");
-            svg.appendChild(path);
+            const path: any = wvSvgEl(doc, "path", { d: "M17.1161 6L18 6.88389L10 14.8839L2 6.88388L2.88388 6L10 13.1161L17.1161 6Z" }, svg);
             btn.appendChild(svg);
 
             let lastHiddenAt = 0;
@@ -6705,7 +6525,6 @@ class _ReaderMixin {
         try {
             if (!win || !win.document) return null;
             const doc = win.document;
-            const HTML = "http://www.w3.org/1999/xhtml";
             // Versioned rebuild: the panel DOM is cached per window, so a plain
             // create-if-absent guard would pin an old-layout panel across plugin
             // reloads (the clear-x shipped invisible this way, 2026-07-22).
@@ -6724,21 +6543,20 @@ class _ReaderMixin {
             panel.setAttribute("animate", "false");
             panel.setAttribute("wv-build", WTL_PANEL_V);
 
-            const wrapper: any = doc.createElementNS(HTML, "div");
+            const wrapper: any = wvHtmlEl(doc, "div");
             wrapper.id = "wv-wtl-wrapper";
 
             // Settings (gear) button — display-only toggles. Sits at the
             // far LEFT, outside the search field. Mirrors the main
             // window's #wv-tabs-menu-settings-btn.
-            const gear: any = doc.createElementNS(HTML, "button");
+            const gear: any = wvHtmlEl(doc, "button");
             gear.id = "wv-wtl-settings-btn";
             gear.type = "button";
             gear.title = "Tabs menu settings";
             gear.style.setProperty("-moz-context-properties",
                 "fill, fill-opacity, stroke, stroke-opacity");
             gear.style.fill = "currentColor";
-            const gearIcon: any = doc.createElementNS(HTML, "img");
-            gearIcon.className = "wv-wtl-settings-icon";
+            const gearIcon: any = wvHtmlEl(doc, "img", "wv-wtl-settings-icon");
             gearIcon.src = "chrome://zotero/skin/20/universal/cog.svg";
             gear.appendChild(gearIcon);
             gear.addEventListener("click", (e: any) => {
@@ -6748,7 +6566,7 @@ class _ReaderMixin {
             wrapper.appendChild(gear);
 
             // Search input — filters rows by title substring.
-            const input: any = doc.createElementNS(HTML, "input");
+            const input: any = wvHtmlEl(doc, "input");
             input.id = "wv-wtl-filter";
             input.type = "text";
             input.setAttribute("placeholder", "Search Tabs");
@@ -6766,7 +6584,7 @@ class _ReaderMixin {
             wrapper.appendChild(input);
             // Clear ("x") — same grey-circle-white-x as every other Weavero
             // search box; shown only with a query, clears + keeps focus.
-            const wtlClear: any = doc.createElementNS(HTML, "button");
+            const wtlClear: any = wvHtmlEl(doc, "button");
             wtlClear.id = "wv-wtl-clear-btn";
             wtlClear.type = "button";
             wtlClear.title = "Clear search";
@@ -6788,7 +6606,7 @@ class _ReaderMixin {
             // File-type funnel — same artwork (Weavero-identity funnel,
             // amber stem) + dropmarker chevron as the main window's
             // #wv-tabs-menu-filetype-btn. Far RIGHT.
-            const funnel: any = doc.createElementNS(HTML, "button");
+            const funnel: any = wvHtmlEl(doc, "button");
             funnel.id = "wv-wtl-filetype-btn";
             funnel.type = "button";
             funnel.title = "Filter tabs by attachment file type. "
@@ -6796,14 +6614,13 @@ class _ReaderMixin {
             funnel.style.setProperty("-moz-context-properties",
                 "fill, fill-opacity, stroke, stroke-opacity");
             funnel.style.fill = "currentColor";
-            const ftIcon: any = doc.createElementNS(HTML, "img");
-            ftIcon.className = "wv-wtl-filetype-icon";
+            const ftIcon: any = wvHtmlEl(doc, "img", "wv-wtl-filetype-icon");
             ftIcon.src = WV_FUNNEL_DATA_URI;
             funnel.appendChild(ftIcon);
-            const dot: any = doc.createElementNS(HTML, "span");
+            const dot: any = wvHtmlEl(doc, "span");
             dot.className = "wv-wtl-filetype-dot";
             funnel.appendChild(dot);
-            const chev: any = doc.createElementNS(HTML, "span");
+            const chev: any = wvHtmlEl(doc, "span");
             chev.className = "wv-wtl-filetype-chev";
             chev.innerHTML = "<svg xmlns=\"http://www.w3.org/2000/svg\" "
                 + "width=\"8\" height=\"8\" viewBox=\"0 0 8 8\" "
@@ -6819,7 +6636,7 @@ class _ReaderMixin {
 
             // List container — rows + library headers injected by
             // _wvWTRenderTabListPanel.
-            const list: any = doc.createElementNS(HTML, "div");
+            const list: any = wvHtmlEl(doc, "div");
             list.id = "wv-wtl-list";
             wrapper.appendChild(list);
 
@@ -6980,294 +6797,36 @@ class _ReaderMixin {
         } catch (e) {}
     }
 
-    /** Open / close the file-type icon-grid popup, anchored under the
-     *  funnel. Reader twin of `_toggleTabsMenuFileTypePopup`: an HTML
-     *  <div> mounted inside the wrapper so clicks inside don't dismiss
-     *  the parent <panel>. */
+    /** The reader window's file-type popup, under its funnel: the shared
+     *  builder (_wvTabsFilterPopupToggle) on the tab-list wrapper, the
+     *  library chips read off #wv-wtl-list, the teardown on the window. */
     _wvWTToggleFileTypePopup(win: any, wrapper: any, anchor: any) {
         try {
-            const doc = win.document;
-            const HTML = "http://www.w3.org/1999/xhtml";
             const ps = this._wvWTPanelState(win);
             if (!ps) return;
-            // The funnel filters the SAME plugin-global state as the main window's
-            // tabs menu (`_tabsMenuFileTypeFilter` + `_tabsMenuLibraryFilter`), so the
-            // consolidated reader render applies them and both menus stay in lock-step.
-            if (!this._tabsMenuFileTypeFilter) {
-                this._tabsMenuFileTypeFilter = { include: new Set(), exclude: new Set() };
-            }
-            if (!this._tabsMenuLibraryFilter) this._tabsMenuLibraryFilter = new Map();
-
-            const existing = wrapper.querySelector("#wv-wtl-filetype-popup");
-            if (existing) {
-                existing.remove();
-                if (win._wvWTFileTypeOutsideClose) {
-                    doc.removeEventListener("mousedown",
-                        win._wvWTFileTypeOutsideClose, true);
-                    delete win._wvWTFileTypeOutsideClose;
-                }
-                return;
-            }
-
-            const popup: any = doc.createElementNS(HTML, "div");
-            popup.id = "wv-wtl-filetype-popup";
-
-            const clearAll = () => {
-                this._tabsMenuFileTypeFilter.include.clear();
-                this._tabsMenuFileTypeFilter.exclude.clear();
-                this._tabsMenuLibraryFilter.clear();
-                renderButtons();
-                this._wvWTRefreshFunnelState(win);
-                this._wvWTRenderTabListPanel(win);
-            };
-
-            const renderButtons = () => {
-                while (popup.firstChild) popup.removeChild(popup.firstChild);
-
-                const topBar: any = doc.createElementNS(HTML, "div");
-                topBar.className = "wv-filter-top-bar wv-tabs-menu-filetype-topbar";
-                const hint: any = doc.createElementNS(HTML, "span");
-                hint.className = "wv-filter-top-hint";
-                hint.textContent = "Alt+click to exclude";
-                topBar.appendChild(hint);
-                const clearTextBtn: any = doc.createElementNS(HTML, "button");
-                clearTextBtn.type = "button";
-                clearTextBtn.className = "wv-filter-clear-btn";
-                clearTextBtn.textContent = "Clear";
-                clearTextBtn.title = "Clear all tab filters (keep this window open)";
-                clearTextBtn.setAttribute("aria-label", "Clear all tab filters");
-                clearTextBtn.addEventListener("click", (e: any) => {
-                    try { e.stopPropagation(); } catch (er) {}
-                    clearAll();
-                });
-                topBar.appendChild(clearTextBtn);
-                const clearBtn: any = doc.createElementNS(HTML, "button");
-                clearBtn.type = "button";
-                clearBtn.className = "wv-filter-clear-icon";
-                clearBtn.setAttribute("aria-label", "Clear and Close");
-                clearBtn.title = "Clear and Close";
-                clearBtn.addEventListener("click", (e: any) => {
-                    try { e.stopPropagation(); } catch (er) {}
-                    clearAll();
-                    if (win._wvWTFileTypeOutsideClose) {
-                        doc.removeEventListener("mousedown",
-                            win._wvWTFileTypeOutsideClose, true);
-                        delete win._wvWTFileTypeOutsideClose;
-                    }
-                    popup.remove();
-                });
-                topBar.appendChild(clearBtn);
-                const anyActive
-                    = (this._tabsMenuFileTypeFilter.include.size > 0 || this._tabsMenuFileTypeFilter.exclude.size > 0)
-                    || this._tabsMenuLibraryFilter.size > 0;
-                if (!anyActive) {
-                    clearTextBtn.style.visibility = "hidden";
-                    clearBtn.style.visibility = "hidden";
-                }
-                popup.appendChild(topBar);
-
-                const inc = this._tabsMenuFileTypeFilter.include;
-                const exc = this._tabsMenuFileTypeFilter.exclude;
-                const toggle = (val: any, alt: boolean) => {
-                    if (alt) {
-                        if (exc.has(val)) exc.delete(val);
-                        else { inc.delete(val); exc.add(val); }
-                    }
-                    else {
-                        if (inc.has(val)) inc.delete(val);
-                        else { exc.delete(val); inc.add(val); }
-                    }
-                    renderButtons();
-                    this._wvWTRefreshFunnelState(win);
-                    this._wvWTRenderTabListPanel(win);
-                };
-                const makeOpt = (val: any, label: string, opts: any) => {
-                    const b: any = doc.createElementNS(HTML, "button");
-                    b.type = "button";
-                    b.className = "wv-filter-opt wv-filter-opt-icon";
-                    b.title = label + " — click to include, Alt+click to exclude.";
-                    if (inc.has(val)) b.dataset.selected = "true";
-                    if (exc.has(val)) b.dataset.excluded = "true";
-                    let ic: any;
-                    if (opts && opts.itemType) {
-                        ic = doc.createElementNS(HTML, "span");
-                        ic.className = "icon icon-css icon-item-type";
-                        ic.setAttribute("data-item-type", opts.itemType);
-                    }
-                    else if (opts && opts.accentColor) {
-                        ic = doc.createElementNS(HTML, "img");
-                        ic.className = "wv-filter-svg";
-                        ic.style.color = opts.accentColor;
-                        ic.src = opts.iconSrc;
-                    }
-                    else {
-                        ic = doc.createElementNS(HTML, "img");
-                        ic.className = "wv-attach-icon";
-                        ic.src = opts.iconSrc;
-                    }
-                    b.appendChild(ic);
-                    b.addEventListener("click", (e: any) => {
-                        try { e.stopPropagation(); } catch (er) {}
-                        toggle(val, e.altKey);
-                    });
-                    return b;
-                };
-                const ftRow: any = doc.createElementNS(HTML, "div");
-                ftRow.className = "wv-tabs-menu-filetype-row";
-                popup.appendChild(ftRow);
-
-                for (const def of (this as any)._ATTACHMENT_FILE_TYPES) {
-                    ftRow.appendChild(makeOpt(def.value, def.label,
-                        { itemType: def.value }));
-                }
-                const sep: any = doc.createElementNS(HTML, "div");
-                sep.className = "wv-tabs-menu-filetype-sep";
-                ftRow.appendChild(sep);
-                ftRow.appendChild(makeOpt("note", "Note", {
-                    iconSrc: "chrome://zotero/skin/16/universal/note.svg",
-                    accentColor: "var(--accent-yellow)",
-                }));
-
-                // Library filter — a chip per library the popup's tabs span, shown
-                // only when there are ≥2. Same tri-state gesture + shared
-                // `_tabsMenuLibraryFilter` state as the main window's tabs menu.
-                try {
-                    const libIds = new Set<number>();
-                    const listEl: any = doc.getElementById("wv-wtl-list");
-                    for (const r of (listEl ? Array.from(listEl.querySelectorAll("[data-wv-library]")) : []) as any[]) {
-                        const v = r.getAttribute("data-wv-library");
-                        if (v != null) libIds.add(Number(v));
-                    }
-                    if (libIds.size >= 2) {
-                        const lf = this._tabsMenuLibraryFilter;
-                        const libToggle = (libID: number, alt: boolean) => {
-                            const cur = lf.get(libID);
-                            if (alt) { if (cur === "exclude") lf.delete(libID); else lf.set(libID, "exclude"); }
-                            else { if (cur === "include") lf.delete(libID); else lf.set(libID, "include"); }
-                            renderButtons();
-                            this._wvWTRefreshFunnelState(win);
-                            this._wvWTRenderTabListPanel(win);
-                        };
-                        const libRow: any = doc.createElementNS(HTML, "div");
-                        libRow.className = "wv-tabs-menu-lib-row";
-                        libRow.style.cssText = "display:flex;flex-direction:column;gap:2px;margin-top:6px;padding-top:6px;border-top:1px solid var(--fill-quinary);";
-                        const libs = ([...libIds].map((id) => { try { return Zotero.Libraries.get(id); } catch (e) { return null; } }).filter(Boolean)) as any[];
-                        libs.sort((a, b) => (a.libraryType === "user" ? -1 : b.libraryType === "user" ? 1 : String(a.name || "").localeCompare(String(b.name || ""))));
-                        for (const lib of libs) {
-                            const chip: any = doc.createElementNS(HTML, "button");
-                            chip.type = "button";
-                            chip.className = "wv-filter-opt";
-                            chip.style.cssText = "display:flex;align-items:center;gap:6px;justify-content:flex-start;width:100%;padding:3px 6px;";
-                            chip.title = lib.name + " — click to show only this library, Alt+click to exclude.";
-                            const cur = lf.get(lib.libraryID);
-                            if (cur === "include") chip.dataset.selected = "true";
-                            if (cur === "exclude") chip.dataset.excluded = "true";
-                            const icon: any = doc.createElementNS(HTML, "span");
-                            icon.className = "icon icon-css " + (lib.libraryType === "group" ? "icon-library-group" : lib.libraryType === "feed" ? "icon-feed" : "icon-library");
-                            icon.style.cssText = "width:16px;height:16px;flex:0 0 16px;";
-                            chip.appendChild(icon);
-                            const nm: any = doc.createElementNS(HTML, "span");
-                            nm.textContent = lib.name;
-                            nm.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;";
-                            chip.appendChild(nm);
-                            chip.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (er) {} libToggle(lib.libraryID, e.altKey); });
-                            libRow.appendChild(chip);
-                        }
-                        popup.appendChild(libRow);
-                    }
-                } catch (e) { Zotero.debug("[Weavero] reader tabs-menu library chips err: " + e); }
-            };
-            renderButtons();
-            wrapper.appendChild(popup);
-
-            const onOutside = (e: any) => {
-                if (wvWithin(popup, e.target)) return; // scrollbar presses too (#55)
-                if (wvWithin(anchor, e.target)) return;
-                popup.remove();
-                doc.removeEventListener("mousedown", onOutside, true);
-                delete win._wvWTFileTypeOutsideClose;
-            };
-            win._wvWTFileTypeOutsideClose = onOutside;
-            doc.addEventListener("mousedown", onOutside, true);
+            this._wvTabsFilterPopupToggle(win, wrapper, anchor, {
+                id: "wv-wtl-filetype-popup",
+                libraryRoot: () => win.document.getElementById("wv-wtl-list"),
+                refresh: () => { this._wvWTRefreshFunnelState(win); this._wvWTRenderTabListPanel(win); },
+                holder: win, key: "_wvWTFileTypeOutsideClose",
+            });
         } catch (e) {
             Zotero.debug("[Weavero] _wvWTToggleFileTypePopup err: " + e);
         }
     }
 
-    /** Open / close the settings (gear) popup. Reader twin of
-     *  `_toggleTabsMenuSettingsPopup`: stacked checkbox rows for "Sort by
-     *  Library" and "Show Annotations Count", each re-rendering the list
-     *  on change. */
+    /** The reader window's settings popup (the gear): the shared builder;
+     *  the toggles are the plugin-global ones the main window's menu shares,
+     *  and a change re-renders this clone. */
     _wvWTToggleSettingsPopup(win: any, wrapper: any, anchor: any) {
         try {
-            const doc = win.document;
-            const HTML = "http://www.w3.org/1999/xhtml";
             const ps = this._wvWTPanelState(win);
             if (!ps) return;
-
-            const existing = wrapper.querySelector("#wv-wtl-settings-popup");
-            if (existing) {
-                existing.remove();
-                if (win._wvWTSettingsOutsideClose) {
-                    doc.removeEventListener("mousedown",
-                        win._wvWTSettingsOutsideClose, true);
-                    delete win._wvWTSettingsOutsideClose;
-                }
-                return;
-            }
-
-            // Sort-by-Library / annotation-count are plugin-GLOBAL state shared
-            // with the main window's tabs menu — the consolidated reader render
-            // reads those globals, so this settings popup must toggle THEM (not the
-            // per-panel `ps`), exactly like the main window. Lazily init from prefs.
-            if (this._tabsMenuGroupByLibrary === undefined) {
-                const v = Zotero.Prefs.get("weavero.tabsMenuGroupByLibrary");
-                this._tabsMenuGroupByLibrary = (typeof v === "boolean") ? v : false;
-            }
-            if (this._tabsMenuShowAnnotationCount === undefined) {
-                const v = Zotero.Prefs.get("weavero.tabsMenuShowAnnotationCount");
-                this._tabsMenuShowAnnotationCount = (typeof v === "boolean") ? v : false;
-            }
-
-            const popup: any = doc.createElementNS(HTML, "div");
-            popup.id = "wv-wtl-settings-popup";
-
-            const makeRow = (key: string, labelText: string) => {
-                const row: any = doc.createElementNS(HTML, "label");
-                row.className = "wv-tabs-menu-settings-row";
-                const cb: any = doc.createElementNS(HTML, "input");
-                cb.type = "checkbox";
-                cb.className = "wv-tabs-menu-settings-cb";
-                cb.checked = !!(this as any)[key];
-                cb.addEventListener("change", () => {
-                    (this as any)[key] = cb.checked;
-                    // Persist so the choice survives restart/reload, and re-render
-                    // this clone. Pref name derives from the field, same as the main
-                    // window: `_tabsMenuGroupByLibrary` → `weavero.tabsMenuGroupByLibrary`.
-                    try { Zotero.Prefs.set("weavero." + key.replace(/^_/, ""), cb.checked); } catch (e) {}
-                    this._wvWTRenderTabListPanel(win);
-                });
-                const lbl: any = doc.createElementNS(HTML, "span");
-                lbl.className = "wv-tabs-menu-settings-label";
-                lbl.textContent = labelText;
-                row.appendChild(cb);
-                row.appendChild(lbl);
-                return row;
-            };
-
-            popup.appendChild(makeRow("_tabsMenuGroupByLibrary", "Sort Tabs by Library"));
-            popup.appendChild(makeRow("_tabsMenuShowAnnotationCount", "Show Annotations Count"));
-            wrapper.appendChild(popup);
-
-            const onOutside = (e: any) => {
-                if (wvWithin(popup, e.target)) return; // scrollbar presses too (#55)
-                if (wvWithin(anchor, e.target)) return;
-                popup.remove();
-                doc.removeEventListener("mousedown", onOutside, true);
-                delete win._wvWTSettingsOutsideClose;
-            };
-            win._wvWTSettingsOutsideClose = onOutside;
-            doc.addEventListener("mousedown", onOutside, true);
+            this._wvTabsSettingsPopupToggle(win, wrapper, anchor, {
+                id: "wv-wtl-settings-popup",
+                refresh: () => this._wvWTRenderTabListPanel(win),
+                holder: win, key: "_wvWTSettingsOutsideClose",
+            });
         } catch (e) {
             Zotero.debug("[Weavero] _wvWTToggleSettingsPopup err: " + e);
         }
@@ -7302,17 +6861,15 @@ class _ReaderMixin {
     _wvWTBuildTabEl(win: any, tab: any) {
         try {
             const doc: any = win.document;
-            const HTML = "http://www.w3.org/1999/xhtml";
             const st = this._wvWTState(win);
-            const el: any = doc.createElementNS(HTML, "div");
+            const el: any = wvHtmlEl(doc, "div");
             el.className = "wv-window-tab"
                 + (st && st.activeId === tab.id ? " wv-active" : "")
                 + (tab.pinned ? " wv-pinned" : "")
                 + ((win._wvWTDragPinId && win._wvWTDragPinId === tab.id) ? " wv-window-tab-pin-preview" : "");
             el.setAttribute("data-wv-tab-id", tab.id);
 
-            const iconEl: any = doc.createElementNS(HTML, "span");
-            iconEl.className = "wv-window-tab-icon";
+            const iconEl: any = wvHtmlEl(doc, "span", "wv-window-tab-icon");
             const rtype = tab.type || (tab.reader && tab.reader._type) || "";
             if (rtype) {
                 iconEl.setAttribute("data-type", rtype);
@@ -7333,12 +6890,9 @@ class _ReaderMixin {
                 }
             } catch (e) {}
 
-            const titleEl: any = doc.createElementNS(HTML, "span");
-            titleEl.className = "wv-window-tab-title";
-            titleEl.textContent = this._wvWTTabTitle(tab);
+            const titleEl: any = wvHtmlEl(doc, "span", "wv-window-tab-title", this._wvWTTabTitle(tab));
 
-            const closeBtn: any = doc.createElementNS(HTML, "button");
-            closeBtn.className = "wv-window-tab-close";
+            const closeBtn: any = wvHtmlEl(doc, "button", "wv-window-tab-close");
             closeBtn.setAttribute("title", "Close");
             closeBtn.setAttribute("tabindex", "-1");
             closeBtn.setAttribute("aria-label", "Close");
@@ -7346,9 +6900,7 @@ class _ReaderMixin {
             // --fill-secondary (rgba(255,255,255,0.55)), 16px — identical icon
             // AND colour to the main window's .tab-close .icon, instead of the
             // old heavier/brighter text "×".
-            const closeIcon: any = doc.createElementNS(HTML, "span");
-            closeIcon.className = "icon icon-css icon-x-8 icon-16";
-            closeBtn.appendChild(closeIcon);
+            const closeIcon: any = wvHtmlEl(doc, "span", "icon icon-css icon-x-8 icon-16", undefined, closeBtn);
             closeBtn.addEventListener("click", (e: any) => {
                 try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
                 try { this._wvWTCloseTab(win, tab.id); } catch (er) {}
@@ -7418,7 +6970,6 @@ class _ReaderMixin {
     _wvWTWireNativeTabDrag(win: any, el: any, tab: any) {
         try {
             const doc: any = win.document;
-            const HTML = "http://www.w3.org/1999/xhtml";
             const reader = tab.reader;
             const readerType = tab.type || (reader && reader._type) || "";
             el.setAttribute("draggable", "true");
@@ -7439,7 +6990,7 @@ class _ReaderMixin {
                     (this as any)._wvMergeDragInfo = payload;
                     (this as any)._wvMergeDragSourceWin = win;
                     try {
-                        const img: any = doc.createElementNS(HTML, "img");
+                        const img: any = wvHtmlEl(doc, "img");
                         img.setAttribute("src",
                             "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7");
                         e.dataTransfer.setDragImage(img, 0, 0);
@@ -7465,7 +7016,6 @@ class _ReaderMixin {
     _wvWTWireTabDrag(win: any, el: any, tab: any) {
         try {
             const doc: any = win.document;
-            const HTML = "http://www.w3.org/1999/xhtml";
             const reader = tab.reader;
             const itemID = (tab.itemID != null) ? tab.itemID : (reader && reader.itemID);
             const readerType = tab.type || (reader && reader._type) || "";
@@ -7482,7 +7032,7 @@ class _ReaderMixin {
                     (this as any)._wvMergeDragInfo = payload;
                     (this as any)._wvMergeDragSourceWin = win;
                     try {
-                        const img: any = doc.createElementNS(HTML, "img");
+                        const img: any = wvHtmlEl(doc, "img");
                         img.setAttribute("src",
                             "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7");
                         e.dataTransfer.setDragImage(img, 0, 0);
@@ -7827,6 +7377,7 @@ class _ReaderMixin {
                 const srcMainWin = plugin && plugin._wvMainTabDragSourceWin;
                 if (srcMainWin && (srcMainWin as any).Zotero_Tabs && plugin._wvTabMultiSelTargets && drag && drag.tabID != null) {
                     const ids = plugin._wvTabMultiSelTargets(srcMainWin, drag.tabID);
+                    try { plugin._wvTGDbg("mainTabDrop on reader strip: dragged=" + drag.tabID + " srcSel=" + Array.from(srcMainWin._wvSelTabIDs || []).join(",") + " targets=" + (ids || []).join(",")); } catch (e) {}
                     if (ids && ids.length > 1) {
                         this._wvWTMountMainSelectionHere(win, srcMainWin, ids, drag.tabID, clientX);
                         return;
@@ -7878,7 +7429,7 @@ class _ReaderMixin {
                         try {
                             if (srcMainWin && srcMainWin.Zotero_Tabs
                                 && srcMainWin.Zotero_Tabs._tabs.some((t: any) => t && t.id === dragTabId)) return srcMainWin;
-                            const wins = (Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()]).filter(Boolean);
+                            const wins = wvMainWins();
                             return wins.find((mw: any) => mw && mw.Zotero_Tabs && mw.Zotero_Tabs._tabs.some((t: any) => t && t.id === dragTabId)) || null;
                         } catch (e) { return null; }
                     };
@@ -7931,7 +7482,7 @@ class _ReaderMixin {
             // Close the source main-window tab FIRST (saves its reader state and
             // defuses the main dragend tear-off), then clear the shared drag.
             try {
-                const wins = (Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()]).filter(Boolean);
+                const wins = wvMainWins();
                 for (const mw of wins) {
                     const ZT: any = mw && (mw as any).Zotero_Tabs;
                     if (ZT && ZT._tabs && ZT._tabs.some((t: any) => t && t.id === drag.tabID)) {
@@ -8008,6 +7559,7 @@ class _ReaderMixin {
                 if (iid != null) moves.push({ id, itemID: iid, isNote: String(t.type || "").indexOf("note") === 0 });
             }
             if (!moves.length) return;
+            try { (this as any)._wvTGDbg("mountMainSelHere: ids=" + ids.join(",") + " dragged=" + draggedId + " x=" + clientX + " target.tabs=" + ((targetWin._wvWT && targetWin._wvWT.tabs.length) || 0)); } catch (e) {}
             // Leaving the window leaves the group (don't carry it to the target).
             for (const m of moves) { try { (this as any)._wvForgetTabGroupForItem(m.itemID); } catch (e) {} }
             try { if (srcMainWin._wvSelTabIDs && srcMainWin._wvSelTabIDs.clear) srcMainWin._wvSelTabIDs.clear(); this._wvTabMultiSelSync(srcMainWin); } catch (e) {}
@@ -8033,6 +7585,7 @@ class _ReaderMixin {
             // Per tab: no-reload swap (close source after, no uninit), else classic
             // close+mount. Sequential so concurrent docshell surgery can't corrupt.
             let draggedNewId: any = null;
+            const landedIds: any[] = [];
             for (const m of moves) {
                 let newId: any = null;
                 const S = m.isNote ? null : resolveMainS(m.id);
@@ -8061,13 +7614,26 @@ class _ReaderMixin {
                     } catch (e) {}
                 }
                 if (m.id === draggedId) draggedNewId = newId;
+                if (newId != null) landedIds.push(newId);
                 await new Promise(r => setT(r, 40));
             }
             if (draggedNewId != null && clientX != null) {
                 try { this._wvWTReorderTab(targetWin, draggedNewId, clientX); } catch (e) {}
             }
             try { this._wvWTRenderStrip(targetWin); } catch (e) {}
-        } catch (e) { Zotero.debug("[Weavero] _wvWTMountMainSelectionHere err: " + e); }
+            // The moved tabs stay MULTI-SELECTED in the destination, as in
+            // Firefox's drop handler (drag-and-drop.js: addRangeToMultiSelectedTabs
+            // over the moved tabs after the dragged one is selected) and as the
+            // main->main move already does. Only the dragged tab was selected
+            // after a two-tab drag into a reader window (MJT 2026-10-16).
+            if (landedIds.length > 1) {
+                try {
+                    targetWin._wvSelWTabIDs = new Set(landedIds);
+                    this._wvWTMultiSelSync(targetWin);
+                } catch (e) {}
+            }
+            try { (this as any)._wvTGDbg("mountMainSelHere: landed=" + landedIds.join(",") + " sel=" + Array.from(targetWin._wvSelWTabIDs || []).join(",") + " marked=" + targetWin.document.querySelectorAll(".wv-window-tabs .wv-window-tab.wv-multisel").length + " active=" + (targetWin._wvWT && targetWin._wvWT.activeId)); } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvWTMountMainSelectionHere err: " + e); try { (this as any)._wvTGDbg("mountMainSelHere ERR=" + e); } catch (e2) {} }
     }
 
     /** Multi-select reader→main: move EVERY selected reader-strip tab into the
@@ -8102,17 +7668,40 @@ class _ReaderMixin {
                 // synchronous); the document loads lazily when the tab is selected.
                 const Z: any = mainWin && (mainWin as any).Zotero_Tabs;
                 if (!Z || typeof Z.add !== "function") return;
+                const newIds: any[] = [];
                 moves.forEach((m: any, idx: number) => {
                     try {
                         if (!Zotero.Items.exists(m.itemID)) return;
-                        Z.add({
+                        const added = Z.add({
                             type: m.isNote ? "note-unloaded" : "reader-unloaded",
                             data: { itemID: m.itemID },
                             select: idx === activeIdx,  // load + show the dragged tab (Firefox rule)
                             preventJumpback: true,
                         });
+                        if (added && added.id) newIds.push(added.id);
                     } catch (e) { Zotero.debug("[Weavero] _wvWTMoveSelectionToMain open err: " + e); }
                 });
+                try { (this as any)._wvTGDbg("moveSelToMain: added=" + newIds.join(",") + " active#" + activeIdx + " moves=" + moves.map((m: any) => m.id + ":" + m.itemID).join(",")); } catch (e) {}
+                // The moved tabs stay MULTI-SELECTED in the main window (Firefox's
+                // addRangeToMultiSelectedTabs after a drop; the main->main move
+                // does the same). _applyTabGroups re-syncs the classes on every
+                // tab-bar render, so the set is what matters (MJT 2026-10-16:
+                // only the dragged tab was selected after the drop).
+                if (newIds.length > 1) {
+                    try {
+                        if (!mainWin._wvSelTabIDs) mainWin._wvSelTabIDs = new Set();
+                        mainWin._wvSelTabIDs.clear();
+                        for (const nid of newIds) mainWin._wvSelTabIDs.add(nid);
+                        // The tab nodes render after this task (React), and the
+                        // observer's re-sync is gated on tab groups being on: mark
+                        // them now, next frame, and once more after the render.
+                        const sync = () => { try { this._wvTabMultiSelSync(mainWin); } catch (e) {} };
+                        sync();
+                        try { mainWin.requestAnimationFrame(sync); } catch (e) {}
+                        setT(sync, 300);
+                        setT(() => { try { (this as any)._wvTGDbg("moveSelToMain +300: sel=" + Array.from(mainWin._wvSelTabIDs || []).join(",") + " marked=" + Array.from(mainWin.document.querySelectorAll("#tab-bar-container .tab.wv-multisel")).map((t: any) => t.dataset.id).join(",") + " selected=" + mainWin.Zotero_Tabs.selectedID); } catch (e) {} }, 320);
+                    } catch (e) {}
+                }
             };
             const setT = (mainWin && mainWin.setTimeout) ? mainWin.setTimeout.bind(mainWin) : setTimeout;
             setT(open, 150);
@@ -8163,6 +7752,7 @@ class _ReaderMixin {
             // tab with a live reader), else classic mount+close. Sequential
             // (await) so concurrent docshell surgery can't corrupt readers.
             (async () => {
+                const landedIds: any[] = [];
                 for (const m of moves) {
                     let done = false;
                     try {
@@ -8198,11 +7788,22 @@ class _ReaderMixin {
                         const landed = !!(targetWin._wvWT && targetWin._wvWT.tabs
                             && targetWin._wvWT.tabs.length > before);
                         if (landed && m.id != null) { try { this._wvWTCloseTab(srcWin, m.id); } catch (e) {} }
+                        done = landed;
                     }
+                    if (done && m.id != null) landedIds.push(m.id);   // the id is preserved across the move
                 }
                 // Closing the source tab removes its element before its dragend
                 // fires, so clear every window's drop ghost here too.
                 try { this._wvWTHideAllDropIndicators(); } catch (e) {}
+                // The moved tabs stay MULTI-SELECTED in the destination strip
+                // (Firefox's addRangeToMultiSelectedTabs after a drop; the
+                // main->main move does the same). MJT 2026-10-16.
+                if (landedIds.length > 1) {
+                    try {
+                        targetWin._wvSelWTabIDs = new Set(landedIds);
+                        plugin._wvWTMultiSelSync(targetWin);
+                    } catch (e) {}
+                }
             })();
         } catch (e) { Zotero.debug("[Weavero] _wvWTHandleCrossWindowDrop err: " + e); }
     }
@@ -8953,7 +8554,7 @@ class _ReaderMixin {
                     const inFlight = (((Zotero as any).Reader && (Zotero as any).Reader._readers) || []).some((r: any) => {
                         try {
                             return r.itemID === itemID && r._window && r._window.document
-                                && r._window.document.documentElement.getAttribute("windowtype") === "zotero:reader";
+                                && wvWinType(r._window) === "zotero:reader";
                         } catch (e) { return false; }
                     });
                     if (inFlight) return;
@@ -8983,7 +8584,7 @@ class _ReaderMixin {
             return (((Zotero as any).Reader && (Zotero as any).Reader._readers) || []).some((r: any) => {
                 try {
                     return r.itemID === itemID && r._window && r._window.document
-                        && r._window.document.documentElement.getAttribute("windowtype") === "zotero:reader";
+                        && wvWinType(r._window) === "zotero:reader";
                 } catch (e) { return false; }
             });
         } catch (e) { return false; }
@@ -9010,7 +8611,7 @@ class _ReaderMixin {
             const inFlight = (itemID: any) => (((Zotero as any).Reader && (Zotero as any).Reader._readers) || []).some((r: any) => {
                 try {
                     return r.itemID === itemID && r._window && r._window.document
-                        && r._window.document.documentElement.getAttribute("windowtype") === "zotero:reader";
+                        && wvWinType(r._window) === "zotero:reader";
                 } catch (e) { return false; }
             });
             for (const itemID of ids) {
@@ -9549,7 +9150,7 @@ class _ReaderMixin {
             const ownerOf = (id: any) => {
                 try {
                     const r: any = (((Zotero as any).Reader && (Zotero as any).Reader._readers) || []).find((x: any) => x.itemID === id && x._window && !before.has(x._window)
-                        && x._window.document && x._window.document.documentElement.getAttribute("windowtype") === "zotero:reader");
+                        && wvWinType(x._window) === "zotero:reader");
                     return r ? r._window : null;
                 } catch (e) { return null; }
             };
@@ -10178,9 +9779,7 @@ class _ReaderMixin {
                     // AND its history tail (issue #28 audit, 2026-08-04): this is
                     // the wvpos-link / interlink arrival navigator, and without
                     // the push the Back button never learns about the jump.
-                    try { if (typeof view._onManualNavigation === "function") view._onManualNavigation(); } catch (e) {}
-                    try { view._lastNavigationTime = Date.now(); } catch (e) {}
-                    try { (this as any)._wvReaderPushHistoryPoint(view); } catch (e) {}
+                    try { (this as any)._wvReaderMarkNav(view); } catch (e) {}
                     view.navigateToPosition(location.position);
                 } else if (typeof view.navigate === "function") {
                     await view.navigate(location);
@@ -10209,7 +9808,7 @@ class _ReaderMixin {
                     try {
                         if (typeof Components !== "undefined" && Components.utils
                             && typeof Components.utils.cloneInto === "function") {
-                            hlPos = Components.utils.cloneInto(plain, view._iframeWindow);
+                            hlPos = wvCloneFor(plain, view._iframeWindow);
                         }
                     } catch (e) {}
                     // Wait for the destination page to finish rendering (renderingState
@@ -10328,7 +9927,7 @@ class _ReaderMixin {
             const win = view && view._iframeWindow;
             if (win && typeof Components !== "undefined" && Components.utils
                 && typeof Components.utils.cloneInto === "function") {
-                return Components.utils.cloneInto(obj, win);
+                return wvCloneFor(obj, win);
             }
         } catch (e) {}
         return obj;
@@ -10393,7 +9992,7 @@ class _ReaderMixin {
             const vp = pageView.viewport.convertToViewportPoint(cx, cy);
             const doc = win.document;
             const R = 8;   // ~Zotero's 7pt dot, a touch larger for screen
-            const dot = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+            const dot = wvHtmlEl(doc, "div");
             dot.className = "wv-reader-target-dot";
             dot.style.cssText = "position:absolute;z-index:2147483646;pointer-events:none;"
                 + "width:" + (R * 2) + "px;height:" + (R * 2) + "px;border-radius:50%;"
@@ -10632,7 +10231,7 @@ class _ReaderMixin {
                     // Ctrl on Win/Linux, Cmd (meta) on macOS (where Ctrl+click
                     // is the OS context-menu gesture); Shift for the window
                     // variant. Require exactly one (ignore neither / both).
-                    const ctrl = Zotero.isMac ? event.metaKey : event.ctrlKey;
+                    const ctrl = wvAccel(event);
                     const shift = event.shiftKey;
                     if (ctrl === shift) return;
                     // Closures go stale across a hot-reload — resolve the live
@@ -10742,7 +10341,7 @@ class _ReaderMixin {
                     };
                     const track = (e) => {
                         try {
-                            const mod = !!((Zotero.isMac ? e.metaKey : e.ctrlKey) || e.shiftKey);
+                            const mod = !!(wvAccel(e) || e.shiftKey);
                             win._wvLinkMod = mod;
                             if (mod && (view._overlayPopup || view._selectedOverlay)) hide();
                         } catch (er) {}
@@ -10771,7 +10370,7 @@ class _ReaderMixin {
             const clearSelIfModLink = (event) => {
                 try {
                     if (event.button !== 0) return;
-                    const ctrl = Zotero.isMac ? event.metaKey : event.ctrlKey;
+                    const ctrl = wvAccel(event);
                     const shift = event.shiftKey;
                     if (ctrl === shift) return;   // need exactly one modifier
                     if (typeof view.pointerEventToPosition !== "function"
@@ -10823,7 +10422,7 @@ class _ReaderMixin {
             const handler = (event) => {
                 try {
                     if (event.button !== 0) return;
-                    const ctrl = Zotero.isMac ? event.metaKey : event.ctrlKey;
+                    const ctrl = wvAccel(event);
                     const shift = event.shiftKey;
                     if (ctrl === shift) return;   // exactly one modifier
                     // Closures go stale across a hot-reload — resolve live
@@ -11497,10 +11096,8 @@ class _ReaderMixin {
         const s = idoc.createElement("style");
         s.id = "weavero-reader-styles";
         s.textContent = [
-            ":root { --wv-link-http: #1a73e8;"
-                + " --wv-link-zotero: #8b4513; --wv-link-app: #9333ea; }",
-            ":root.wv-ui-dark { --wv-link-http: #8ab4f8;"
-                + " --wv-link-zotero: #cd853f; --wv-link-app: #c084fc; }",
+            ":root { " + wvLinkVars("light") + " }",
+            ":root.wv-ui-dark { " + wvLinkVars("dark") + " }",
             ".wv-url-span { cursor: pointer !important; }",
             ".wv-url-span.wv-link-http   { color: var(--wv-link-http); }",
             ".wv-url-span.wv-link-zotero { color: var(--wv-link-zotero); }",
@@ -12183,7 +11780,7 @@ class _ReaderMixin {
             // EVERY main window — a theme flip while a background window was
             // open left that window in the old mode.
             try {
-                const mains = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+                const mains = wvMainWins();
                 for (const w of mains) {
                     const d = w && w.document;
                     if (d && d.documentElement) d.documentElement.classList.toggle("wv-ui-dark", dark);
@@ -12854,7 +12451,7 @@ class _ReaderMixin {
         // PDFs ended up in the page-fallback host (ring-traced 2026-08-01;
         // same fix as the pin's own offset observer in reader-panels.ts).
         const Cu: any = (Components as any).utils;
-        const obsInit = Cu ? Cu.cloneInto({ attributes: true, attributeFilter: ["style"] }, win)
+        const obsInit = Cu ? wvCloneFor({ attributes: true, attributeFilter: ["style"] }, win)
             : { attributes: true, attributeFilter: ["style"] };
         const obs = new win.MutationObserver(reposition);
         obs.observe(pdfViewer, obsInit);
@@ -14737,10 +14334,7 @@ class _ReaderMixin {
      *  true) so link colours are consistent across the reader sidebar and
      *  the item pane. Off = leave AM's anchors in AM's own colour. */
     _getRecolorAmLinks() {
-        try {
-            const v = Zotero.Prefs.get("weavero.recolorAmLinks");
-            return v === undefined ? true : !!v;
-        } catch (e) { return true; }
+        return (this as any)._wvPref("recolorAmLinks");
     }
 
     /** Restore a way to create a comment when Annotation Markdown has
@@ -14864,9 +14458,7 @@ class _ReaderMixin {
                             || row.querySelector(".head")
                             || row.querySelector("header")
                             || row;
-                const btn = idoc.createElementNS(
-                    "http://www.w3.org/1999/xhtml", "button");
-                btn.className = BTN_CLASS + " " + BTN_SIDEBAR_CLASS;
+                const btn = wvHtmlEl(idoc, "button", BTN_CLASS + " " + BTN_SIDEBAR_CLASS);
                 btn.setAttribute("data-wv-icon-reason", "overflow");
                 this._applyIconState(btn, comment);
                 btn.addEventListener("click", e => {
@@ -15050,7 +14642,7 @@ class _ReaderMixin {
             // the window type, NOT on tabID being unset: a reader instance moved
             // in by a no-reload swap carries a synthetic `wvwt-…` tabID, which
             // used to make this bail → the menubar stayed visible in those windows.
-            try { if (win.document.documentElement.getAttribute("windowtype") !== "zotero:reader") return; } catch (e) { return; }
+            try { if (wvWinType(win) !== "zotero:reader") return; } catch (e) { return; }
             if ((Zotero as any).isMac) return;
             if (win._wvCompactMenubar) return;
             const doc = win.document;
@@ -15078,9 +14670,7 @@ class _ReaderMixin {
             // target. The menubar gets a left-pad to leave room for it.
             try {
                 if (!menubar.querySelector(".wv-reader-menubar-icon")) {
-                    const HTML = "http://www.w3.org/1999/xhtml";
-                    const iconEl = doc.createElementNS(HTML, "span");
-                    iconEl.className = "wv-reader-menubar-icon";
+                    const iconEl = wvHtmlEl(doc, "span", "wv-reader-menubar-icon");
                     iconEl.setAttribute("aria-hidden", "true");
                     menubar.insertBefore(iconEl, menubar.firstChild);
                     stash.menubarIcon = iconEl;
@@ -15093,118 +14683,17 @@ class _ReaderMixin {
             // Inject collapsing CSS into this reader window's document.
             this._ensureReaderCompactMenubarStyles(doc);
 
-            // Toggle the menubar on the *release* of the Alt key, faithfully
-            // mirroring Firefox's native MenuBarListener (dom/xul/
-            // MenuBarListener.cpp): the reveal fires only when Alt was pressed
-            // ALONE — no other modifier down and no other key pressed in
-            // between — so Ctrl+Alt (and any Alt+key shortcut) never reveals it
-            // accidentally. Two-state machine, like Firefox's mAccessKeyDown /
-            // mAccessKeyDownCanceled:
-            //   altDown  — a bare Alt press is in progress.
-            //   canceled — a modifier / other key / mouse press intervened, so
-            //              the pending toggle is voided until Alt is released.
-            // Esc collapses only when no menu is open; mousedown outside
-            // collapses (and voids a pending reveal).
-            let altDown = false;      // ~ mAccessKeyDown
-            let canceled = false;     // ~ mAccessKeyDownCanceled
-            const hasOtherMod = (e: any) => !!(e.ctrlKey || e.shiftKey || e.metaKey);
+            // Alt-up toggles the menubar: lib/menubar.ts, Firefox's
+            // MenuBarListener model, the one machine for the main, reader and
+            // note windows. Its key handlers are forwarded from the reader
+            // iframe's document below (keys inside the reader app never reach
+            // this window's listeners).
             const isDead = () => {
                 try { return !win || win.closed; } catch (e) { return true; }
             };
             const isCollapsed = () => menubar.getAttribute("wv-compact-hidden") === "true";
-            const collapse = () => {
-                try { if (!isDead()) menubar.setAttribute("wv-compact-hidden", "true"); }
-                catch (e) {}
-            };
-            const MBLOG = (m: string) => { try { Zotero.debug("[Weavero][menubar:readerwin] " + m); } catch (er) {} };
-            const keyDown = (e: any) => {
-                try {
-                    if (isDead()) return;
-                    if (!altDown) {
-                        // Begin tracking only on a bare, non-repeat Alt press (no
-                        // other modifier). If the menubar is already visible, a
-                        // second Alt dismisses it IMMEDIATELY on keydown.
-                        if (e.key === "Alt" && !e.repeat && !hasOtherMod(e)) {
-                            if (!isCollapsed()) {
-                                MBLOG("keydown Alt: COLLAPSE (already visible)");
-                                collapse();
-                                return;
-                            }
-                            altDown = true;
-                            canceled = false;
-                            MBLOG("keydown Alt: tracking (bare)");
-                        }
-                        else if (e.key === "Alt" && !e.repeat) MBLOG("keydown Alt: ignored, other modifier down (ctrl=" + e.ctrlKey + " shift=" + e.shiftKey + " meta=" + e.metaKey + ")");
-                        return;
-                    }
-                    // Alt already held. Once canceled, stay canceled until keyup.
-                    if (canceled) return;
-                    // Any key other than a bare Alt auto-repeat means Alt is part
-                    // of a combo (e.g. Alt held, then Ctrl or a letter) — void it.
-                    const bareAltRepeat = e.key === "Alt" && !hasOtherMod(e);
-                    if (!bareAltRepeat) { canceled = true; MBLOG("keydown '" + e.key + "' cancels pending Alt toggle"); }
-                } catch (er) {}
-            };
-            const keyUp = (e: any) => {
-                try {
-                    if (isDead()) return;
-                    if (e.key !== "Alt") return;   // only the access key toggles
-                    const act = altDown && !canceled && !hasOtherMod(e);
-                    if (!act) MBLOG("keyup Alt: no toggle (altDown=" + altDown + " canceled=" + canceled + ")");
-                    altDown = false;
-                    canceled = false;
-                    if (!act) return;
-                    // Reveal if hidden, collapse if already visible (second Alt).
-                    MBLOG("keyup Alt: " + (isCollapsed() ? "REVEAL" : "COLLAPSE (toggle off)"));
-                    if (isCollapsed()) menubar.removeAttribute("wv-compact-hidden");
-                    else collapse();
-                } catch (er) {}
-            };
-            const escapeKey = (e: any) => {
-                try {
-                    if (isDead()) return;
-                    if (e.key !== "Escape" || isCollapsed()) return;
-                    const openMenu = menubar.querySelector("menu[open='true'], menupopup[state='open']");
-                    if (openMenu) return;
-                    collapse();
-                } catch (er) {}
-            };
-            const docMouseDown = (e: any) => {
-                try {
-                    if (isDead()) return;
-                    // A mouse press while Alt is held voids the pending reveal
-                    // (Firefox's MouseDown handler sets mAccessKeyDownCanceled).
-                    if (altDown) canceled = true;
-                    if (isCollapsed()) return;
-                    const t = e.target;
-                    if (!t || typeof t.closest !== "function") return;
-                    if (t.closest("menubar")) return;
-                    if (t.closest("menupopup")) return;
-                    collapse();
-                } catch (er) {}
-            };
-            // When a menu item is activated (Tools → Plugins, File →
-            // Print, etc.), retract the menubar — Firefox behaviour.
-            // The action still runs; we listen on the bubble phase so
-            // the menuitem's own oncommand handler executes first.
-            const menuCommand = (e: any) => {
-                try {
-                    if (isDead() || isCollapsed()) return;
-                    if (!menubar.contains(e.target)) return;
-                    collapse();
-                } catch (er) {}
-            };
-
-            win.addEventListener("keydown", keyDown, true);
-            win.addEventListener("keyup", keyUp, true);
-            win.addEventListener("keydown", escapeKey, true);
-            win.addEventListener("mousedown", docMouseDown, true);
-            menubar.addEventListener("command", menuCommand);
-            stash.keyDown = keyDown;
-            stash.keyUp = keyUp;
-            stash.escapeKey = escapeKey;
-            stash.docMouseDown = docMouseDown;
-            stash.menuCommand = menuCommand;
+            const alt = wvAltReveal({ win, menubar, tag: "menubar:readerwin" });
+            stash.altOff = alt.off;
             stash.menubar = menubar;
 
             // The reader window's "toolbar" (page nav, annotation tools,
@@ -15248,7 +14737,7 @@ class _ReaderMixin {
                     const onEvt = (label: string) => (e: any) => {
                         try {
                             if (isDead() || isCollapsed()) return;
-                            collapse();
+                            alt.collapse();
                         } catch (er) {
                             Zotero.debug("[Weavero] compact menubar evt err: " + er);
                         }
@@ -15270,9 +14759,9 @@ class _ReaderMixin {
                     // never reveal. We re-attach those handlers here on
                     // the iframe doc as well; they manipulate the
                     // chrome-doc menubar element either way.
-                    const kdInIframe = (e: any) => { try { stash.keyDown(e); } catch (er) {} };
-                    const kuInIframe = (e: any) => { try { stash.keyUp(e); } catch (er) {} };
-                    const escInIframe = (e: any) => { try { stash.escapeKey(e); } catch (er) {} };
+                    const kdInIframe = (e: any) => { try { alt.keyDown(e); } catch (er) {} };
+                    const kuInIframe = (e: any) => { try { alt.keyUp(e); } catch (er) {} };
+                    const escInIframe = (e: any) => { try { alt.escapeKey(e); } catch (er) {} };
                     ifDoc.addEventListener("keydown", kdInIframe, true);
                     ifDoc.addEventListener("keyup", kuInIframe, true);
                     ifDoc.addEventListener("keydown", escInIframe, true);
@@ -15385,6 +14874,9 @@ class _ReaderMixin {
             // by menu-bar hiding — so we deliberately do NOT touch them here,
             // or reverting the menu-bar hide would wipe the title-bar swap.
 
+            // The Alt-reveal machine (lib/menubar.ts); the per-handler removals
+            // below serve a stash left by a build before 2026-10-21.
+            try { stash.altOff?.(); } catch (e) {}
             try { if (stash.keyDown) win.removeEventListener("keydown", stash.keyDown, true); } catch (e) {}
             try { if (stash.keyUp) win.removeEventListener("keyup", stash.keyUp, true); } catch (e) {}
             try { if (stash.escapeKey) win.removeEventListener("keydown", stash.escapeKey, true); } catch (e) {}
@@ -15429,14 +14921,11 @@ class _ReaderMixin {
             const strip = doc.querySelector(".wv-window-tabstrip");
             if (!strip) return;                  // tab strip not created yet
             if (strip.querySelector(".wv-window-controls")) return;   // already added
-
-            const HTML = "http://www.w3.org/1999/xhtml";
-            const controls = doc.createElementNS(HTML, "div");
+            const controls = wvHtmlEl(doc, "div");
             controls.className = "wv-window-controls";
 
             const mkCtl = (cls: string, label: string, handler: () => void) => {
-                const btn = doc.createElementNS(HTML, "button");
-                btn.className = "wv-window-control " + cls;
+                const btn = wvHtmlEl(doc, "button", "wv-window-control " + cls);
                 btn.setAttribute("title", label);
                 btn.setAttribute("tabindex", "-1");
                 btn.setAttribute("aria-label", label);
@@ -16156,7 +15645,6 @@ class _ReaderMixin {
         try {
             if (!win || !win.document || !stripEl) return null;
             const doc = win.document;
-            const HTML = "http://www.w3.org/1999/xhtml";
             // Re-use if already present.
             let btn = stripEl.querySelector(":scope > .wv-hamburger-btn");
             if (btn) return btn;
@@ -16635,13 +16123,12 @@ class _ReaderMixin {
             //    namespaced children in chrome (HTML parser inside an
             //    XHTML chrome doc treats <svg> as an HTML element and the
             //    lines never paint).
-            btn = doc.createElementNS(HTML, "button");
+            btn = wvHtmlEl(doc, "button");
             btn.className = "wv-hamburger-btn";
             btn.setAttribute("title", "Open application menu");
             btn.setAttribute("tabindex", "-1");
             btn.setAttribute("aria-label", "Open application menu");
-            const SVG_NS = "http://www.w3.org/2000/svg";
-            const svg = doc.createElementNS(SVG_NS, "svg");
+            const svg = wvSvgEl(doc, "svg");
             // 16×16 viewBox — Firefox's exact app-menu icon. Three filled
             // rects (16-wide × 1-tall) at y=2/7/12 (centerlines 2.5/7.5/
             // 12.5), 0.5-radius rounded ends, 5-unit spacing. Bars span
@@ -16653,13 +16140,7 @@ class _ReaderMixin {
             svg.setAttribute("viewBox", "0 0 16 16");
             svg.setAttribute("aria-hidden", "true");
             for (const y of ["2", "7", "12"]) {
-                const rect = doc.createElementNS(SVG_NS, "rect");
-                rect.setAttribute("x", "0");
-                rect.setAttribute("y", y);
-                rect.setAttribute("width", "16");
-                rect.setAttribute("height", "1");
-                rect.setAttribute("rx", "0.5");
-                svg.appendChild(rect);
+                const rect = wvSvgEl(doc, "rect", { x: "0", y, width: "16", height: "1", rx: "0.5" }, svg);
             }
             btn.appendChild(svg);
             btn.addEventListener("click", (e: any) => {
@@ -17009,80 +16490,24 @@ class _ReaderMixin {
                 const str = (key: string, fallback: string, n?: number) => {
                     try { return (Zotero as any).getString(key, [], n); } catch (e) { return fallback; }
                 };
-                // Resolve the tab's attachment (the tab item IS the attachment for
-                // a reader; fall back to the best child attachment otherwise).
-                const targetAttachment = () => {
-                    try {
-                        const it: any = Zotero.Items.get(targetItemID());
-                        if (!it) return null;
-                        return (it.isAttachment && it.isAttachment()) ? it : (this as any)._wvGetBestAttachmentSync(it);
-                    } catch (e) { return null; }
-                };
-
-                // "View Online" + "Show File" — the items-list menu's pair
-                // (globe / folder-open icons), applied to the tab's item.
-                const targetViewOnlineURL = () => {
-                    try {
-                        const it: any = Zotero.Items.get(targetItemID());
-                        if (!it) return null;
-                        const att = (it.isAttachment && it.isAttachment()) ? it : null;
-                        const top = att && att.parentID ? Zotero.Items.get(att.parentID) : it;
-                        let url = (top && top.getField) ? (top.getField("url") || "") : "";
-                        if (!url && top && top.getField) {
-                            const doi = top.getField("DOI");
-                            const clean = doi && (Zotero.Utilities as any).cleanDOI
-                                ? (Zotero.Utilities as any).cleanDOI(doi) : null;
-                            if (clean) url = "https://doi.org/" + clean;
-                        }
-                        if (!url && att && att.getField) url = att.getField("url") || "";
-                        return url || null;
-                    } catch (e) { return null; }
-                };
-                const viewOnline = mkItem("View Online", () => {
-                    try {
-                        const url = targetViewOnlineURL();
-                        const mw: any = Zotero.getMainWindow();
-                        if (url && mw && mw.ZoteroPane) { mw.ZoteroPane.loadURI(url); mw.focus(); }
-                    } catch (e) {}
-                }, {
-                    icon: "chrome://zotero/skin/16/universal/globe.svg",
-                    getVisible: () => { try { return !!targetViewOnlineURL(); } catch (e) { return false; } },
-                });
-                const showFile = mkItem((Zotero as any).isMac ? "Show in Finder" : "Show File", async () => {
-                    try {
-                        const att: any = targetAttachment();
-                        const mw: any = Zotero.getMainWindow();
-                        if (att && mw && mw.ZoteroPane) await mw.ZoteroPane.showAttachmentInFilesystem(att.id);
-                    } catch (e) {}
-                }, {
-                    icon: "chrome://zotero/skin/16/universal/folder-open.svg",
-                    getVisible: () => {
-                        try { const a: any = targetAttachment(); return !!(a && a.isFileAttachment && a.isFileAttachment()); }
-                        catch (e) { return false; }
-                    },
-                });
-
-                // "Open in External Viewer" — launch the attachment in the OS app
-                // (Zotero.launchFile), gated by enableOpenExternalViewer. Same
-                // entry the main-window tab menu adds; icon is the attachment-type
-                // glyph (set per-target in popupshowing).
-                const externalViewer = mkItem("Open in External Viewer", async () => {
-                    try {
-                        const att: any = targetAttachment();
-                        if (!att) return;
-                        let path = null;
-                        try { path = await att.getFilePathAsync(); } catch (_) {}
-                        if (path) { try { (Zotero as any).launchFile(path); } catch (_) {} }
-                    } catch (e) {}
-                }, {
-                    icon: wvIcon,
-                    getVisible: () => {
-                        try {
-                            if (!((this as any)._getEnableOpenExternalViewer && (this as any)._getEnableOpenExternalViewer())) return false;
-                            return !!targetAttachment();
-                        } catch (e) { return false; }
-                    },
-                });
+                // "View Online", "Show File", "Open in External Viewer": the one
+                // list in tabs.ts (WV_TAB_MENU_ENTRIES) as XUL items; label and
+                // visibility per target, the icon refreshed in popupshowing.
+                const targetItem = () => { try { return Zotero.Items.get(targetItemID()) || null; } catch (e) { return null; } };
+                const lpE: any = this;
+                const entryItems: any = {};
+                for (const en of lpE._wvTabMenuEntries()) {
+                    const mi = mkItem(en.label(lpE), () => {
+                        const r: any = en.run(lpE, targetItem());
+                        if (r && typeof r.catch === "function") r.catch((e: any) => Zotero.debug("[Weavero] reader tab menu " + en.key + " err: " + e));
+                    }, {
+                        icon: en.icon(lpE, null) || wvIcon,
+                        getVisible: () => { try { return en.visible(lpE, targetItem()); } catch (e) { return false; } },
+                    });
+                    mi.setAttribute(en.marker, "1");
+                    entryItems[en.key] = mi;
+                }
+                const viewOnline = entryItems.viewOnline, showFile = entryItems.showFile, externalViewer = entryItems.externalViewer;
 
                 // "Add Tab(s) to Group" submenu + "Remove from Tab Group" —
                 // group commands for deck tabs, multi-select aware. The popup
@@ -17205,6 +16630,9 @@ class _ReaderMixin {
                 copyAs.setAttribute("label", "Copy As");
                 copyAs.setAttribute("class", "menu-iconic");
                 if (wvIcon) copyAs.setAttribute("image", wvIcon);
+                // Gated by the URI-utilities option like the main window's
+                // (2026-10-21; before, this window showed it regardless).
+                (copyAs as any)._wvGetVisible = () => { try { return !!((this as any)._getEnableCopyItemLink && (this as any)._getEnableCopyItemLink()); } catch (e) { return false; } };
                 const copyAsPop = doc.createXULElement("menupopup");
                 copyAs.appendChild(copyAsPop);
                 copyAsPop.addEventListener("popupshowing", (ev: any) => {
@@ -17395,9 +16823,11 @@ class _ReaderMixin {
                         } catch (e) {}
                         try { const t = targetTab(); pinTab.setAttribute("label", (t && t.pinned) ? "Unpin Tab" : "Pin Tab"); } catch (e) {}
                         try {
-                            const att: any = targetAttachment();
-                            const img = att ? (this as any)._wvAttachmentIconURL(att) : null;
-                            if (img) { externalViewer.setAttribute("class", "menuitem-iconic"); externalViewer.setAttribute("image", img); }
+                            const it = targetItem();
+                            for (const en of lpE._wvTabMenuEntries()) {
+                                const img = en.icon(lpE, it);
+                                if (img) { entryItems[en.key].setAttribute("class", "menuitem-iconic"); entryItems[en.key].setAttribute("image", img); }
+                            }
                         } catch (e) {}
                         // "Show in Library" — library-aware icon, exactly as the main
                         // window adds it (_setupTabExternalRepositioner → _bmShowInLibraryIcon:
@@ -17580,7 +17010,7 @@ class _ReaderMixin {
     _ensureReaderCompactMenubarStyles(doc) {
         try {
             wvRemoveStyle(doc, "wv-reader-compact-menubar-styles");   // always replaced (src-ts.md sheet replace)
-            const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+            const style = wvHtmlEl(doc, "style");
             style.id = "wv-reader-compact-menubar-styles";
             style.textContent = [
                 /* Hidden state — height-only collapse so menus stay
@@ -18200,11 +17630,11 @@ class _ReaderMixin {
             const extraScale = cur > 1 ? 1 + (cur - 1) * 1.8 : cur;
             // Waive after EVERY await/content call — promise resolution
             // re-Xrays (the 2026-08-27 scan lesson).
-            const vp1 = Cu.waiveXrays(page.getViewport(Cu.cloneInto({ scale: 1 }, iwin)));
+            const vp1 = Cu.waiveXrays(page.getViewport(wvCloneFor({ scale: 1 }, iwin)));
             let scale = dpr * extraScale;
             const maxScale = Math.sqrt(viewer.maxCanvasPixels / (vp1.width * vp1.height));
             if (scale > maxScale) scale = maxScale;
-            const vpS = Cu.waiveXrays(page.getViewport(Cu.cloneInto({ scale }, iwin)));
+            const vpS = Cu.waiveXrays(page.getViewport(wvCloneFor({ scale }, iwin)));
             // Trim origin from the ONE known correspondence: the destination
             // dot's centre is at popup.x/y in final image coords AND at a
             // computable viewport point.
@@ -18224,7 +17654,7 @@ class _ReaderMixin {
             box.style.cssText = "position:absolute;left:0;top:0;width:" + img.clientWidth
                 + "px;height:" + img.clientHeight + "px;pointer-events:none;z-index:2;";
             for (const a of links) {
-                const vpR = Cu.waiveXrays(vpS.convertToViewportRectangle(Cu.cloneInto([a.rect[0], a.rect[1], a.rect[2], a.rect[3]], iwin)));
+                const vpR = Cu.waiveXrays(vpS.convertToViewportRectangle(wvCloneFor([a.rect[0], a.rect[1], a.rect[2], a.rect[3]], iwin)));
                 const r = this._wvPreviewMapRect([vpR[0], vpR[1], vpR[2], vpR[3]], tx, ty, dpr, cssRatioX, cssRatioY);
                 if (r.width <= 0 || r.height <= 0) continue;
                 const z = idoc.createElement("div");

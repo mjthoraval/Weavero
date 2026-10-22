@@ -24,12 +24,18 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
 import { BOOKMARK_PATH, BOOKMARK_PATH_14, BOOKMARK_PATH_20, SCHEME_SVG_TEMPLATE, URL_GLOBE_SVG, URL_EXTERNAL_SVG, WV_FUNNEL_DATA_URI, WV_FUNNEL_PATH, WV_FUNNEL_STEM_COLOR } from "./constants";
-import { wvPopupHost, wvDismissTooltip, wvSetBoolAttr, wvBoolAttrOn, wvReaderMenuEvent, wvWithin } from "../lib/dom";
+import { wvPopupHost, wvDismissTooltip, wvSetBoolAttr, wvBoolAttrOn, wvReaderMenuEvent, wvWithin, wvIsTextEntry, wvHtmlEl } from "../lib/dom";
 import { wvLivePlugin } from "../lib/live";
 import { wvStoreWrite, wvStoreRead } from "../lib/store";
 import { wvTimeout, wvClearTimeout } from "../lib/timers";
-import { wvInjectStyle, wvRemoveStyle } from "../lib/style";
+import { wvMenuItem } from "../lib/menu";
+import { wvInjectStyle, wvRemoveStyle, wvFilterTileRules } from "../lib/style";
 import { wvListen, wvUnlisten, wvListenKeys } from "../lib/listen";
+import { wvMainWins, wvWinType } from "../lib/windows";
+import { wvAccel, wvAccelAny } from "../lib/keys";
+import { wvCloneFor } from "../lib/xray";
+import { wvSvgEl } from "../lib/svg";
+import { wvLinkClassRules } from "../lib/links";
 
 declare const Components: any;
 declare const Services: any;
@@ -58,7 +64,25 @@ const RP_BM_CTX_WIRE_V = 21;   // v20: the strip's history menu opens at the poi
 // already heals currently-stale tabs.)
 const RP_PANELS_WIRE_V = 15;
 const RP_STYLE_ID = "wv-reader-panels-style";
-const NS_HTML_RP = "http://www.w3.org/1999/xhtml";
+
+// View -> Layout follows the tab (zotero#2814): the reader's panes.
+// "Sidebar" as agreed upstream in 2022 (dstillman / mrtcode); "Context
+// Pane" is Zotero's own name for the right pane -- its toggle tooltips in
+// the reader, the note editor and the sidenav all read "Toggle Context
+// Pane" (MJT 2026-10-15, over dstillman's 2022 "Context Pane"); plus
+// the handle's selector.
+// "Outline Pane" is Better Notes' (its toolbar button: "Toggle Outline
+// Pane"), shown in a note tab that has its outline (MJT 2026-10-15).
+const WV_LAYOUT_ITEMS: Array<[string, string]> = [
+    ["sidebar", "Sidebar"],
+    ["outline", "Outline Pane"],
+    ["pane", "Context Pane"],
+    ["selector", "Colour and Tag Selector"],
+];
+// Zotero's own Layout items: they toggle the LIBRARY's panes whatever the
+// tab (standalone.js onViewMenuItemClick) and are hidden in reader / note
+// tabs while the submenu is open.
+const WV_ZOTERO_LAYOUT_IDS = ["view-menuitem-collections-pane", "view-menuitem-item-pane", "view-menuitem-tag-selector"];
 
 // Sidebar/box content-type icon for outline entries tagged `kind:"box"` -- a
 // framed panel (rounded rect + header rule). Raw inline SVG using currentColor
@@ -249,33 +273,10 @@ const RP_POPUP_CSS = [
     "#" + RP_FILTER_POPUP_ID + " .wv-rf-colors-row .wv-filter-options{flex-wrap:nowrap;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-rf-colsep{flex:1 0 auto;min-width:16px;display:flex;justify-content:center;align-self:stretch;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-rf-colsep .wv-filter-vertical-separator{margin:2px 0;}",
-    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt{display:inline-flex;align-items:center;gap:6px;",
-    "  padding:2px 8px;border-radius:4px;cursor:pointer;border:1px solid rgba(127,127,127,0.4);",
-    "  background:transparent;color:inherit;font:inherit;font-size:12px;}",
-    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt:hover{background:rgba(127,127,127,0.08);}",
-    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt[data-selected=\"true\"]{",
-    "  background:rgba(94,106,210,0.34);border-color:rgba(94,106,210,0.95);",
-    "  box-shadow:inset 0 0 0 1px rgba(94,106,210,0.55);}",
-    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt[data-selected=\"true\"]:hover{background:rgba(94,106,210,0.45);}",
-    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt[data-excluded=\"true\"]{",
-    "  border-color:rgba(220,72,72,0.7);",
-    "  background:linear-gradient(to top right,transparent calc(50% - 1px),",
-    "    rgba(220,72,72,0.85) calc(50% - 1px),rgba(220,72,72,0.85) calc(50% + 1px),",
-    "    transparent calc(50% + 1px)),rgba(220,72,72,0.10);}",
-    // height:28px + box-sizing:border-box pins every icon-only tile at
-    // the same outer height as the library popup. Without this clamp
-    // the reader iframe's higher default line-height (16.8 vs 16 in
-    // chrome) gave color tiles 22 tall and Has Comment 32 tall, while
-    // annotation-type icons were 26 — mixed visual heights across what
-    // should read as one row of tiles. Children center via flex
-    // align-items, so the SVG/swatch inside is unaffected.
-    // 4 px around the 16-px glyph box, Zotero's own ratio for a glyph in a
-    // button (20-px icons in 28-px toolbar buttons): a 26x26 tile. The old
-    // `4px 6px` in a 28-px box left 6/5 px to the box and 7/6 px to a colour
-    // swatch's painted square, which read as too airy (MJT, 2026-09-21).
-    // Same figure in the library popup (constants.ts), the tabs file-type
-    // popup (reader.ts) and the bookmarks chip popup below.
-    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt-icon{padding:4px;min-width:26px;height:26px;box-sizing:border-box;justify-content:center;gap:0;}",
+    // The option tiles (lib/style.ts wvFilterTileRules): the same set as the
+    // library popup, the reader-window file-type popup and the bookmarks
+    // chip popup below.
+    ...wvFilterTileRules("#" + RP_FILTER_POPUP_ID),
     // `_makeLinkSvg` builds a 1em×1em SVG so it scales with surrounding
     // text in reader badges. Inside a filter-popup tile (font-size:12px
     // → 12×12 icon) that ends up smaller than the 16×16 icons next to
@@ -343,7 +344,37 @@ const RP_POPUP_CSS = [
     // duplicates what the pane funnel does -- and its filter hides on the page
     // too. Hidden by default once the pane funnel is on; the Settings pane
     // brings it back (MJT, 2026-09-18). Class-gated so the pref decides.
-    "#sidebarContainer.wv-al-nonative #annotationsView #selector{display:none;}",
+    // Since 0.22.2 (issue #58) "hidden" is COLLAPSED to a handle: a centred
+    // pill drawn in the selector's own 8 px top padding, so NOTHING in
+    // Zotero's layout moves (MJT 2026-10-14: an in-flow handle row pushed
+    // the colours 6 px down). The handle is a zero-height button placed
+    // just BEFORE Zotero's #selector in #annotationsView -- outside the
+    // selector's scroll box, so it never scrolls away (Zotero caps the
+    // selector at 140 px), and a foreign sibling React appends the next
+    // selector after (it drops the whole #selector when the Selector
+    // unmounts: tags, more than one colour or more than one author). Its
+    // ::before is the 9 px band (border + padding) over the selector's top
+    // edge, the hit area; ::after the pill. Shown only while a selector
+    // follows it.
+    ".wv-sel-handle{position:relative;display:block;width:100%;height:0;margin:0;padding:0;border:0;background:transparent;",
+    "  overflow:visible;z-index:2;cursor:pointer;color:inherit;}",
+    ".wv-sel-handle:not(:has(+ #selector)){display:none;}",
+    ".wv-sel-handle::before{content:\"\";position:absolute;left:0;right:0;top:0;height:9px;}",
+    ".wv-sel-handle::after{content:\"\";position:absolute;left:50%;top:3px;width:32px;height:4px;margin-left:-16px;border-radius:2px;background:var(--fill-tertiary);}",
+    ".wv-sel-handle:hover::after{background:var(--fill-secondary);}",
+    // A colour, tag or author selected while collapsed: Zotero keeps filtering
+    // the pane AND the page, and nothing else says so.
+    ".wv-sel-handle[data-wv-mark=\"1\"]::after{background:var(--accent-blue);}",
+    // Collapsed: the selector is its border and top padding, 9 px, the
+    // pill over it; the children stay in the DOM (React's, and `.selected`
+    // still tells).
+    "#sidebarContainer.wv-al-nonative #annotationsView #selector > *{display:none;}",
+    "#sidebarContainer.wv-al-nonative #annotationsView #selector{padding-bottom:0;overflow:hidden;}",
+    // View -> Layout -> Colour and Tag Selector off: the selector GONE,
+    // handle included -- as the library's Tag Selector item hides the whole
+    // selector (MJT 2026-10-14). The menu's own state (annSelectorHidden),
+    // apart from the handle's fold.
+    "#sidebarContainer.wv-al-nosel #annotationsView #selector,#sidebarContainer.wv-al-nosel #annotationsView .wv-sel-handle{display:none;}",
     "#sidebarContainer:not(.wv-bm-tab-on):not(.wv-outline-tab-on):has(#annotationsView:not(.hidden)) .wv-al-actions{display:flex;}",
     // The native search box expands to a 130-px input INSIDE `.end`; with a
     // funnel beside it that squeezes to nothing, so the OPEN input drops to
@@ -564,6 +595,87 @@ const RP_BM_TAB_ON = "wv-bm-tab-on";
 const RP_OUTLINE_VIEW_TYPES = new Set(["pdf", "snapshot", "epub"]);
 const RP_OUTLINE_VIEW_CLASS = "wv-outline-reader-view";
 const RP_OUTLINE_TAB_ON = "wv-outline-tab-on";
+
+/** A keyboard-navigable row list of the reader sidebar -- the outline and the
+ *  Bookmarks tab -- as the one key handler sees it (survey 2026-10-06 §4,
+ *  line-for-line twins merged 2026-10-21). `rows` are the list's DOM rows in
+ *  order; the cursor is the `active` class, the multi-selection the
+ *  `selected` class mirrored in a Set of row keys on the reader. */
+interface WvListKeys {
+    kind: string;
+    viewClass: string;
+    rowClass: string;
+    active: string;
+    selected: string;
+    key(p: any, row: any): string | null;
+    sel(reader: any): Set<string>;
+    anchor(reader: any): string | null;
+    setAnchor(reader: any, key: string | null): void;
+    /** Remember the cursor outside the DOM (a list that re-renders on every store change). */
+    setCursor(reader: any, key: string | null): void;
+    /** The cursor row's index, -1 when the list has none. */
+    cursor(p: any, reader: any, rows: any[]): number;
+    navigate(p: any, reader: any, idoc: any, row: any): void;
+    edit(p: any, reader: any, idoc: any, row: any): void;
+    container(p: any, reader: any, row: any): { has: boolean; open: boolean };
+    depth(p: any, row: any): number;
+    /** Only called when the container's state differs from `open`. */
+    setOpen(p: any, reader: any, idoc: any, row: any, open: boolean): void;
+    setSelectionOpen(p: any, reader: any, idoc: any, open: boolean): void;
+}
+
+const WV_KEYS_OUTLINE: WvListKeys = {
+    kind: "outline",
+    viewClass: RP_OUTLINE_VIEW_CLASS,
+    rowClass: "wv-outline-row",
+    active: "wv-outline-active",
+    selected: "wv-outline-selected",
+    key: (p, row) => p._wvOutlineRowKey(row),
+    sel: (reader) => reader._wvOutlineSel || (reader._wvOutlineSel = new Set()),
+    anchor: (reader) => (reader._wvOutlineSelAnchor == null ? null : reader._wvOutlineSelAnchor),
+    setAnchor: (reader, key) => { reader._wvOutlineSelAnchor = key; },
+    setCursor: () => {},   // the outline's cursor lives in the DOM alone
+    cursor: (p, reader, rows) => rows.findIndex((r: any) => r.classList.contains("wv-outline-active")),
+    navigate: (p, reader, idoc, row) => p._wvOutlineNavigate(reader, idoc, row._wvOl.entry, row),   // sets active + jumps
+    edit: (p, reader, idoc, row) => p._wvOutlineBeginRename(reader, idoc, row._wvOl.entry, row._wvOl.index, row._wvOl.curatedView),
+    container: (p, reader, row) => {
+        const tw = row.querySelector(".wv-outline-twisty");
+        const has = !!(tw && !tw.classList.contains("wv-outline-leaf"));
+        return { has, open: has && !tw.classList.contains("wv-outline-collapsed") };
+    },
+    depth: (p, row) => Math.max(0, (row._wvOl && row._wvOl.entry.indentLevel) || 0),
+    setOpen: (p, reader, idoc, row, open) => { p._wvOutlineKeyExpand(reader, idoc, row, open); },
+    setSelectionOpen: (p, reader, idoc, open) => { p._wvOutlineKeyExpandSelection(reader, idoc, open); },
+};
+
+const WV_KEYS_BOOKMARKS: WvListKeys = {
+    kind: "bookmarks",
+    viewClass: RP_BM_VIEW_CLASS,
+    rowClass: "wv-bm-reader-row",
+    active: "wv-bm-reader-active",
+    selected: "wv-bm-reader-selected",
+    key: (p, row) => p._wvBmRowKey(row),
+    sel: (reader) => reader._wvBmSel || (reader._wvBmSel = new Set()),
+    anchor: (reader) => (reader._wvBmSelAnchor == null ? null : reader._wvBmSelAnchor),
+    setAnchor: (reader, key) => { reader._wvBmSelAnchor = key; },
+    setCursor: (reader, key) => { reader._wvBmActiveId = key; },   // persists across re-renders
+    // By the remembered id first (the classes are lost on every re-render), then the class.
+    cursor: (p, reader, rows) => {
+        let i = rows.findIndex((r: any) => p._wvBmRowKey(r) === reader._wvBmActiveId);
+        if (i < 0) i = rows.findIndex((r: any) => r.classList.contains("wv-bm-reader-active"));
+        return i;
+    },
+    navigate: (p, reader, idoc, row) => p._wvBmNavigateRow(reader, row),
+    edit: (p, reader, idoc, row) => p._wvBmEditRow(reader, idoc, row),
+    container: (p, reader, row) => {
+        const info = p._wvBmResolveRow(reader, row);
+        const has = !!(info && info.isFolder);
+        return { has, open: has && !!(info.entry && info.entry.expanded) };
+    },
+    depth: (p, row) => p._wvBmRowDepth(row),
+    setOpen: (p, reader, idoc, row) => { p._wvBmToggleFolder(reader, idoc, row); },
+    setSelectionOpen: (p, reader, idoc, open) => { p._wvBmSetSelectedFolders(reader, idoc, open); },
+};
 
 /** Put Edit > Undo / Redo back as Zotero had them after Weavero owned them
  *  for one popup (see _wvEditUndoMenuApply). Module-level so a popuphidden
@@ -1526,13 +1638,8 @@ const RP_BM_CSS = [
     // The rules below scope the filter-popup styling to the chip
     // popup container too — same declarations as the
     // `#wv-reader-filter-popup` rules above (lines ~113-141).
-    ".wv-bm-chip-popup .wv-filter-opt{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:4px;cursor:pointer;border:1px solid rgba(127,127,127,0.4);background:transparent;color:inherit;font:inherit;font-size:12px;}",
-    ".wv-bm-chip-popup .wv-filter-opt:hover{background:rgba(127,127,127,0.08);}",
-    ".wv-bm-chip-popup .wv-filter-opt[data-selected=\"true\"]{background:rgba(94,106,210,0.34);border-color:rgba(94,106,210,0.95);box-shadow:inset 0 0 0 1px rgba(94,106,210,0.55);}",
-    ".wv-bm-chip-popup .wv-filter-opt[data-selected=\"true\"]:hover{background:rgba(94,106,210,0.45);}",
-    ".wv-bm-chip-popup .wv-filter-opt[data-excluded=\"true\"]{background:linear-gradient(to top right,transparent calc(50% - 1px),rgba(220,72,72,0.95) calc(50% - 1px),rgba(220,72,72,0.95) calc(50% + 1px),transparent calc(50% + 1px)),rgba(220,72,72,0.16);border-color:rgba(220,72,72,0.95);}",
+    ...wvFilterTileRules(".wv-bm-chip-popup"),
     ".wv-bm-chip-popup .wv-bm-chip.excluded{background:rgba(220,72,72,0.16);border-color:rgba(220,72,72,0.95);text-decoration:line-through;}",
-    ".wv-bm-chip-popup .wv-filter-opt-icon{padding:4px;min-width:26px;height:26px;box-sizing:border-box;justify-content:center;gap:0;}",
     ".wv-bm-chip-popup .wv-chip-swatch{width:12px;height:12px;border-radius:50%;display:inline-block;box-sizing:border-box;border:1px solid rgba(0,0,0,0.15);}",
     ".wv-bm-chip-popup .wv-swatch-native{display:block;flex:0 0 auto;}",
     // OR-group card tint — applied to each chip row so the popup reads
@@ -1591,14 +1698,7 @@ const RP_BM_CSS = [
     // for inline links in notes / reader / item pane. Self-contained
     // declaration so the sidebar paints correctly even if the surface's
     // global link-colour stylesheet isn't loaded.
-    ":root .wv-bm-reader-label.wv-link-http{color:#1a73e8;}",
-    ":root .wv-bm-reader-label.wv-link-zotero{color:#8b4513;}",
-    ":root .wv-bm-reader-label.wv-link-app{color:#9333ea;}",
-    "@media (prefers-color-scheme: dark){",
-    " :root .wv-bm-reader-label.wv-link-http{color:#8ab4f8;}",
-    " :root .wv-bm-reader-label.wv-link-zotero{color:#cd853f;}",
-    " :root .wv-bm-reader-label.wv-link-app{color:#c084fc;}",
-    "}",
+    ...wvLinkClassRules(":root .wv-bm-reader-label"),
     ".wv-bm-reader-sublabel{opacity:.55;font-style:italic;}",
     ".wv-bm-reader-row .wv-bm-reader-page{flex:0 0 auto;opacity:.5;font-size:.6875rem;}",
     // Comment badge (issue #30): muted speech bubble between label and page
@@ -2200,7 +2300,7 @@ class _ReaderPanelsMixin {
                         } catch (e) {}
                     }
                 }
-                iw.__wvAnnRank = (Components as any).utils.cloneInto(rank, reader._iframeWindow);
+                iw.__wvAnnRank = wvCloneFor(rank, reader._iframeWindow);
             }
             // RENDER ONLY ON CHANGE. This runs on every ensure pass, and the
             // ensure pass runs from the sidebar mutation observer -- an
@@ -2344,7 +2444,7 @@ class _ReaderPanelsMixin {
                     // any stamp an older build left in the header.
                     if (el && el.parentElement !== card) { el.remove(); el = null; }
                     if (!el) {
-                        el = idoc.createElementNS(NS_HTML_RP, "div");
+                        el = wvHtmlEl(idoc, "div");
                         el.className = "wv-ann-date";
                         card.appendChild(el);
                     }
@@ -2354,10 +2454,7 @@ class _ReaderPanelsMixin {
                         el.setAttribute("data-wv-sig", sig);
                         while (el.firstChild) el.removeChild(el.firstChild);
                         for (const t of lines) {
-                            const ln = idoc.createElementNS(NS_HTML_RP, "div");
-                            ln.className = "wv-ann-date-line";
-                            ln.textContent = t;
-                            el.appendChild(ln);
+                            const ln = wvHtmlEl(idoc, "div", "wv-ann-date-line", t, el);
                         }
                     }
                     const full = d ? [d.a ? "Date Added: " + d.a.f : "", d.m ? "Date Modified: " + d.m.f : ""].filter(Boolean).join("\n") : "";
@@ -2386,7 +2483,7 @@ class _ReaderPanelsMixin {
                 return;
             }
             if (!bar) {
-                bar = idoc.createElementNS(NS_HTML_RP, "div");
+                bar = wvHtmlEl(idoc, "div");
                 bar.className = "wv-ann-sortbar";
                 const tb = sc.querySelector(".sidebar-toolbar");
                 if (tb && tb.nextSibling) sc.insertBefore(bar, tb.nextSibling);
@@ -2403,19 +2500,16 @@ class _ReaderPanelsMixin {
             // arrows next to it when relevant").
             // "Annotations" title at the left, same typography as the
             // outline header (user call 2026-08-28: consistency).
-            const title = idoc.createElementNS(NS_HTML_RP, 'span');
+            const title = wvHtmlEl(idoc, 'span');
             title.className = 'wv-outline-head-title';
             title.textContent = 'Annotations';
             bar.appendChild(title);
             const labels: any = { position: "Position", dateAdded: "Date Added",
                 dateModified: "Date Modified", manual: "Manual" };
-            const drop = idoc.createElementNS(NS_HTML_RP, "button");
-            drop.className = "wv-outline-src-chip wv-outline-src-switchable wv-ann-sortdrop";
+            const drop = wvHtmlEl(idoc, "button", "wv-outline-src-chip wv-outline-src-switchable wv-ann-sortdrop");
             drop.setAttribute("title", "Annotation sort");
-            const lab = idoc.createElementNS(NS_HTML_RP, "span");
-            lab.textContent = labels[cur.field] || cur.field;
-            drop.appendChild(lab);
-            const caret = idoc.createElementNS(NS_HTML_RP, "span");
+            const lab = wvHtmlEl(idoc, "span", undefined, labels[cur.field] || cur.field, drop);
+            const caret = wvHtmlEl(idoc, "span");
             caret.className = "wv-outline-src-caret";
             caret.innerHTML = RP_OUTLINE_CHEVRON;
             drop.appendChild(caret);
@@ -2429,8 +2523,7 @@ class _ReaderPanelsMixin {
             });
             bar.appendChild(drop);
             if (cur.field !== "manual") {
-                const dir = idoc.createElementNS(NS_HTML_RP, "button");
-                dir.className = "wv-ann-sortchip wv-on wv-ann-sortdir";
+                const dir = wvHtmlEl(idoc, "button", "wv-ann-sortchip wv-on wv-ann-sortdir");
                 dir.textContent = cur.dir === "asc" ? "↑" : "↓";
                 dir.setAttribute("title", "Toggle sort direction");
                 dir.addEventListener("click", (ev: any) => {
@@ -2775,7 +2868,7 @@ class _ReaderPanelsMixin {
                         // {} across the Xray (dev.26 badge-observer lesson).
                         // class attribute watched so the bar follows sidebar
                         // VIEW switches (.active moves between tab buttons).
-                        obs.observe(sc, (Components as any).utils.cloneInto(
+                        obs.observe(sc, wvCloneFor(
                             { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "title"] }, cw));
                         (idoc as any).__wvAnnDateObs = obs;
                         (idoc as any).__wvAnnDateObsV = 3;
@@ -2869,41 +2962,19 @@ class _ReaderPanelsMixin {
     _wvShowAnnSortMenu(reader: any, idoc: any, anchor: any) {
         try {
             this._wvCloseReaderBmContextMenu(idoc);
-            const menu = idoc.createElementNS(NS_HTML_RP, "div");
+            const menu = wvHtmlEl(idoc, "div");
             menu.id = RP_BM_CTX_ID;
             // Marks this as the ann-sort menu so the header right-click
             // handler can toggle-close it.
             menu.setAttribute("data-wv-annsort", "1");
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
             const cur = this._wvAnnSort(reader);
-            const row = (label: string, ticked: boolean, onPick: () => void, isDefault = false) => {
-                const it = idoc.createElementNS(NS_HTML_RP, "div");
-                it.className = "wv-ctx-item";
-                const ic = idoc.createElementNS(NS_HTML_RP, "span");
-                ic.className = "wv-ctx-ic";
-                ic.textContent = ticked ? "\u2713" : "";
-                const lb = idoc.createElementNS(NS_HTML_RP, "span");
-                lb.textContent = label;
-                it.appendChild(ic); it.appendChild(lb);
-                if (isDefault) {
-                    // Dimmed, as in the Outline / Bookmarks tab menus (MJT 2026-09-29).
-                    const df = idoc.createElementNS(NS_HTML_RP, "span");
-                    df.className = "wv-ctx-def";
-                    df.textContent = "(default)";
-                    it.appendChild(df);
-                }
-                it.addEventListener("click", () => { close(); onPick(); });
-                menu.appendChild(it);
-            };
+            const row = (label: string, ticked: boolean, onPick: () => void, isDefault = false) =>
+                this._wvCtxItem(idoc, menu, { label, ticked, def: isDefault, close, onClick: onPick });
             // Title the menu, exactly as the bookmarks sort menu does
             // (`heading("Sort by")`): three bare field names with a tick gave
             // no clue what axis they set (user request 2026-08-24).
-            const heading = (text: string) => {
-                const hd = idoc.createElementNS(NS_HTML_RP, "div");
-                hd.className = "wv-ctx-heading";
-                hd.textContent = text;
-                menu.appendChild(hd);
-            };
+            const heading = (text: string) => this._wvCtxHeading(idoc, menu, text);
             heading("Sort by");
             // Direction lives in the sort BAR (one click on the active chip
             // toggles it) -- the menu stays fields-only (user call 2026-08-03).
@@ -2925,7 +2996,7 @@ class _ReaderPanelsMixin {
                 if (this._wvReaderAtt(reader)) {
                     const shown = this._wvAnnDatesShown(reader);
                     const def = this._wvAnnDatesDefault();
-                    const sep = idoc.createElementNS(NS_HTML_RP, "div");
+                    const sep = wvHtmlEl(idoc, "div");
                     sep.className = "wv-ctx-sep";
                     menu.appendChild(sep);
                     heading("Show on cards");
@@ -3049,6 +3120,7 @@ class _ReaderPanelsMixin {
             rm("." + RP_OUTLINE_VIEW_CLASS);
             rm(".wv-bm-sidebar-actions");
             rm(".wv-al-actions");
+            rm(".wv-sel-handle");
             rm(".wv-bm-chip-popup");
             // Clear our active-tab classes so the restore re-applies cleanly.
             if (sc) { sc.classList.remove(RP_BM_TAB_ON); sc.classList.remove(RP_OUTLINE_TAB_ON); }
@@ -3067,6 +3139,12 @@ class _ReaderPanelsMixin {
             try { this._wvUnwatchNativeOutline(reader); } catch (_) {}
             this._wvReaderRewirePanels(reader, idoc);
             try { this._wvAnnSortTeardown(reader, idoc); } catch (_) {}
+            // The selector handle's watch (issue #58); the handle itself went
+            // with the rewire pass, the class goes with the sweep below.
+            try {
+                if ((idoc as any).__wvSelHandleObs) { (idoc as any).__wvSelHandleObs.disconnect(); delete (idoc as any).__wvSelHandleObs; }
+                delete (idoc as any).__wvSelHandleObsV;
+            } catch (_) {}
             try { (idoc as any)._wvRewireRestore = null; } catch (_) {}
             try { this._wvReaderHideBmHoverCard(idoc); } catch (_) {}
             // Close the filter popup INCLUDING its dismiss listeners -- a
@@ -3203,8 +3281,7 @@ class _ReaderPanelsMixin {
     // ---- Feature C: Outline takeover (Phase 2, read-only) -------------------
 
     _getEnableOutlineTakeover(): boolean {
-        try { const v = Zotero.Prefs.get("weavero.readerOutlineTakeover"); return v === undefined ? true : !!v; }
-        catch (_) { return true; }
+        return (this as any)._wvPref("readerOutlineTakeover");
     }
 
     /** Inject Weavero's outline panel and wire the Outline-tab takeover.
@@ -3224,7 +3301,7 @@ class _ReaderPanelsMixin {
             // Ensure our outline view wrapper exists (built-DOM, Weavero-owned).
             let view = content.querySelector("." + RP_OUTLINE_VIEW_CLASS);
             if (!view) {
-                view = idoc.createElementNS(NS_HTML_RP, "div");
+                view = wvHtmlEl(idoc, "div");
                 view.className = "viewWrapper " + RP_OUTLINE_VIEW_CLASS;
                 // Focusable (programmatic only) so clicking the empty part of the
                 // pane gives it focus -- then the +/- and arrow-key shortcuts work
@@ -3248,10 +3325,10 @@ class _ReaderPanelsMixin {
                         view.focus();
                     } catch (_) {}
                 });
-                const head = idoc.createElementNS(NS_HTML_RP, "div");
+                const head = wvHtmlEl(idoc, "div");
                 head.className = "wv-outline-head";
                 head.textContent = "Outline";
-                const list = idoc.createElementNS(NS_HTML_RP, "div");
+                const list = wvHtmlEl(idoc, "div");
                 list.className = "wv-outline-list";
                 view.appendChild(head);
                 view.appendChild(list);
@@ -4210,7 +4287,7 @@ class _ReaderPanelsMixin {
                 try {
                     const iwin: any = reader._iframeWindow || (reader._iframe && reader._iframe.contentWindow);
                     const idsArr: any = (iwin && (Components as any).utils)
-                        ? (Components as any).utils.cloneInto([bm.itemKey], iwin) : [bm.itemKey];
+                        ? wvCloneFor([bm.itemKey], iwin) : [bm.itemKey];
                     reader.setSelectedAnnotations(idsArr, true);
                 } catch (_) {}
                 return;
@@ -4307,7 +4384,7 @@ class _ReaderPanelsMixin {
             // (32px) -- they rendered noticeably smaller in RM (2026-07-29).
             const W = isPinGlyph ? Math.round(PIN_H * (66.34 / 33.855)) : PIN_H;
             const H = PIN_H;
-            const pin: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+            const pin: any = wvHtmlEl(doc, "div");
             pin.className = "wv-rm-pin";
             pin.setAttribute("style", "position:absolute;z-index:9999;pointer-events:none;line-height:0;"
                 + "width:" + W + "px;height:" + H + "px;transition:opacity .25s ease;opacity:1;");
@@ -4589,7 +4666,7 @@ class _ReaderPanelsMixin {
                     const se = iwin.document.scrollingElement || iwin.document.documentElement;
                     const from = se.scrollTop;
                     const target = Math.max(0, from + rectTop - iwin.innerHeight * 0.25);
-                    try { se.scrollTo(Cu.cloneInto({ top: target, behavior: "smooth" }, iwin)); }
+                    try { se.scrollTo(wvCloneFor({ top: target, behavior: "smooth" }, iwin)); }
                     catch (_) { iwin.scrollTo(iwin.scrollX || 0, target); }
                     wvTimeout(() => {
                         try {
@@ -4635,7 +4712,7 @@ class _ReaderPanelsMixin {
             // skip those and let the next candidate try).
             const mapVisible = (cand: any) => {
                 try {
-                    const cpos = Cu.cloneInto({ pageIndex: cand.pageIndex, rects: cand.rects.map((r: number[]) => [r[0], r[1], r[2], r[3]]) }, iwin);
+                    const cpos = wvCloneFor({ pageIndex: cand.pageIndex, rects: cand.rects.map((r: number[]) => [r[0], r[1], r[2], r[3]]) }, iwin);
                     const rg = sdtv.toDisplayedRange(cpos);
                     if (!rg) return null;
                     const rr = rg.getBoundingClientRect();
@@ -4926,10 +5003,7 @@ class _ReaderPanelsMixin {
             // the empty branch would show "No outline for this document" (a
             // lie) and could arm its extraction-retry loop.
             if (outlineFilter && !outlineFilter.visible.size) {
-                const none = idoc.createElementNS(NS_HTML_RP, "div");
-                none.className = "wv-outline-empty";
-                none.textContent = "No outline entries match the search.";
-                list.appendChild(none);
+                const none = wvHtmlEl(idoc, "div", "wv-outline-empty", "No outline entries match the search.", list);
                 return;
             }
             if (!entries.length) {
@@ -4945,7 +5019,7 @@ class _ReaderPanelsMixin {
                 const outlineActive = !!(container && container.classList.contains(RP_OUTLINE_TAB_ON));
                 const tries = settled ? 0 : (reader._wvOutlineFetchTries = (reader._wvOutlineFetchTries || 0) + 1);
                 const stillTrying = !settled && outlineActive && tries <= 25 && (extracting || tries <= 3);
-                const empty = idoc.createElementNS(NS_HTML_RP, "div");
+                const empty = wvHtmlEl(idoc, "div");
                 empty.className = "wv-outline-empty";
                 empty.textContent = curatedView
                     ? "Your outline is empty."
@@ -4956,14 +5030,10 @@ class _ReaderPanelsMixin {
                 // reported 2026-07-21). Curated-but-empty: how to add. Non-curated
                 // & settled: a button that bootstraps an editable Weavero outline.
                 if (curatedView) {
-                    const hint = idoc.createElementNS(NS_HTML_RP, "div");
-                    hint.className = "wv-outline-empty wv-outline-empty-sub";
-                    hint.textContent = "Select text in the document, then right-click → Add Selected Text to Outline.";
-                    list.appendChild(hint);
+                    const hint = wvHtmlEl(idoc, "div", "wv-outline-empty wv-outline-empty-sub", "Select text in the document, then right-click → Add Selected Text to Outline.", list);
                 } else if (!stillTrying) {
-                    const wrap = idoc.createElementNS(NS_HTML_RP, "div");
-                    wrap.className = "wv-outline-empty wv-outline-empty-sub";
-                    const btn = idoc.createElementNS(NS_HTML_RP, "button");
+                    const wrap = wvHtmlEl(idoc, "div", "wv-outline-empty wv-outline-empty-sub");
+                    const btn = wvHtmlEl(idoc, "button");
                     btn.className = "wv-outline-create-btn";
                     btn.textContent = "Create Weavero Outline";
                     btn.setAttribute("title", "Start an editable outline for this document");
@@ -5045,6 +5115,8 @@ class _ReaderPanelsMixin {
             const fetched = this._wvOutlineFlattenTree((cache && cache.tree) || []);
             if (!fetched.length) return;
             let fi = 0, changed = 0;
+            const patches: Array<[string, string, any]> = [];
+            const key = this._bmReaderKey(att.libraryID, att.itemKey);
             for (const e of entries) {
                 if (e.source && e.source.origin === "user") continue;
                 let j = fi;
@@ -5053,12 +5125,13 @@ class _ReaderPanelsMixin {
                 if (!e.href && fetched[j].href) {
                     e.href = fetched[j].href;
                     if (e.source && !e.source.href) e.source.href = fetched[j].href;
+                    patches.push([key, String(e.id), { href: e.href, source: e.source }]);
                     changed++;
                 }
                 fi = j + 1;
             }
             if (changed) {
-                await this._wvOutlinePersist();
+                await this._wvOutlinePersistSilent(patches);   // a repair, never an undo step
                 Zotero.debug("[Weavero] outline href repair: restored " + changed);
             }
         } catch (e) {
@@ -5091,7 +5164,6 @@ class _ReaderPanelsMixin {
      *  in-memory (view state, not persisted). */
     _wvRenderOutlineEntries(reader: any, idoc: any, container: any, entries: any[], curatedView: boolean,
                             filter?: { q: string, visible: Set<number>, dimmed: Set<number> } | null) {
-        const NS = NS_HTML_RP;
         // Page labels come from the SAME path bookmarks use (`_bmReaderPageLabel`):
         // the annotations-sidebar convention (an annotation's page label on that
         // page, else pageIndex+1), NOT the PDF's `_pageLabels` table -- so the
@@ -5120,18 +5192,18 @@ class _ReaderPanelsMixin {
                 && (Math.max(0, entries[i + 1].indentLevel || 0) > depth);
             const key = keyOf(entry, i);
             const isExpanded = filter ? true : expandedSet.has(key);
-            const row = idoc.createElementNS(NS, "div");
+            const row = wvHtmlEl(idoc, "div");
             row.className = "wv-outline-row";
             if (filter && filter.dimmed.has(i)) row.classList.add("wv-outline-dimmed");
             // Content-type tag (e.g. "box" for a sidebar) -> distinct styling.
             if (entry.kind) row.classList.add("wv-outline-kind-" + entry.kind);
             if (depth > 0) row.style.paddingLeft = (depth * 16) + "px";   // 16px/level, matches native .children
             (row as any)._wvOl = { entry, index: i, curatedView };   // what this row edits
-            const tw = idoc.createElementNS(NS, "span");
+            const tw = wvHtmlEl(idoc, "span");
             tw.className = "wv-outline-twisty" + (hasKids ? "" : " wv-outline-leaf")
                 + ((hasKids && !isExpanded) ? " wv-outline-collapsed" : "");
             tw.innerHTML = RP_OUTLINE_CHEVRON;
-            const label = idoc.createElementNS(NS, "span");
+            const label = wvHtmlEl(idoc, "span");
             label.className = "wv-outline-label";
             label.textContent = entry.title || "(untitled)";
             label.setAttribute("title", "Double-click to rename, right-click for more");
@@ -5141,8 +5213,7 @@ class _ReaderPanelsMixin {
             // number) so label alignment is universal — see the CSS comment.
             // Box/sidebar entries get a framed-panel icon.
             if (entry.kind === "box") {
-                const kic = idoc.createElementNS(NS, "span");
-                kic.className = "wv-outline-kind-ic";
+                const kic = wvHtmlEl(idoc, "span", "wv-outline-kind-ic");
                 kic.setAttribute("title", "Sidebar / box");
                 kic.innerHTML = RP_BOX_SVG;
                 row.appendChild(kic);
@@ -5156,8 +5227,7 @@ class _ReaderPanelsMixin {
                     : tgtK.anchor === "bottom" ? WV_PAGE_BOTTOM_SVG
                         : tgtK.anchor === "top" ? WV_PAGE_TOP_SVG : null;
                 if (kindIcon) {
-                    const tic = idoc.createElementNS(NS, "span");
-                    tic.className = "wv-outline-kind-ic";
+                    const tic = wvHtmlEl(idoc, "span", "wv-outline-kind-ic");
                     tic.setAttribute("title", tgtK.anchor === "point" ? "Pinned spot"
                         : tgtK.anchor === "bottom" ? "Bottom of page" : "Top of page");
                     tic.innerHTML = kindIcon;
@@ -5169,8 +5239,7 @@ class _ReaderPanelsMixin {
             const pi = (showPages && !entry.url && entry.position && Number.isInteger(entry.position.pageIndex))
                 ? entry.position.pageIndex : null;
             if (pi != null) {
-                const pg = idoc.createElementNS(NS, "span");
-                pg.className = "wv-outline-page";
+                const pg = wvHtmlEl(idoc, "span", "wv-outline-page");
                 const probe = { type: "position", position: { pageIndex: pi },
                     srcLibraryID: att && att.libraryID, srcItemKey: att && att.itemKey };
                 const lbl = this._bmReaderPageLabel(probe) || String(pi + 1);
@@ -5183,10 +5252,7 @@ class _ReaderPanelsMixin {
                 // own page map (the toolbar's "22 / 356") labels a range.
                 const elbl = this._wvEpubEntryPageLabel(reader, entry);
                 if (elbl) {
-                    const pg = idoc.createElementNS(NS, "span");
-                    pg.className = "wv-outline-page";
-                    pg.textContent = "p. " + elbl;
-                    row.appendChild(pg);
+                    const pg = wvHtmlEl(idoc, "span", "wv-outline-page", "p. " + elbl, row);
                 }
             }
             if (hasKids) {
@@ -5211,7 +5277,7 @@ class _ReaderPanelsMixin {
                     ? (r._wvOl.curatedView ? String(r._wvOl.entry.id) : ("idx-" + r._wvOl.index)) : null;
                 // Ctrl/Cmd+click: toggle membership. NO navigation (user-specified
                 // 2026-07-21) -- selecting a batch must not bounce the view around.
-                if (e.ctrlKey || e.metaKey) {
+                if (wvAccelAny(e)) {
                     if (sel.has(key)) { sel.delete(key); row.classList.remove("wv-outline-selected"); }
                     else { sel.add(key); row.classList.add("wv-outline-selected"); }
                     reader._wvOutlineSelAnchor = key;
@@ -5419,7 +5485,7 @@ class _ReaderPanelsMixin {
             const nextDepth = nextRow ? depthOf(nextRow) : 0;
             const minI = nextDepth, maxI = Math.max(nextDepth, prevDepth + 1);
             const drawDepth = (desiredIndent != null) ? Math.max(minI, Math.min(desiredIndent, maxI)) : tDepth;
-            const ind = idoc.createElementNS(NS_HTML_RP, "div");
+            const ind = wvHtmlEl(idoc, "div");
             ind.className = "wv-outline-drop-ind";
             ind.style.marginLeft = ((origin0 - listContentLeft) + drawDepth * step) + "px";
             if (insertRef) list.insertBefore(ind, insertRef); else list.appendChild(ind);
@@ -5735,7 +5801,7 @@ class _ReaderPanelsMixin {
         try {
             const NAV = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown", "Enter", " "];
             if (NAV.indexOf(e.key) < 0) return false;
-            if (e.ctrlKey || e.metaKey || e.altKey) return false;
+            if (wvAccelAny(e) || e.altKey) return false;
             const t = e.target;
             if (!t || t.id !== "sidebarContainer") return false;
             let target: any = null;
@@ -5779,7 +5845,7 @@ class _ReaderPanelsMixin {
     _wvSidebarHandleCtrlF(reader: any, idoc: any, e: any) {
         try {
             if (e.key !== "f" && e.key !== "F") return false;
-            if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return false;
+            if (!wvAccel(e) || e.shiftKey || e.altKey) return false;
             // Same diagnosis ring the outline key handler feeds.
             const rlog = (m: string) => {
                 try {
@@ -5966,9 +6032,8 @@ class _ReaderPanelsMixin {
             } catch (_) {}
             const ref = await this._wvOutlineResolveId(reader, entry, index, curatedView);
             if (!ref) return;
-            const snaps = this._wvOutlineSnapshotIds(ref.att, [String(ref.id)]);
+            // The store's choke point records the step (survey §3.7).
             await this._wvOutlineDeleteEntry(ref.att.libraryID, ref.att.itemKey, ref.id);
-            this._wvOutlineRecordDelete(ref.att, snaps);
             await this._wvReaderRenderOutline(reader, idoc);
             if (wasOn) this._wvOutlineLandAfterDelete(reader, idoc, fromIndex);
         } catch (_) {}
@@ -6000,7 +6065,7 @@ class _ReaderPanelsMixin {
             // Ctrl/Cmd+F diagnosis ring (2026-07-28, "Ctrl+F not working"):
             // logs ONLY ctrl/meta+F events, one line per gate decision, into
             // Zotero._wvOutlineKeyLog (capped) + the debug log.
-            const dbgF = (e.ctrlKey || e.metaKey) && (e.key === "f" || e.key === "F");
+            const dbgF = wvAccel(e) && (e.key === "f" || e.key === "F");
             const dlog = (m: string) => {
                 if (!dbgF) return;
                 try {
@@ -6024,7 +6089,7 @@ class _ReaderPanelsMixin {
             const container = idoc.getElementById("sidebarContainer");
             if (!container || !container.classList.contains(RP_OUTLINE_TAB_ON)) { dlog("BAIL: outline tab not active"); return; }
             const t = e.target;
-            if (t && (t.isContentEditable || t.localName === "input" || t.localName === "textarea")) { dlog("BAIL: typing in an input"); return; }
+            if (wvIsTextEntry(t)) { dlog("BAIL: typing in an input"); return; }
             const view = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS);
             const list = view && view.querySelector(".wv-outline-list");
             if (!list) { dlog("BAIL: no outline list"); return; }
@@ -6047,7 +6112,7 @@ class _ReaderPanelsMixin {
             // not typing). The reader's own undo fires only from the view or
             // the Annotations sidebar (reader keyboard-manager.js), so nothing
             // is taken from it here. The TAB's merged choice runs (2026-10-01).
-            if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+            if (wvAccel(e) && !e.altKey) {
                 const lk = String(k).toLowerCase();
                 if (lk === "z" || (lk === "y" && !e.shiftKey && !e.metaKey)) {
                     e.preventDefault(); e.stopPropagation();
@@ -6067,92 +6132,9 @@ class _ReaderPanelsMixin {
                 if (k === "+") { e.preventDefault(); e.stopPropagation(); this._wvOutlineSetAllExpanded(reader, idoc, true); return; }
                 if (k === "-" && !e.shiftKey) { e.preventDefault(); e.stopPropagation(); this._wvOutlineSetAllExpanded(reader, idoc, false); return; }
             }
-            // Everything below is navigation. The `.wv-outline-active` row is the
-            // real cursor, NOT DOM focus: the reader reverts focus to <body> when
-            // inline-rename ends, so requiring literal row focus lost keyboard
-            // control after Escape (2026-07-21). Accept focus INSIDE the outline,
-            // OR body-level focus (reader chrome -- never the PDF view, whose key
-            // events fire in a different window and can't reach here) WHEN a row
-            // is active. A real widget elsewhere in the sidebar keeps its keys.
-            const ae = idoc.activeElement;
-            // "Focus is in the outline" = activeElement inside the view OR the
-            // key event TARGETED the view. In the reader's in-process <browser>,
-            // `idoc.activeElement` can disagree with the event target (observed
-            // live 2026-07-28: Ctrl+F delivered to the focused outline view --
-            // target div.viewWrapper -- while activeElement still read the
-            // reader's find input, so the gate bailed and the reader find
-            // opened). The delivery target is the ground truth.
-            const inOutline = !!((ae && ae.closest && ae.closest("." + RP_OUTLINE_VIEW_CLASS))
-                || (t && t.closest && t.closest("." + RP_OUTLINE_VIEW_CLASS)));
-            const bodyish = !ae || ae === idoc.body || ae === idoc.documentElement;
-            const hasActive = !!list.querySelector(".wv-outline-row.wv-outline-active");
-            if (!inOutline && !(bodyish && hasActive)) {
-                dlog("BAIL focus gate: inOutline=" + inOutline + " bodyish=" + bodyish + " hasActive=" + hasActive);
-                return;
-            }
-            if (e.altKey) { dlog("BAIL: altKey"); return; }
-            if ((k === "a" || k === "A") && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
-                e.preventDefault(); e.stopPropagation();
-                const sel: Set<string> = reader._wvOutlineSel || (reader._wvOutlineSel = new Set());
-                sel.clear();
-                for (const r of rows) { const kk = this._wvOutlineRowKey(r); if (kk != null) { sel.add(kk); r.classList.add("wv-outline-selected"); } }
-                return;
-            }
-            // (Ctrl/Cmd+F is handled by the sidebar-wide router at the top of
-            // this function -- outline, annotations, and Bookmarks all route
-            // to their own search there.)
-            // Ctrl (Cmd on Mac) = "move focus only": step the cursor WITHOUT
-            // changing the selection, so you can Space-toggle rows into a
-            // multi-selection (items-list model, virtualized-table `moveFocused`).
-            // Applies to the vertical moves; any OTHER ctrl/meta combo is left
-            // alone (Ctrl+Left/Right etc. do nothing, matching the tree).
-            const moveFocused = (typeof Zotero !== "undefined" && (Zotero as any).isMac) ? e.metaKey : e.ctrlKey;
-            if ((e.ctrlKey || e.metaKey) && !moveFocused) return;
-            // (+/- expand-all / collapse-all handled above the focus gate.)
-            const NAV = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "Enter", " "];
-            if (NAV.indexOf(k) < 0) return;
-            if (moveFocused && !(k === "ArrowUp" || k === "ArrowDown" || k === "Home" || k === "End")) return;
-            e.preventDefault(); e.stopPropagation();
-            let i = rows.findIndex((r: any) => r.classList.contains("wv-outline-active"));
-            if (i < 0) {
-                // No cursor yet (pane freshly focused): the first nav key ENTERS
-                // the list -- Down/Home land on the first row, Up/End on the
-                // last -- instead of acting relative to a phantom row 0.
-                if (k === "ArrowDown" || k === "Home") { this._wvOutlineKeyMove(reader, idoc, rows, 0, e.shiftKey, moveFocused); return; }
-                if (k === "ArrowUp" || k === "End") { this._wvOutlineKeyMove(reader, idoc, rows, rows.length - 1, e.shiftKey, moveFocused); return; }
-                i = 0;
-            }
-            const row = rows[i];
-            const tw = row.querySelector(".wv-outline-twisty");
-            const hasKids = !!(tw && !tw.classList.contains("wv-outline-leaf"));
-            const collapsed = !!(tw && tw.classList.contains("wv-outline-collapsed"));
-            const selCount = rows.filter((r: any) => r.classList.contains("wv-outline-selected")).length;
-            switch (k) {
-            case "ArrowDown": this._wvOutlineKeyMove(reader, idoc, rows, i + 1, e.shiftKey, moveFocused); break;
-            case "ArrowUp": this._wvOutlineKeyMove(reader, idoc, rows, i - 1, e.shiftKey, moveFocused); break;
-            case "Home": this._wvOutlineKeyMove(reader, idoc, rows, 0, e.shiftKey, moveFocused); break;
-            case "End": this._wvOutlineKeyMove(reader, idoc, rows, rows.length - 1, e.shiftKey, moveFocused); break;
-            // Enter edits -- but only a SINGLE selection; renaming makes no sense
-            // for a multi-selection (there's no one row to edit).
-            case "Enter": if (selCount <= 1) this._wvOutlineBeginRename(reader, idoc, row._wvOl.entry, row._wvOl.index, row._wvOl.curatedView); break;
-            case " ": this._wvOutlineKeyToggle(reader, row); break;
-            case "ArrowRight":
-                // >1 selected -> expand every selected container (items-tree model).
-                if (selCount > 1) { this._wvOutlineKeyExpandSelection(reader, idoc, true); break; }
-                if (hasKids && collapsed) this._wvOutlineKeyExpand(reader, idoc, row, true);
-                else if (hasKids) this._wvOutlineKeyMove(reader, idoc, rows, i + 1, false);
-                break;
-            case "ArrowLeft":
-                if (selCount > 1) { this._wvOutlineKeyExpandSelection(reader, idoc, false); break; }
-                if (hasKids && !collapsed) this._wvOutlineKeyExpand(reader, idoc, row, false);
-                else {
-                    const depth = Math.max(0, row._wvOl.entry.indentLevel || 0);
-                    let p = i - 1;
-                    while (p >= 0 && Math.max(0, rows[p]._wvOl.entry.indentLevel || 0) >= depth) p--;
-                    if (p >= 0) this._wvOutlineKeyMove(reader, idoc, rows, p, false);
-                }
-                break;
-            }
+            // Everything below is navigation (the focus gate, Ctrl/Cmd+A and
+            // the items-tree key map), shared with the Bookmarks tab.
+            this._wvListKeyNav(WV_KEYS_OUTLINE, reader, idoc, list, rows, e, dlog);
         } catch (_) {}
     }
 
@@ -6162,66 +6144,170 @@ class _ReaderPanelsMixin {
         return r && r._wvOl ? (r._wvOl.curatedView ? String(r._wvOl.entry.id) : ("idx-" + r._wvOl.index)) : null;
     }
 
-    /** Move the outline "focus" to row `j`.
-     *   - focusOnly (Ctrl/Cmd): move the cursor ONLY -- no selection change, no
-     *     navigate; updates the anchor so a following Shift/Space acts from here.
-     *   - extend (Shift): extend the multi-selection from the anchor, no navigate.
-     *   - plain: single-select + navigate (mirrors the collections pane). */
-    _wvOutlineKeyMove(reader: any, idoc: any, rows: any[], j: number, extend: boolean, focusOnly?: boolean) {
-        j = Math.max(0, Math.min(j, rows.length - 1));
-        const row = rows[j];
-        if (!row) return;
-        const sel: Set<string> = reader._wvOutlineSel || (reader._wvOutlineSel = new Set());
-        if (focusOnly && !extend) {
-            for (const r of rows) r.classList.remove("wv-outline-active");
-            row.classList.add("wv-outline-active");
-            const key = this._wvOutlineRowKey(row);
-            if (key != null) reader._wvOutlineSelAnchor = key;
-            try { row.focus(); } catch (_) {}
-            try { row.scrollIntoView({ block: "nearest" }); } catch (_) {}
+    /** THE sidebar lists' keyboard navigation, past the view-specific keys
+     *  (Delete, undo, +/-): the focus gate, Ctrl/Cmd+A, and the items-tree
+     *  key map -- Up/Down/Home/End move the cursor (plain: single-select +
+     *  navigate; Shift: extend the range from the anchor; Ctrl/Cmd: cursor
+     *  only; Ctrl+Shift: merge the range), Space toggles the cursor row,
+     *  Enter edits a single selection, Right/Left open / close a container
+     *  (every selected one when several are selected) else step into it /
+     *  up to the parent. One implementation for the outline and the
+     *  Bookmarks tab (survey 2026-10-06 §4, 2026-10-21). `dlog` is the
+     *  outline's Ctrl+F diagnosis ring. */
+    _wvListKeyNav(m: WvListKeys, reader: any, idoc: any, list: any, rows: any[], e: any, dlog?: (s: string) => void) {
+        const log = dlog || (() => {});
+        const t = e.target;
+        const k = e.key;
+        // The `active` row is the real cursor, NOT DOM focus: the reader
+        // reverts focus to <body> when inline-rename ends, so requiring
+        // literal row focus lost keyboard control after Escape (2026-07-21).
+        // Accept focus INSIDE the view, OR body-level focus (reader chrome --
+        // never the PDF view, whose key events fire in a different window and
+        // can't reach here) WHEN a row is active. A real widget elsewhere in
+        // the sidebar keeps its keys. "Focus is in the view" = activeElement
+        // inside it OR the key event TARGETED it: in the reader's in-process
+        // <browser>, `idoc.activeElement` can disagree with the event target
+        // (observed live 2026-07-28: Ctrl+F delivered to the focused outline
+        // view -- target div.viewWrapper -- while activeElement still read the
+        // reader's find input, so the gate bailed and the reader find opened).
+        // The delivery target is the ground truth.
+        const ae = idoc.activeElement;
+        const inView = !!((ae && ae.closest && ae.closest("." + m.viewClass))
+            || (t && t.closest && t.closest("." + m.viewClass)));
+        const bodyish = !ae || ae === idoc.body || ae === idoc.documentElement;
+        const hasActive = !!list.querySelector("." + m.rowClass + "." + m.active);
+        if (!inView && !(bodyish && hasActive)) {
+            log("BAIL focus gate: inView=" + inView + " bodyish=" + bodyish + " hasActive=" + hasActive);
+            return;
         }
-        else if (extend) {
-            let a = rows.findIndex((r: any) => this._wvOutlineRowKey(r) === reader._wvOutlineSelAnchor);
-            if (a < 0) a = j;
-            const lo = Math.min(a, j), hi = Math.max(a, j);
-            // Plain Shift REPLACES the selection with the anchor..j range;
-            // Ctrl+Shift (focusOnly) MERGES the range INTO the existing selection
-            // -- so a scattered selection built with Ctrl-skip + Space survives
-            // (the items-list `toggleSelection` merge; reported 2026-07-21 that
-            // "the items before skipping are unselected").
-            if (!focusOnly) {
-                sel.clear();
-                for (const r of rows) r.classList.remove("wv-outline-selected");
-            }
-            for (let x = lo; x <= hi; x++) {
-                const kk = this._wvOutlineRowKey(rows[x]);
-                if (kk != null) { sel.add(kk); rows[x].classList.add("wv-outline-selected"); }
-            }
-            for (const r of rows) r.classList.remove("wv-outline-active");
-            row.classList.add("wv-outline-active");
-            try { row.focus(); } catch (_) {}
-            try { row.scrollIntoView({ block: "nearest" }); } catch (_) {}
-        }
-        else {
-            const key = this._wvOutlineRowKey(row);
+        if (e.altKey) { log("BAIL: altKey"); return; }
+        if ((k === "a" || k === "A") && wvAccel(e) && !e.shiftKey) {
+            e.preventDefault(); e.stopPropagation();
+            const sel = m.sel(reader);
             sel.clear();
-            for (const r of rows) r.classList.remove("wv-outline-selected");
-            if (key != null) { sel.add(key); reader._wvOutlineSelAnchor = key; row.classList.add("wv-outline-selected"); }
-            this._wvOutlineNavigate(reader, idoc, row._wvOl.entry, row);   // sets active + jumps
-            try { row.focus(); } catch (_) {}
-            try { row.scrollIntoView({ block: "nearest" }); } catch (_) {}
+            for (const r of rows) { const kk = m.key(this, r); if (kk != null) { sel.add(kk); r.classList.add(m.selected); } }
+            return;
+        }
+        // (Ctrl/Cmd+F is handled by the sidebar-wide router before the
+        // view-specific keys -- outline, annotations, and Bookmarks all route
+        // to their own search there.)
+        // Ctrl (Cmd on Mac) = "move focus only": step the cursor WITHOUT
+        // changing the selection, so you can Space-toggle rows into a
+        // multi-selection (items-list model, virtualized-table `moveFocused`).
+        // Applies to the vertical moves; any OTHER ctrl/meta combo is left
+        // alone (Ctrl+Left/Right etc. do nothing, matching the tree).
+        const moveFocused = wvAccel(e);
+        if (wvAccelAny(e) && !moveFocused) return;
+        const NAV = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "Enter", " "];
+        if (NAV.indexOf(k) < 0) return;
+        if (moveFocused && !(k === "ArrowUp" || k === "ArrowDown" || k === "Home" || k === "End")) return;
+        e.preventDefault(); e.stopPropagation();
+        let i = m.cursor(this, reader, rows);
+        if (i < 0) {
+            // No cursor yet (pane freshly focused): the first nav key ENTERS
+            // the list -- Down/Home land on the first row, Up/End on the
+            // last -- instead of acting relative to a phantom row 0.
+            if (k === "ArrowDown" || k === "Home") { this._wvListKeyMove(m, reader, idoc, rows, 0, e.shiftKey, moveFocused); return; }
+            if (k === "ArrowUp" || k === "End") { this._wvListKeyMove(m, reader, idoc, rows, rows.length - 1, e.shiftKey, moveFocused); return; }
+            i = 0;
+        }
+        const row = rows[i];
+        const c = m.container(this, reader, row);
+        const selCount = rows.filter((r: any) => r.classList.contains(m.selected)).length;
+        switch (k) {
+        case "ArrowDown": this._wvListKeyMove(m, reader, idoc, rows, i + 1, e.shiftKey, moveFocused); break;
+        case "ArrowUp": this._wvListKeyMove(m, reader, idoc, rows, i - 1, e.shiftKey, moveFocused); break;
+        case "Home": this._wvListKeyMove(m, reader, idoc, rows, 0, e.shiftKey, moveFocused); break;
+        case "End": this._wvListKeyMove(m, reader, idoc, rows, rows.length - 1, e.shiftKey, moveFocused); break;
+        // Enter edits -- but only a SINGLE selection; renaming makes no sense
+        // for a multi-selection (there's no one row to edit).
+        case "Enter": if (selCount <= 1) m.edit(this, reader, idoc, row); break;
+        case " ": this._wvListKeyToggle(m, reader, row); break;
+        case "ArrowRight":
+            // >1 selected -> open every selected container (items-tree model).
+            if (selCount > 1) { m.setSelectionOpen(this, reader, idoc, true); break; }
+            if (c.has && !c.open) m.setOpen(this, reader, idoc, row, true);
+            else if (c.has) this._wvListKeyMove(m, reader, idoc, rows, i + 1, false);
+            break;
+        case "ArrowLeft":
+            if (selCount > 1) { m.setSelectionOpen(this, reader, idoc, false); break; }
+            if (c.has && c.open) m.setOpen(this, reader, idoc, row, false);
+            else {
+                const depth = m.depth(this, row);
+                let p = i - 1;
+                while (p >= 0 && m.depth(this, rows[p]) >= depth) p--;
+                if (p >= 0) this._wvListKeyMove(m, reader, idoc, rows, p, false);
+            }
+            break;
         }
     }
 
-    /** Space: toggle the focused row in the multi-selection (like Ctrl+click). */
-    _wvOutlineKeyToggle(reader: any, row: any) {
-        const sel: Set<string> = reader._wvOutlineSel || (reader._wvOutlineSel = new Set());
-        const key = this._wvOutlineRowKey(row);
+    /** Move a list's cursor to row `j`.
+     *   - focusOnly (Ctrl/Cmd): move the cursor ONLY -- no selection change, no
+     *     navigate; updates the anchor so a following Shift/Space acts from here.
+     *   - extend (Shift): extend the multi-selection from the anchor, no navigate.
+     *     Plain Shift REPLACES the selection with the anchor..j range; Ctrl+Shift
+     *     (focusOnly) MERGES the range INTO the existing selection -- so a
+     *     scattered selection built with Ctrl-skip + Space survives (the
+     *     items-list `toggleSelection` merge; reported 2026-07-21 that "the
+     *     items before skipping are unselected").
+     *   - plain: single-select + navigate (mirrors the collections pane), the
+     *     navigate skipped on `noNav` (the Bookmarks Shift+click). */
+    _wvListKeyMove(m: WvListKeys, reader: any, idoc: any, rows: any[], j: number, extend: boolean, focusOnly?: boolean, noNav?: boolean) {
+        j = Math.max(0, Math.min(j, rows.length - 1));
+        const row = rows[j];
+        if (!row) return;
+        const key = m.key(this, row);
+        m.setCursor(reader, key);
+        const sel = m.sel(reader);
+        const setActive = () => { for (const r of rows) r.classList.remove(m.active); row.classList.add(m.active); };
+        const land = () => { try { row.focus(); } catch (_) {} try { row.scrollIntoView({ block: "nearest" }); } catch (_) {} };
+        if (focusOnly && !extend) {
+            setActive();
+            if (key != null) m.setAnchor(reader, key);
+            land();
+        }
+        else if (extend) {
+            const anchor = m.anchor(reader);
+            let a = anchor == null ? -1 : rows.findIndex((r: any) => m.key(this, r) === anchor);
+            if (a < 0) a = j;
+            const lo = Math.min(a, j), hi = Math.max(a, j);
+            if (!focusOnly) { sel.clear(); for (const r of rows) r.classList.remove(m.selected); }
+            for (let x = lo; x <= hi; x++) { const kk = m.key(this, rows[x]); if (kk != null) { sel.add(kk); rows[x].classList.add(m.selected); } }
+            setActive();
+            land();
+        }
+        else {
+            sel.clear();
+            for (const r of rows) r.classList.remove(m.selected);
+            if (key != null) { sel.add(key); m.setAnchor(reader, key); row.classList.add(m.selected); }
+            setActive();
+            if (!noNav) m.navigate(this, reader, idoc, row);
+            land();
+        }
+    }
+
+    /** Space / Ctrl+click: toggle the row in the multi-selection; it becomes
+     *  the cursor and the anchor. */
+    _wvListKeyToggle(m: WvListKeys, reader: any, row: any) {
+        const sel = m.sel(reader);
+        const key = m.key(this, row);
         if (key == null) return;
-        if (sel.has(key)) { sel.delete(key); row.classList.remove("wv-outline-selected"); }
-        else { sel.add(key); row.classList.add("wv-outline-selected"); }
-        reader._wvOutlineSelAnchor = key;
+        if (sel.has(key)) { sel.delete(key); row.classList.remove(m.selected); }
+        else { sel.add(key); row.classList.add(m.selected); }
+        m.setAnchor(reader, key);
+        try { for (const r of [...(row.parentNode ? row.parentNode.querySelectorAll("." + m.rowClass + "." + m.active) : [])]) (r as any).classList.remove(m.active); } catch (_) {}
+        row.classList.add(m.active);
+        m.setCursor(reader, key);
         try { row.focus(); } catch (_) {}
+    }
+
+    _wvOutlineKeyMove(reader: any, idoc: any, rows: any[], j: number, extend: boolean, focusOnly?: boolean) {
+        this._wvListKeyMove(WV_KEYS_OUTLINE, reader, idoc, rows, j, extend, focusOnly);
+    }
+
+    _wvOutlineKeyToggle(reader: any, row: any) {
+        this._wvListKeyToggle(WV_KEYS_OUTLINE, reader, row);
     }
 
     /** Left/Right expand or collapse a container row, then keep focus on it. */
@@ -6298,9 +6384,10 @@ class _ReaderPanelsMixin {
                 if (ref && ref.id != null && !ids.includes(ref.id)) { att = ref.att; ids.push(ref.id); }
             }
             if (!att || !ids.length) return;
-            const snaps = this._wvOutlineSnapshotIds(att, ids);
-            for (const id of ids) await this._wvOutlineDeleteEntry(att.libraryID, att.itemKey, id);
-            this._wvOutlineRecordDelete(att, snaps);
+            // One step for the N deletes (the store's choke point, batched).
+            await this._wvUndoBatch(async () => {
+                for (const id of ids) await this._wvOutlineDeleteEntry(att.libraryID, att.itemKey, id);
+            });
             try { if (reader._wvOutlineSel) reader._wvOutlineSel.clear(); } catch (_) {}
             await this._wvReaderRenderOutline(reader, idoc);
             this._wvOutlineLandAfterDelete(reader, idoc, fromIndex);
@@ -6332,11 +6419,11 @@ class _ReaderPanelsMixin {
 
     // ---- Outline undo (MJT 2026-09-29, first slice of Weavero-wide undo) ----
     // One history per document (scope "outline:<lib>:<key>", modules/undo.ts).
-    // Add and delete record a step AFTER they succeed, from snapshots of the
-    // stored entries (deep copies with their ids and indices): undo of an add
-    // deletes those ids, undo of a delete re-inserts the copies at their old
-    // indices -- `_wvOutlineInsertEntry` keeps an entry's own id, so the
-    // expanded set, the selection and later steps keep matching.
+    // Since survey §3.7 (2026-10-17) every step is recorded at the store's
+    // write choke point (modules/bookmarks.ts, `_wvOlUndoCapture`: type
+    // "outline.doc"); the snapshot helpers below serve the older
+    // "outline.add" / "outline.delete" steps a stack may still hold (the
+    // history survives a reload).
 
     _wvOutlineUndoScope(att: any): string {
         return "outline:" + att.libraryID + ":" + att.itemKey;
@@ -6434,6 +6521,20 @@ class _ReaderPanelsMixin {
      *  ({att, snaps}) replayed by whichever build is live (a reload keeps the
      *  history -- see modules/undo.ts). */
     _wvUndoRegisterAll() {
+        // Recorded at the outline store's choke point: a document's
+        // record-level changes, and its creation / deletion.
+        const attOfKey = (key: string) => { const i = key.indexOf(":"); return { libraryID: parseInt(key.slice(0, i), 10), itemKey: key.slice(i + 1) }; };
+        const olIds = (d: any) => {
+            const out = (d.changes || []).map((c: any) => String(c.id));
+            // Creating or deleting the document touches all of it.
+            if (JSON.stringify(d.docBefore) !== JSON.stringify(d.docAfter)) out.push("doc:" + d.key);
+            return out;
+        };
+        this._wvUndoRegisterType("outline.doc", {
+            undo: async function (this: any, d: any) { const ids = await this._wvOlUndoApply(d, "before"); await this._wvOutlineAfterUndo(attOfKey(d.key), ids); },
+            redo: async function (this: any, d: any) { const ids = await this._wvOlUndoApply(d, "after"); await this._wvOutlineAfterUndo(attOfKey(d.key), ids); },
+            ids: olIds,
+        });
         const attOf = (d: any) => ({ libraryID: d.att.libraryID, itemKey: d.att.itemKey });
         const idsOf = (d: any) => (d.snaps || []).map((s: any) => String(s.entry.id));
         this._wvUndoRegisterType("outline.add", {
@@ -6507,33 +6608,6 @@ class _ReaderPanelsMixin {
                 for (const w of wins) { try { this._bmRefreshPopupList(w); } catch (_) {} }
             }
         } catch (e) { Zotero.debug("[Weavero] _wvBmUndoAfter err: " + e); }
-    }
-
-    /** Record "entries added" -- call AFTER the insert with the new ids. */
-    _wvOutlineRecordAdd(att: any, ids: string[]) {
-        try {
-            const snaps = this._wvOutlineSnapshotIds(att, ids);
-            if (!snaps.length) return;
-            // "Outline" in the label: the Edit menu is app-wide (MJT 2026-09-30).
-            const label = snaps.length === 1 ? "Add Outline Entry" : "Add " + snaps.length + " Outline Entries";
-            this._wvUndoPush(this._wvOutlineUndoScope(att), {
-                label, type: "outline.add",
-                data: { att: { libraryID: att.libraryID, itemKey: att.itemKey }, snaps },
-            });
-        } catch (e) { Zotero.debug("[Weavero] _wvOutlineRecordAdd err: " + e); }
-    }
-
-    /** Record "entries deleted" -- call AFTER the delete with the snapshots
-     *  taken BEFORE it (`_wvOutlineSnapshotIds`). */
-    _wvOutlineRecordDelete(att: any, snaps: Array<{ entry: any; index: number }>) {
-        try {
-            if (!snaps.length) return;
-            const label = snaps.length === 1 ? "Delete Outline Entry" : "Delete " + snaps.length + " Outline Entries";
-            this._wvUndoPush(this._wvOutlineUndoScope(att), {
-                label, type: "outline.delete",
-                data: { att: { libraryID: att.libraryID, itemKey: att.itemKey }, snaps },
-            });
-        } catch (e) { Zotero.debug("[Weavero] _wvOutlineRecordDelete err: " + e); }
     }
 
     // ---- One undo choice per tab (MJT 2026-10-01, slice 2) ------------------
@@ -6914,7 +6988,7 @@ class _ReaderPanelsMixin {
             // the selection were both rejected; the spec's stand-in reader
             // has no such boundary).
             const iw: any = reader._iframeWindow;
-            const R = (o: any) => { try { return (Components as any).utils.cloneInto(o, iw); } catch (_) { return o; } };
+            const R = (o: any) => { try { return wvCloneFor(o, iw); } catch (_) { return o; } };
             // Scroll through the reader's public navigate (it awaits the
             // view's initialization), one tick later so the reader has
             // finished its own post-undo state updates. Traced (MJT
@@ -7125,7 +7199,7 @@ class _ReaderPanelsMixin {
                 if (inline) ic.innerHTML = inline;
                 else if (icon) {
                     // data: icons as images (chrome:// ones do not load here).
-                    const img = idoc.createElementNS(NS_HTML_RP, "img");
+                    const img = wvHtmlEl(idoc, "img");
                     img.setAttribute("src", icon); img.setAttribute("width", "16"); img.setAttribute("height", "16");
                     img.setAttribute("style", "-moz-context-properties:fill;fill:currentColor;");
                     ic.appendChild(img);
@@ -7146,8 +7220,11 @@ class _ReaderPanelsMixin {
     // refreshed on every history change through `_wvUndoAfterChange`.
 
     /** `weavero.readerUndoButtons` (Settings → Extras → Undo, default on;
-     *  MJT 2026-10-02): whether the toolbar arrows are shown. */
+     *  MJT 2026-10-02): whether the toolbar arrows are shown. Greyed with
+     *  Extras in Settings, so Extras switches them off too (prefs.4, MJT
+     *  2026-10-17). */
     _wvReaderUndoButtonsOn(): boolean {
+        try { if (!this._getEnableVisualExtras()) return false; } catch (_) {}
         try { const v = Zotero.Prefs.get("weavero.readerUndoButtons"); return v !== false; } catch (_) { return true; }
     }
 
@@ -7199,8 +7276,7 @@ class _ReaderPanelsMixin {
             if (stale) { this._wvReaderRemoveUndoButtons(idoc); undoBtn = null; }
             if (!undoBtn) {
                 const mk = (dir: "undo" | "redo") => {
-                    const b = idoc.createElementNS(NS_HTML_RP, "button");
-                    b.className = "toolbar-button wv-undo-btn";
+                    const b = wvHtmlEl(idoc, "button", "toolbar-button wv-undo-btn");
                     b.setAttribute("tabindex", "-1");
                     b.setAttribute("data-wv-undo", dir);
                     b.setAttribute("data-wv-ver", String(RP_BM_CTX_WIRE_V));
@@ -7224,8 +7300,7 @@ class _ReaderPanelsMixin {
                     b.addEventListener("auxclick", (e: any) => { if (e.button === 2) hist(e); });
                     return b;
                 };
-                const div = idoc.createElementNS(NS_HTML_RP, "div");
-                div.className = "divider wv-undo-divider";
+                const div = wvHtmlEl(idoc, "div", "divider wv-undo-divider");
                 div.setAttribute("data-wv-undo", "divider");
                 const u = mk("undo"), r = mk("redo");
                 start.appendChild(div); start.appendChild(u); start.appendChild(r);
@@ -7536,7 +7611,7 @@ class _ReaderPanelsMixin {
                     const t: any = e.target;
                     const tdoc: any = t && t.ownerDocument;
                     if (!tdoc || tdoc === win.document) return;          // the window's own chrome
-                    if (t.isContentEditable || t.localName === "input" || t.localName === "textarea") return;
+                    if (wvIsTextEntry(t)) return;
                     const ctx = P._wvEditUndoRoute(win);
                     if (!ctx) return;
                     if (tdoc === ctx.idoc && !(t.closest && t.closest("#annotationsView"))) return;   // other sidebar parts
@@ -7619,6 +7694,300 @@ class _ReaderPanelsMixin {
             delete popup._wvUndoMenuVer;
             wvEditUndoMenuRestore(popup);
         } catch (_) {}
+    }
+
+    /** View -> Layout follows the tab (zotero#2814, open since 2022 with
+     *  the names used here; #5379 closed as its duplicate; MJT 2026-10-14).
+     *  Zotero's three Layout items toggle the LIBRARY's panes whatever the
+     *  tab and read the library panes for their check marks. In a reader
+     *  tab the submenu now shows Sidebar / Context Pane / Colour and Tag
+     *  Selector (the selector hidden ENTIRELY, as the library's item hides
+     *  its whole Tag Selector; the handle only folds it), in a note tab
+     *  Context Pane -- and Outline Pane when Better Notes' outline is
+     *  there -- with the real state as check marks, and
+     *  Zotero's three are hidden there -- the one place Weavero hides native
+     *  menubar items (src-ts.md): they do nothing in those tabs, which is
+     *  exactly what #2814 asks for; they come back on popuphidden, and with
+     *  the switch off nothing is touched. Zotero's onViewMenuItemClick
+     *  ignores our items (its `view-menuitem-` prefix check). A separate
+     *  reader window has no Layout submenu at all: one is added at the end
+     *  of its View menu (localized label borrowed from a main window), its
+     *  Context Pane being Weavero's reader-window item pane while that
+     *  exists. Per window; listeners keyed on the popup and the items. The
+     *  items carry a `wv-` ID, not just the class: destroy's chrome sweep
+     *  (_wvStripWindowChrome) removes id'd elements whole but UNWRAPS a
+     *  class-only element whose descendants have non-wv classes -- a
+     *  rendered menuitem's img.menu-icon / label.menu-text -- and every
+     *  reload left twelve stray img / label nodes in the popup
+     *  (2026-10-14). Never `view-menuitem-*`: Zotero's handler keys on
+     *  that prefix. Both wiring recordings list these ids. */
+    _wvWireLayoutMenu(win: any) {
+        try {
+            const doc = win && win.document;
+            if (!doc || !doc.documentElement) return;
+            const isReaderWin = wvWinType(doc) === "zotero:reader";
+            const tag = this._wvWireTag();
+            let popup: any = null;
+            if (isReaderWin) {
+                const view: any = doc.getElementById("menu_viewPopup");
+                if (!view) return;
+                let menu: any = doc.getElementById("wv-layout-menu");
+                if (!menu) {
+                    const sep = doc.createXULElement("menuseparator");
+                    sep.className = "wv-layout-sep";
+                    menu = doc.createXULElement("menu");
+                    menu.id = "wv-layout-menu";
+                    menu.className = "wv-layout-menu";
+                    menu.setAttribute("label", this._wvLayoutMenuLabel());
+                    const mp = doc.createXULElement("menupopup");
+                    mp.id = "wv-layout-menu-popup";
+                    menu.appendChild(mp);
+                    view.appendChild(sep);
+                    view.appendChild(menu);
+                }
+                popup = menu.querySelector("menupopup");
+                // The switch, read as the View menu opens: off = no submenu.
+                wvListen(view, "layoutMenu:viewShowing", "popupshowing", (ev: any) => {
+                    try {
+                        if (ev.target !== view) return;
+                        const lp: any = wvLivePlugin();
+                        const on = !!(lp && lp._getReaderLayoutMenu());
+                        const m: any = doc.getElementById("wv-layout-menu");
+                        if (m) m.hidden = !on;
+                        const s: any = view.querySelector(":scope > .wv-layout-sep");
+                        if (s) s.hidden = !on;
+                    } catch (_) {}
+                }, false, tag);
+            }
+            else {
+                popup = doc.querySelector("#layout-menu > menupopup");
+            }
+            if (!popup) return;
+            let after: any = isReaderWin ? null : doc.getElementById("view-menuitem-tag-selector");
+            for (const [key, label] of WV_LAYOUT_ITEMS) {
+                let it: any = null;
+                for (const c of popup.children) { if (c.getAttribute && c.getAttribute("data-wv-layout") === key) { it = c; break; } }
+                if (!it) {
+                    it = doc.createXULElement("menuitem");
+                    it.id = "wv-view-menuitem-" + key;
+                    it.className = "wv-layout-item";
+                    it.setAttribute("type", "checkbox");
+                    it.setAttribute("autocheck", "false");
+                    it.setAttribute("label", label);
+                    it.setAttribute("data-wv-layout", key);
+                    it.hidden = true;
+                    if (after && after.parentNode === popup) popup.insertBefore(it, after.nextSibling);
+                    else popup.appendChild(it);
+                }
+                after = it;
+                wvListen(it, "layoutMenu:command", "command", () => {
+                    try { const lp: any = wvLivePlugin(); if (lp) lp._wvLayoutMenuCommand(win, key); } catch (_) {}
+                }, false, tag);
+            }
+            wvListen(popup, "layoutMenu:popupshowing", "popupshowing", (ev: any) => {
+                try { if (ev.target !== popup) return; const lp: any = wvLivePlugin(); if (lp) lp._wvLayoutMenuSync(win, popup); } catch (_) {}
+            }, false, tag);
+            wvListen(popup, "layoutMenu:popuphidden", "popuphidden", (ev: any) => {
+                try { if (ev.target !== popup) return; const lp: any = wvLivePlugin(); if (lp) lp._wvLayoutMenuRestore(win, popup); } catch (_) {}
+            }, false, tag);
+        } catch (e) { Zotero.debug("[Weavero] _wvWireLayoutMenu err: " + e); }
+    }
+
+    /** The localized "Layout" of a main window's own submenu, for the
+     *  reader window's copy. */
+    _wvLayoutMenuLabel(): string {
+        try {
+            const mw: any = Zotero.getMainWindow();
+            const m = mw && mw.document && mw.document.getElementById("layout-menu");
+            const l = m && m.getAttribute("label");
+            if (l) return l;
+        } catch (_) {}
+        return "Layout";
+    }
+
+    /** The reader the submenu speaks for: the selected tab's in a main
+     *  window; in a reader window the active tab's (a Weavero deck) or the
+     *  window's own. */
+    _wvLayoutMenuReader(win: any): any {
+        try {
+            const rs: any[] = (Zotero.Reader as any)._readers || [];
+            const doc = win.document;
+            if (wvWinType(doc) === "zotero:reader") {
+                const mine = rs.filter((r) => {
+                    try { return !!r && (r._window === win || (r._iframeWindow && r._iframeWindow.top === win)); }
+                    catch (_) { return false; }
+                });
+                const wt: any = win._wvWT;
+                if (wt && wt.activeId) { const a = mine.find((r) => r.tabID === wt.activeId); if (a) return a; }
+                return mine.find((r) => !r.tabID) || mine[0] || null;
+            }
+            const ZT: any = win.Zotero_Tabs;
+            if (!ZT || !ZT.selectedID) return null;
+            return (Zotero.Reader as any).getByTabID(ZT.selectedID) || null;
+        } catch (_) { return null; }
+    }
+
+    /** Better Notes' outline container in the selected note tab's content
+     *  (#bn-outline-container; it carries `collapsed` when shut), or null:
+     *  no BN, no note tab, no outline. */
+    _wvLayoutMenuOutline(win: any): any {
+        try {
+            const ZT: any = win.Zotero_Tabs;
+            if (!ZT || ZT.selectedType !== "note" || !ZT.selectedID) return null;
+            const host = win.document.getElementById(ZT.selectedID);
+            return host ? host.querySelector("#bn-outline-container") : null;
+        } catch (_) { return null; }
+    }
+
+    /** On popupshowing: which items show, and their check marks, from the
+     *  real state. Modes: library (Zotero's items, ours hidden), reader,
+     *  note, window (a reader window), off (the switch). */
+    _wvLayoutMenuSync(win: any, popup: any) {
+        try {
+            const doc = win.document;
+            const isReaderWin = wvWinType(doc) === "zotero:reader";
+            const on = !!this._getReaderLayoutMenu();
+            const type = isReaderWin ? "window" : String((win.Zotero_Tabs && win.Zotero_Tabs.selectedType) || "library");
+            const mode = !on ? "off" : type === "window" ? "window" : type === "note" ? "note" : type.indexOf("reader") === 0 ? "reader" : "library";
+            if (!isReaderWin) {
+                const hide = mode === "reader" || mode === "note";
+                for (const id of WV_ZOTERO_LAYOUT_IDS) {
+                    const el: any = doc.getElementById(id);
+                    if (!el) continue;
+                    if (hide) { if (!el.hidden) { el.hidden = true; el.setAttribute("data-wv-hidden", "1"); } }
+                    else if (el.getAttribute("data-wv-hidden") === "1") { el.hidden = false; el.removeAttribute("data-wv-hidden"); }
+                }
+            }
+            const reader = (mode === "reader" || mode === "window") ? this._wvLayoutMenuReader(win) : null;
+            const ir: any = reader && reader._internalReader && (Components as any).utils.waiveXrays(reader._internalReader);
+            const details: any = isReaderWin ? doc.getElementById("wv-reader-item-details") : null;
+            const cp: any = !isReaderWin ? win.ZoteroContextPane : null;
+            // Better Notes' outline pane in the selected note tab, if any.
+            const outline: any = mode === "note" ? this._wvLayoutMenuOutline(win) : null;
+            // The selector item hides the selector ENTIRELY, handle included
+            // (the library's Tag Selector item hides the whole selector too;
+            // MJT 2026-10-14) -- the handle only folds it.
+            const show: any = {
+                sidebar: !!ir && (mode === "reader" || mode === "window"),
+                outline: !!outline,
+                pane: (mode === "note" || mode === "reader") ? !!(cp && typeof cp.togglePane === "function") : (mode === "window" && !!details),
+                selector: !!ir && (mode === "reader" || mode === "window") && this._wvAnnPaneEnabled(),
+            };
+            const checked: any = {
+                sidebar: !!(ir && ir._state && ir._state.sidebarOpen),
+                outline: !!outline && !outline.hasAttribute("collapsed"),
+                pane: isReaderWin ? !!(details && !details._collapsed) : !!(cp && !cp.collapsed),
+                selector: !this._getAnnSelectorHidden(),
+            };
+            for (const it of popup.querySelectorAll(":scope > .wv-layout-item")) {
+                const key = it.getAttribute("data-wv-layout");
+                it.hidden = !show[key];
+                if (checked[key]) it.setAttribute("checked", "true"); else it.removeAttribute("checked");
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvLayoutMenuSync err: " + e); }
+    }
+
+    /** On popuphidden: Zotero's items back, ours out of the way (a tab
+     *  switch between two opens must never find the library items hidden). */
+    _wvLayoutMenuRestore(win: any, popup: any) {
+        try {
+            const doc = win.document;
+            for (const id of WV_ZOTERO_LAYOUT_IDS) {
+                const el: any = doc.getElementById(id);
+                if (el && el.getAttribute("data-wv-hidden") === "1") { el.hidden = false; el.removeAttribute("data-wv-hidden"); }
+            }
+            for (const it of popup.querySelectorAll(":scope > .wv-layout-item")) it.hidden = true;
+        } catch (_) {}
+    }
+
+    _wvLayoutMenuCommand(win: any, key: string) {
+        try {
+            const doc = win.document;
+            const isReaderWin = wvWinType(doc) === "zotero:reader";
+            if (key === "sidebar") {
+                const r = this._wvLayoutMenuReader(win);
+                if (!r) return;
+                // The toolbar button's own path: the UI handler toggles the
+                // sidebar AND tells Zotero (onToggleSidebar, the default for
+                // the next reader); a direct toggleSidebar would skip the
+                // second.
+                const idoc = r._iframeWindow && r._iframeWindow.document;
+                const btn = idoc && idoc.getElementById("sidebarToggle");
+                if (btn) { btn.click(); return; }
+                const ir: any = r._internalReader && (Components as any).utils.waiveXrays(r._internalReader);
+                const open = !!(ir && ir._state && ir._state.sidebarOpen);
+                if (typeof r.toggleSidebar === "function") r.toggleSidebar(!open);
+                return;
+            }
+            if (key === "pane") {
+                if (isReaderWin) {
+                    const d: any = doc.getElementById("wv-reader-item-details");
+                    if (d) { d._collapsed = !d._collapsed; try { (this as any)._wvReaderPaneSync(win); } catch (_) {} }
+                }
+                else {
+                    const cp: any = win.ZoteroContextPane;
+                    if (cp && typeof cp.togglePane === "function") cp.togglePane();
+                }
+                return;
+            }
+            if (key === "selector") { this._wvAnnSelectorHiddenToggle(); return; }
+            if (key === "outline") {
+                // Better Notes' own toggle for the SELECTED note tab's
+                // workspace (toggleOutline writes the selected tab type's
+                // sidebar state through Zotero_Tabs.updateSidebarLayout --
+                // called with a reader tab in front it would rewrite the
+                // READER's saved sidebar state, 2026-10-15). Zotero's
+                // Notes.toggleSidebar is the API BN patches; the same thing.
+                const ZT: any = win.Zotero_Tabs;
+                if (!ZT || ZT.selectedType !== "note") return;
+                const BN: any = (Zotero as any).BetterNotes;
+                const ws = BN && BN.api && BN.api.workspace && typeof BN.api.workspace.getWorkspaceByUID === "function"
+                    ? BN.api.workspace.getWorkspaceByUID(ZT.selectedID) : null;
+                if (ws && typeof ws.toggleOutline === "function") ws.toggleOutline();
+                else if (typeof (Zotero as any).Notes.toggleSidebar === "function") {
+                    const o = this._wvLayoutMenuOutline(win);
+                    (Zotero as any).Notes.toggleSidebar(!!(o && o.hasAttribute("collapsed")));
+                }
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvLayoutMenuCommand err: " + e); }
+    }
+
+    _wvUnwireLayoutMenu(win: any) {
+        try {
+            const doc = win && win.document;
+            if (!doc || !doc.documentElement) return;
+            const isReaderWin = wvWinType(doc) === "zotero:reader";
+            const popup: any = isReaderWin ? doc.getElementById("wv-layout-menu-popup") : doc.querySelector("#layout-menu > menupopup");
+            if (popup) {
+                for (const it of [...popup.querySelectorAll(":scope > .wv-layout-item")]) { wvUnlisten(it, "layoutMenu:command"); it.remove(); }
+                wvUnlisten(popup, "layoutMenu:popupshowing");
+                wvUnlisten(popup, "layoutMenu:popuphidden");
+            }
+            if (isReaderWin) {
+                const view: any = doc.getElementById("menu_viewPopup");
+                if (view) {
+                    wvUnlisten(view, "layoutMenu:viewShowing");
+                    for (const s of [...view.querySelectorAll(":scope > .wv-layout-sep")]) s.remove();
+                }
+                const m = doc.getElementById("wv-layout-menu");
+                if (m) m.remove();
+            }
+            else {
+                for (const id of WV_ZOTERO_LAYOUT_IDS) {
+                    const el: any = doc.getElementById(id);
+                    if (el && el.getAttribute("data-wv-hidden") === "1") { el.hidden = false; el.removeAttribute("data-wv-hidden"); }
+                }
+            }
+        } catch (_) {}
+    }
+
+    /** destroy(): every main window and every reader window. */
+    _wvTeardownLayoutMenus() {
+        try {
+            const wins: any[] = wvMainWins();
+            for (const w of wins) { try { this._wvUnwireLayoutMenu(w); } catch (_) {} }
+        } catch (_) {}
+        try { for (const t of (this as any)._wvReaderWindowTargets()) { try { this._wvUnwireLayoutMenu(t.win); } catch (_) {} } } catch (_) {}
     }
 
     /** The reader's CURRENT text selection as {position, text}, or null when
@@ -7874,7 +8243,16 @@ class _ReaderPanelsMixin {
 
     /** The shortcut's text for a menu ("" when none is set). */
     _wvOutlineKeyText(id: string): string {
+        if (!this._wvOutlineKeysOn()) return "";
         return this._wvOutlineKeyLabel(this._wvOutlineKeyGet(id));
+    }
+
+    /** The shortcuts are an Extras option (Settings greys them with it):
+     *  inert while Extras is off, their recording kept (prefs.4, MJT
+     *  2026-10-17). `_wvOutlineKeyGet` stays raw for Settings and the
+     *  conflict checks. */
+    _wvOutlineKeysOn(): boolean {
+        try { return !!this._getEnableVisualExtras(); } catch (_) { return true; }
     }
 
     /** keydown in a reader tab (its own document and its views). Typing
@@ -7882,6 +8260,7 @@ class _ReaderPanelsMixin {
     _wvOutlineShortcutKey(reader: any, e: any): boolean {
         try {
             if (e.repeat || e.isComposing || e.defaultPrevented) return false;
+            if (!this._wvOutlineKeysOn()) return false;
             let id: string | null = null;
             for (const a of this._wvOutlineKeyActions()) {
                 if (this._wvOutlineKeyMatches(this._wvOutlineKeyGet(a.id), e)) { id = a.id; break; }
@@ -7892,7 +8271,7 @@ class _ReaderPanelsMixin {
             for (const el of [t, fe]) {
                 if (!el) continue;
                 const ln = String(el.localName || "").toLowerCase();
-                if (el.isContentEditable || ln === "input" || ln === "textarea" || ln === "select") return false;
+                if (wvIsTextEntry(el)) return false;
                 if (el.closest && el.closest(".textAnnotation, .label-popup, [contenteditable='true']")) return false;
             }
             e.preventDefault(); e.stopPropagation();
@@ -8130,23 +8509,26 @@ class _ReaderPanelsMixin {
                         || (a.cfi ? { type: "FragmentSelector", value: a.cfi } : null);
                     if (!next) return;
                     const withAnchor = Object.assign({}, next, { anchor: "point" });
-                    await this._wvOutlineSetEntryPosition(att.libraryID, att.itemKey,
-                        entry.id, withAnchor, entry.title);
-                    entry.position = withAnchor;
-                    entry.resolvedPosition = withAnchor;
-                    // Re-file at the document-order slot for the NEW spot.
-                    // The PDF pin drag has done this from the start
-                    // (_wvOutlineShowEntryPin -> _wvOutlineReplaceByPosition);
-                    // the DOM commit only wrote the position, so a dragged
-                    // EPUB/snapshot pin kept its old place in the list (MJT
-                    // 2026-09-01, "it did not get moved in the order").
-                    try {
-                        const idoc2 = reader._iframeWindow && reader._iframeWindow.document;
-                        if (idoc2) {
-                            await this._wvOutlineReplaceByPosition(reader, idoc2,
-                                att.libraryID, att.itemKey, entry.id);
-                        }
-                    } catch (_) {}
+                    // One undo step: the spot, the anchor and the re-file.
+                    await this._wvUndoBatch(async () => {
+                        await this._wvOutlineSetEntryPosition(att.libraryID, att.itemKey,
+                            entry.id, withAnchor, entry.title);
+                        entry.position = withAnchor;
+                        entry.resolvedPosition = withAnchor;
+                        // Re-file at the document-order slot for the NEW spot.
+                        // The PDF pin drag has done this from the start
+                        // (_wvOutlineShowEntryPin -> _wvOutlineReplaceByPosition);
+                        // the DOM commit only wrote the position, so a dragged
+                        // EPUB/snapshot pin kept its old place in the list (MJT
+                        // 2026-09-01, "it did not get moved in the order").
+                        try {
+                            const idoc2 = reader._iframeWindow && reader._iframeWindow.document;
+                            if (idoc2) {
+                                await this._wvOutlineReplaceByPosition(reader, idoc2,
+                                    att.libraryID, att.itemKey, entry.id);
+                            }
+                        } catch (_) {}
+                    });
                 } catch (e) { Zotero.debug("[Weavero] outline pin commit err: " + e); }
             };
             const iwin = pv._iframeWindow;
@@ -8767,7 +9149,7 @@ class _ReaderPanelsMixin {
                             try { if (readerS._wvOlSpySecsMO) readerS._wvOlSpySecsMO.disconnect(); } catch (_) {}
                             const mo = new cw.MutationObserver(kick);
                             const init = { attributes: true, attributeFilter: ["style"], childList: true, subtree: true };
-                            mo.observe(secs, Cu ? Cu.cloneInto(init, cw) : init);
+                            mo.observe(secs, wvCloneFor(init, cw));
                             readerS._wvOlSpySecsMO = mo;
                             readerS._wvOlSpySecsEl = secs;
                             // New content: every cached range is stale.
@@ -8802,7 +9184,7 @@ class _ReaderPanelsMixin {
                         try { if (reader._wvOlSpyBodyMO) reader._wvOlSpyBodyMO.disconnect(); } catch (_) {}
                         const bmo = new cw.MutationObserver(attach);
                         const binit = { childList: true };
-                        bmo.observe(body, Cu ? Cu.cloneInto(binit, cw) : binit);
+                        bmo.observe(body, wvCloneFor(binit, cw));
                         reader._wvOlSpyBodyMO = bmo;
                         reader._wvOlSpyBodyEl = body;
                         reader._wvOlSpySecsEl = null;
@@ -8868,28 +9250,12 @@ class _ReaderPanelsMixin {
         try {
             this._wvCloseReaderBmContextMenu(idoc);
             const page = this._wvOutlineCurrentPageIndex(reader) + 1;
-            const menu = idoc.createElementNS(NS_HTML_RP, "div");
+            const menu = wvHtmlEl(idoc, "div");
             menu.id = RP_BM_CTX_ID;
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
-            const item = (label: string, icon: string, fn: () => void, keyId?: string) => {
-                const it = idoc.createElementNS(NS_HTML_RP, "div");
-                it.className = "wv-ctx-item";
-                const ic = idoc.createElementNS(NS_HTML_RP, "span");
-                ic.className = "wv-ctx-ic"; ic.innerHTML = icon || "";
-                const lb = idoc.createElementNS(NS_HTML_RP, "span");
-                lb.textContent = label;
-                it.appendChild(ic); it.appendChild(lb);
-                // The user's shortcut for it, if any (issue #51).
-                const kt = keyId ? this._wvOutlineKeyText(keyId) : "";
-                if (kt) {
-                    const hn = idoc.createElementNS(NS_HTML_RP, "span");
-                    hn.className = "wv-ctx-hint";
-                    hn.textContent = kt;
-                    it.appendChild(hn);
-                }
-                it.addEventListener("click", () => { close(); fn(); });
-                menu.appendChild(it);
-            };
+            // The hint is the user's shortcut for it, if any (issue #51).
+            const item = (label: string, icon: string, fn: () => void, keyId?: string) =>
+                this._wvCtxItem(idoc, menu, { label, icon, hint: (keyId && this._wvOutlineKeyText(keyId)) || undefined, close, onClick: fn });
             const rmOn = this._wvReadingModeActive(reader);
             // ORDER = precision, best first: text anchors to the exact words, a
             // pin to a point, a page anchor only to the sheet (asked
@@ -9220,7 +9586,7 @@ class _ReaderPanelsMixin {
             // could never complete, 2026-08-26) leaves its ghost in the doc
             // with no reachable cleanup closure.
             try { for (const g of Array.from(pdoc.querySelectorAll(".wv-pin-ghost")) as any[]) g.remove(); } catch (_) {}
-            const ghost: any = pdoc.createElementNS(NS_HTML_RP, "div");
+            const ghost: any = wvHtmlEl(pdoc, "div");
             ghost.className = "wv-reader-pin wv-pin-ghost";
             const PIN_H = 32;
             const bmp = RP_PIN_USE_EMOJI ? this._wvPinEmojiBitmap(pdoc) : null;
@@ -9325,8 +9691,11 @@ class _ReaderPanelsMixin {
             if (!position || !Array.isArray(position.rects) || !position.rects.length) return;
             const onMove = (newPos: any) => {
                 const pos = { pageIndex: newPos.pageIndex, rects: newPos.rects, anchor: "point" };
-                Promise.resolve(this._wvOutlineSetEntryPosition(libraryID, itemKey, id, pos))
-                    .then(() => this._wvOutlineReplaceByPosition(reader, idoc, libraryID, itemKey, id)).catch(() => {});
+                // One undo step: the new spot, then the reading-order re-file.
+                this._wvUndoBatch(async () => {
+                    await this._wvOutlineSetEntryPosition(libraryID, itemKey, id, pos);
+                    await this._wvOutlineReplaceByPosition(reader, idoc, libraryID, itemKey, id);
+                }).catch(() => {});
             };
             // Draw NOW when pdf.js already has the page view built -- the
             // usual case, the target being in or near the viewport -- and
@@ -9362,12 +9731,14 @@ class _ReaderPanelsMixin {
             let pending: any = { pageIndex: tgt.pageIndex, rects: tgt.rects, anchor: "point" };
             const onMove = (newPos: any) => { pending = { pageIndex: newPos.pageIndex, rects: newPos.rects, anchor: "point" }; };
             const removePin = () => {
-                try { const pdoc = pv._iframeWindow && pv._iframeWindow.document; const el = pdoc && pdoc.querySelector(".wv-reader-pin"); if (el) el.remove(); } catch (_) {}
+                try { const pdoc = pv._iframeWindow && pv._iframeWindow.document; if (pdoc) this._wvPinRemove(pdoc, { force: true }); } catch (_) {}
             };
             const commit = () => {
                 removePin();
-                Promise.resolve(this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, pending))
-                    .then(() => this._wvOutlineReplaceByPosition(reader, idoc, ref.att.libraryID, ref.att.itemKey, ref.id))
+                this._wvUndoBatch(async () => {
+                    await this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, pending);
+                    await this._wvOutlineReplaceByPosition(reader, idoc, ref.att.libraryID, ref.att.itemKey, ref.id);
+                })
                     .then(() => this._wvReaderPanelNote(idoc, "Pin position saved."))
                     .catch(() => {});
             };
@@ -9485,8 +9856,7 @@ class _ReaderPanelsMixin {
                 url: null,
                 source: { title, position: pos, url: null, origin: "user" },
             };
-            const stored = await this._wvOutlineInsertEntry(att.libraryID, att.itemKey, entry, gap);
-            if (stored && stored.id != null) this._wvOutlineRecordAdd(att, [String(stored.id)]);
+            const stored = await this._wvOutlineInsertEntry(att.libraryID, att.itemKey, entry, gap);   // the store records the step
             reader._wvOutlineViewSource = null;
             // REALLY select the new entry (blue selected row), not just a
             // focus ring — the same contract the bookmark reveal follows
@@ -9611,7 +9981,7 @@ class _ReaderPanelsMixin {
             };
             try {
                 dropSuppression();   // never stack two
-                const sup = idoc.createElementNS(NS_HTML_RP, "style");
+                const sup = wvHtmlEl(idoc, "style");
                 sup.id = SUP_ID;
                 sup.textContent = ".selection-popup{display:none!important;}";
                 (idoc.head || idoc.documentElement).appendChild(sup);
@@ -9679,8 +10049,10 @@ class _ReaderPanelsMixin {
             const ref = await this._wvOutlineResolveId(reader, entry, index, curatedView);
             if (!ref) return;
             this._wvOutlineArmSelectRegion(reader, idoc, (sel) => {
-                Promise.resolve(this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, sel.position))
-                    .then(() => this._wvOutlineReplaceByPosition(reader, idoc, ref.att.libraryID, ref.att.itemKey, ref.id))
+                this._wvUndoBatch(async () => {
+                    await this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, sel.position);
+                    await this._wvOutlineReplaceByPosition(reader, idoc, ref.att.libraryID, ref.att.itemKey, ref.id);
+                })
                     .then(() => {
                         const d = this._wvOutlineDoc(ref.att.libraryID, ref.att.itemKey);
                         const en = d && Array.isArray(d.entries) ? d.entries.find((z: any) => z.id === ref.id) : null;
@@ -9712,8 +10084,10 @@ class _ReaderPanelsMixin {
             const pageNum = res.page;
             const anchor = res.bottom ? "bottom" : "top";
             const pageIndex = pageNum - 1;
-            await this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, { pageIndex, anchor });
-            await this._wvOutlineReplaceByPosition(reader, idoc, ref.att.libraryID, ref.att.itemKey, ref.id);
+            await this._wvUndoBatch(async () => {
+                await this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, { pageIndex, anchor });
+                await this._wvOutlineReplaceByPosition(reader, idoc, ref.att.libraryID, ref.att.itemKey, ref.id);
+            });
             try {
                 const d = this._wvOutlineDoc(ref.att.libraryID, ref.att.itemKey);
                 const e = d && Array.isArray(d.entries) ? d.entries.find((x: any) => x.id === ref.id) : null;
@@ -9731,14 +10105,11 @@ class _ReaderPanelsMixin {
     _wvOutlineEditPositionDialog(idoc: any, initialPage: number, initialBottom: boolean, pageCount: number, opts?: any): Promise<any> {
         return new Promise((resolve) => {
             try {
-                const NS = NS_HTML_RP;
-                const backdrop = idoc.createElementNS(NS, "div");
+                const backdrop = wvHtmlEl(idoc, "div");
                 backdrop.className = "wv-bm-url-dialog-backdrop";
-                const dlg = idoc.createElementNS(NS, "div");
-                dlg.className = "wv-bm-url-dialog";
+                const dlg = wvHtmlEl(idoc, "div", "wv-bm-url-dialog");
 
-                const title = idoc.createElementNS(NS, "div");
-                title.className = "wv-bm-url-dialog-label";
+                const title = wvHtmlEl(idoc, "div", "wv-bm-url-dialog-label");
                 title.textContent = (opts && opts.title) || "Edit Position";
                 title.setAttribute("style", "font-size:13px;opacity:.9;margin-bottom:2px;");
 
@@ -9752,12 +10123,10 @@ class _ReaderPanelsMixin {
                 let origText: any = null;      // the "Default name: …" hint
                 let resetBtn: any = null;
                 if (opts && opts.withName) {
-                    nameRow = idoc.createElementNS(NS, "div");
+                    nameRow = wvHtmlEl(idoc, "div");
                     nameRow.className = "wv-bm-url-dialog-row";
-                    const nLbl = idoc.createElementNS(NS, "label");
-                    nLbl.className = "wv-bm-url-dialog-label";
-                    nLbl.textContent = "Name";
-                    nInput = idoc.createElementNS(NS, "input");
+                    const nLbl = wvHtmlEl(idoc, "label", "wv-bm-url-dialog-label", "Name");
+                    nInput = wvHtmlEl(idoc, "input");
                     nInput.className = "wv-bm-url-dialog-input";
                     nInput.setAttribute("type", "text");
                     nInput.setAttribute("style", "font:inherit;");
@@ -9770,12 +10139,12 @@ class _ReaderPanelsMixin {
                     // string -- resetting after moving the page should offer
                     // the new page's name, not the old one.
                     if (opts.originalName || opts.autoNameFromPosition) {
-                        const oRow = idoc.createElementNS(NS, "div");
+                        const oRow = wvHtmlEl(idoc, "div");
                         oRow.setAttribute("style",
                             "display:flex;align-items:center;gap:8px;margin-top:4px;font-size:11px;opacity:.75;");
-                        origText = idoc.createElementNS(NS, "span");
+                        origText = wvHtmlEl(idoc, "span");
                         origText.setAttribute("style", "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;");
-                        resetBtn = idoc.createElementNS(NS, "button");
+                        resetBtn = wvHtmlEl(idoc, "button");
                         resetBtn.className = "wv-bm-url-dialog-btn";
                         resetBtn.textContent = "Reset";
                         resetBtn.setAttribute("style", "font-size:11px;padding:1px 8px;");
@@ -9784,13 +10153,9 @@ class _ReaderPanelsMixin {
                     }
                 }
 
-                const pageRow = idoc.createElementNS(NS, "div");
-                pageRow.className = "wv-bm-url-dialog-row";
-                const pLbl = idoc.createElementNS(NS, "label");
-                pLbl.className = "wv-bm-url-dialog-label";
-                pLbl.textContent = "Page" + (pageCount ? " (1–" + pageCount + ")" : "");
-                const pInput: any = idoc.createElementNS(NS, "input");
-                pInput.className = "wv-bm-url-dialog-input";
+                const pageRow = wvHtmlEl(idoc, "div", "wv-bm-url-dialog-row");
+                const pLbl = wvHtmlEl(idoc, "label", "wv-bm-url-dialog-label", "Page" + (pageCount ? " (1–" + pageCount + ")" : ""));
+                const pInput: any = wvHtmlEl(idoc, "input", "wv-bm-url-dialog-input");
                 pInput.setAttribute("type", "number");
                 pInput.setAttribute("min", "1");
                 if (pageCount) pInput.setAttribute("max", String(pageCount));
@@ -9798,20 +10163,17 @@ class _ReaderPanelsMixin {
                 pInput.setAttribute("style", "max-width:110px;");
                 pageRow.appendChild(pLbl); pageRow.appendChild(pInput);
 
-                const posRow = idoc.createElementNS(NS, "div");
-                posRow.className = "wv-bm-url-dialog-row";
-                const posLbl = idoc.createElementNS(NS, "label");
-                posLbl.className = "wv-bm-url-dialog-label";
-                posLbl.textContent = "Position";
-                const optsBox = idoc.createElementNS(NS, "div");
+                const posRow = wvHtmlEl(idoc, "div", "wv-bm-url-dialog-row");
+                const posLbl = wvHtmlEl(idoc, "label", "wv-bm-url-dialog-label", "Position");
+                const optsBox = wvHtmlEl(idoc, "div");
                 optsBox.setAttribute("style", "display:flex;gap:16px;margin-top:3px;");
                 const mkRadio = (val: string, label: string, checked: boolean) => {
-                    const wrap = idoc.createElementNS(NS, "label");
+                    const wrap = wvHtmlEl(idoc, "label");
                     wrap.setAttribute("style", "display:inline-flex;align-items:center;gap:5px;cursor:pointer;");
-                    const r: any = idoc.createElementNS(NS, "input");
+                    const r: any = wvHtmlEl(idoc, "input");
                     r.setAttribute("type", "radio"); r.setAttribute("name", "wv-outline-pos"); r.value = val;
                     wvSetBoolAttr(r, "checked", !!checked);
-                    const t = idoc.createElementNS(NS, "span"); t.textContent = label;
+                    const t = wvHtmlEl(idoc, "span", undefined, label);
                     wrap.appendChild(r); wrap.appendChild(t);
                     return r;
                 };
@@ -9825,12 +10187,10 @@ class _ReaderPanelsMixin {
                 let cInput: any = null;
                 let commentRow: any = null;
                 if (opts && opts.withComment) {
-                    commentRow = idoc.createElementNS(NS, "div");
+                    commentRow = wvHtmlEl(idoc, "div");
                     commentRow.className = "wv-bm-url-dialog-row";
-                    const cLbl = idoc.createElementNS(NS, "label");
-                    cLbl.className = "wv-bm-url-dialog-label";
-                    cLbl.textContent = "Comment";
-                    cInput = idoc.createElementNS(NS, "textarea");
+                    const cLbl = wvHtmlEl(idoc, "label", "wv-bm-url-dialog-label", "Comment");
+                    cInput = wvHtmlEl(idoc, "textarea");
                     cInput.className = "wv-bm-url-dialog-input";
                     cInput.setAttribute("rows", "3");
                     cInput.setAttribute("style", "resize:vertical;min-height:44px;font:inherit;");
@@ -9838,12 +10198,9 @@ class _ReaderPanelsMixin {
                     commentRow.appendChild(cLbl); commentRow.appendChild(cInput);
                 }
 
-                const btnRow = idoc.createElementNS(NS, "div");
-                btnRow.className = "wv-bm-url-dialog-btns";
-                const cancelBtn: any = idoc.createElementNS(NS, "button");
-                cancelBtn.textContent = "Cancel"; cancelBtn.className = "wv-bm-url-dialog-btn";
-                const okBtn: any = idoc.createElementNS(NS, "button");
-                okBtn.textContent = "OK"; okBtn.className = "wv-bm-url-dialog-btn wv-bm-url-dialog-btn-primary";
+                const btnRow = wvHtmlEl(idoc, "div", "wv-bm-url-dialog-btns");
+                const cancelBtn: any = wvHtmlEl(idoc, "button", undefined, "Cancel"); cancelBtn.className = "wv-bm-url-dialog-btn";
+                const okBtn: any = wvHtmlEl(idoc, "button", undefined, "OK"); okBtn.className = "wv-bm-url-dialog-btn wv-bm-url-dialog-btn-primary";
                 btnRow.appendChild(cancelBtn); btnRow.appendChild(okBtn);
 
                 dlg.appendChild(title);
@@ -9912,7 +10269,7 @@ class _ReaderPanelsMixin {
                     // (_bmShowEditDialog), whose Ctrl+Enter the user expects
                     // to work in every bookmark dialog (2026-08-18). Page
                     // bookmarks route HERE instead, and lacked it.
-                    else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submit(); }
+                    else if (e.key === "Enter" && wvAccel(e)) { e.preventDefault(); submit(); }
                     // Plain Enter in the comment TEXTAREA inserts a newline, not submit.
                     else if (e.key === "Enter" && !(cInput && e.target === cInput)) { e.preventDefault(); submit(); }
                 };
@@ -9938,8 +10295,9 @@ class _ReaderPanelsMixin {
             if (!cache || !cache.tree) {
                 try { cache = await this._wvReaderFetchOutline(reader); reader._wvOutlineCache = cache; } catch (_) {}
             }
+            // The user's own action, with no edit after it: a step of its own.
             await this._wvOutlineEnsureCurated(att.libraryID, att.itemKey,
-                (cache && cache.source) || "extracted", (cache && cache.tree) || []);
+                (cache && cache.source) || "extracted", (cache && cache.tree) || [], { ownStep: true });
             reader._wvOutlineViewSource = null;
             this._wvReaderRenderOutline(reader, idoc);
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineCreateEmpty err: " + e); }
@@ -9990,8 +10348,7 @@ class _ReaderPanelsMixin {
                 url: null,
                 source: { title, position: pos, url: null, origin: "user" },
             };
-            const stored = await this._wvOutlineInsertEntry(att.libraryID, att.itemKey, entry, gap);
-            if (stored && stored.id != null) this._wvOutlineRecordAdd(att, [String(stored.id)]);
+            const stored = await this._wvOutlineInsertEntry(att.libraryID, att.itemKey, entry, gap);   // the store records the step
             // REALLY select the new entry (blue selected row, exclusive) --
             // this path inserts directly rather than via _wvOutlineCreateEntry
             // (which got the same contract earlier today), so it marked the
@@ -10181,7 +10538,7 @@ class _ReaderPanelsMixin {
                 try {
                     const iw = pv._iframeWindow;
                     const Cu = (Components as any).utils;
-                    if (iw && Cu) arg = Cu.cloneInto(position, iw);
+                    if (iw && Cu) arg = wvCloneFor(position, iw);
                 } catch (_) {}
                 const r = pv.toDisplayedRange(arg);
                 if (r && r.startContainer) return { container: r.startContainer, offset: r.startOffset || 0 };
@@ -10345,8 +10702,7 @@ class _ReaderPanelsMixin {
             await this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, precise, title);
             await this._wvReaderRenderOutline(reader, idoc);
             try {
-                const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
-                this._wvClearStalePin(pv);
+                const gen = this._wvHlNext(pv);
                 this._wvOutlineScrollToRect(pv, res.pageIndex, rects[0]);
                 this._wvOutlineHighlightInPlace(pv, res.pageIndex, rects, gen, 0);
             } catch (_) {}
@@ -10381,7 +10737,7 @@ class _ReaderPanelsMixin {
                     let arg: any = e.resolvedPosition || e.position;
                     try {
                         const Cu = (Components as any).utils;
-                        if (pvD._iframeWindow && Cu) arg = Cu.cloneInto(arg, pvD._iframeWindow);
+                        if (pvD._iframeWindow && Cu) arg = wvCloneFor(arg, pvD._iframeWindow);
                     } catch (_) {}
                     seed = pvD.toDisplayedRange(arg);
                 } catch (_) {}
@@ -10401,15 +10757,14 @@ class _ReaderPanelsMixin {
                         try { const a = this._wvDomAnchorFromRange(pvD, rangeNew); selr = a && a.selector; } catch (_) {}
                         if (!selr) return;
                         const precise = JSON.parse(JSON.stringify(selr));
-                        let chain: Promise<any> = Promise.resolve();
-                        if (withText && text) {
-                            chain = chain
-                                .then(() => this._wvOutlineRenameEntry(ref.att.libraryID, ref.att.itemKey, ref.id, text))
-                                .then(() => this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, precise, text));
-                        } else {
-                            chain = chain.then(() => this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, precise));
-                        }
-                        return chain.then(() => this._wvReaderRenderOutline(reader, idoc));
+                        // One undo step: the rename (with text) and the region.
+                        return this._wvUndoBatch(async () => {
+                            if (withText && text) {
+                                await this._wvOutlineRenameEntry(ref.att.libraryID, ref.att.itemKey, ref.id, text);
+                                await this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, precise, text);
+                            }
+                            else await this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, precise);
+                        }).then(() => this._wvReaderRenderOutline(reader, idoc));
                     },
                 });
             }
@@ -10423,15 +10778,14 @@ class _ReaderPanelsMixin {
                 // position with that title as `regionTitle`, so the two stay
                 // in sync (no spurious "Re-detect from Title" afterward).
                 onCommit: (precise: any, text: string | null) => {
-                    let chain: Promise<any> = Promise.resolve();
-                    if (text) {
-                        chain = chain
-                            .then(() => this._wvOutlineRenameEntry(ref.att.libraryID, ref.att.itemKey, ref.id, text))
-                            .then(() => this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, precise, text));
-                    } else {
-                        chain = chain.then(() => this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, precise));
-                    }
-                    return chain.then(() => this._wvReaderRenderOutline(reader, idoc));
+                    // One undo step: the rename (with text) and the region.
+                    return this._wvUndoBatch(async () => {
+                        if (text) {
+                            await this._wvOutlineRenameEntry(ref.att.libraryID, ref.att.itemKey, ref.id, text);
+                            await this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, precise, text);
+                        }
+                        else await this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, precise);
+                    }).then(() => this._wvReaderRenderOutline(reader, idoc));
                 },
             });
         } catch (err) { Zotero.debug("[Weavero] _wvOutlineEditRegion err: " + err); }
@@ -10557,6 +10911,113 @@ class _ReaderPanelsMixin {
         } catch (_) { return null; }
     }
 
+    /** The part of the two handle-drag region editors that owes nothing to
+     *  the geometry -- the PDF editor (`_wvRegionEditorOpen`, char indices on
+     *  a page) and the DOM editor (`_wvDomRegionEditorOpen`, a Range) carried
+     *  it line for line (survey 2026-10-06 §4, merged 2026-10-21): the
+     *  toolbar ("Save Region and Text" FIRST and the Enter default, MJT
+     *  2026-09-24 -- after reshaping a region the title usually follows it,
+     *  and it replaces a hand-renamed title too; "Save Region" keeps it;
+     *  "Cancel"), the two text-selection-style handles (a thin bar spanning
+     *  the line at the range edge with a round knob ABOVE the line at the
+     *  start and BELOW at the end -- the plain mid-line floating circles
+     *  read "strange", 2026-07-21, re-asked for DOM views 2026-09-04 "do the
+     *  same anchors as in the PDF reader"), Escape / Enter on the content
+     *  document AND the sidebar document (the editor opens from the outline
+     *  or bookmark menu, so focus is still in the sidebar and the first
+     *  Escape never reached the content document, MJT 2026-09-24; keys do
+     *  not cross frame boundaries, so none is handled twice), the
+     *  one-editor-per-view registration, the handle-drag plumbing (pointer
+     *  capture, move / up), the panel note. Colours go in with !important:
+     *  an EPUB theme's reset otherwise blanks them (the pin caret /
+     *  highlight painter trap). width:max-content on the bar is
+     *  load-bearing: in the DOM editor the containing block is a 0-width
+     *  div, so shrink-to-fit resolved to MIN-content -- every button wrapped
+     *  to word-width and the bar grew ~2x tall (MJT 2026-09-04, snapshot
+     *  Edit Region). `p.commit(withText)` and `p.cleanup()` are the editor's
+     *  own; the shell's `destroy` runs `cleanup` once, then the shared
+     *  teardown. */
+    _wvRegionEditorShell(idoc: any, pv: any, doc: any, opts: any, p: {
+        container: any;
+        barCss?: string;
+        commit: (withText: boolean) => void;
+        cleanup: () => void;
+    }): { bar: any; start: any; end: any; destroy: () => void; alive: () => boolean;
+          wireHandle: (h: any, which: "start" | "end", drag: { move: (ev: any, which: "start" | "end") => void; down?: () => void; up?: () => void }) => void } {
+        const container = p.container;
+        const bar: any = wvHtmlEl(doc, "div", "wv-region-bar");
+        bar.style.cssText = "position:absolute;display:flex;gap:6px;padding:4px 6px;"
+            + "width:max-content;white-space:nowrap;font:12px sans-serif;"
+            + "border:1px solid rgba(127,127,127,.5);border-radius:6px;"
+            + "box-shadow:0 2px 6px rgba(0,0,0,.5);pointer-events:auto;z-index:2;" + (p.barCss || "");
+        bar.style.setProperty("background-color", "rgba(40,40,40,.95)", "important");
+        const mkBtn = (label: string, bg: string) => {
+            const b: any = wvHtmlEl(doc, "button", undefined, label);
+            b.style.cssText = "font:12px sans-serif;color:#fff;border:none;border-radius:4px;padding:3px 8px;cursor:pointer;";
+            b.style.setProperty("background-color", bg, "important");
+            bar.appendChild(b); return b;
+        };
+        const saveTextBtn = mkBtn("Save Region and Text", "#2e7d32");
+        const saveBtn = mkBtn("Save Region", "#2e7d32");
+        const cancelBtn = mkBtn("Cancel", "#555");
+        container.appendChild(bar);
+        const HANDLE_COL = "#4072e5";
+        const mkHandle = (atStart: boolean) => {
+            const h: any = wvHtmlEl(doc, "div", "wv-region-handle");
+            h.style.cssText = "position:absolute;width:2px;margin-left:-1px;"
+                + "box-shadow:0 0 0 .5px rgba(255,255,255,.6);"
+                + "cursor:ew-resize;touch-action:none;pointer-events:auto;z-index:3;";
+            h.style.setProperty("background-color", HANDLE_COL, "important");
+            const knob: any = wvHtmlEl(doc, "div", "wv-region-knob");
+            knob.style.cssText = "position:absolute;left:50%;margin-left:-6px;width:12px;height:12px;"
+                + "border-radius:50%;border:2px solid #fff;box-shadow:0 1px 2px rgba(0,0,0,.5);"
+                + (atStart ? "top:0;margin-top:-12px;" : "bottom:0;margin-bottom:-12px;");
+            knob.style.setProperty("background-color", HANDLE_COL, "important");
+            h.appendChild(knob);
+            container.appendChild(h);
+            return h;
+        };
+        const start = mkHandle(true);
+        const end = mkHandle(false);
+        let destroyed = false;
+        const onKey = (ev: any) => {
+            if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); destroy(); }
+            else if (ev.key === "Enter") { ev.preventDefault(); ev.stopPropagation(); p.commit(true); }
+        };
+        const destroy = () => {
+            if (destroyed) return;
+            destroyed = true;
+            try { p.cleanup(); } catch (_) {}
+            try { container.remove(); } catch (_) {}
+            try { doc.removeEventListener("keydown", onKey, true); } catch (_) {}
+            try { if (idoc && idoc !== doc) idoc.removeEventListener("keydown", onKey, true); } catch (_) {}
+            if (pv._wvRegionEditor && pv._wvRegionEditor._id === opts.editorId) pv._wvRegionEditor = null;
+        };
+        const wireHandle = (h: any, which: "start" | "end", drag: { move: (ev: any, which: "start" | "end") => void; down?: () => void; up?: () => void }) => {
+            h.addEventListener("pointerdown", (e: any) => {
+                try { e.preventDefault(); e.stopPropagation(); h.setPointerCapture(e.pointerId); } catch (_) {}
+                if (drag.down) { try { drag.down(); } catch (_) {} }
+                const onMove = (me: any) => { try { drag.move(me, which); } catch (_) {} };
+                const onUp = () => {
+                    try { h.removeEventListener("pointermove", onMove); } catch (_) {}
+                    try { h.removeEventListener("pointerup", onUp); } catch (_) {}
+                    if (drag.up) { try { drag.up(); } catch (_) {} }
+                };
+                h.addEventListener("pointermove", onMove);
+                h.addEventListener("pointerup", onUp);
+            }, true);
+        };
+        saveBtn.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (_) {} p.commit(false); });
+        saveTextBtn.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (_) {} p.commit(true); });
+        cancelBtn.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (_) {} destroy(); });
+        doc.addEventListener("keydown", onKey, true);
+        try { if (idoc && idoc !== doc) idoc.addEventListener("keydown", onKey, true); } catch (_) {}
+        pv._wvRegionEditor = { _id: opts.editorId, destroy };
+        this._wvReaderPanelNote(idoc, "Drag the handles to reshape the region — Save Region and Text also reloads the "
+            + (opts.noteWord || "title") + "; Save Region keeps it. (Enter = Save Region and Text, Esc = cancel.)");
+        return { bar, start, end, destroy, alive: () => !destroyed, wireHandle };
+    }
+
     _wvDomRegionEditorOpen(reader: any, idoc: any, seed: any, opts: any) {
         try {
             const pv = reader._internalReader
@@ -10569,74 +11030,27 @@ class _ReaderPanelsMixin {
             try { if (pv._wvRegionEditor) pv._wvRegionEditor.destroy(); } catch (_) {}
             let range = seed.cloneRange();
 
-            const container = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-            container.className = "wv-epub-region-editor";
+            const container = wvHtmlEl(doc, "div", "wv-epub-region-editor");
             container.style.cssText = "position:absolute;left:0;top:0;width:0;height:0;z-index:2147483645;";
             wvDomNoZoom(container);
             doc.body.appendChild(container);
-
-            const mkDiv = (css: string) => {
-                const d: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-                d.style.cssText = css; container.appendChild(d); return d;
-            };
-            // width:max-content is load-bearing: the containing block is the
-            // 0-width `container` div, so shrink-to-fit resolves to
-            // MIN-content — every button wrapped to word-width and the bar
-            // grew ~2x tall (MJT 2026-09-04, snapshot Edit Region).
-            const bar = mkDiv("position:absolute;display:flex;gap:6px;padding:4px 6px;"
-                + "width:max-content;white-space:nowrap;"
-                + "border:1px solid rgba(127,127,127,.5);"
-                + "border-radius:6px;pointer-events:auto;z-index:2;");
-            bar.style.setProperty("background-color", "rgba(40,40,40,.95)", "important");
-            const mkBtn = (label: string, bg: string) => {
-                const b: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
-                b.textContent = label;
-                b.style.cssText = "font:12px sans-serif;color:#fff;"
-                    + "border:none;border-radius:4px;padding:3px 8px;cursor:pointer;";
-                // Same theme-reset trap as the pin caret / highlight painter.
-                b.style.setProperty("background-color", bg, "important");
-                bar.appendChild(b); return b;
-            };
-            // "Save Region and Text" FIRST and the Enter default (MJT 2026-09-24):
-            // after reshaping a region the title usually follows it. It
-            // replaces a hand-renamed title too -- Save Region keeps it.
-            const saveTextBtn = mkBtn("Save Region and Text", "#2e7d32");
-            const saveBtn = mkBtn("Save Region", "#2e7d32");
-            const cancelBtn = mkBtn("Cancel", "#555");
             const hls: any[] = [];
-            const handles: any = {};
-            // Text-selection-style handles, SAME design as the PDF editor
-            // (_wvRegionEditorOpen): a thin vertical bar spanning the line at
-            // the range edge, with a round knob ABOVE the line at the start
-            // and BELOW at the end. The plain mid-line floating circles this
-            // replaces sat on the glyphs and read "strange" — the identical
-            // 2026-07-21 PDF complaint, re-reported for DOM views by MJT
-            // 2026-09-04 ("do the same anchors as in the PDF reader").
-            const HANDLE_COL = "#4072e5";
-            const mkHandle = (which: string) => {
-                const atStart = which === "start";
-                const h = mkDiv("position:absolute;width:2px;margin-left:-1px;"
-                    + "box-shadow:0 0 0 .5px rgba(255,255,255,.6);"
-                    + "cursor:ew-resize;touch-action:none;pointer-events:auto;z-index:3;");
-                h.style.setProperty("background-color", HANDLE_COL, "important");
-                const knob: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-                knob.className = "wv-epub-region-knob";
-                knob.style.cssText = "position:absolute;left:50%;margin-left:-6px;width:12px;height:12px;"
-                    + "border-radius:50%;border:2px solid #fff;box-shadow:0 1px 2px rgba(0,0,0,.5);"
-                    + (atStart ? "top:0;margin-top:-12px;" : "bottom:0;margin-bottom:-12px;");
-                // Same theme-reset trap as the bar/buttons.
-                knob.style.setProperty("background-color", HANDLE_COL, "important");
-                h.appendChild(knob);
-                handles[which] = h; return h;
-            };
-            mkHandle("start"); mkHandle("end");
+            // The toolbar, the handles, Escape / Enter, the registration: the
+            // shell shared with the PDF editor. The highlight divs live on the
+            // BODY (see paint), so they go in the shell's cleanup.
+            const shell = this._wvRegionEditorShell(idoc, pv, doc, opts, {
+                container,
+                commit: (withText) => commit(withText),
+                cleanup: () => { for (const d of hls.splice(0)) { try { d.remove(); } catch (_) {} } },
+            });
+            const bar = shell.bar;
+            const handles = { start: shell.start, end: shell.end };
             // A drag's trailing paint (the chrome-timer one below) can fire
             // AFTER Save/Escape destroyed the editor; it then re-created a
             // highlight div on <body> that nothing ever removed (an orphan
             // box found on the Rizuan snapshot, 2026-09-24).
-            let destroyedEd = false;
             const paint = () => {
-                if (destroyedEd) return;
+                if (!shell.alive()) return;
                 const rects = this._wvDomLeafRects(range);
                 if (!rects.length) return;
                 // Reuse the highlight divs in place -- destroying and
@@ -10655,7 +11069,7 @@ class _ReaderPanelsMixin {
                         // the BODY, not in the overlay container: a z-indexed
                         // container is an isolated group and the blend would
                         // stop at its transparent backdrop.
-                        d = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+                        d = wvHtmlEl(doc, "div");
                         d.style.cssText = "position:absolute;z-index:2147483644;pointer-events:none;border-radius:2px;";
                         d.style.setProperty("background-color", "#B9DBFF", "important");
                         d.style.setProperty("mix-blend-mode", "multiply", "important");
@@ -10691,14 +11105,6 @@ class _ReaderPanelsMixin {
                 bar.style.left = Math.max(4, Math.min(first.left + iw.scrollX, docW - barW - 4)) + "px";
                 bar.style.top = barTop + "px";
             };
-            const destroy = () => {
-                destroyedEd = true;
-                try { container.remove(); } catch (_) {}
-                for (const d of hls.splice(0)) { try { d.remove(); } catch (_) {} }   // they live on the body
-                try { doc.removeEventListener("keydown", onKey, true); } catch (_) {}
-                try { if (idoc && idoc !== doc) idoc.removeEventListener("keydown", onKey, true); } catch (_) {}
-                if (pv._wvRegionEditor && pv._wvRegionEditor._id === opts.editorId) pv._wvRegionEditor = null;
-            };
             const commit = (withText?: boolean) => {
                 // Read the range's CURRENT text always -> kept in step with
                 // the geometry (Save-and-Text also adopts it as the visible
@@ -10706,7 +11112,7 @@ class _ReaderPanelsMixin {
                 // derives its own anchor from it (CFI or selector).
                 const text = String(range.toString() || "").replace(/\s+/g, " ").trim();
                 const committed = range;
-                destroy();
+                shell.destroy();
                 try {
                     Promise.resolve(opts.onCommit(committed, text || null, !!withText))
                         // Re-flash the saved region, PDF-editor parity (its
@@ -10717,94 +11123,65 @@ class _ReaderPanelsMixin {
                         .catch(() => {});
                 } catch (_) {}
             };
-            const onKey = (ev: any) => {
-                if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); destroy(); }
-                else if (ev.key === "Enter") { ev.preventDefault(); ev.stopPropagation(); commit(true); }
+            // At most one paint per ~frame, however many pointer events land
+            // in between (a high-rate mouse delivers 100+ a second) -- but
+            // NOT via requestAnimationFrame: rAF is suspended whenever the
+            // content frame is hidden or its docShell inactive, and a drag
+            // whose repaint waits on it looks frozen. Paint synchronously
+            // when a frame has passed, else leave one trailing paint on the
+            // CHROME window's timer (never throttled).
+            const mwT: any = Zotero.getMainWindow();
+            let lastPaint = 0, trailing: any = null;
+            const schedulePaint = () => {
+                const now = Date.now();
+                if (now - lastPaint >= 16) {
+                    lastPaint = now;
+                    try { paint(); } catch (_) {}
+                    return;
+                }
+                if (trailing) return;
+                trailing = mwT.setTimeout(() => {
+                    trailing = null;
+                    lastPaint = Date.now();
+                    try { paint(); } catch (_) {}
+                }, 16 - (now - lastPaint));
             };
-            const wireHandle = (h: any, which: "start" | "end") => {
-                h.addEventListener("pointerdown", (e: any) => {
-                    try { e.preventDefault(); e.stopPropagation(); h.setPointerCapture(e.pointerId); } catch (_) {}
-                    // At most one paint per ~frame, however many pointer
-                    // events land in between (a high-rate mouse delivers
-                    // 100+ a second) -- but NOT via requestAnimationFrame:
-                    // rAF is suspended whenever the content frame is hidden
-                    // or its docShell inactive, and a drag whose repaint
-                    // waits on it looks frozen. Paint synchronously when a
-                    // frame has passed, else leave one trailing paint on the
-                    // CHROME window's timer (never throttled).
-                    const mwT: any = Zotero.getMainWindow();
-                    let lastPaint = 0, trailing: any = null;
-                    const schedulePaint = () => {
-                        const now = Date.now();
-                        if (now - lastPaint >= 16) {
-                            lastPaint = now;
-                            try { paint(); } catch (_) {}
-                            return;
-                        }
-                        if (trailing) return;
-                        trailing = mwT.setTimeout(() => {
-                            trailing = null;
-                            lastPaint = Date.now();
-                            try { paint(); } catch (_) {}
-                        }, 16 - (now - lastPaint));
-                    };
-                    const onMove = (me: any) => {
-                        try {
-                            // Hit-test THROUGH the editor's own overlay: the
-                            // pointer rides on the knob while dragging, and
-                            // caretPositionFromPoint under the knob answers
-                            // with the knob (an element in a container at the
-                            // very end of the body -- the runaway range of the
-                            // 2026-09-09 hang, and once rejected, a region
-                            // that only moved when the pointer escaped the
-                            // knob). Hidden elements are not hit-tested; the
-                            // flip happens inside one task, so it never paints.
-                            let caret: any = null;
-                            const vis = container.style.visibility;
-                            try {
-                                container.style.visibility = "hidden";
-                                caret = doc.caretPositionFromPoint
-                                    ? doc.caretPositionFromPoint(me.clientX, me.clientY) : null;
-                            } finally { container.style.visibility = vis; }
-                            // Text carets only, bounded size; otherwise keep
-                            // the last good region (see _wvDomRegionCandidate).
-                            const cand = this._wvDomRegionCandidate(range, caret, which);
-                            if (!cand) return;
-                            range = cand;
-                            schedulePaint();
-                        } catch (_) {}
-                    };
-                    const onUp = () => {
-                        try { h.removeEventListener("pointermove", onMove); } catch (_) {}
-                        try { h.removeEventListener("pointerup", onUp); } catch (_) {}
-                    };
-                    h.addEventListener("pointermove", onMove);
-                    h.addEventListener("pointerup", onUp);
-                }, true);
+            const drag = {
+                move: (me: any, which: "start" | "end") => {
+                    // Hit-test THROUGH the editor's own overlay: the pointer
+                    // rides on the knob while dragging, and
+                    // caretPositionFromPoint under the knob answers with the
+                    // knob (an element in a container at the very end of the
+                    // body -- the runaway range of the 2026-09-09 hang, and
+                    // once rejected, a region that only moved when the
+                    // pointer escaped the knob). Hidden elements are not
+                    // hit-tested; the flip happens inside one task, so it
+                    // never paints.
+                    let caret: any = null;
+                    const vis = container.style.visibility;
+                    try {
+                        container.style.visibility = "hidden";
+                        caret = doc.caretPositionFromPoint
+                            ? doc.caretPositionFromPoint(me.clientX, me.clientY) : null;
+                    } finally { container.style.visibility = vis; }
+                    // Text carets only, bounded size; otherwise keep the last
+                    // good region (see _wvDomRegionCandidate).
+                    const cand = this._wvDomRegionCandidate(range, caret, which);
+                    if (!cand) return;
+                    range = cand;
+                    schedulePaint();
+                },
             };
-            wireHandle(handles.start, "start");
-            wireHandle(handles.end, "end");
-            saveBtn.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (_) {} commit(false); });
-            saveTextBtn.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (_) {} commit(true); });
-            cancelBtn.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (_) {} destroy(); });
-            doc.addEventListener("keydown", onKey, true);
-            // ALSO the sidebar document: the editor is opened from the outline
-            // or bookmark menu, so keyboard focus is still in the sidebar and
-            // the first Escape/Enter never reached the content document (MJT
-            // 2026-09-24: "the first escape does not work"). Key events do
-            // not cross frame boundaries, so no key is handled twice.
-            try { if (idoc && idoc !== doc) idoc.addEventListener("keydown", onKey, true); } catch (_) {}
-            pv._wvRegionEditor = { _id: opts.editorId, destroy };
+            shell.wireHandle(handles.start, "start", drag);
+            shell.wireHandle(handles.end, "end", drag);
             paint();
             // Zoom / resize: the region's text moves, its overlay follows.
-            this._wvDomOnRelayout(iw, doc, () => { if (destroyedEd) return false; paint(); return true; });
+            this._wvDomOnRelayout(iw, doc, () => { if (!shell.alive()) return false; paint(); return true; });
             // Bring the region into view (same 1/4 rule as navigation).
             try {
                 const r0 = range.getClientRects()[0];
                 if (r0) iw.scrollTo(this._wvDomScrollX(iw, r0), Math.max(0, r0.top + iw.scrollY - iw.innerHeight * 0.25));
             } catch (_) {}
-            this._wvReaderPanelNote(idoc, "Drag the handles to reshape the region — Save Region and Text also reloads the "
-                + (opts.noteWord || "label") + "; Save Region keeps it. (Enter = Save Region and Text, Esc = cancel.)");
         } catch (err) { Zotero.debug("[Weavero] _wvDomRegionEditorOpen err: " + err); }
     }
 
@@ -10918,13 +11295,22 @@ class _ReaderPanelsMixin {
                 const pr = pageView.div.getBoundingClientRect();
                 return pageView.viewport.convertToPdfPoint(cx - pr.left, cy - pr.top) as [number, number];
             };
-
-            const NS = "http://www.w3.org/1999/xhtml";
             const host = this._ensureBadgeOverlay(doc) || pageView.div;
-            const container: any = doc.createElementNS(NS, "div");
-            container.className = "wv-region-editor";
+            const container: any = wvHtmlEl(doc, "div", "wv-region-editor");
             container.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2147483646;";
             host.appendChild(container);
+            const hlEls: any[] = [];
+            let offObs: any = null;
+            // The toolbar (pinned above the region's first line by the
+            // translate), the handles, Escape / Enter, the registration: the
+            // shell shared with the DOM editor.
+            const shell = this._wvRegionEditorShell(idoc, pv, doc, opts, {
+                container,
+                barCss: "transform:translate(0,-125%);",
+                commit: (withText) => commit(withText),
+                cleanup: () => { try { offObs && offObs.disconnect(); } catch (_) {} },
+            });
+            const bar = shell.bar, startHandle = shell.start, endHandle = shell.end;
 
             // Position an element by a PDF rect (fills it) or a PDF point (small).
             const placeRect = (el: any, r: number[]) => {
@@ -10952,58 +11338,12 @@ class _ReaderPanelsMixin {
                 el.style.height = "calc(" + Math.max(1, uyBot - uyTop) + "px * var(--scale-factor,1))";
             };
 
-            const hlEls: any[] = [];
-            // Text-selection-style handles: a thin vertical bar the height of the
-            // line at the range edge, with a round grab knob -- knob ABOVE the
-            // line at the start, BELOW at the end, so the two ends read clearly
-            // (the plain floating circles looked "strange", reported 2026-07-21).
-            const HANDLE_COL = "#4072e5";
-            const mkHandle = (atStart: boolean) => {
-                const h: any = doc.createElementNS(NS, "div");
-                h.className = "wv-region-handle";
-                h.style.cssText = "position:absolute;width:2px;margin-left:-1px;background:" + HANDLE_COL + ";"
-                    + "box-shadow:0 0 0 .5px rgba(255,255,255,.6);pointer-events:auto;cursor:ew-resize;touch-action:none;";
-                const knob: any = doc.createElementNS(NS, "div");
-                knob.style.cssText = "position:absolute;left:50%;margin-left:-6px;width:12px;height:12px;border-radius:50%;"
-                    + "background:" + HANDLE_COL + ";border:2px solid #fff;box-shadow:0 1px 2px rgba(0,0,0,.5);"
-                    + (atStart ? "top:0;margin-top:-12px;" : "bottom:0;margin-bottom:-12px;");
-                h.appendChild(knob);
-                container.appendChild(h);
-                return h;
-            };
-            const startHandle = mkHandle(true);
-            const endHandle = mkHandle(false);
-            // Toolbar (Save / Cancel), pinned above the region's first line.
-            const bar: any = doc.createElementNS(NS, "div");
-            bar.className = "wv-region-bar";
-            bar.style.cssText = "position:absolute;transform:translate(0,-125%);display:flex;gap:4px;"
-                + "background:rgba(30,30,30,.94);border-radius:6px;padding:3px 4px;pointer-events:auto;"
-                + "box-shadow:0 2px 6px rgba(0,0,0,.5);font:12px sans-serif;white-space:nowrap;";
-            const mkBtn = (label: string, bg: string) => {
-                const b: any = doc.createElementNS(NS, "button");
-                b.textContent = label;
-                b.style.cssText = "font:inherit;color:#fff;background:" + bg + ";border:none;border-radius:4px;"
-                    + "padding:2px 8px;cursor:pointer;";
-                return b;
-            };
-            // Two save actions: region only, or region + reload the title text
-            // from the newly-covered glyphs (the region->title direction lives
-            // HERE, right after an edit -- not as a standalone always-on item).
-            const saveBtn = mkBtn("Save Region", "#2e7d32");
-            const saveTextBtn = mkBtn("Save Region and Text", "#2e7d32");
-            const cancelBtn = mkBtn("Cancel", "#555");
-            // "Save Region and Text" first and the Enter default (MJT 2026-09-24).
-            bar.appendChild(saveTextBtn); bar.appendChild(saveBtn); bar.appendChild(cancelBtn);
-            container.appendChild(bar);
-
-            let destroyed = false;
             const rerender = () => {
-                if (destroyed) return;
+                if (!shell.alive()) return;
                 const rects = wvRectsForCharRange(chars, start, end);
                 // Highlight rects (recycle a pool).
                 while (hlEls.length < rects.length) {
-                    const h: any = doc.createElementNS(NS, "div");
-                    h.className = "wv-region-hl";
+                    const h: any = wvHtmlEl(doc, "div", "wv-region-hl");
                     h.style.cssText = "position:absolute;background:rgba(64,114,229,.30);pointer-events:none;";
                     container.appendChild(h); hlEls.push(h);
                 }
@@ -11020,11 +11360,10 @@ class _ReaderPanelsMixin {
             // Keep --page-offset vars fresh across zoom/reflow (see the pin's note
             // on why this must be synchronous, not rAF). One observer feeds the
             // whole container; children inherit the vars.
-            let offObs: any = null;
             try {
                 const pgDiv = pageView.div;
                 const apply = () => {
-                    if (destroyed || !container.isConnected) { try { offObs && offObs.disconnect(); } catch (_) {} return; }
+                    if (!shell.alive() || !container.isConnected) { try { offObs && offObs.disconnect(); } catch (_) {} return; }
                     container.style.setProperty("--page-offset-top", pgDiv.offsetTop + "px");
                     container.style.setProperty("--page-offset-left", pgDiv.offsetLeft + "px");
                 };
@@ -11032,7 +11371,7 @@ class _ReaderPanelsMixin {
                 const MO = (win as any).MutationObserver;
                 if (MO) {
                     const Cu: any = (Components as any).utils;
-                    const init = Cu ? Cu.cloneInto({ attributes: true, attributeFilter: ["style"] }, win) : { attributes: true };
+                    const init = Cu ? wvCloneFor({ attributes: true, attributeFilter: ["style"] }, win) : { attributes: true };
                     offObs = new MO(apply);
                     const viewerEl = app.pdfViewer.viewer || pgDiv.parentNode;
                     if (viewerEl) offObs.observe(viewerEl, init);
@@ -11040,19 +11379,6 @@ class _ReaderPanelsMixin {
                 }
             } catch (_) {}
 
-            const onKey = (ev: any) => {
-                if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); destroy(); }
-                else if (ev.key === "Enter") { ev.preventDefault(); ev.stopPropagation(); commit(true); }
-            };
-            const destroy = () => {
-                if (destroyed) return;
-                destroyed = true;
-                try { offObs && offObs.disconnect(); } catch (_) {}
-                try { container.remove(); } catch (_) {}
-                try { doc.removeEventListener("keydown", onKey, true); } catch (_) {}
-                try { if (idoc && idoc !== doc) idoc.removeEventListener("keydown", onKey, true); } catch (_) {}
-                if (pv._wvRegionEditor && pv._wvRegionEditor._id === opts.editorId) pv._wvRegionEditor = null;
-            };
             const commit = (withText?: boolean) => {
                 const rects = wvRectsForCharRange(chars, start, end);
                 // Read the region's CURRENT text ALWAYS -- the caller stores it
@@ -11062,7 +11388,7 @@ class _ReaderPanelsMixin {
                 // "1. I n t r o d u c t i o n"; asked 2026-07-22).
                 let text = wvTextForCharRange(chars, start, end) || "";
                 if (text && this._wvLooksGlyphSpaced(text)) text = this._wvDeGlyphSpace(text);
-                destroy();
+                shell.destroy();
                 if (!rects.length) return;
                 const precise = { pageIndex, rects };
                 // Store write-back is the CALLER's business (outline vs
@@ -11070,67 +11396,50 @@ class _ReaderPanelsMixin {
                 // region afterwards. Param 2 = the label to adopt (only on
                 // Save-Region-and-Text); param 3 = the region text ALWAYS.
                 Promise.resolve(opts.onCommit(precise, (withText && text) ? text : null, text || null))
-                    .then(() => { try { const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1); this._wvClearStalePin(pv); this._wvOutlineHighlightInPlace(pv, pageIndex, rects, gen, 0); } catch (_) {} })
+                    .then(() => { try { const gen = this._wvHlNext(pv); this._wvOutlineHighlightInPlace(pv, pageIndex, rects, gen, 0); } catch (_) {} })
                     .catch(() => {});
             };
 
             // Handle drag: snap the dragged end to the char nearest the pointer.
-            const wireHandle = (hnd: any, which: "start" | "end") => {
-                hnd.addEventListener("pointerdown", (e: any) => {
-                    try { e.preventDefault(); e.stopPropagation(); hnd.setPointerCapture(e.pointerId); } catch (_) {}
-                    // NEUTRALISE the reader's own text drag-selection (same
-                    // technique as the pin drag). Dragging a handle over the text
-                    // layer otherwise triggers the reader's `selectText` action,
-                    // painting a stray selection from the mousedown point that
-                    // MASKS our editable highlight -- so a reduce looked like it
-                    // did nothing even though our rects had shrunk underneath
-                    // (reported 2026-07-21). The reader sets `action`/
-                    // `pointerDownPosition` in a WINDOW-capture mousedown handler
-                    // that fires before our document-capture one, so we null them
-                    // right after (pointerdown precedes mousedown, so registering
-                    // here is in time), and clear the DOM selection on every move.
-                    const killSel = () => { try { pv.action = null; pv.pointerDownPosition = null; } catch (_) {} };
-                    const onDocDown = () => killSel();
+            // NEUTRALISE the reader's own text drag-selection (same technique
+            // as the pin drag). Dragging a handle over the text layer
+            // otherwise triggers the reader's `selectText` action, painting a
+            // stray selection from the mousedown point that MASKS our
+            // editable highlight -- so a reduce looked like it did nothing
+            // even though our rects had shrunk underneath (reported
+            // 2026-07-21). The reader sets `action` / `pointerDownPosition`
+            // in a WINDOW-capture mousedown handler that fires before our
+            // document-capture one, so we null them right after (pointerdown
+            // precedes mousedown, so registering in `down` is in time), and
+            // clear the DOM selection on every move.
+            const killSel = () => { try { pv.action = null; pv.pointerDownPosition = null; } catch (_) {} };
+            const onDocDown = () => killSel();
+            const drag = {
+                down: () => {
                     try { doc.addEventListener("mousedown", onDocDown, true); } catch (_) {}
                     killSel();
                     try { win.getSelection().removeAllRanges(); } catch (_) {}
-                    const onMove = (ev: any) => {
-                        try {
-                            killSel();
-                            try { win.getSelection().removeAllRanges(); } catch (_) {}
-                            ev.preventDefault();
-                            const [px, py] = clientToPdf(ev.clientX, ev.clientY);
-                            const idx = wvSnapCharToPoint(chars, px, py);
-                            if (which === "start") start = Math.min(idx, end);
-                            else end = Math.max(idx, start);
-                            rerender();
-                        } catch (_) {}
-                    };
-                    const onUp = () => {
-                        try { hnd.removeEventListener("pointermove", onMove); hnd.removeEventListener("pointerup", onUp); } catch (_) {}
-                        try { doc.removeEventListener("mousedown", onDocDown, true); } catch (_) {}
-                        try { win.getSelection().removeAllRanges(); } catch (_) {}
-                    };
-                    hnd.addEventListener("pointermove", onMove);
-                    hnd.addEventListener("pointerup", onUp);
-                }, true);
+                },
+                move: (ev: any, which: "start" | "end") => {
+                    killSel();
+                    try { win.getSelection().removeAllRanges(); } catch (_) {}
+                    ev.preventDefault();
+                    const [px, py] = clientToPdf(ev.clientX, ev.clientY);
+                    const idx = wvSnapCharToPoint(chars, px, py);
+                    if (which === "start") start = Math.min(idx, end);
+                    else end = Math.max(idx, start);
+                    rerender();
+                },
+                up: () => {
+                    try { doc.removeEventListener("mousedown", onDocDown, true); } catch (_) {}
+                    try { win.getSelection().removeAllRanges(); } catch (_) {}
+                },
             };
-            wireHandle(startHandle, "start");
-            wireHandle(endHandle, "end");
-            saveBtn.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (_) {} commit(false); });
-            saveTextBtn.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (_) {} commit(true); });
-            cancelBtn.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (_) {} destroy(); });
-            doc.addEventListener("keydown", onKey, true);
-            // Sidebar document too -- focus is still there after the menu
-            // click (same first-Escape bug as the DOM editor, 2026-09-24).
-            try { if (idoc && idoc !== doc) idoc.addEventListener("keydown", onKey, true); } catch (_) {}
-
-            pv._wvRegionEditor = { _id: opts.editorId, destroy };
+            shell.wireHandle(startHandle, "start", drag);
+            shell.wireHandle(endHandle, "end", drag);
             // Bring the region into view, then paint.
             try { this._wvOutlineScrollToRect(pv, pageIndex, wvRectsForCharRange(chars, start, end)[0] || base.rects[0]); } catch (_) {}
             rerender();
-            this._wvReaderPanelNote(idoc, "Drag the handles to reshape the region — Save Region and Text also reloads the "
-                + (opts.noteWord || "title") + "; Save Region keeps it. (Enter = Save Region and Text, Esc = cancel.)");
         } catch (err) { Zotero.debug("[Weavero] _wvRegionEditorOpen err: " + err); }
     }
 
@@ -11183,8 +11492,7 @@ class _ReaderPanelsMixin {
                         }
                     }
                 } else if (pv && Array.isArray(pos.rects) && pos.rects.length) {
-                    const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
-                    this._wvClearStalePin(pv);
+                    const gen = this._wvHlNext(pv);
                     this._wvOutlineScrollToRect(pv, pos.pageIndex, pos.rects[0]);
                     if (pos.anchor !== "point") this._wvOutlineHighlightInPlace(pv, pos.pageIndex, pos.rects, gen, 0);
                 }
@@ -11202,7 +11510,8 @@ class _ReaderPanelsMixin {
         try {
             const att = this._wvReaderAtt(reader);
             if (!att) return;
-            Promise.resolve(this._wvOutlineResetEntryName(att.libraryID, att.itemKey, id))
+            // One undo step: the name and the region it brings back.
+            this._wvUndoBatch(() => Promise.resolve(this._wvOutlineResetEntryName(att.libraryID, att.itemKey, id))
                 // Restore the REGION too. Putting the original name back while
                 // leaving a hand-corrected highlight in place left the entry in a
                 // mixed state -- a title from the PDF pointing at a box the user
@@ -11217,7 +11526,7 @@ class _ReaderPanelsMixin {
                 // title from page 240 to the table of contents on viii
                 // (MJT 2026-09-24).
                 .then(() => this._wvOutlineRestoreOriginalRegion(reader, idoc, att, id))
-                .then((restored: boolean) => restored ? null : this._wvOutlineDetectRegionForId(reader, idoc, att, id))
+                .then((restored: boolean) => restored ? null : this._wvOutlineDetectRegionForId(reader, idoc, att, id)))
                 .then(() => this._wvReaderRenderOutline(reader, idoc))
                 // The name changed, as in a Rename: dashed afterglow, cursor
                 // and selection untouched (collections-pane parity, 2026-09-24).
@@ -11277,7 +11586,7 @@ class _ReaderPanelsMixin {
                         const precise = res ? { pageIndex: res.pageIndex, rects: (res.rects && res.rects.length) ? res.rects : [res.rect] } : target;
                         if (curated && entry.id) {
                             entry.resolvedPosition = precise;
-                            this._wvOutlineSetEntryPosition(att.libraryID, att.itemKey, entry.id, precise, resolveTitle);
+                            this._wvOutlineSetEntryPosition(att.libraryID, att.itemKey, entry.id, precise, resolveTitle, { auto: true });
                         }
                         target = precise;
                     }
@@ -11463,7 +11772,7 @@ class _ReaderPanelsMixin {
                 } catch (_) {}
                 this._wvOutlineAfterglow(idoc, renamedKey);
             };
-            const input = idoc.createElementNS(NS_HTML_RP, "input");
+            const input = wvHtmlEl(idoc, "input");
             input.className = "wv-outline-rename-input";
             input.setAttribute("type", "text");
             input.value = entry.title || "";
@@ -11651,16 +11960,19 @@ class _ReaderPanelsMixin {
             } catch (_) {}
             let n = 0;
             const changed: string[] = [];
-            for (const it of items) {
-                const t = String(it.entry.title || "");
-                const fixed = this._wvCleanTitleSpacing(t);
-                if (!fixed || fixed === t) continue;
-                const ref = await this._wvOutlineResolveId(reader, it.entry, it.index, it.curatedView);
-                if (!ref) continue;
-                await this._wvOutlineRenameEntry(ref.att.libraryID, ref.att.itemKey, ref.id, fixed);
-                changed.push(String(ref.id));
-                n++;
-            }
+            // One undo step for the multi-selection.
+            await this._wvUndoBatch(async () => {
+                for (const it of items) {
+                    const t = String(it.entry.title || "");
+                    const fixed = this._wvCleanTitleSpacing(t);
+                    if (!fixed || fixed === t) continue;
+                    const ref = await this._wvOutlineResolveId(reader, it.entry, it.index, it.curatedView);
+                    if (!ref) continue;
+                    await this._wvOutlineRenameEntry(ref.att.libraryID, ref.att.itemKey, ref.id, fixed);
+                    changed.push(String(ref.id));
+                    n++;
+                }
+            });
             await this._wvReaderRenderOutline(reader, idoc);
             // Renamed like a Rename: the dashed afterglow shows where (2026-09-24).
             if (changed.length) this._wvOutlineAfterglow(idoc, changed);
@@ -11683,10 +11995,12 @@ class _ReaderPanelsMixin {
                     items = selRows.map((r: any) => r._wvOl).filter(Boolean);
                 }
             } catch (_) {}
-            for (const it of items) {
-                const ref = await this._wvOutlineResolveId(reader, it.entry, it.index, it.curatedView);
-                if (ref) await this._wvOutlineSetSpacingOk(ref.att.libraryID, ref.att.itemKey, ref.id, true);
-            }
+            await this._wvUndoBatch(async () => {   // one undo step for the multi-selection
+                for (const it of items) {
+                    const ref = await this._wvOutlineResolveId(reader, it.entry, it.index, it.curatedView);
+                    if (ref) await this._wvOutlineSetSpacingOk(ref.att.libraryID, ref.att.itemKey, ref.id, true);
+                }
+            });
             await this._wvReaderRenderOutline(reader, idoc);
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineDismissSpacing err: " + e); }
     }
@@ -11705,10 +12019,12 @@ class _ReaderPanelsMixin {
                     items = selRows.map((r: any) => r._wvOl).filter(Boolean);
                 }
             } catch (_) {}
-            for (const it of items) {
-                const ref = await this._wvOutlineResolveId(reader, it.entry, it.index, it.curatedView);
-                if (ref) await this._wvOutlineSetEntryKind(ref.att.libraryID, ref.att.itemKey, ref.id, kind);
-            }
+            await this._wvUndoBatch(async () => {   // one undo step for the multi-selection
+                for (const it of items) {
+                    const ref = await this._wvOutlineResolveId(reader, it.entry, it.index, it.curatedView);
+                    if (ref) await this._wvOutlineSetEntryKind(ref.att.libraryID, ref.att.itemKey, ref.id, kind);
+                }
+            });
             await this._wvReaderRenderOutline(reader, idoc);
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineSetKind err: " + e); }
     }
@@ -11730,31 +12046,13 @@ class _ReaderPanelsMixin {
                     || [...idoc.querySelectorAll(".wv-outline-row")].find((r: any) => r._wvOl && r._wvOl.entry === entry);
                 if (ctxRow) ctxRow.classList.add("wv-outline-ctx");
             } catch (_) {}
-            const menu = idoc.createElementNS(NS_HTML_RP, "div");
+            const menu = wvHtmlEl(idoc, "div");
             menu.id = RP_BM_CTX_ID;
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
-            const mk = (label: string, icon: string, fn: () => void, danger?: boolean, disabled?: boolean) => {
-                const it = idoc.createElementNS(NS_HTML_RP, "div");
-                it.className = "wv-ctx-item" + (danger ? " wv-ctx-danger" : "");
-                if (disabled) it.setAttribute("style", "opacity:.5;pointer-events:none;");
-                const ic = idoc.createElementNS(NS_HTML_RP, "span");
-                ic.className = "wv-ctx-ic";
-                if (icon && icon.indexOf("chrome://") === 0) {
-                    ic.classList.add("wv-ctx-ic-native");
-                    this._wvChromeIconSvg(icon).then((svg: string) => { try { ic.innerHTML = svg || ""; } catch (_) {} });
-                } else if (icon && icon.indexOf("data:") === 0) {
-                    const img = idoc.createElementNS(NS_HTML_RP, "img");
-                    img.setAttribute("src", icon); img.setAttribute("width", "16"); img.setAttribute("height", "16");
-                    img.setAttribute("style", "-moz-context-properties:fill;fill:currentColor;");
-                    ic.appendChild(img);
-                } else { ic.innerHTML = icon || ""; }
-                const lb = idoc.createElementNS(NS_HTML_RP, "span"); lb.textContent = label;
-                it.appendChild(ic); it.appendChild(lb);
-                it.addEventListener("click", () => { close(); fn(); });
-                menu.appendChild(it);
-            };
+            const mk = (label: string, icon: string, fn: () => void, danger?: boolean, disabled?: boolean) =>
+                this._wvCtxItem(idoc, menu, { label, icon, danger, disabled, close, onClick: fn });
             // No doubled separator when the entries between two are hidden (multi-selection).
-            const sep = () => { const lc: any = menu.lastElementChild; if (!lc || (lc.classList && lc.classList.contains("wv-ctx-sep"))) return; const s = idoc.createElementNS(NS_HTML_RP, "div"); s.className = "wv-ctx-sep"; menu.appendChild(s); };
+            const sep = () => this._wvCtxSep(idoc, menu, true);
             const att0 = this._wvReaderAtt(reader);
             let openIcon = "";
             try { openIcon = att0 && att0.att ? att0.att.getImageSrc() : ""; } catch (_) {}
@@ -11885,13 +12183,11 @@ class _ReaderPanelsMixin {
                     if (lb) {
                         const orig = String(entry.source.title).replace(/\s+/g, " ").trim();
                         const shown = orig.length > 60 ? orig.slice(0, 59) + "…" : orig;
-                        const sub = idoc.createElementNS(NS_HTML_RP, "span");
-                        sub.textContent = "“" + shown + "”";
+                        const sub = wvHtmlEl(idoc, "span", undefined, "“" + shown + "”");
                         sub.setAttribute("style", "display:block;font-size:11px;opacity:.7;margin-top:1px;"
                             + "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:320px;");
                         lb.setAttribute("style", (lb.getAttribute("style") || "") + "display:flex;flex-direction:column;");
-                        const main = idoc.createElementNS(NS_HTML_RP, "span");
-                        main.textContent = lb.textContent;
+                        const main = wvHtmlEl(idoc, "span", undefined, lb.textContent);
                         lb.textContent = "";
                         lb.appendChild(main); lb.appendChild(sub);
                         it.setAttribute("title", this._wvOutlineExactOriginal(reader, entry)
@@ -11938,9 +12234,9 @@ class _ReaderPanelsMixin {
         try {
             const att = this._wvReaderAtt(reader);
             if (!att) return;
-            // Name what is at stake (counts). The delete is outright -- no
-            // bespoke archive, no undo (a general outline Undo is a parked TODO),
-            // so the confirm is the only guard and states the loss plainly. ANY
+            // Name what is at stake (counts). The delete is an undo step
+            // ("Delete Weavero Outline", recorded at the store's choke point
+            // since survey §3.7) -- the confirm says how to get it back. ANY
             // failure around it CANCELS: it used to sit in a swallowed try, and
             // an error there would have deleted without asking.
             let ok = false;
@@ -11953,10 +12249,12 @@ class _ReaderPanelsMixin {
                 let what = entries.length + " entries";
                 if (renamed) what += ", " + renamed + " renamed";
                 if (added) what += ", " + added + " added by you";
+                let accel = "";
+                try { accel = this._wvNativeEditAccel("undo") || ""; } catch (_) {}
                 ok = !!Services.prompt.confirm(null, "Weavero",
                     "Delete the Weavero outline of this document?\n\n"
-                    + "Your Weavero outline (" + what + ") is deleted and cannot be restored. "
-                    + "The document's own outline is not changed.");
+                    + "Your Weavero outline (" + what + ") is deleted; Undo" + (accel ? " (" + accel + ")" : "")
+                    + " in this tab brings it back. The document's own outline is not changed.");
             } catch (_) { ok = false; }
             if (!ok) return;
             Promise.resolve(this._wvOutlineRevert(att.libraryID, att.itemKey))
@@ -11977,11 +12275,10 @@ class _ReaderPanelsMixin {
      *  original, at which point switching becomes meaningful. */
     _wvOutlineRenderHeader(reader: any, idoc: any, view: any, source: string) {
         try {
-            const NS = NS_HTML_RP;
             const head = view.querySelector(".wv-outline-head");
             if (!head) return;
             while (head.firstChild) head.firstChild.remove();
-            const title = idoc.createElementNS(NS, "span");
+            const title = wvHtmlEl(idoc, "span");
             title.className = "wv-outline-head-title";
             title.textContent = "Outline";
             head.appendChild(title);
@@ -11989,8 +12286,7 @@ class _ReaderPanelsMixin {
             // Introduction with no PDF heading, etc.). Prompts for a title and
             // targets the current page; refine via the row's "Set Target" menu.
             // 2026-07-23.
-            const addBtn = idoc.createElementNS(NS, "button");
-            addBtn.className = "wv-outline-head-btn wv-outline-add-btn";
+            const addBtn = wvHtmlEl(idoc, "button", "wv-outline-head-btn wv-outline-add-btn");
             addBtn.setAttribute("title", "Add a new outline entry");
             addBtn.innerHTML = RP_PLUS_SVG;
             addBtn.addEventListener("click", (e: any) => {
@@ -12015,19 +12311,18 @@ class _ReaderPanelsMixin {
             // usually actually want), never as a bare button.
             const att = this._wvReaderAtt(reader);
             // Source chip at the RIGHT end -- a switcher when >1 source exists.
-            const chip = idoc.createElementNS(NS, "button");
+            const chip = wvHtmlEl(idoc, "button");
             chip.className = "wv-outline-src-chip wv-outline-src-" + source;
             chip.setAttribute("title", this._wvOutlineSourceTip(source));
-            const dot = idoc.createElementNS(NS, "span");
+            const dot = wvHtmlEl(idoc, "span");
             dot.className = "wv-outline-src-dot";
-            const lab = idoc.createElementNS(NS, "span");
-            lab.textContent = this._wvOutlineSourceLabel(source);
+            const lab = wvHtmlEl(idoc, "span", undefined, this._wvOutlineSourceLabel(source));
             chip.appendChild(dot);
             chip.appendChild(lab);
             const sources = this._wvOutlineAvailableSources(reader, source);
             if (sources.length > 1) {
                 chip.classList.add("wv-outline-src-switchable");
-                const caret = idoc.createElementNS(NS, "span");
+                const caret = wvHtmlEl(idoc, "span");
                 caret.className = "wv-outline-src-caret";
                 caret.innerHTML = RP_OUTLINE_CHEVRON;
                 chip.appendChild(caret);
@@ -12063,8 +12358,7 @@ class _ReaderPanelsMixin {
             // stays in the module's own store (2026-07-23).
             if (att && (this as any)._wvOeEnabled && (this as any)._wvOeEnabled()) {
                 const P: any = this;
-                const evalBtn = idoc.createElementNS(NS, "button");
-                evalBtn.className = "wv-outline-head-btn wv-outline-eval-btn";
+                const evalBtn = wvHtmlEl(idoc, "button", "wv-outline-head-btn wv-outline-eval-btn");
                 const setIcon = () => {
                     // Target the LIVE button, not the captured node: a header
                     // re-render can replace the button between opening the
@@ -12104,24 +12398,14 @@ class _ReaderPanelsMixin {
             const att = this._wvReaderAtt(reader);
             if (!att) return;
             const P: any = this;
-            const menu = idoc.createElementNS(NS_HTML_RP, "div");
+            const menu = wvHtmlEl(idoc, "div");
             menu.id = RP_BM_CTX_ID;
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
             Promise.resolve(P._wvOeInit && P._wvOeInit()).catch(() => {});
             const cur = P._wvOeCase ? P._wvOeCase(att.libraryID, att.itemKey) : null;
             const tag = (v: string) => (cur && cur.verdict === v ? " ✓" : "");
-            const mk = (label: string, icon: string, fn: () => void) => {
-                const it = idoc.createElementNS(NS_HTML_RP, "div");
-                it.className = "wv-ctx-item";
-                const ic = idoc.createElementNS(NS_HTML_RP, "span");
-                ic.className = "wv-ctx-ic";
-                ic.textContent = icon;
-                const lb = idoc.createElementNS(NS_HTML_RP, "span");
-                lb.textContent = label;
-                it.appendChild(ic); it.appendChild(lb);
-                it.addEventListener("click", () => { close(); fn(); });
-                menu.appendChild(it);
-            };
+            const mk = (label: string, icon: string, fn: () => void) =>
+                this._wvCtxItem(idoc, menu, { label, icon, close, onClick: fn });
             mk("Eval: Not marked" + (cur ? "" : " ✓"), "🧪", async () => { await P._wvOeUnmark(reader, idoc); if (onDone) onDone(); });
             mk("Eval: extraction Good" + tag("good"), "👍", async () => { await P._wvOeMark(reader, idoc, "good"); if (onDone) onDone(); });
             mk("Eval: extraction Bad" + tag("bad"), "👎", async () => { await P._wvOeMark(reader, idoc, "bad"); if (onDone) onDone(); });
@@ -12156,34 +12440,19 @@ class _ReaderPanelsMixin {
             this._wvCloseReaderBmContextMenu(idoc);
             const att = this._wvReaderAtt(reader);
             if (!att) return;
-            const menu = idoc.createElementNS(NS_HTML_RP, "div");
+            const menu = wvHtmlEl(idoc, "div");
             menu.id = RP_BM_CTX_ID;
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
-            const heading = (text: string) => {
-                const hd = idoc.createElementNS(NS_HTML_RP, "div");
-                hd.className = "wv-ctx-heading";
-                hd.textContent = text;
-                menu.appendChild(hd);
-            };
+            const heading = (text: string) => this._wvCtxHeading(idoc, menu, text);
             heading("History");
             const row = (name: string, ch: any, hint: string, dir: "undo" | "redo") => {
                 const label: string | null = ch ? (ch.label || "") : null;
-                const it = idoc.createElementNS(NS_HTML_RP, "div");
-                it.className = "wv-ctx-item" + (label === null ? " wv-ctx-off" : "");
-                const ic = idoc.createElementNS(NS_HTML_RP, "span");
-                ic.className = "wv-ctx-ic";
-                const lb = idoc.createElementNS(NS_HTML_RP, "span");
-                lb.textContent = label ? name + " " + label : name;
-                const hn = idoc.createElementNS(NS_HTML_RP, "span");
-                hn.className = "wv-ctx-hint";
-                hn.textContent = hint;
-                it.appendChild(ic); it.appendChild(lb); it.appendChild(hn);
+                const it = this._wvCtxItem(idoc, menu, { label: label ? name + " " + label : name, hint, off: label === null,
+                    close, onClick: ch ? () => this._wvTabUndoRedo(reader, idoc, dir) : undefined });
                 if (ch) {
-                    const stackName = this._wvUndoStackGlyph(idoc, it, ic, ch.kind, ch.scope);
+                    const stackName = this._wvUndoStackGlyph(idoc, it, it.firstChild, ch.kind, ch.scope);
                     if (stackName) it.title = stackName;
-                    it.addEventListener("click", () => { close(); this._wvTabUndoRedo(reader, idoc, dir); });
                 }
-                menu.appendChild(it);
             };
             row("Undo", this._wvTabUndoChoice(reader, "undo", idoc), this._wvNativeEditAccel("undo"), "undo");
             row("Redo", this._wvTabUndoChoice(reader, "redo", idoc), this._wvNativeEditAccel("redo"), "redo");
@@ -12208,12 +12477,11 @@ class _ReaderPanelsMixin {
                 const full = this._wvTabUndoList(reader, idoc, 100000, dir);
                 if (full.length < 2) return;
                 const Word = dir === "undo" ? "Undo" : "Redo";
-                const sep = idoc.createElementNS(NS_HTML_RP, "div");
+                const sep = wvHtmlEl(idoc, "div");
                 sep.className = "wv-ctx-sep";
                 menu.appendChild(sep);
                 heading(dir === "undo" ? "Undo history" : "Redo history");
-                const boxEl = idoc.createElementNS(NS_HTML_RP, "div");
-                boxEl.className = "wv-ctx-histbox";
+                const boxEl = wvHtmlEl(idoc, "div", "wv-ctx-histbox");
                 boxEl.setAttribute("data-wv-dir", dir);
                 menu.appendChild(boxEl);
                 const manual = new Set<string>();
@@ -12273,8 +12541,7 @@ class _ReaderPanelsMixin {
                     paint();
                 };
                 list.forEach((r, k) => {
-                    const it = idoc.createElementNS(NS_HTML_RP, "div");
-                    it.className = "wv-ctx-item wv-ctx-hist";
+                    const it = wvHtmlEl(idoc, "div", "wv-ctx-item wv-ctx-hist");
                     it.setAttribute("data-wv-hist", String(k));
                     it.setAttribute("data-wv-key", r.key);
                     it.setAttribute("data-wv-dir", dir);
@@ -12282,19 +12549,15 @@ class _ReaderPanelsMixin {
                     // edge to the glyph; the 12-px box sits inside it (MJT
                     // 2026-10-01: "the space around the tick seems to trigger
                     // the row" -- a misclick there ran the reach-back).
-                    const cb = idoc.createElementNS(NS_HTML_RP, "span");
-                    cb.className = "wv-ctx-check";
-                    const box = idoc.createElementNS(NS_HTML_RP, "span");
+                    const cb = wvHtmlEl(idoc, "span", "wv-ctx-check");
+                    const box = wvHtmlEl(idoc, "span");
                     box.className = "wv-ctx-box";
                     cb.appendChild(box);
                     cb.addEventListener("click", (e: any) => { e.stopPropagation(); toggle(r); });
-                    const ic = idoc.createElementNS(NS_HTML_RP, "span");
+                    const ic = wvHtmlEl(idoc, "span");
                     ic.className = "wv-ctx-ic";
-                    const lb = idoc.createElementNS(NS_HTML_RP, "span");
-                    lb.textContent = r.label;
-                    const hn = idoc.createElementNS(NS_HTML_RP, "span");
-                    hn.className = "wv-ctx-hint";
-                    hn.textContent = this._wvTabUndoAgo(r.at);
+                    const lb = wvHtmlEl(idoc, "span", undefined, r.label);
+                    const hn = wvHtmlEl(idoc, "span", "wv-ctx-hint", this._wvTabUndoAgo(r.at));
                     it.appendChild(cb); it.appendChild(ic); it.appendChild(lb); it.appendChild(hn);
                     const stackName = this._wvUndoStackGlyph(idoc, it, ic, r.kind, r.scope);
                     // A plain click runs the row's GROUP -- exactly what the
@@ -12310,7 +12573,7 @@ class _ReaderPanelsMixin {
                     it.addEventListener("mouseenter", () => showGroup(r, true));
                     it.addEventListener("mouseleave", () => showGroup(r, false));
                     it.addEventListener("click", (e: any) => {
-                        if (e.ctrlKey || e.metaKey) { e.stopPropagation(); toggle(r); return; }
+                        if (wvAccelAny(e)) { e.stopPropagation(); toggle(r); return; }
                         const picked = list.filter(x => x.key === r.key || group.has(x.key));
                         close();
                         this._wvTabUndoRows(reader, idoc, picked, dir);
@@ -12327,25 +12590,24 @@ class _ReaderPanelsMixin {
                     boxEl.appendChild(it);
                 });
                 if (full.length > shown) {
-                    const more = idoc.createElementNS(NS_HTML_RP, "div");
+                    const more = wvHtmlEl(idoc, "div");
                     more.className = "wv-ctx-item wv-ctx-more";
                     more.setAttribute("data-wv-dir", dir);
-                    const mic = idoc.createElementNS(NS_HTML_RP, "span"); mic.className = "wv-ctx-ic"; mic.textContent = "…";
-                    const mlb = idoc.createElementNS(NS_HTML_RP, "span");
+                    const mic = wvHtmlEl(idoc, "span", "wv-ctx-ic", "…");
+                    const mlb = wvHtmlEl(idoc, "span");
                     const n = Math.min(STEP, full.length - shown);
                     mlb.textContent = "Show " + n + " older step" + (n === 1 ? "" : "s");
-                    const mhn = idoc.createElementNS(NS_HTML_RP, "span"); mhn.className = "wv-ctx-hint";
-                    mhn.textContent = (full.length - shown) + " more";
+                    const mhn = wvHtmlEl(idoc, "span", "wv-ctx-hint", (full.length - shown) + " more");
                     more.appendChild(mic); more.appendChild(mlb); more.appendChild(mhn);
                     more.addEventListener("click", (e: any) => { e.stopPropagation(); shown += STEP; build(); fitMenu(); });
                     boxEl.appendChild(more);
                 }
                 // The footer: run the selection.
-                footer = idoc.createElementNS(NS_HTML_RP, "div");
+                footer = wvHtmlEl(idoc, "div");
                 footer.className = "wv-ctx-item wv-ctx-run";
                 footer.setAttribute("data-wv-dir", dir);
-                const fic = idoc.createElementNS(NS_HTML_RP, "span"); fic.className = "wv-ctx-ic"; fic.textContent = dir === "undo" ? "↶" : "↷";
-                const flb = idoc.createElementNS(NS_HTML_RP, "span"); flb.textContent = Word + " 0 selected";
+                const fic = wvHtmlEl(idoc, "span", "wv-ctx-ic", dir === "undo" ? "↶" : "↷");
+                const flb = wvHtmlEl(idoc, "span", undefined, Word + " 0 selected");
                 footer.appendChild(fic); footer.appendChild(flb);
                 footer.style.display = "none";
                 footer.title = Word + " every ticked step, in order";
@@ -12489,21 +12751,11 @@ class _ReaderPanelsMixin {
             // the source selector passes "weavero" explicitly.
             if (!hasCurated) return;   // nothing to offer
             if (current !== "weavero") return;
-            const menu = idoc.createElementNS(NS_HTML_RP, "div");
+            const menu = wvHtmlEl(idoc, "div");
             menu.id = RP_BM_CTX_ID;
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
-            const mk = (label: string, icon: string, fn: () => void, danger?: boolean) => {
-                const it = idoc.createElementNS(NS_HTML_RP, "div");
-                it.className = "wv-ctx-item" + (danger ? " wv-ctx-danger" : "");
-                const ic = idoc.createElementNS(NS_HTML_RP, "span");
-                ic.className = "wv-ctx-ic";
-                ic.innerHTML = icon;
-                const lb = idoc.createElementNS(NS_HTML_RP, "span");
-                lb.textContent = label;
-                it.appendChild(ic); it.appendChild(lb);
-                it.addEventListener("click", () => { close(); fn(); });
-                menu.appendChild(it);
-            };
+            const mk = (label: string, icon: string, fn: () => void, danger?: boolean) =>
+                this._wvCtxItem(idoc, menu, { label, icon, danger, close, onClick: fn });
             mk("Delete Weavero Outline…", RP_DELETE_SVG, () => this._wvOutlineDoRevert(reader, idoc), true);
             (idoc.body || idoc.documentElement).appendChild(menu);
             const r = anchor.getBoundingClientRect();
@@ -12518,6 +12770,10 @@ class _ReaderPanelsMixin {
      *  when it is a boolean, else the global `weavero.outlinePageNumbers`
      *  pref (default on). `att` may be null (no attachment -> global). */
     _wvOutlinePagesShown(att: any): boolean {
+        // Extras off: no labels, whatever a document chose (its own choice
+        // is kept for when Extras returns). Settings greys this option with
+        // Extras (prefs.4, MJT 2026-10-17).
+        try { if (!this._getEnableVisualExtras()) return false; } catch (_) {}
         try {
             if (att && att.libraryID != null && att.itemKey) {
                 const s = this._wvOutlineFileSettings(att.libraryID, att.itemKey);
@@ -12556,7 +12812,7 @@ class _ReaderPanelsMixin {
             this._wvCloseReaderBmContextMenu(idoc);
             const att = this._wvReaderAtt(reader);
             if (!att || att.libraryID == null || !att.itemKey) return;
-            const menu = idoc.createElementNS(NS_HTML_RP, "div");
+            const menu = wvHtmlEl(idoc, "div");
             menu.id = RP_BM_CTX_ID;
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
             const rerender = () => {
@@ -12569,62 +12825,39 @@ class _ReaderPanelsMixin {
             // "(default)" goes at the END of the line, as in Settings (MJT
             // 2026-09-29): after the size when there is one, else after the name.
             const fill = (it: any, name: string, ticked: boolean, isDefault: boolean, hint: string) => {
-                const ic = idoc.createElementNS(NS_HTML_RP, "span");
+                const ic = wvHtmlEl(idoc, "span");
                 ic.className = "wv-ctx-ic";
                 ic.textContent = ticked ? "✓" : "";
-                const lb = idoc.createElementNS(NS_HTML_RP, "span");
-                lb.textContent = name;
+                const lb = wvHtmlEl(idoc, "span", undefined, name);
                 it.appendChild(ic); it.appendChild(lb);
                 if (isDefault && !hint) {
                     // Dim like the size column (MJT 2026-09-29).
-                    const df = idoc.createElementNS(NS_HTML_RP, "span");
-                    df.className = "wv-ctx-def";
-                    df.textContent = "(default)";
-                    it.appendChild(df);
+                    const df = wvHtmlEl(idoc, "span", "wv-ctx-def", "(default)", it);
                 }
                 if (hint) {
-                    const hn = idoc.createElementNS(NS_HTML_RP, "span");
-                    hn.className = "wv-ctx-hint";
-                    hn.textContent = hint + (isDefault ? " (default)" : "");
-                    it.appendChild(hn);
+                    const hn = wvHtmlEl(idoc, "span", "wv-ctx-hint", hint + (isDefault ? " (default)" : ""), it);
                 }
             };
             // Text-size lines: the size in fixed-width columns -- the number
             // right-aligned, then "(default)", then the flyout arrow -- so the
             // sizes line up vertically on every line (MJT 2026-09-29).
             const fillCols = (it: any, name: string, ticked: boolean, isDefault: boolean, size: string, arrow: boolean) => {
-                const ic = idoc.createElementNS(NS_HTML_RP, "span");
+                const ic = wvHtmlEl(idoc, "span");
                 ic.className = "wv-ctx-ic";
                 ic.textContent = ticked ? "✓" : "";
-                const lb = idoc.createElementNS(NS_HTML_RP, "span");
-                lb.textContent = name;
-                const cols = idoc.createElementNS(NS_HTML_RP, "span");
+                const lb = wvHtmlEl(idoc, "span", undefined, name);
+                const cols = wvHtmlEl(idoc, "span");
                 cols.className = "wv-ctx-cols";
-                const sz = idoc.createElementNS(NS_HTML_RP, "span");
-                sz.className = "wv-ctx-size";
-                sz.textContent = size;
-                const df = idoc.createElementNS(NS_HTML_RP, "span");
-                df.className = "wv-ctx-defcol";
-                df.textContent = isDefault ? "(default)" : "";
-                const ar = idoc.createElementNS(NS_HTML_RP, "span");
-                ar.className = "wv-ctx-arrowcol";
-                ar.textContent = arrow ? "▸" : "";
+                const sz = wvHtmlEl(idoc, "span", "wv-ctx-size", size);
+                const df = wvHtmlEl(idoc, "span", "wv-ctx-defcol", isDefault ? "(default)" : "");
+                const ar = wvHtmlEl(idoc, "span", "wv-ctx-arrowcol", arrow ? "▸" : "");
                 cols.appendChild(sz); cols.appendChild(df); cols.appendChild(ar);
                 it.appendChild(ic); it.appendChild(lb); it.appendChild(cols);
             };
-            const row = (name: string, ticked: boolean, pick: () => void, isDefault = false, hint = "") => {
-                const it = idoc.createElementNS(NS_HTML_RP, "div");
-                it.className = "wv-ctx-item";
-                fill(it, name, ticked, isDefault, hint);
-                it.addEventListener("click", () => { close(); pick(); });
-                menu.appendChild(it);
-            };
-            const heading = (text: string) => {
-                const hd = idoc.createElementNS(NS_HTML_RP, "div");
-                hd.className = "wv-ctx-heading";
-                hd.textContent = text;
-                menu.appendChild(hd);
-            };
+            // As `fill` lays a row out: the default mark only without a hint.
+            const row = (name: string, ticked: boolean, pick: () => void, isDefault = false, hint = "") =>
+                this._wvCtxItem(idoc, menu, { label: name, ticked, def: isDefault && !hint, hint: hint || undefined, close, onClick: pick });
+            const heading = (text: string) => this._wvCtxHeading(idoc, menu, text);
             // (Undo / Redo moved to the header strip's right-click menu, MJT
             // 2026-09-30 -- _wvOutlineShowHistoryMenu.)
             // Expand / collapse every entry (MJT 2026-09-29): the Outline tab's
@@ -12646,7 +12879,10 @@ class _ReaderPanelsMixin {
             }
             // Page numbers: not in a web snapshot, which has no pages (MJT
             // 2026-09-24). PDFs and EPUBs keep it.
-            if ((reader && reader._type) !== "snapshot") {
+            // Both per-document choices below are Extras options (Settings
+            // greys them with it): gone from the menu while Extras is off.
+            const extrasOn = (() => { try { return !!this._getEnableVisualExtras(); } catch (_) { return true; } })();
+            if ((reader && reader._type) !== "snapshot" && extrasOn) {
                 const shown = this._wvOutlinePagesShown(att);
                 const globalOn = this._getOutlinePageNumbers();
                 const setPages = (v: boolean) => () => { this._wvOutlineSetPageNumbers(att, v).then(rerender, rerender); };
@@ -12660,7 +12896,7 @@ class _ReaderPanelsMixin {
             // bookmarks menu's hover flyout). The tick marks the current
             // choice; "(default)" the Settings value -- picking it removes the
             // document's exception, as for the page numbers.
-            {
+            if (extrasOn) {
                 const cur = this._wvOutlineTextSizeOf(att);
                 const g = this._wvOutlineTextSizeGlobal();
                 const apply = () => { this._wvApplyOutlineTextScale(idoc, reader); };
@@ -12668,8 +12904,7 @@ class _ReaderPanelsMixin {
                 const px = (v: string) => this._wvOutlineSizePx(v) + " px";
                 heading("Text size");
                 const sizeRow = (name: string, v: string) => {
-                    const r = idoc.createElementNS(NS_HTML_RP, "div");
-                    r.className = "wv-ctx-item";
+                    const r = wvHtmlEl(idoc, "div", "wv-ctx-item");
                     fillCols(r, name, cur === v, g === v, px(v), false);
                     r.addEventListener("click", () => { close(); set(v); });
                     menu.appendChild(r);
@@ -12677,15 +12912,12 @@ class _ReaderPanelsMixin {
                 sizeRow("Zotero Outline", "zotero");
                 sizeRow("Zotero Item Pane", "itemPane");
                 const fixedCur = RP_OUTLINE_FIXED.includes(cur);
-                const it = idoc.createElementNS(NS_HTML_RP, "div");
-                it.className = "wv-ctx-item wv-ctx-haschild";
+                const it = wvHtmlEl(idoc, "div", "wv-ctx-item wv-ctx-haschild");
                 fillCols(it, "Fixed", fixedCur, fixedCur && cur === g, fixedCur ? cur + " px" : "", true);
-                const fly = idoc.createElementNS(NS_HTML_RP, "div");
-                fly.className = "wv-ctx-submenu";
+                const fly = wvHtmlEl(idoc, "div", "wv-ctx-submenu");
                 fly.style.minWidth = "0";
                 for (const v of RP_OUTLINE_FIXED) {
-                    const ci = idoc.createElementNS(NS_HTML_RP, "div");
-                    ci.className = "wv-ctx-item";
+                    const ci = wvHtmlEl(idoc, "div", "wv-ctx-item");
                     fill(ci, v + " px", cur === v, v === g, "");
                     ci.addEventListener("click", (ev: any) => {
                         try { ev.stopPropagation(); } catch (_) {}
@@ -12746,7 +12978,7 @@ class _ReaderPanelsMixin {
             if (!att || att.libraryID == null || !att.itemKey) return;
             const shown = this._wvBmPagesShown(att);
             const globalOn = this._getBookmarkPageNumbers();
-            const menu = idoc.createElementNS(NS_HTML_RP, "div");
+            const menu = wvHtmlEl(idoc, "div");
             menu.id = RP_BM_CTX_ID;
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
             const rerender = () => {
@@ -12755,32 +12987,10 @@ class _ReaderPanelsMixin {
                     if (P) P._wvReaderRenderBmList(reader, idoc);
                 } catch (_) {}
             };
-            const row = (label: string, ticked: boolean, value: boolean, isDefault: boolean) => {
-                const it = idoc.createElementNS(NS_HTML_RP, "div");
-                it.className = "wv-ctx-item";
-                const ic = idoc.createElementNS(NS_HTML_RP, "span");
-                ic.className = "wv-ctx-ic";
-                ic.textContent = ticked ? "\u2713" : "";
-                const lb = idoc.createElementNS(NS_HTML_RP, "span");
-                lb.textContent = label;
-                it.appendChild(ic); it.appendChild(lb);
-                if (isDefault) {
-                    // Dimmed, as in the Outline tab menu (MJT 2026-09-29).
-                    const df = idoc.createElementNS(NS_HTML_RP, "span");
-                    df.className = "wv-ctx-def";
-                    df.textContent = "(default)";
-                    it.appendChild(df);
-                }
-                it.addEventListener("click", () => {
-                    close();
-                    this._wvBmSetPageNumbers(att, value).then(rerender, rerender);
-                });
-                menu.appendChild(it);
-            };
-            const hd = idoc.createElementNS(NS_HTML_RP, "div");
-            hd.className = "wv-ctx-heading";
-            hd.textContent = "Page numbers";
-            menu.appendChild(hd);
+            const row = (label: string, ticked: boolean, value: boolean, isDefault: boolean) =>
+                this._wvCtxItem(idoc, menu, { label, ticked, def: isDefault, close,
+                    onClick: () => { this._wvBmSetPageNumbers(att, value).then(rerender, rerender); } });
+            this._wvCtxHeading(idoc, menu, "Page numbers");
             row("Show", shown, true, globalOn);
             row("Hide", !shown, false, !globalOn);
             (idoc.body || idoc.documentElement).appendChild(menu);
@@ -12926,6 +13136,9 @@ class _ReaderPanelsMixin {
      *  Settings value -- the same two levels as the page numbers (MJT
      *  2026-09-29). `att` null -> the Settings value. */
     _wvOutlineTextSizeOf(att: any): string {
+        // Extras off: Zotero's own size, whatever was chosen (kept for when
+        // Extras returns) -- the option is greyed with Extras (prefs.4).
+        try { if (!this._getEnableVisualExtras()) return "zotero"; } catch (_) {}
         try {
             if (att && att.libraryID != null && att.itemKey) {
                 const s = this._wvOutlineFileSettings(att.libraryID, att.itemKey);
@@ -12996,25 +13209,23 @@ class _ReaderPanelsMixin {
     _wvOutlineShowSourceMenu(reader: any, idoc: any, anchor: any, sources: string[], current: string) {
         try {
             this._wvCloseReaderBmContextMenu(idoc);
-            const menu = idoc.createElementNS(NS_HTML_RP, "div");
+            const menu = wvHtmlEl(idoc, "div");
             menu.id = RP_BM_CTX_ID;
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
             for (const src of sources) {
-                const it = idoc.createElementNS(NS_HTML_RP, "div");
+                const it = wvHtmlEl(idoc, "div");
                 // wv-outline-src-<src> so the same dot-colour CSS the chip uses
                 // applies to this item's dot -- the menu carries the chip's colour
                 // code (green Embedded / amber Extracted / accent Weavero).
                 // Layout: [dot][label] left-aligned across all rows, with the
                 // current row's check pushed to the RIGHT so the dots line up.
                 it.className = "wv-ctx-item wv-outline-src-" + src;
-                const dot = idoc.createElementNS(NS_HTML_RP, "span");
+                const dot = wvHtmlEl(idoc, "span");
                 dot.className = "wv-outline-src-dot";
-                const lb = idoc.createElementNS(NS_HTML_RP, "span");
-                lb.textContent = this._wvOutlineSourceLabel(src);
+                const lb = wvHtmlEl(idoc, "span", undefined, this._wvOutlineSourceLabel(src));
                 it.appendChild(dot); it.appendChild(lb);
                 if (src === current) {
-                    const ck = idoc.createElementNS(NS_HTML_RP, "span");
-                    ck.className = "wv-ctx-check-right";
+                    const ck = wvHtmlEl(idoc, "span", "wv-ctx-check-right");
                     ck.innerHTML = RP_CHECK_SVG;
                     it.appendChild(ck);
                 }
@@ -13036,26 +13247,13 @@ class _ReaderPanelsMixin {
                             if (!att0 || !this._wvOutlineHasCurated(att0.libraryID, att0.itemKey)) return;
                             const old = menu.querySelector(".wv-ctx-sidemenu");
                             if (old) old.remove();
-                            const sub = idoc.createElementNS(NS_HTML_RP, "div");
-                            sub.className = "wv-ctx-sidemenu";   // NOT .wv-ctx-submenu: that class is hover-only (display:none)
+                            const sub = wvHtmlEl(idoc, "div", "wv-ctx-sidemenu");   // NOT .wv-ctx-submenu: that class is hover-only (display:none)
                             sub.setAttribute("style", "position:absolute;z-index:1;background:Canvas;color:CanvasText;"
                                 + "border:1px solid rgba(127,127,127,.4);border-radius:6px;"
                                 + "box-shadow:0 4px 16px rgba(0,0,0,.3);padding:4px;min-width:160px;"
                                 + "left:" + (menu.offsetWidth - 6) + "px;top:" + (it.offsetTop - 4) + "px;");
-                            const del = idoc.createElementNS(NS_HTML_RP, "div");
-                            del.className = "wv-ctx-item wv-ctx-danger";
-                            const ic = idoc.createElementNS(NS_HTML_RP, "span");
-                            ic.className = "wv-ctx-ic";
-                            ic.innerHTML = RP_DELETE_SVG;
-                            const lb2 = idoc.createElementNS(NS_HTML_RP, "span");
-                            lb2.textContent = "Delete Weavero Outline…";
-                            del.appendChild(ic); del.appendChild(lb2);
-                            del.addEventListener("click", (ev2: any) => {
-                                try { ev2.stopPropagation(); } catch (_) {}
-                                close();
-                                this._wvOutlineDoRevert(reader, idoc);
-                            });
-                            sub.appendChild(del);
+                            this._wvCtxItem(idoc, sub, { label: "Delete Weavero Outline…", icon: RP_DELETE_SVG, danger: true, close,
+                                onClick: (ev2: any) => { try { ev2.stopPropagation(); } catch (_) {} this._wvOutlineDoRevert(reader, idoc); } });
                             // A click on the submenu must not reach the Weavero
                             // row underneath it (that would switch the source).
                             sub.addEventListener("click", (ev3: any) => { try { ev3.stopPropagation(); } catch (_) {} });
@@ -13206,17 +13404,10 @@ class _ReaderPanelsMixin {
                 try {
                     const irH = reader._internalReader;
                     const pvH = irH && (irH._primaryView || irH._lastView);
-                    // A TOC jump supersedes a showing pin or flash, as in the PDF path.
-                    if (pvH) { this._wvClearStalePin(pvH); this._wvDomClearHighlight(pvH); }
-                    // Back-button point (issue #28): the in-place landing below
-                    // bypasses navigate()'s history, and this branch returns
-                    // before the general push further down (survey 2026-10-06).
-                    if (pvH) this._wvReaderPushHistoryPoint(pvH);
-                    const rngH = pvH && this._wvDomQuarterPlace(pvH, { href: node.href });
-                    if (rngH) {
-                        if (this._getEnableOutlineTextHighlight()) this._wvDomHighlightRange(pvH, rngH);
-                        return;
-                    }
+                    // A TOC jump supersedes a showing pin or flash, as in the PDF
+                    // path; a Back point (issue #28): this branch returns before
+                    // the general push further down (survey 2026-10-06).
+                    if (pvH && this._wvJumpToAnchor(pvH, { href: node.href }, { history: true, highlight: this._getEnableOutlineTextHighlight() })) return;
                 } catch (_) {}
                 try {
                     const ir0 = reader._internalReader;
@@ -13224,7 +13415,7 @@ class _ReaderPanelsMixin {
                     const Cu0 = (Components as any).utils;
                     if (ir0 && typeof ir0.navigate === "function") {
                         ir0.navigate((iw0 && Cu0)
-                            ? Cu0.cloneInto({ href: node.href }, iw0)
+                            ? wvCloneFor({ href: node.href }, iw0)
                             : { href: node.href });
                     }
                 } catch (_) {}
@@ -13260,9 +13451,7 @@ class _ReaderPanelsMixin {
 
             // Established (saved) OR already a real box -> go straight there.
             if (pv && rects && (established || !this._wvOutlineIsPointRect(target))) {
-                const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
-                this._wvClearStalePin(pv);
-                const rr = rects[0];
+                const gen = this._wvHlNext(pv);
                 if (this._wvOutlineIsPointRect(target) && target.anchor !== "point") {
                     // Established but coarse -- recovery had failed (e.g. a
                     // "References" section with no visible heading; the embedded
@@ -13274,21 +13463,15 @@ class _ReaderPanelsMixin {
                     // Manual pin -> the exact spot (1/4-down rule); no region to
                     // highlight (a zero-area point). Show the draggable pin marker,
                     // like a position bookmark.
-                    if (!this._wvOutlineScrollToRect(pv, target.pageIndex, rr)) this._wvOutlineNavRaw(reader, pv, target);
+                    this._wvJumpToRect(pv, target.pageIndex, rects, { gen, fallback: () => this._wvOutlineNavRaw(reader, pv, target) });
                     try {
                         const att = this._wvReaderAtt(reader);
                         if (att && node && node.id) this._wvOutlineShowEntryPin(reader, idoc, att.libraryID, att.itemKey, node.id, target);
                     } catch (_) {}
                 } else {
-                    if (!this._wvOutlineScrollToRect(pv, target.pageIndex, rr)) this._wvOutlineNavRaw(reader, pv, target);
-                    // ALL the rects, not just the first. A recovered heading box
-                    // is a single rect, but a region set from a selection has one
-                    // per line -- highlighting rects[0] alone lit up only the
-                    // heading's first line and left the rest unmarked (2026-07-20).
-                    // Scrolling still targets the first rect: that is the start of
-                    // the region, and where the eye should land.
-                    this._wvOutlineHighlightInPlace(pv, target.pageIndex,
-                        rects.map((r: number[]) => [r[0], r[1], r[2], r[3]]), gen, 0);
+                    // Scrolling targets the first rect (the start of the region,
+                    // where the eye should land); every rect is highlighted.
+                    this._wvJumpToRect(pv, target.pageIndex, rects, { gen, highlight: true, fallback: () => this._wvOutlineNavRaw(reader, pv, target) });
                 }
                 return;
             }
@@ -13304,8 +13487,7 @@ class _ReaderPanelsMixin {
             if (pv && rects && this._wvOutlineIsPointRect(target)) {
                 const resolveTitle = curated ? ((node.source && node.source.title) || node.title) : node.title;
                 if (!resolveTitle) { this._wvOutlineNavRaw(reader, pv, target); return; }
-                const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
-                this._wvClearStalePin(pv);
+                const gen = this._wvHlNext(pv);
                 const r0 = rects[0];
                 Promise.resolve(this._wvOutlineRecoverRect(pv, target.pageIndex, r0[0], r0[1], resolveTitle))
                     .then((res: any) => {
@@ -13314,11 +13496,10 @@ class _ReaderPanelsMixin {
                         if (curated && node.id) {
                             node.resolvedPosition = precise;   // in-memory (same store object)
                             const att = this._wvReaderAtt(reader);
-                            if (att) this._wvOutlineSetEntryPosition(att.libraryID, att.itemKey, node.id, precise, resolveTitle);
+                            if (att) this._wvOutlineSetEntryPosition(att.libraryID, att.itemKey, node.id, precise, resolveTitle, { auto: true });
                         }
                         if (res) {
-                            try { this._wvOutlineScrollToRect(pv, res.pageIndex, res.rect); } catch (_) {}
-                            this._wvOutlineHighlightInPlace(pv, res.pageIndex, [res.rect], gen, 0);
+                            this._wvJumpToRect(pv, res.pageIndex, [res.rect], { gen, highlight: true });
                         } else {
                             // No matching heading text on the page -> top of page.
                             this._wvOutlineNavPageTop(reader, pv, target.pageIndex);
@@ -13347,9 +13528,8 @@ class _ReaderPanelsMixin {
                 // Same for the previous entry's text flash: a pin click drew
                 // nothing that would replace it, so it lingered beside the
                 // new pin until its own fade (MJT 2026-09-09, second report).
-                if (pv) { this._wvClearStalePin(pv); this._wvDomClearHighlight(pv); }
                 try {
-                    wvPlacedDom = !!this._wvDomQuarterPlace(pv, { position: target, href: node && node.href });
+                    wvPlacedDom = !!(pv && this._wvJumpToAnchor(pv, { position: target, href: node && node.href }));
                 } catch (_) {}
             }
             if (!wvPlacedDom) this._wvOutlineNavRaw(reader, pv, target);
@@ -13394,7 +13574,6 @@ class _ReaderPanelsMixin {
     _wvReaderPanelNote(idoc: any, text: string) {
         try {
             if (!idoc) return;
-            const NS = NS_HTML_RP;
             idoc.querySelectorAll(".wv-readingmode-note").forEach((n: any) => n.remove());
             // The VISIBLE pane hosts the note: the outline view exists while
             // the Bookmarks tab is showing (hidden), and a note there is a
@@ -13406,7 +13585,7 @@ class _ReaderPanelsMixin {
                 || idoc.querySelector("." + RP_BM_VIEW_CLASS)
                 || idoc.getElementById("sidebarContent");
             if (!host) return;
-            const note = idoc.createElementNS(NS, "div");
+            const note = wvHtmlEl(idoc, "div");
             note.className = "wv-readingmode-note";
             note.textContent = text;
             host.appendChild(note);
@@ -13427,6 +13606,67 @@ class _ReaderPanelsMixin {
      *  location (where the user WAS) onto the back stack. Fire-and-forget,
      *  not awaited, same as upstream; double-pushes from fallback branches
      *  are deduped by History.save's tail check + 2s rate limit. */
+    /** A new click generation on the view: an in-flight recovery or paint of
+     *  the previous click aborts when it finds the generation moved, and a
+     *  showing pin goes (the supersede rule: "switching quickly between items
+     *  should clear the previous marker, pins included", 2026-07-29). Eight
+     *  jumps spelled the pair out (survey 2026-10-06 §3.6). */
+    _wvHlNext(pv: any): number {
+        const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
+        this._wvClearStalePin(pv);
+        return gen;
+    }
+
+    /** The PDF text-target jump, one way (survey 2026-10-06 §3.6): a new
+     *  generation unless the caller already took one (`gen`), navigate's tail
+     *  when the caller asks (`mark`, with `history` false for skipHistory),
+     *  the quarter-rule scroll (`_wvOutlineScrollToRect`) with the caller's
+     *  `fallback` when the page view is not laid out yet, and the in-place
+     *  highlight of every rect when `highlight` is on. Returns the
+     *  generation, for a caller that paints more later. */
+    _wvJumpToRect(pv: any, pageIndex: number, rects: number[][], o?: { gen?: number; mark?: boolean; history?: boolean; highlight?: boolean; fallback?: () => void }): number {
+        const opts = o || {};
+        const gen = opts.gen != null ? opts.gen : this._wvHlNext(pv);
+        if (opts.mark) this._wvReaderMarkNav(pv, { history: opts.history !== false });
+        const rr = rects && rects[0];
+        let landed = false;
+        try { landed = !!(rr && this._wvOutlineScrollToRect(pv, pageIndex, rr)); } catch (_) {}
+        if (!landed && opts.fallback) { try { opts.fallback(); } catch (_) {} }
+        if (opts.highlight && rects && rects.length) {
+            // Every rect: a region set from a selection has one per line, and
+            // highlighting only the first left the rest bare (2026-07-20).
+            this._wvOutlineHighlightInPlace(pv, pageIndex, rects.map((r: number[]) => [r[0], r[1], r[2], r[3]]), gen, 0);
+        }
+        return gen;
+    }
+
+    /** The DOM (EPUB / snapshot) target jump, one way: a showing pin and text
+     *  highlight go, a Back point is recorded when asked, the target lands a
+     *  quarter down (`_wvDomQuarterPlace`: text top, nested scrollers) and is
+     *  highlighted when asked. Returns the range, or null when the view is
+     *  not scrollable or the anchor did not resolve -- the caller's fallback. */
+    _wvJumpToAnchor(pv: any, anchor: any, o?: { history?: boolean; highlight?: boolean }): any {
+        const opts = o || {};
+        try { this._wvClearStalePin(pv); this._wvDomClearHighlight(pv); } catch (_) {}
+        if (opts.history) this._wvReaderPushHistoryPoint(pv);
+        const rng = this._wvDomQuarterPlace(pv, anchor);
+        if (rng && opts.highlight) this._wvDomHighlightRange(pv, rng);
+        return rng;
+    }
+
+    /** What the reader's own navigate() does around a jump, for the in-place
+     *  jumps that bypass it: tell the view a manual navigation happened (its
+     *  scroll-spy stands down), stamp the time (the 1.5 s suppression), and
+     *  record a Back point (issue #28). `history: false` is navigate's own
+     *  skipHistory: no Back point, and the view is not told either. Five
+     *  copies spelled the triad out (survey 2026-10-06 §3.6). */
+    _wvReaderMarkNav(pv: any, opts?: { history?: boolean }) {
+        const history = !opts || opts.history !== false;
+        try { if (history && typeof pv._onManualNavigation === "function") pv._onManualNavigation(); } catch (_) {}
+        try { pv._lastNavigationTime = Date.now(); } catch (_) {}
+        if (history) { try { this._wvReaderPushHistoryPoint(pv); } catch (_) {} }
+    }
+
     _wvReaderPushHistoryPoint(pv: any) {
         try {
             if (!pv || typeof pv._pushHistoryPoint !== "function") return;
@@ -13452,7 +13692,7 @@ class _ReaderPanelsMixin {
                         || cur.dest[2] !== loc.left || cur.dest[3] !== loc.top;
                     if (stale) {
                         const Cu = (Components as any).utils;
-                        hist.save(Cu.cloneInto(
+                        hist.save(wvCloneFor(
                             { dest: [loc.pageNumber - 1, { name: "XYZ" }, loc.left, loc.top, null] },
                             iwin), true);
                     }
@@ -13468,7 +13708,7 @@ class _ReaderPanelsMixin {
             const iw = reader._iframeWindow;
             const Cu = (Components as any).utils;
             if (ir && typeof ir.navigate === "function") {
-                try { ir.navigate((iw && Cu) ? Cu.cloneInto({ position: pos }, iw) : { position: pos }); return; } catch (_) {}
+                try { ir.navigate((iw && Cu) ? wvCloneFor({ position: pos }, iw) : { position: pos }); return; } catch (_) {}
             }
             if (pv && typeof pv.navigateToPosition === "function") { try { pv.navigateToPosition(pos); } catch (_) {} }
         } catch (_) {}
@@ -13620,7 +13860,7 @@ class _ReaderPanelsMixin {
             if (existing.textContent !== css) existing.textContent = css;
             return;
         }
-        const s = idoc.createElementNS(NS_HTML_RP, "style");
+        const s = wvHtmlEl(idoc, "style");
         s.id = RP_STYLE_ID;
         s.textContent = css;
         (idoc.head || idoc.documentElement).appendChild(s);
@@ -14104,7 +14344,7 @@ class _ReaderPanelsMixin {
             if (!end) return;
             let btn = idoc.querySelector("." + RP_FILTER_BTN_CLASS);
             if (!btn) {
-                btn = idoc.createElementNS(NS_HTML_RP, "button");
+                btn = wvHtmlEl(idoc, "button");
                 btn.className = "toolbar-button " + RP_FILTER_BTN_CLASS;
                 btn.setAttribute("tabindex", "-1");
                 btn.setAttribute("title", "Filter annotations");
@@ -14116,8 +14356,7 @@ class _ReaderPanelsMixin {
                 // `_wvReaderPrefetchIcons` will overwrite the src with
                 // the fetched copy; both URIs are byte-identical so the
                 // user sees nothing change.
-                const fimg = idoc.createElementNS(NS_HTML_RP, "img");
-                fimg.className = "wv-filter-svg";
+                const fimg = wvHtmlEl(idoc, "img", "wv-filter-svg");
                 fimg.setAttribute("src", RP_FUNNEL_DATA_URI);
                 btn.appendChild(fimg);
                 // Tiny ▾ chevron after the funnel — matches Zotero's
@@ -14126,7 +14365,7 @@ class _ReaderPanelsMixin {
                 // filter button's XUL `toolbarbutton-menu-dropmarker`.
                 // Same 8×8 inline SVG the tabs-menu file-type button
                 // uses (see tabs.ts).
-                const chev = idoc.createElementNS(NS_HTML_RP, "span");
+                const chev = wvHtmlEl(idoc, "span");
                 chev.className = "wv-rf-chev";
                 chev.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><path d="M1 2.5h6L4 6z"/></svg>';
                 btn.appendChild(chev);
@@ -14557,7 +14796,7 @@ class _ReaderPanelsMixin {
             const obj: any = {};
             for (const k of keys) obj[k] = true;
             iw.__wvAnnListHideKeys = keys.length
-                ? (Components as any).utils.cloneInto(obj, reader._iframeWindow) : null;
+                ? wvCloneFor(obj, reader._iframeWindow) : null;
             (reader as any).__wvAnnListSig = sig;
             // setFilter recomputes `_hidden` from Zotero's own criteria and
             // ends in render(), where the wrapper re-marks -- the only way to
@@ -14624,13 +14863,17 @@ class _ReaderPanelsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvAnnListEnsure err: " + e); }
     }
 
-    /** The pane FILTERING runs under the Filters master alone: the Settings
-     *  type defaults and the native-selector switch apply whether or not the
-     *  funnel is shown (MJT, 2026-09-21: "it should be possible to hide
-     *  certain annotation types from the settings without wanting to see the
-     *  funnel"). */
+    /** The pane FILTERING runs under ONE master: the Settings type defaults
+     *  and the native-selector switch apply whether or not the funnel is
+     *  shown (MJT, 2026-09-21: "it should be possible to hide certain
+     *  annotation types from the settings without wanting to see the
+     *  funnel"). That master is EXTRAS, the section whose "Reader annotations
+     *  pane" boxes Settings greys -- it was Sort & Filters until prefs.4,
+     *  so the boxes stayed live while their master was another section's
+     *  (survey §3.5; MJT 2026-10-17, "Ok to fix as you suggest": a box's
+     *  section master is the feature's master). */
     _wvAnnPaneEnabled(): boolean {
-        try { return !!this._getEnableFilters(); }
+        try { return !!this._getEnableVisualExtras(); }
         catch (_) { return false; }
     }
 
@@ -14651,14 +14894,138 @@ class _ReaderPanelsMixin {
         wvUnlisten(idoc, "annListSearch:click");
     }
 
-    /** Zotero's own selector at the foot of the pane: hidden by default (it
-     *  filters the page as well), on its own switch, funnel or no funnel. */
+    /** Zotero's own selector at the foot of the pane: with the handle
+     *  feature on (Settings, `annSelectorHandle`; the Filters master above
+     *  it) it folds to its handle, collapsed by default (it filters the page
+     *  as well); the handle alone moves the state (`hideNativeAnnSelector`,
+     *  no Settings box). Feature off: Zotero's selector as Zotero draws it,
+     *  always shown (MJT 2026-10-14: "the settings should enable the
+     *  feature, not work as a toggle"). */
     _wvAnnListApplyNativeSelector(idoc: any) {
         try {
             const sc = idoc.getElementById("sidebarContainer");
             if (!sc) return;
-            const hide = this._wvAnnPaneEnabled() && this._getHideNativeAnnSelector();
+            const on = this._wvAnnSelHandleOn();
+            const hide = on && this._getHideNativeAnnSelector();
             sc.classList.toggle("wv-al-nonative", hide);
+            // View -> Layout's own state: the selector gone entirely while
+            // that feature is on (off = nothing of Weavero's in the menu).
+            sc.classList.toggle("wv-al-nosel", this._wvAnnPaneEnabled() && !!this._getReaderLayoutMenu() && !!this._getAnnSelectorHidden());
+            this._wvAnnSelHandleEnsure(idoc);
+            if (on) this._wvAnnSelHandleWatch(idoc);
+            else this._wvAnnSelHandleUnwatch(idoc);
+        } catch (_) {}
+    }
+
+    /** View -> Layout -> Colour and Tag Selector: flip the menu's state; its
+     *  observer (_wvWireAnnListPrefWatch) re-applies every open reader. */
+    _wvAnnSelectorHiddenToggle() {
+        try { Zotero.Prefs.set("weavero.annSelectorHidden", !this._getAnnSelectorHidden()); }
+        catch (e) { Zotero.debug("[Weavero] _wvAnnSelectorHiddenToggle err: " + e); }
+    }
+
+    /** The handle feature: its own Settings box under the Filters master. */
+    _wvAnnSelHandleOn(): boolean {
+        try { return this._wvAnnPaneEnabled() && !!this._getAnnSelectorHandle(); }
+        catch (_) { return false; }
+    }
+
+    /** The handle on Zotero's selector (issue #58): a zero-height foreign
+     *  node just BEFORE #selector in #annotationsView (its pill is drawn
+     *  over the selector's top padding, see the CSS). React never touches
+     *  it: it appends the next selector after it and drops the selector
+     *  alone when the Selector unmounts (the handle then hides by CSS). A
+     *  handle inside the selector, from a build before 0.22.2-dev.5, is
+     *  replaced. Under its own setting and the Filters master; without
+     *  them Zotero's selector stays as Zotero draws it. Mutation-quiet when
+     *  nothing changed: the watch observes the sidebar for class changes,
+     *  and a write here on every tick would loop. */
+    _wvAnnSelHandleEnsure(idoc: any) {
+        try {
+            const sel = idoc.querySelector("#sidebarContainer #annotationsView #selector");
+            if (!sel) return;
+            for (const c of [...sel.children]) { if (c.classList && c.classList.contains("wv-sel-handle")) { try { c.remove(); } catch (_) {} } }
+            let h: any = sel.previousElementSibling;
+            if (!(h && h.classList && h.classList.contains("wv-sel-handle"))) {
+                h = null;
+                for (const c of [...(sel.parentNode ? sel.parentNode.children : [])]) {
+                    if (c.classList && c.classList.contains("wv-sel-handle")) { if (h) { try { c.remove(); } catch (_) {} } else h = c; }
+                }
+            }
+            if (!this._wvAnnSelHandleOn()) { if (h) h.remove(); return; }
+            if (!h) {
+                h = wvHtmlEl(idoc, "button");
+                h.className = "wv-sel-handle";
+                h.setAttribute("type", "button");
+                h.setAttribute("tabindex", "-1");
+                h.addEventListener("click", (e: any) => {
+                    try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
+                    try {
+                        const lp: any = wvLivePlugin();
+                        if (lp) lp._wvAnnSelHandleToggle();
+                    } catch (_) {}
+                });
+            }
+            if (sel.previousElementSibling !== h) sel.parentNode.insertBefore(h, sel);
+            const collapsed = this._getHideNativeAnnSelector();
+            // `.selected` is React's own class on a chosen colour / tag /
+            // author; display:none keeps the buttons in the DOM, so a
+            // collapsed selector still tells.
+            const marked = collapsed && !!sel.querySelector(".selected");
+            const mark = marked ? "1" : "0";
+            if (h.getAttribute("data-wv-mark") !== mark) h.setAttribute("data-wv-mark", mark);
+            const exp = collapsed ? "false" : "true";
+            if (h.getAttribute("aria-expanded") !== exp) h.setAttribute("aria-expanded", exp);
+            const title = collapsed
+                ? (marked ? "Show the colour and tag selector (a selection is active: it filters the pane and the document)"
+                    : "Show the colour and tag selector")
+                : "Hide the colour and tag selector";
+            if (h.getAttribute("title") !== title) h.setAttribute("title", title);
+        } catch (e) { Zotero.debug("[Weavero] _wvAnnSelHandleEnsure err: " + e); }
+    }
+
+    /** One switch for the handle and the Settings box: the pref. Its
+     *  observer (_wvWireAnnListPrefWatch) re-applies every open reader. */
+    _wvAnnSelHandleToggle() {
+        try { Zotero.Prefs.set("weavero.hideNativeAnnSelector", !this._getHideNativeAnnSelector()); }
+        catch (e) { Zotero.debug("[Weavero] _wvAnnSelHandleToggle err: " + e); }
+    }
+
+    /** Re-add the handle after React remounts the selector, and follow the
+     *  selection mark (a `.selected` class flip). Own observer, not the
+     *  sort feature's (that one goes with its setting). Per document, one
+     *  per instance version; cloneInto as every content-side observer. */
+    _wvAnnSelHandleWatch(idoc: any) {
+        try {
+            const tag = this._wvWireTag();
+            if ((idoc as any).__wvSelHandleObsV === tag) return;
+            try { (idoc as any).__wvSelHandleObs && (idoc as any).__wvSelHandleObs.disconnect(); } catch (_) {}
+            const cw: any = idoc.defaultView;
+            const sc = idoc.getElementById("sidebarContainer");
+            if (!cw || !cw.MutationObserver || !sc) return;
+            const obs = new cw.MutationObserver(() => {
+                try {
+                    if ((idoc as any).__wvSelHandleT) cw.clearTimeout((idoc as any).__wvSelHandleT);
+                    (idoc as any).__wvSelHandleT = cw.setTimeout(() => {
+                        try {
+                            const lp: any = wvLivePlugin();
+                            if (lp) lp._wvAnnSelHandleEnsure(idoc);
+                        } catch (_) {}
+                    }, 60);
+                } catch (_) {}
+            });
+            obs.observe(sc, wvCloneFor(
+                { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] }, cw));
+            (idoc as any).__wvSelHandleObs = obs;
+            (idoc as any).__wvSelHandleObsV = tag;
+        } catch (e) { Zotero.debug("[Weavero] _wvAnnSelHandleWatch err: " + e); }
+    }
+
+    _wvAnnSelHandleUnwatch(idoc: any) {
+        try {
+            if ((idoc as any).__wvSelHandleObs) { (idoc as any).__wvSelHandleObs.disconnect(); delete (idoc as any).__wvSelHandleObs; }
+            delete (idoc as any).__wvSelHandleObsV;
+            if ((idoc as any).__wvSelHandleT) { idoc.defaultView.clearTimeout((idoc as any).__wvSelHandleT); delete (idoc as any).__wvSelHandleT; }
         } catch (_) {}
     }
 
@@ -14734,8 +15101,12 @@ class _ReaderPanelsMixin {
         try { for (const el of idoc.querySelectorAll(".wv-al-actions")) el.remove(); } catch (_) {}
         try {
             const sc = idoc.getElementById("sidebarContainer");
-            if (sc) sc.classList.remove("wv-al-nonative");
+            if (sc) { sc.classList.remove("wv-al-nonative"); sc.classList.remove("wv-al-nosel"); }
         } catch (_) {}
+        // The selector handle and its watch (issue #58): Zotero's selector
+        // stays as Zotero draws it.
+        try { for (const el of idoc.querySelectorAll(".wv-sel-handle")) el.remove(); } catch (_) {}
+        this._wvAnnSelHandleUnwatch(idoc);
         wvUnlisten(idoc, "annListSearch:pointerdown");
         wvUnlisten(idoc, "annListSearch:click");
         try {
@@ -14752,9 +15123,9 @@ class _ReaderPanelsMixin {
             if (!end) return;
             let host: any = end.querySelector(".wv-al-actions");
             if (!host) {
-                host = idoc.createElementNS(NS_HTML_RP, "div");
+                host = wvHtmlEl(idoc, "div");
                 host.className = "wv-al-actions";
-                const btn = idoc.createElementNS(NS_HTML_RP, "button");
+                const btn = wvHtmlEl(idoc, "button");
                 // `toolbar-button` = Zotero's own sidebar-toolbar button, so
                 // hover/active feedback is the native one (background only).
                 btn.className = "toolbar-button wv-al-btn";
@@ -14765,11 +15136,10 @@ class _ReaderPanelsMixin {
                 // (outline context-fill, amber stem), so the two read as one
                 // control in two places; the prefetch swaps in its fetched
                 // copy, byte-identical.
-                const fimg = idoc.createElementNS(NS_HTML_RP, "img");
-                fimg.className = "wv-filter-svg";
+                const fimg = wvHtmlEl(idoc, "img", "wv-filter-svg");
                 fimg.setAttribute("src", RP_FUNNEL_DATA_URI);
                 btn.appendChild(fimg);
-                const chev = idoc.createElementNS(NS_HTML_RP, "span");
+                const chev = wvHtmlEl(idoc, "span");
                 chev.className = "wv-rf-chev";
                 chev.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><path d="M1 2.5h6L4 6z"/></svg>';
                 btn.appendChild(chev);
@@ -14837,7 +15207,7 @@ class _ReaderPanelsMixin {
      *  document departs from the default. Appended by the shared renderer. */
     _wvAnnPaneFooter(reader: any, idoc: any, popup: any, stack: any) {
         const mk = (tag: string, cls?: string) => {
-            const el = idoc.createElementNS(NS_HTML_RP, tag);
+            const el = wvHtmlEl(idoc, tag);
             if (cls) el.className = cls;
             return el;
         };
@@ -14947,11 +15317,14 @@ class _ReaderPanelsMixin {
             }
             g._wvAnnListPrefObsVer = tag;
             const typePrefs = this._wvAnnListTypes().map(t => this._wvAnnListPrefName(t));
-            // `enableFilters` is the pane funnel's MASTER (_wvAnnPaneEnabled):
-            // the root observer only re-ran the sort on it, so the funnel
-            // stayed applied or absent until the next scan (survey 2026-10-06).
+            // `enableVisualExtras` is the pane's MASTER (_wvAnnPaneEnabled;
+            // `enableFilters` until prefs.4, still watched: the annotation
+            // sort it gates shares the pane): the root observer only re-ran
+            // the sort, so the funnel stayed applied or absent until the next
+            // scan (survey 2026-10-06).
             const watched = typePrefs.concat(["weavero.annPaneDefault",
-                "weavero.enableAnnPaneFilter", "weavero.hideNativeAnnSelector", "weavero.enableFilters"]);
+                "weavero.enableAnnPaneFilter", "weavero.hideNativeAnnSelector", "weavero.annSelectorHandle",
+                "weavero.annSelectorHidden", "weavero.readerLayoutMenu", "weavero.enableVisualExtras", "weavero.enableFilters"]);
             g._wvAnnListPrefObs = watched.map(name => Zotero.Prefs.registerObserver(
                 name,
                 () => {
@@ -15071,7 +15444,7 @@ class _ReaderPanelsMixin {
                 }
             } catch (_) {}
 
-            const popup = idoc.createElementNS(NS_HTML_RP, "div");
+            const popup = wvHtmlEl(idoc, "div");
             popup.id = RP_FILTER_POPUP_ID;
             popup.dataset.wvKind = kind;
             if (sbWidth > 0 && !(opts && opts.place === "beside")) {
@@ -15400,10 +15773,8 @@ class _ReaderPanelsMixin {
             const cols = Zotero.Tags.getColors ? Zotero.Tags.getColors(libID) : null;
             if (cols && cols.forEach) cols.forEach((v: any, k: string) => { if (v && v.color) tagColors[k] = v.color; });
         } catch (_) {}
-
-        const NS = NS_HTML_RP;
         const mk = (tag: string, cls?: string) => {
-            const el = idoc.createElementNS(NS, tag);
+            const el = wvHtmlEl(idoc, tag);
             if (cls) el.className = cls;
             return el;
         };
@@ -15864,7 +16235,7 @@ class _ReaderPanelsMixin {
                 // native select-all can act -- but the event still reaches
                 // the input, so re-implement select-all manually.
                 num.addEventListener("keydown", (e: any) => {
-                    if ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === "a") {
+                    if (wvAccel(e) && String(e.key).toLowerCase() === "a") {
                         try { num.select(); } catch (_) {}
                         e.stopPropagation();
                     }
@@ -16025,7 +16396,7 @@ class _ReaderPanelsMixin {
                 // resolveTyped reads), textContent (what the user sees) and
                 // aria-valuetext, then the normal typed-apply path runs.
                 inp.addEventListener("keydown", (e: any) => {
-                    if ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === "a") {
+                    if (wvAccel(e) && String(e.key).toLowerCase() === "a") {
                         try { inp.select(); } catch (_) {}
                         e.stopPropagation();
                         return;
@@ -16396,7 +16767,7 @@ class _ReaderPanelsMixin {
         try {
             const ir = reader._internalReader;
             const iwin = reader._iframeWindow || (reader._iframe && reader._iframe.contentWindow);
-            const mkEmpty = () => { try { return (iwin && Components && Components.utils) ? Components.utils.cloneInto([], iwin) : []; } catch (_) { return []; } };
+            const mkEmpty = () => { try { return (iwin && Components && Components.utils) ? wvCloneFor([], iwin) : []; } catch (_) { return []; } };
             for (const v of [ir && ir._primaryView, ir && ir._secondaryView, ir && ir._lastView]) {
                 if (!v || typeof v.setAnnotations !== "function") continue;
                 if (block) {
@@ -16427,7 +16798,7 @@ class _ReaderPanelsMixin {
     /** Has Comment tile mirroring the library's: speech-bubble glyph,
      *  click=require / Alt+click=require-absent / re-click=off. */
     _wvMakeReaderHasCommentTile(reader: any, idoc: any, popup: any, st: any, defOn?: boolean, active?: boolean) {
-        const btn = idoc.createElementNS(NS_HTML_RP, "button");
+        const btn = wvHtmlEl(idoc, "button");
         btn.type = "button";
         btn.className = "wv-filter-opt wv-filter-opt-icon";
         // Has Comment sits in the same row as a `.wv-filter-or-inline`
@@ -16524,9 +16895,8 @@ class _ReaderPanelsMixin {
      *  minIso/maxIso (optional) DISABLE days outside [min, max] -- used to
      *  keep a from/to pair conflict-free (ISO strings compare correctly). */
     _wvRfMiniCal(idoc: any, selIso: string | null, onPick: (iso: string) => void, minIso?: string | null, maxIso?: string | null) {
-        const NS = NS_HTML_RP;
         const mk = (tag: string, cls?: string) => {
-            const el = idoc.createElementNS(NS, tag);
+            const el = wvHtmlEl(idoc, tag);
             if (cls) el.className = cls;
             return el;
         };
@@ -16838,7 +17208,7 @@ class _ReaderPanelsMixin {
                 let arg: any = { colors, tags, authors };
                 try {
                     if (iwin && Components && Components.utils) {
-                        arg = Components.utils.cloneInto(arg, iwin);
+                        arg = wvCloneFor(arg, iwin);
                     }
                 } catch (_) {}
                 // setFilter's body recomputes the _hidden flags synchronously
@@ -17239,7 +17609,7 @@ class _ReaderPanelsMixin {
             // Tab button.
             let tab = idoc.querySelector("." + RP_BM_TAB_CLASS);
             if (!tab) {
-                tab = idoc.createElementNS(NS_HTML_RP, "button");
+                tab = wvHtmlEl(idoc, "button");
                 tab.className = "toolbar-button " + RP_BM_TAB_CLASS;
                 tab.setAttribute("tabindex", "-1");
                 tab.setAttribute("role", "tab");
@@ -17393,7 +17763,7 @@ class _ReaderPanelsMixin {
             // View panel.
             let view = content.querySelector("." + RP_BM_VIEW_CLASS);
             if (!view) {
-                view = idoc.createElementNS(NS_HTML_RP, "div");
+                view = wvHtmlEl(idoc, "div");
                 view.className = "viewWrapper " + RP_BM_VIEW_CLASS;
                 // tabindex for keyboard nav; data-tabstop is owned by
                 // _wvReaderApplyBmTabState (active view only -- see the
@@ -17402,17 +17772,15 @@ class _ReaderPanelsMixin {
                 // Single header row: scope toggle on the left, + on the right
                 // (the standalone "Bookmarks" title row was dropped to save
                 // vertical space; the tab already labels the panel).
-                const scopeBar = idoc.createElementNS(NS_HTML_RP, "div");
-                scopeBar.className = "wv-bm-scope-toggle";
-                const scopeGroup = idoc.createElementNS(NS_HTML_RP, "div");
-                scopeGroup.className = "wv-bm-scope-group";
+                const scopeBar = wvHtmlEl(idoc, "div", "wv-bm-scope-toggle");
+                const scopeGroup = wvHtmlEl(idoc, "div", "wv-bm-scope-group");
                 // Set the active class at creation time using the persisted
                 // pref. (A post-build idoc.querySelectorAll wouldn't see the
                 // buttons yet — `view` isn't appended to `content` until later
                 // in this block, so the buttons aren't reachable via idoc.)
                 const initialScope = this._wvReaderBmScope();
                 const mkScope = (lbl: string, scope: string) => {
-                    const b = idoc.createElementNS(NS_HTML_RP, "button");
+                    const b = wvHtmlEl(idoc, "button");
                     const isActive = (initialScope === "both") || (scope === initialScope);
                     b.className = "wv-bm-scope-btn" + (isActive ? " wv-bm-scope-active" : "");
                     b.setAttribute("data-scope", scope);
@@ -17427,7 +17795,7 @@ class _ReaderPanelsMixin {
                         // strip listener that interprets it as a tab
                         // selection).
                         try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
-                        const ctrl = !!(e && (e.ctrlKey || e.metaKey));
+                        const ctrl = wvAccelAny(e);
                         const cur = this._wvReaderBmScope();
                         let next: string;
                         if (ctrl) {
@@ -17524,7 +17892,7 @@ class _ReaderPanelsMixin {
                 // Magnifier toggles a search input that filters bookmark
                 // labels (folders with matching descendants stay open). Same
                 // affordance as the reader's Annotations tab.
-                const searchBtn = idoc.createElementNS(NS_HTML_RP, "button");
+                const searchBtn = wvHtmlEl(idoc, "button");
                 // Zotero's own sidebar toolbar button (see the CSS note).
                 searchBtn.className = "toolbar-button wv-bm-search-btn";
                 searchBtn.setAttribute("type", "button");
@@ -17537,10 +17905,9 @@ class _ReaderPanelsMixin {
                 // reads heavier than the one in the Annotations tab next
                 // door (MJT, 2026-09-21).
                 searchBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20" fill="none"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M12.75 7.5C12.75 10.3995 10.3995 12.75 7.5 12.75C4.60051 12.75 2.25 10.3995 2.25 7.5C2.25 4.60051 4.60051 2.25 7.5 2.25C10.3995 2.25 12.75 4.60051 12.75 7.5ZM11.6331 12.5169C10.5097 13.4435 9.06986 14 7.5 14C3.91015 14 1 11.0899 1 7.5C1 3.91015 3.91015 1 7.5 1C11.0899 1 14 3.91015 14 7.5C14 9.06984 13.4435 10.5097 12.517 11.6331L19 18.1161L18.1162 19L11.6331 12.5169Z"/></svg>';
-                const searchRow = idoc.createElementNS(NS_HTML_RP, "div");
-                searchRow.className = "wv-bm-search-row";
+                const searchRow = wvHtmlEl(idoc, "div", "wv-bm-search-row");
                 searchRow.style.display = "none";
-                const searchInput = idoc.createElementNS(NS_HTML_RP, "input") as any;
+                const searchInput = wvHtmlEl(idoc, "input") as any;
                 searchInput.className = "wv-bm-search-input";
                 // type="text" (not "search") so the reader's keyboard-manager
                 // `isTextBox` gate skips letter shortcuts (r = Read Aloud, h =
@@ -17551,7 +17918,7 @@ class _ReaderPanelsMixin {
                 // Clear ("x") button inside the field (issue #19) -- same grey
                 // circle + white x as the native search (searchfield-cancel.svg),
                 // shown only when there is a query.
-                const clearBtn = idoc.createElementNS(NS_HTML_RP, "button") as any;
+                const clearBtn = wvHtmlEl(idoc, "button") as any;
                 clearBtn.className = "wv-bm-search-clear";
                 clearBtn.setAttribute("type", "button");
                 clearBtn.setAttribute("title", "Clear search");
@@ -17609,7 +17976,7 @@ class _ReaderPanelsMixin {
                 // popover keeps the same chips and behaviour, just anchored
                 // to the funnel here instead of taking permanent vertical
                 // space below the list.
-                const filterBtn = idoc.createElementNS(NS_HTML_RP, "button");
+                const filterBtn = wvHtmlEl(idoc, "button");
                 // Zotero's own sidebar toolbar button, with the pane funnel's
                 // exact contents (see `_wvAnnListEnsureButton`): the baked
                 // two-tone funnel image and the 8-px chevron, in a 28-px box.
@@ -17618,11 +17985,10 @@ class _ReaderPanelsMixin {
                 filterBtn.setAttribute("tabindex", "-1");
                 blockBmRowDrag(filterBtn);
                 filterBtn.setAttribute("title", "Filter bookmarks");
-                const fimg = idoc.createElementNS(NS_HTML_RP, "img");
-                fimg.className = "wv-filter-svg";
+                const fimg = wvHtmlEl(idoc, "img", "wv-filter-svg");
                 fimg.setAttribute("src", RP_FUNNEL_DATA_URI);
                 filterBtn.appendChild(fimg);
-                const chev = idoc.createElementNS(NS_HTML_RP, "span");
+                const chev = wvHtmlEl(idoc, "span");
                 chev.className = "wv-rf-chev";
                 chev.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><path d="M1 2.5h6L4 6z"/></svg>';
                 filterBtn.appendChild(chev);
@@ -17660,7 +18026,7 @@ class _ReaderPanelsMixin {
                     // hot-reload doesn't stack duplicate buttons.
                     const stale = sidebarEnd.querySelector(".wv-bm-sidebar-actions");
                     if (stale) try { stale.remove(); } catch (_) {}
-                    actionHost = idoc.createElementNS(NS_HTML_RP, "div");
+                    actionHost = wvHtmlEl(idoc, "div");
                     actionHost.className = "wv-bm-sidebar-actions";
                     actionHost.appendChild(searchBtn);
                     actionHost.appendChild(filterBtn);
@@ -17669,13 +18035,12 @@ class _ReaderPanelsMixin {
                     // Toolbar isn't there for some reason (alternative
                     // theme? upstream change?) — fall back to a row at
                     // the top of the pane so the buttons remain usable.
-                    const actionBar = idoc.createElementNS(NS_HTML_RP, "div");
-                    actionBar.className = "wv-bm-actionbar";
+                    const actionBar = wvHtmlEl(idoc, "div", "wv-bm-actionbar");
                     actionBar.appendChild(searchBtn);
                     actionBar.appendChild(filterBtn);
                     view.appendChild(actionBar);
                 }
-                const list = idoc.createElementNS(NS_HTML_RP, "div");
+                const list = wvHtmlEl(idoc, "div");
                 list.className = "wv-bm-reader-list";
                 view.appendChild(scopeBar);
                 view.appendChild(searchRow);
@@ -17916,7 +18281,6 @@ class _ReaderPanelsMixin {
             // originalLabel stays current (even for renamed bookmarks).
             this._bmReaderSyncLabels(att.libraryID, att.itemKey);
             this._wvReaderHideBmHoverCard(idoc);   // rows are about to be rebuilt
-            const NS = NS_HTML_RP;
             while (list.firstChild) list.firstChild.remove();
             const doc = this._bmReaderDoc(att.libraryID, att.itemKey);
             // Pre-load data for item bookmarks whose item isn't loaded; once
@@ -17937,14 +18301,9 @@ class _ReaderPanelsMixin {
             const fGlobal = useFilter ? this._wvBmFilterCombined(doc.global, q, chipMatch) : null;
             const addSection = (heading: string, nodes: any[], section: "local" | "global", f: { visible: Set<string>, dimmed: Set<string> } | null) => {
                 if (f && !f.visible.size) return;   // under search/chips with no matches → hide
-                const gc = idoc.createElementNS(NS, "div");
-                gc.className = "wv-bm-reader-group " + (section === "local" ? "wv-bm-grp-local" : "wv-bm-grp-global");
-                const h = idoc.createElementNS(NS, "div");
-                h.className = "wv-bm-reader-grouphead";
-                const htitle = idoc.createElementNS(NS, "span");
-                htitle.className = "wv-bm-gh-title";
-                htitle.textContent = heading;
-                h.appendChild(htitle);
+                const gc = wvHtmlEl(idoc, "div", "wv-bm-reader-group " + (section === "local" ? "wv-bm-grp-local" : "wv-bm-grp-global"));
+                const h = wvHtmlEl(idoc, "div", "wv-bm-reader-grouphead");
+                const htitle = wvHtmlEl(idoc, "span", "wv-bm-gh-title", heading, h);
                 // Per-section "+" buttons. "Elsewhere" opens the
                 // add-menu (Pick item / Add Link). "This Document"
                 // skips the menu and goes straight to the item picker
@@ -17953,8 +18312,7 @@ class _ReaderPanelsMixin {
                 // an extra click. The picker pre-selects the current
                 // attachment and expands its annotations so the user
                 // lands in the right place by default.
-                const add = idoc.createElementNS(NS, "button");
-                add.className = "wv-bm-reader-newfolder";
+                const add = wvHtmlEl(idoc, "button", "wv-bm-reader-newfolder");
                 add.setAttribute("title", "Add bookmark");
                 add.innerHTML = RP_PLUS_SVG;
                 add.addEventListener("click", (e: any) => {
@@ -17967,8 +18325,7 @@ class _ReaderPanelsMixin {
                     this._wvShowReaderBmAddMenu(reader, idoc, add, "document", section);
                 });
                 h.appendChild(add);
-                const nf = idoc.createElementNS(NS, "button");
-                nf.className = "wv-bm-reader-newfolder";
+                const nf = wvHtmlEl(idoc, "button", "wv-bm-reader-newfolder");
                 nf.setAttribute("title", "New folder in this section");
                 nf.innerHTML = RP_FOLDER_PLUS_SVG;
                 nf.addEventListener("click", (e: any) => {
@@ -17986,15 +18343,13 @@ class _ReaderPanelsMixin {
                     // Empty section (only reached with no active search — the
                     // search/chip no-match case returns above). Keep the header +
                     // "+" for discoverability; show a short how-to hint, not a tree.
-                    const hint = idoc.createElementNS(NS, "div");
-                    hint.className = "wv-bm-reader-empty-section";
+                    const hint = wvHtmlEl(idoc, "div", "wv-bm-reader-empty-section");
                     hint.textContent = section === "local"
                         ? "Right-click in the page, or drag an annotation here."
                         : "Use + to bookmark an item, collection, or link.";
                     gc.appendChild(hint);
                 } else {
-                    const treeWrap = idoc.createElementNS(NS, "div");
-                    treeWrap.className = "wv-bm-reader-tree";
+                    const treeWrap = wvHtmlEl(idoc, "div", "wv-bm-reader-tree");
                     // Non-destructive display sort: render a sorted COPY, leaving
                     // the stored manual order intact. Filter sets (visible/dimmed)
                     // key off ids, so they still apply to the sorted copy.
@@ -18023,16 +18378,10 @@ class _ReaderPanelsMixin {
                 const libNodes = this._bmDoc.bookmarks;
                 const fLib = useFilter ? this._wvBmFilterCombined(libNodes, q, chipMatch) : null;
                 if (!fLib || fLib.visible.size) {
-                    const gc = idoc.createElementNS(NS, "div");
-                    gc.className = "wv-bm-reader-group wv-bm-grp-library";
-                    const h = idoc.createElementNS(NS, "div");
-                    h.className = "wv-bm-reader-grouphead";
-                    const htitle = idoc.createElementNS(NS, "span");
-                    htitle.className = "wv-bm-gh-title";
-                    htitle.textContent = "Global";
-                    h.appendChild(htitle);
-                    const addLib = idoc.createElementNS(NS, "button");
-                    addLib.className = "wv-bm-reader-newfolder";
+                    const gc = wvHtmlEl(idoc, "div", "wv-bm-reader-group wv-bm-grp-library");
+                    const h = wvHtmlEl(idoc, "div", "wv-bm-reader-grouphead");
+                    const htitle = wvHtmlEl(idoc, "span", "wv-bm-gh-title", "Global", h);
+                    const addLib = wvHtmlEl(idoc, "button", "wv-bm-reader-newfolder");
                     addLib.setAttribute("title", "Add bookmark to Library");
                     addLib.innerHTML = RP_PLUS_SVG;
                     addLib.addEventListener("click", (e: any) => {
@@ -18040,8 +18389,7 @@ class _ReaderPanelsMixin {
                         this._wvShowReaderBmAddMenu(reader, idoc, addLib, "library");
                     });
                     h.appendChild(addLib);
-                    const nfLib = idoc.createElementNS(NS, "button");
-                    nfLib.className = "wv-bm-reader-newfolder";
+                    const nfLib = wvHtmlEl(idoc, "button", "wv-bm-reader-newfolder");
                     nfLib.setAttribute("title", "New folder in Library");
                     nfLib.innerHTML = RP_FOLDER_PLUS_SVG;
                     nfLib.addEventListener("click", (e: any) => {
@@ -18053,8 +18401,7 @@ class _ReaderPanelsMixin {
                     h.appendChild(nfLib);
                     h.appendChild(this._wvReaderBmMkSortBtn(reader, idoc, "library"));
                     gc.appendChild(h);
-                    const treeWrap = idoc.createElementNS(NS, "div");
-                    treeWrap.className = "wv-bm-reader-tree";
+                    const treeWrap = wvHtmlEl(idoc, "div", "wv-bm-reader-tree");
                     // Non-destructive display sort, same as the doc sections.
                     // (Per-tab, seeded from the popup-shared "library" pref.)
                     const libSort = this._wvReaderBmSort("library", reader);
@@ -18067,7 +18414,7 @@ class _ReaderPanelsMixin {
                 }
             }
             if (useFilter && (!fLocal || !fLocal.visible.size) && (!fGlobal || !fGlobal.visible.size)) {
-                const empty = idoc.createElementNS(NS, "div");
+                const empty = wvHtmlEl(idoc, "div");
                 empty.className = "wv-bm-reader-empty";
                 empty.textContent = q ? ("No bookmarks match \"" + q + "\".") : "No bookmarks match the current filter.";
                 list.appendChild(empty);
@@ -18341,7 +18688,7 @@ class _ReaderPanelsMixin {
     _wvReaderBmMkSortBtn(reader: any, idoc: any, section: WvBmSortSection) {
         const sortMode = this._wvReaderBmSortMode(section, reader);
         const sortDir = this._wvReaderBmSortDir(section, reader);
-        const sortBtn = idoc.createElementNS(NS_HTML_RP, "button");
+        const sortBtn = wvHtmlEl(idoc, "button");
         sortBtn.className = "wv-bm-reader-newfolder wv-bm-reader-sortbtn"
             + (sortMode !== "manual" ? " wv-bm-sort-active" : "");
         const fieldLabel = this._wvReaderBmSortFieldLabel(sortMode);
@@ -18490,7 +18837,7 @@ class _ReaderPanelsMixin {
             const pdfDoc = app.pdfDocument;
             if (!pdfDoc || typeof pdfDoc.getPageData !== "function") return null;
             const Cu = (Components as any).utils;
-            const arg = Cu.cloneInto({ pageIndex }, iw);
+            const arg = wvCloneFor({ pageIndex }, iw);
             return await pdfDoc.getPageData(arg);
         } catch (_) { return null; }
     }
@@ -18619,8 +18966,7 @@ class _ReaderPanelsMixin {
             const host = this._wvDomOverlayHost(iwin, doc, range);
             const boxes: any[] = [];
             for (const r of rects.slice(0, 40)) {
-                const box: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-                box.className = "wv-dom-heading-flash";
+                const box: any = wvHtmlEl(doc, "div", "wv-dom-heading-flash");
                 // RAW rects, no padding: padded line boxes overlapped between
                 // lines and the multiply doubled in the seams, reading as a
                 // stronger colour than the PDF flash (2026-08-26).
@@ -18767,7 +19113,7 @@ class _ReaderPanelsMixin {
                 let arg = pos;
                 try {
                     const Cu = (Components as any).utils;
-                    if (Cu && pv._iframeWindow) arg = Cu.cloneInto(pos, pv._iframeWindow);
+                    if (Cu && pv._iframeWindow) arg = wvCloneFor(pos, pv._iframeWindow);
                 } catch (_) {}
                 let rng: any = null;
                 try { rng = pv.toDisplayedRange(arg); } catch (_) { rng = null; }
@@ -19142,8 +19488,7 @@ class _ReaderPanelsMixin {
                 try { anchor.classList.remove("wv-bm-filter-open"); } catch (_) {}
                 return;
             }
-            const NS = NS_HTML_RP;
-            popup = idoc.createElementNS(NS, "div");
+            popup = wvHtmlEl(idoc, "div");
             popup.className = "wv-bm-chip-popup";
             // Append to the iframe body (not to `view`) so the popup's
             // `position: absolute` resolves against the viewport. Then
@@ -19313,7 +19658,6 @@ class _ReaderPanelsMixin {
             // the pane (snapshot kept under `.claude/snapshots/`).
             const popup = idoc && idoc.querySelector(".wv-bm-chip-popup");
             if (!popup) return;
-            const NS = NS_HTML_RP;
             const bar = popup;
             while (bar.firstChild) bar.firstChild.remove();
             const st = this._wvReaderBmChipState(reader);
@@ -19325,7 +19669,7 @@ class _ReaderPanelsMixin {
             const anyFacets = facets.colors.size || facets.tags.size || facets.authors.size || facets.types.size
                 || (facets.bmTypes && facets.bmTypes.size);
             if (!anyFacets) {
-                const empty = idoc.createElementNS(NS, "div");
+                const empty = wvHtmlEl(idoc, "div");
                 empty.className = "wv-bm-chip-popup-empty";
                 empty.textContent = "No filters available for the current bookmark list.";
                 bar.appendChild(empty);
@@ -19340,8 +19684,7 @@ class _ReaderPanelsMixin {
             // "line" rows never wrap and set the popup's width; "wrap" rows
             // wrap and do not vote on it (see `.wv-bm-chip-popup` width rule).
             const mkRow = (kind?: string) => {
-                const r = idoc.createElementNS(NS, "div");
-                r.className = "wv-bm-chip-row wv-filter-or-group" + (kind === "line" ? " wv-bm-row-line" : kind === "wrap" ? " wv-bm-row-wrap" : "");
+                const r = wvHtmlEl(idoc, "div", "wv-bm-chip-row wv-filter-or-group" + (kind === "line" ? " wv-bm-row-line" : kind === "wrap" ? " wv-bm-row-wrap" : ""));
                 return r;
             };
             const toggle = (set: Set<string>, key: string) => { if (set.has(key)) set.delete(key); else set.add(key); };
@@ -19357,10 +19700,9 @@ class _ReaderPanelsMixin {
             // are hidden (layout preserved) until a filter is active; `rerender`
             // re-runs this function so they appear/disappear in lockstep. 2026-07-24.
             {
-                const head = idoc.createElementNS(NS, "div");
+                const head = wvHtmlEl(idoc, "div");
                 head.setAttribute("style", "display:flex;align-items:center;gap:8px;margin:0 0 4px;");
-                const title = idoc.createElementNS(NS, "div");
-                title.textContent = "Filter Bookmarks";
+                const title = wvHtmlEl(idoc, "div", undefined, "Filter Bookmarks");
                 title.setAttribute("style", "font-weight:600;flex:1;opacity:.85;");
                 head.appendChild(title);
                 const active = this._wvReaderBmChipsActive(reader);
@@ -19372,12 +19714,12 @@ class _ReaderPanelsMixin {
                         }
                     } catch (_) {}
                 };
-                const clearBtn: any = idoc.createElementNS(NS, "button");
+                const clearBtn: any = wvHtmlEl(idoc, "button");
                 clearBtn.type = "button"; clearBtn.textContent = "Clear";
                 clearBtn.setAttribute("title", "Clear all filters (keep this window open)");
                 clearBtn.setAttribute("style", "font:inherit;font-size:11px;line-height:1;padding:2px 8px;border-radius:4px;border:none;background:rgba(127,127,127,.18);color:inherit;cursor:pointer;" + (active ? "" : "visibility:hidden;"));
                 clearBtn.addEventListener("click", (e: any) => { e.stopPropagation(); clearBmFilter(); rerender(); });
-                const clearCloseBtn: any = idoc.createElementNS(NS, "button");
+                const clearCloseBtn: any = wvHtmlEl(idoc, "button");
                 clearCloseBtn.type = "button"; clearCloseBtn.textContent = "×";
                 clearCloseBtn.setAttribute("title", "Clear and Close");
                 clearCloseBtn.setAttribute("style", "font:inherit;font-size:15px;line-height:1;padding:0 7px;border-radius:50%;border:none;background:rgba(220,72,72,.16);color:rgb(220,72,72);cursor:pointer;" + (active ? "" : "visibility:hidden;"));
@@ -19406,7 +19748,7 @@ class _ReaderPanelsMixin {
                 const row = mkRow("line");
                 for (const [cat, label, svg] of BM_TYPE_META) {
                     if (!facets.bmTypes.has(cat)) continue;
-                    const chip = idoc.createElementNS(NS, "button");
+                    const chip = wvHtmlEl(idoc, "button");
                     (chip as any).type = "button";
                     chip.className = "wv-filter-opt wv-filter-opt-icon";
                     chip.setAttribute("title", label + " — " + facets.bmTypes.get(cat) + " — Alt+click to exclude");
@@ -19448,11 +19790,8 @@ class _ReaderPanelsMixin {
                     if (c === "#000000") {
                         // Spacer (>= 16 px, takes the slack) with the line
                         // in the middle -- the reader popups' `.wv-rf-colsep`.
-                        const sp = idoc.createElementNS(NS, "div");
-                        sp.className = "wv-rf-colsep";
-                        const sep = idoc.createElementNS(NS, "div");
-                        sep.className = "wv-filter-vertical-separator";
-                        sp.appendChild(sep);
+                        const sp = wvHtmlEl(idoc, "div", "wv-rf-colsep");
+                        const sep = wvHtmlEl(idoc, "div", "wv-filter-vertical-separator", undefined, sp);
                         row.appendChild(sp);
                     }
                     // Unified with the filter popup (popups 1 & 2):
@@ -19461,7 +19800,7 @@ class _ReaderPanelsMixin {
                     // site briefly used before the circle unification;
                     // now ALL filters use it via _wvNativeColorSwatch),
                     // `data-selected="true"` for the highlight state.
-                    const btn = idoc.createElementNS(NS, "button");
+                    const btn = wvHtmlEl(idoc, "button");
                     (btn as any).type = "button";
                     btn.className = "wv-filter-opt wv-filter-opt-icon";
                     btn.setAttribute("title", c + " — " + facets.colors.get(c) + " annotation(s) — Alt+click to exclude");
@@ -19485,7 +19824,7 @@ class _ReaderPanelsMixin {
                     // glyph (annotate-highlight/underline/note/text/
                     // area/ink). `data-selected="true"` for the
                     // active state.
-                    const chip = idoc.createElementNS(NS, "button");
+                    const chip = wvHtmlEl(idoc, "button");
                     (chip as any).type = "button";
                     chip.className = "wv-filter-opt wv-filter-opt-icon";
                     chip.setAttribute("title", (TYPE_NAME[tp] || tp) + " — " + facets.types.get(tp) + " — Alt+click to exclude");
@@ -19516,19 +19855,17 @@ class _ReaderPanelsMixin {
                     const row = mkRow("wrap");
                     for (const t of keys) {
                         const info = facets.tags.get(t)!;
-                        const chip = idoc.createElementNS(NS, "span");
+                        const chip = wvHtmlEl(idoc, "span");
                         chip.className = "wv-bm-chip" + (st.tags.has(t) ? " selected" : "")
                             + (this._wvBmChipExcl(st, "tags").has(t) ? " excluded" : "");
                         chip.setAttribute("title", t + " — " + info.count + " bookmark(s) — Alt+click to exclude");
                         if (info.color) {
-                            const dot = idoc.createElementNS(NS, "span");
+                            const dot = wvHtmlEl(idoc, "span");
                             dot.className = "wv-bm-chip-tag-dot";
                             dot.style.background = info.color;
                             chip.appendChild(dot);
                         }
-                        const lbl = idoc.createElementNS(NS, "span");
-                        lbl.textContent = t;
-                        chip.appendChild(lbl);
+                        const lbl = wvHtmlEl(idoc, "span", undefined, t, chip);
                         chip.addEventListener("click", (e: any) => { this._wvBmChipToggle(st, "tags", t, !!e.altKey); rerender(); });
                         row.appendChild(chip);
                     }
@@ -19542,7 +19879,7 @@ class _ReaderPanelsMixin {
                 const row = mkRow("wrap");
                 const keys = Array.from(facets.authors.keys()).sort((a, b) => a.localeCompare(b));
                 for (const a of keys) {
-                    const chip = idoc.createElementNS(NS, "span");
+                    const chip = wvHtmlEl(idoc, "span");
                     chip.className = "wv-bm-chip" + (st.authors.has(a) ? " selected" : "")
                         + (this._wvBmChipExcl(st, "authors").has(a) ? " excluded" : "");
                     chip.setAttribute("title", a + " — " + facets.authors.get(a) + " annotation(s) — Alt+click to exclude");
@@ -19600,7 +19937,6 @@ class _ReaderPanelsMixin {
 
     /** Render the global library bookmarks tree into the list container. */
     _wvReaderRenderLibraryInto(reader: any, idoc: any, list: any) {
-        const NS = NS_HTML_RP;
         const nodes = (this._bmDoc && this._bmDoc.bookmarks) || [];
         // Pre-load any cross-document items so their real icons/titles paint
         // (else they show the fallback ribbon glyph until the user clicks them).
@@ -19617,19 +19953,13 @@ class _ReaderPanelsMixin {
         // button) so the Library scope stays addable even when empty — same as
         // the document sections. The content below is a how-to hint when empty,
         // a no-match note under a search, else the tree.
-        const gc = idoc.createElementNS(NS, "div");
-        gc.className = "wv-bm-reader-group wv-bm-grp-library";
+        const gc = wvHtmlEl(idoc, "div", "wv-bm-reader-group wv-bm-grp-library");
         // Section header with title + add + new-folder buttons (matches
         // the merged-scope layout so single-Library scope has the same
         // affordances as when it appears alongside the doc sections).
-        const h = idoc.createElementNS(NS, "div");
-        h.className = "wv-bm-reader-grouphead";
-        const htitle = idoc.createElementNS(NS, "span");
-        htitle.className = "wv-bm-gh-title";
-        htitle.textContent = "Global";
-        h.appendChild(htitle);
-        const addBtn = idoc.createElementNS(NS, "button");
-        addBtn.className = "wv-bm-reader-newfolder";
+        const h = wvHtmlEl(idoc, "div", "wv-bm-reader-grouphead");
+        const htitle = wvHtmlEl(idoc, "span", "wv-bm-gh-title", "Global", h);
+        const addBtn = wvHtmlEl(idoc, "button", "wv-bm-reader-newfolder");
         addBtn.setAttribute("title", "Add bookmark to Library");
         addBtn.innerHTML = RP_PLUS_SVG;
         addBtn.addEventListener("click", (e: any) => {
@@ -19637,8 +19967,7 @@ class _ReaderPanelsMixin {
             this._wvShowReaderBmAddMenu(reader, idoc, addBtn, "library");
         });
         h.appendChild(addBtn);
-        const nfBtn = idoc.createElementNS(NS, "button");
-        nfBtn.className = "wv-bm-reader-newfolder";
+        const nfBtn = wvHtmlEl(idoc, "button", "wv-bm-reader-newfolder");
         nfBtn.setAttribute("title", "New folder in Library");
         nfBtn.innerHTML = RP_FOLDER_PLUS_SVG;
         nfBtn.addEventListener("click", (e: any) => {
@@ -19651,18 +19980,11 @@ class _ReaderPanelsMixin {
         h.appendChild(this._wvReaderBmMkSortBtn(reader, idoc, "library"));
         gc.appendChild(h);
         if (!nodes.length) {
-            const hint = idoc.createElementNS(NS, "div");
-            hint.className = "wv-bm-reader-empty-section";
-            hint.textContent = "Use + to bookmark an item, collection, library, or saved search — they appear here in every document.";
-            gc.appendChild(hint);
+            const hint = wvHtmlEl(idoc, "div", "wv-bm-reader-empty-section", "Use + to bookmark an item, collection, library, or saved search — they appear here in every document.", gc);
         } else if (f && !f.visible.size) {
-            const hint = idoc.createElementNS(NS, "div");
-            hint.className = "wv-bm-reader-empty-section";
-            hint.textContent = q ? ("No bookmarks match \"" + q + "\".") : "No bookmarks match the current filter.";
-            gc.appendChild(hint);
+            const hint = wvHtmlEl(idoc, "div", "wv-bm-reader-empty-section", q ? ("No bookmarks match \"" + q + "\".") : "No bookmarks match the current filter.", gc);
         } else {
-            const treeWrap = idoc.createElementNS(NS, "div");
-            treeWrap.className = "wv-bm-reader-tree";
+            const treeWrap = wvHtmlEl(idoc, "div", "wv-bm-reader-tree");
             // Non-destructive display sort (shared "library" sort pref; alpha/
             // date only, so no `att` geometry is ever needed here).
             const libSort = this._wvReaderBmSort("library", reader);
@@ -19694,17 +20016,16 @@ class _ReaderPanelsMixin {
 
     /** A library folder row: chevron + folder glyph + name; click toggles. */
     _wvReaderLibFolderRow(reader: any, idoc: any, folder: any, depth: number) {
-        const NS = NS_HTML_RP;
-        const row = idoc.createElementNS(NS, "div");
+        const row = wvHtmlEl(idoc, "div");
         row.className = "wv-bm-reader-row wv-bm-reader-folder";
         row.style.paddingLeft = (8 + depth * 14) + "px";
-        const chev = idoc.createElementNS(NS, "span");
+        const chev = wvHtmlEl(idoc, "span");
         chev.className = "wv-bm-reader-chev";
         chev.innerHTML = folder.expanded ? RP_CHEV_DOWN : RP_CHEV_RIGHT;
-        const ic = idoc.createElementNS(NS, "span");
+        const ic = wvHtmlEl(idoc, "span");
         ic.className = "wv-bm-reader-ic";
         ic.innerHTML = RP_FOLDER_SVG;
-        const label = idoc.createElementNS(NS, "span");
+        const label = wvHtmlEl(idoc, "span");
         label.className = "wv-bm-reader-label";
         label.textContent = folder.name || "Folder";
         label.setAttribute("title", folder.name || "");
@@ -19719,16 +20040,14 @@ class _ReaderPanelsMixin {
 
     /** A library bookmark row: type icon + label; click navigates/opens. */
     _wvReaderLibBmRow(reader: any, idoc: any, bm: any, depth: number) {
-        const NS = NS_HTML_RP;
-        const row = idoc.createElementNS(NS, "div");
+        const row = wvHtmlEl(idoc, "div");
         row.className = "wv-bm-reader-row";
         row.style.paddingLeft = (8 + depth * 14) + "px";
-        const chevSpacer = idoc.createElementNS(NS, "span");
-        chevSpacer.className = "wv-bm-reader-chev wv-bm-reader-chev-spacer";
+        const chevSpacer = wvHtmlEl(idoc, "span", "wv-bm-reader-chev wv-bm-reader-chev-spacer");
         chevSpacer.innerHTML = RP_CHEV_RIGHT;
         row.appendChild(chevSpacer);
         const ic = this._wvReaderBuildBmIcon(reader, idoc, bm);
-        const label = idoc.createElementNS(NS, "span");
+        const label = wvHtmlEl(idoc, "span");
         label.className = "wv-bm-reader-label";
         // URL bookmarks inherit the same scheme-coloured link palette
         // (http=blue, zotero://=brown, app=violet) the rest of Weavero
@@ -19746,10 +20065,7 @@ class _ReaderPanelsMixin {
         // attachment. Kept single-line so row rhythm stays uniform.
         const parentTitle = this._bmParentAttachmentTitle(bm);
         if (parentTitle) {
-            const sub = idoc.createElementNS(NS, "span");
-            sub.className = "wv-bm-reader-sublabel";
-            sub.textContent = " — in " + parentTitle;
-            label.appendChild(sub);
+            const sub = wvHtmlEl(idoc, "span", "wv-bm-reader-sublabel", " — in " + parentTitle, label);
         }
         // Drop the plain HTML tooltip in favour of the rich hover card wired
         // below — the two would otherwise both fire on hover.
@@ -19760,9 +20076,7 @@ class _ReaderPanelsMixin {
         const missing = this._bmTargetMissing(bm);
         if (missing) {
             row.classList.add("wv-bm-missing");
-            const warn = idoc.createElementNS(NS, "span");
-            warn.className = "wv-bm-reader-missing-badge";
-            warn.textContent = "⚠";
+            const warn = wvHtmlEl(idoc, "span", "wv-bm-reader-missing-badge", "⚠");
             warn.setAttribute("title", "This bookmark's target no longer exists. Right-click → Delete to remove it.");
             row.appendChild(warn);
         }
@@ -19880,6 +20194,13 @@ class _ReaderPanelsMixin {
      *  same shape `_wvBmTransferDocToLib` produces when a doc-scope text
      *  bookmark is dragged to the library scope. */
     async _wvReaderLibAcceptDrop(reader: any, idoc: any, payload: any, target: any): Promise<boolean> {
+        // ONE undo step: the adds, then a move per added row to the drop
+        // slot (survey §3.7).
+        try { return await this._wvUndoBatch(() => this._wvReaderLibAcceptDropIn(reader, idoc, payload, target)); }
+        catch (e) { Zotero.debug("[Weavero] _wvReaderLibAcceptDrop err: " + e); return false; }
+    }
+
+    async _wvReaderLibAcceptDropIn(reader: any, idoc: any, payload: any, target: any): Promise<boolean> {
         try {
             const att = this._wvReaderAtt(reader);
             const entries: any[] = [];
@@ -19972,18 +20293,17 @@ class _ReaderPanelsMixin {
      *  rename/delete; click toggles; draggable + drop target (before/after/
      *  into). */
     _wvReaderFolderRow(reader: any, idoc: any, att: any, folder: any, section: "local" | "global", depth: number) {
-        const NS = NS_HTML_RP;
-        const row = idoc.createElementNS(NS, "div");
+        const row = wvHtmlEl(idoc, "div");
         row.className = "wv-bm-reader-row wv-bm-reader-folder";
         row.style.paddingLeft = (8 + depth * 14) + "px";
         row.style.setProperty("--wv-drop-indent", this._wvBmDropIndentPx(depth) + "px");
-        const chev = idoc.createElementNS(NS, "span");
+        const chev = wvHtmlEl(idoc, "span");
         chev.className = "wv-bm-reader-chev";
         chev.innerHTML = folder.expanded ? RP_CHEV_DOWN : RP_CHEV_RIGHT;
-        const ic = idoc.createElementNS(NS, "span");
+        const ic = wvHtmlEl(idoc, "span");
         ic.className = "wv-bm-reader-ic";
         ic.innerHTML = RP_FOLDER_SVG;
-        const label = idoc.createElementNS(NS, "span");
+        const label = wvHtmlEl(idoc, "span");
         label.className = "wv-bm-reader-label";
         label.textContent = folder.name || "Folder";
         label.setAttribute("title", folder.name || "");
@@ -20057,7 +20377,7 @@ class _ReaderPanelsMixin {
             if (!row) return;
             // Leave the hover action buttons / add / chevron clicks alone.
             if (t.closest(".wv-bm-reader-actions,.wv-bm-reader-newfolder,.wv-bm-reader-chev")) return;
-            if (e.ctrlKey || e.metaKey) {
+            if (wvAccelAny(e)) {
                 e.preventDefault(); e.stopPropagation();
                 this._wvBmKeyToggle(reader, row); try { row.focus(); } catch (_) {}
                 return;
@@ -20103,8 +20423,8 @@ class _ReaderPanelsMixin {
             {
                 const c0 = idoc.getElementById("sidebarContainer");
                 const t0 = e.target;
-                const typing = !!(t0 && (t0.isContentEditable || t0.localName === "input" || t0.localName === "textarea"));
-                if (c0 && c0.classList.contains(RP_BM_TAB_ON) && !typing && (e.ctrlKey || e.metaKey) && !e.altKey) {
+                const typing = wvIsTextEntry(t0);
+                if (c0 && c0.classList.contains(RP_BM_TAB_ON) && !typing && wvAccel(e) && !e.altKey) {
                     const lk = String(e.key).toLowerCase();
                     if (lk === "z" || (lk === "y" && !e.shiftKey && !e.metaKey)) {
                         e.preventDefault(); e.stopPropagation();
@@ -20116,7 +20436,7 @@ class _ReaderPanelsMixin {
             }
             if (!this._wvBmKbScope(reader, idoc)) return;
             const t = e.target;
-            if (t && (t.isContentEditable || t.localName === "input" || t.localName === "textarea")) return;
+            if (wvIsTextEntry(t)) return;
             const list = this._wvBmList(idoc);
             if (!list) return;
             const rows: any[] = [...list.querySelectorAll(".wv-bm-reader-row")];
@@ -20159,66 +20479,9 @@ class _ReaderPanelsMixin {
                 if (k === "+") { e.preventDefault(); e.stopPropagation(); this._wvBmSetAllFolders(reader, idoc, true); return; }
                 if (k === "-" && !e.shiftKey) { e.preventDefault(); e.stopPropagation(); this._wvBmSetAllFolders(reader, idoc, false); return; }
             }
-            // Nav: focus in the bookmarks view, or body-level with an active row
-            // (the reader reverts focus to <body>; the active class is the cursor).
-            const ae = idoc.activeElement;
-            const inView = !!(ae && ae.closest && ae.closest("." + RP_BM_VIEW_CLASS));
-            const bodyish = !ae || ae === idoc.body || ae === idoc.documentElement;
-            const hasActive = !!list.querySelector(".wv-bm-reader-row.wv-bm-reader-active");
-            if (!inView && !(bodyish && hasActive)) return;
-            if (e.altKey) return;
-            if ((k === "a" || k === "A") && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
-                e.preventDefault(); e.stopPropagation();
-                const sel: Set<string> = reader._wvBmSel || (reader._wvBmSel = new Set());
-                sel.clear();
-                for (const r of rows) { const kk = this._wvBmRowKey(r); if (kk != null) { sel.add(kk); r.classList.add("wv-bm-reader-selected"); } }
-                return;
-            }
-            const moveFocused = (typeof Zotero !== "undefined" && (Zotero as any).isMac) ? e.metaKey : e.ctrlKey;
-            if ((e.ctrlKey || e.metaKey) && !moveFocused) return;
-            // (+/- expand-all / collapse-all handled above the focus gate.)
-            const NAV = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "Enter", " "];
-            if (NAV.indexOf(k) < 0) return;
-            if (moveFocused && !(k === "ArrowUp" || k === "ArrowDown" || k === "Home" || k === "End")) return;
-            e.preventDefault(); e.stopPropagation();
-            let i = rows.findIndex((r: any) => this._wvBmRowKey(r) === reader._wvBmActiveId);
-            if (i < 0) i = rows.findIndex((r: any) => r.classList.contains("wv-bm-reader-active"));
-            if (i < 0) {
-                // Same list-entry semantics as the outline: first nav key with
-                // no cursor enters the list at the top (Down/Home) or bottom
-                // (Up/End).
-                if (k === "ArrowDown" || k === "Home") { this._wvBmKeyMove(reader, idoc, rows, 0, e.shiftKey, moveFocused); return; }
-                if (k === "ArrowUp" || k === "End") { this._wvBmKeyMove(reader, idoc, rows, rows.length - 1, e.shiftKey, moveFocused); return; }
-                i = 0;
-            }
-            const row = rows[i];
-            const info = this._wvBmResolveRow(reader, row);
-            const isFolder = !!(info && info.isFolder);
-            const expanded = !!(info && info.entry && info.entry.expanded);
-            const selCount = rows.filter((r: any) => r.classList.contains("wv-bm-reader-selected")).length;
-            switch (k) {
-            case "ArrowDown": this._wvBmKeyMove(reader, idoc, rows, i + 1, e.shiftKey, moveFocused); break;
-            case "ArrowUp": this._wvBmKeyMove(reader, idoc, rows, i - 1, e.shiftKey, moveFocused); break;
-            case "Home": this._wvBmKeyMove(reader, idoc, rows, 0, e.shiftKey, moveFocused); break;
-            case "End": this._wvBmKeyMove(reader, idoc, rows, rows.length - 1, e.shiftKey, moveFocused); break;
-            case "Enter": if (selCount <= 1) this._wvBmEditRow(reader, idoc, row); break;
-            case " ": this._wvBmKeyToggle(reader, row); break;
-            case "ArrowRight":
-                if (selCount > 1) { this._wvBmSetSelectedFolders(reader, idoc, true); break; }
-                if (isFolder && !expanded) this._wvBmToggleFolder(reader, idoc, row);
-                else if (isFolder && expanded) this._wvBmKeyMove(reader, idoc, rows, i + 1, false, false);
-                break;
-            case "ArrowLeft":
-                if (selCount > 1) { this._wvBmSetSelectedFolders(reader, idoc, false); break; }
-                if (isFolder && expanded) this._wvBmToggleFolder(reader, idoc, row);
-                else {
-                    const depth = this._wvBmRowDepth(row);
-                    let p = i - 1;
-                    while (p >= 0 && this._wvBmRowDepth(rows[p]) >= depth) p--;
-                    if (p >= 0) this._wvBmKeyMove(reader, idoc, rows, p, false, false);
-                }
-                break;
-            }
+            // Nav: the focus gate, Ctrl/Cmd+A and the key map shared with the
+            // outline (the gate also honours the event's own target now).
+            this._wvListKeyNav(WV_KEYS_BOOKMARKS, reader, idoc, list, rows, e);
         } catch (_) {}
     }
 
@@ -20228,54 +20491,11 @@ class _ReaderPanelsMixin {
     }
 
     _wvBmKeyMove(reader: any, idoc: any, rows: any[], j: number, extend: boolean, focusOnly?: boolean, noNav?: boolean) {
-        j = Math.max(0, Math.min(j, rows.length - 1));
-        const row = rows[j];
-        if (!row) return;
-        reader._wvBmActiveId = this._wvBmRowKey(row);   // persists across re-renders
-        const sel: Set<string> = reader._wvBmSel || (reader._wvBmSel = new Set());
-        if (focusOnly && !extend) {
-            for (const r of rows) r.classList.remove("wv-bm-reader-active");
-            row.classList.add("wv-bm-reader-active");
-            const key = this._wvBmRowKey(row);
-            if (key != null) reader._wvBmSelAnchor = key;
-            try { row.focus(); } catch (_) {}
-            try { row.scrollIntoView({ block: "nearest" }); } catch (_) {}
-        }
-        else if (extend) {
-            let a = rows.findIndex((r: any) => this._wvBmRowKey(r) === reader._wvBmSelAnchor);
-            if (a < 0) a = j;
-            const lo = Math.min(a, j), hi = Math.max(a, j);
-            if (!focusOnly) { sel.clear(); for (const r of rows) r.classList.remove("wv-bm-reader-selected"); }
-            for (let x = lo; x <= hi; x++) { const kk = this._wvBmRowKey(rows[x]); if (kk != null) { sel.add(kk); rows[x].classList.add("wv-bm-reader-selected"); } }
-            for (const r of rows) r.classList.remove("wv-bm-reader-active");
-            row.classList.add("wv-bm-reader-active");
-            try { row.focus(); } catch (_) {}
-            try { row.scrollIntoView({ block: "nearest" }); } catch (_) {}
-        }
-        else {
-            const key = this._wvBmRowKey(row);
-            sel.clear();
-            for (const r of rows) r.classList.remove("wv-bm-reader-selected");
-            if (key != null) { sel.add(key); reader._wvBmSelAnchor = key; row.classList.add("wv-bm-reader-selected"); }
-            for (const r of rows) r.classList.remove("wv-bm-reader-active");
-            row.classList.add("wv-bm-reader-active");
-            if (!noNav) this._wvBmNavigateRow(reader, row);
-            try { row.focus(); } catch (_) {}
-            try { row.scrollIntoView({ block: "nearest" }); } catch (_) {}
-        }
+        this._wvListKeyMove(WV_KEYS_BOOKMARKS, reader, idoc, rows, j, extend, focusOnly, noNav);
     }
 
     _wvBmKeyToggle(reader: any, row: any) {
-        const sel: Set<string> = reader._wvBmSel || (reader._wvBmSel = new Set());
-        const key = this._wvBmRowKey(row);
-        if (key == null) return;
-        if (sel.has(key)) { sel.delete(key); row.classList.remove("wv-bm-reader-selected"); }
-        else { sel.add(key); row.classList.add("wv-bm-reader-selected"); }
-        reader._wvBmSelAnchor = key;
-        for (const r of [...(row.parentNode ? row.parentNode.querySelectorAll(".wv-bm-reader-row.wv-bm-reader-active") : [])]) (r as any).classList.remove("wv-bm-reader-active");
-        row.classList.add("wv-bm-reader-active");
-        reader._wvBmActiveId = key;
-        try { row.focus(); } catch (_) {}
+        this._wvListKeyToggle(WV_KEYS_BOOKMARKS, reader, row);
     }
 
     _wvBmRefocusRow(reader: any, idoc: any, key: string | null) {
@@ -20331,7 +20551,7 @@ class _ReaderPanelsMixin {
             // jumps (2026-07-29).
             let lblH = 0;
             try { lblH = Math.round(labelEl.getBoundingClientRect().height); } catch (_) {}
-            const input: any = idoc.createElementNS(NS_HTML_RP, "input");
+            const input: any = wvHtmlEl(idoc, "input");
             input.className = "wv-bm-rename-input";
             input.setAttribute("type", "text");
             if (lblH >= 12) input.setAttribute("style", "height:" + lblH + "px;line-height:" + lblH + "px;");
@@ -20546,24 +20766,26 @@ class _ReaderPanelsMixin {
                 reader._wvOutlineViewSource = null;
             }
             const newIds: string[] = [];
-            for (const bm of bms) {
-                let pos: any = null;
-                try { pos = bm.position ? JSON.parse(JSON.stringify(bm.position)) : null; } catch (_) {}
-                if (!pos || !Array.isArray(pos.rects) || !pos.rects.length) continue;
-                const d = this._wvOutlineDoc(att.libraryID, att.itemKey);
-                const entries: any[] = (d && d.entries) || [];
-                const title = String(bm.label || "").replace(/\s+/g, " ").trim().slice(0, 160) || "Bookmark";
-                const { gap, indent } = this._wvOutlineDocOrderGap(entries, pos);
-                const stored = await this._wvOutlineInsertEntry(att.libraryID, att.itemKey, {
-                    title, indentLevel: indent,
-                    position: pos, resolvedPosition: pos, regionTitle: title,
-                    url: null,
-                    source: { title, position: pos, url: null, origin: "user" },
-                }, gap);
-                if (stored && stored.id) newIds.push(String(stored.id));
-            }
+            // One step for the N entries (the store's choke point, batched).
+            await this._wvUndoBatch(async () => {
+                for (const bm of bms) {
+                    let pos: any = null;
+                    try { pos = bm.position ? JSON.parse(JSON.stringify(bm.position)) : null; } catch (_) {}
+                    if (!pos || !Array.isArray(pos.rects) || !pos.rects.length) continue;
+                    const d = this._wvOutlineDoc(att.libraryID, att.itemKey);
+                    const entries: any[] = (d && d.entries) || [];
+                    const title = String(bm.label || "").replace(/\s+/g, " ").trim().slice(0, 160) || "Bookmark";
+                    const { gap, indent } = this._wvOutlineDocOrderGap(entries, pos);
+                    const stored = await this._wvOutlineInsertEntry(att.libraryID, att.itemKey, {
+                        title, indentLevel: indent,
+                        position: pos, resolvedPosition: pos, regionTitle: title,
+                        url: null,
+                        source: { title, position: pos, url: null, origin: "user" },
+                    }, gap);
+                    if (stored && stored.id) newIds.push(String(stored.id));
+                }
+            });
             if (!newIds.length) { this._wvReaderPanelNote(idoc, "Nothing to copy — no selection region on the bookmark."); return; }
-            this._wvOutlineRecordAdd(att, newIds);
             // SHOW the result (user request 2026-07-22): switch to the Outline
             // tab with the new entries selected and the first one focused --
             // same landing the add-from-selection path gives.
@@ -20942,7 +21164,7 @@ class _ReaderPanelsMixin {
             if (!ir || !ir._state || !ir._state.primaryViewAnnotationPopup) return;
             const iwin: any = reader._iframeWindow || (reader._iframe && reader._iframe.contentWindow);
             const upd: any = (iwin && (Components as any).utils)
-                ? (Components as any).utils.cloneInto({ primaryViewAnnotationPopup: null }, iwin)
+                ? wvCloneFor({ primaryViewAnnotationPopup: null }, iwin)
                 : { primaryViewAnnotationPopup: null };
             if (ir._updateState) ir._updateState(upd);
         } catch (_) {}
@@ -20969,7 +21191,7 @@ class _ReaderPanelsMixin {
                 // through the same resolver the outline uses. Ctrl/Shift keep
                 // their meaning (show in library / open in a new window), which
                 // don't touch the hidden base view. 2026-07-29.
-                if (!(e && (e.ctrlKey || e.metaKey || e.shiftKey))) {
+                if (!(wvAccelAny(e) || e.shiftKey)) {
                     this._wvBmRmNavigate(reader, idocR, bm);
                     return;
                 }
@@ -20993,7 +21215,7 @@ class _ReaderPanelsMixin {
         // popup; the annotation-bookmark branch below re-opens it for the
         // new annotation if applicable.
         this._wvDismissReaderAnnPopup(reader);
-        const ctrl = !!(e && (e.ctrlKey || e.metaKey));
+        const ctrl = wvAccelAny(e);
         const shift = !!(e && e.shiftKey);
         const isLocalLoc = (bm.type === "position" || bm.type === "page" || bm.type === "text")
             && this._wvReaderBookmarkIsLocal(reader, bm);
@@ -21076,7 +21298,7 @@ class _ReaderPanelsMixin {
                 try {
                     const iwin: any = reader._iframeWindow || (reader._iframe && reader._iframe.contentWindow);
                     const idsArr: any = (iwin && (Components as any).utils)
-                        ? (Components as any).utils.cloneInto([bm.itemKey], iwin)
+                        ? wvCloneFor([bm.itemKey], iwin)
                         : [bm.itemKey];
                     reader.setSelectedAnnotations(idsArr, true);
                     // NO popup here, deliberately (user decision 2026-08-04,
@@ -21098,8 +21320,7 @@ class _ReaderPanelsMixin {
      *  collection/library icon (annotations get their type glyph + colour).
      *  Shared by the list row and the hover card so they look identical. */
     _wvReaderBuildBmIcon(reader: any, idoc: any, bm: any) {
-        const NS = NS_HTML_RP;
-        const ic = idoc.createElementNS(NS, "span");
+        const ic = wvHtmlEl(idoc, "span");
         ic.className = "wv-bm-reader-ic";
         if (bm.type === "position") {
             // "Add Bookmark to This Position" — a precise spot, marked with the
@@ -21134,7 +21355,7 @@ class _ReaderPanelsMixin {
                 const info = this._bmIconInfo(bm, idoc.defaultView);
                 const src = info && this._wvReaderResolveRowIcon(reader, idoc, info.image);
                 if (src) {
-                    const img = idoc.createElementNS(NS, "img");
+                    const img = wvHtmlEl(idoc, "img");
                     img.setAttribute("src", src);
                     img.setAttribute("width", "16"); img.setAttribute("height", "16");
                     if (info.fill) img.setAttribute("style", "-moz-context-properties:fill;fill:" + info.fill + ";");
@@ -21150,20 +21371,18 @@ class _ReaderPanelsMixin {
      *  click→navigate, drag reorder/nest). `depth` indents nested rows; a
      *  hidden chevron spacer keeps icons aligned with folder rows. */
     _wvReaderBmRow(reader: any, idoc: any, att: any, bm: any, section?: "local" | "global", depth?: number) {
-        const NS = NS_HTML_RP;
-        const row = idoc.createElementNS(NS, "div");
+        const row = wvHtmlEl(idoc, "div");
         row.className = "wv-bm-reader-row";
         row.style.paddingLeft = (8 + (depth || 0) * 14) + "px";
         // Default the drop-line indent to THIS row's own depth, so the bar lands
         // "indented inside" even if a (hot-reload-stale) dragover handler doesn't
         // override it; dragover only adjusts it for pop-out / first-child cases.
         row.style.setProperty("--wv-drop-indent", this._wvBmDropIndentPx(depth || 0) + "px");
-        const chevSpacer = idoc.createElementNS(NS, "span");
-        chevSpacer.className = "wv-bm-reader-chev wv-bm-reader-chev-spacer";
+        const chevSpacer = wvHtmlEl(idoc, "span", "wv-bm-reader-chev wv-bm-reader-chev-spacer");
         chevSpacer.innerHTML = RP_CHEV_RIGHT;
         row.appendChild(chevSpacer);
         const ic = this._wvReaderBuildBmIcon(reader, idoc, bm);
-        const label = idoc.createElementNS(NS, "span");
+        const label = wvHtmlEl(idoc, "span");
         label.className = "wv-bm-reader-label";
         if (bm.type === "url") {
             const cls = this._urlLinkClass(String(bm.url || ""));
@@ -21172,7 +21391,7 @@ class _ReaderPanelsMixin {
         label.textContent = bm.label || "Bookmark";
         // No native `title` tooltip here — the rich hover card supersedes it
         // (a title would show as a SECOND popup over the card).
-        const page = idoc.createElementNS(NS, "span");
+        const page = wvHtmlEl(idoc, "span");
         page.className = "wv-bm-reader-page";
         // Annotation bookmarks don't store a pageLabel; derive it live from the
         // annotation so they show "p. N" like position/text bookmarks.
@@ -21194,9 +21413,7 @@ class _ReaderPanelsMixin {
         const missing = this._bmTargetMissing(bm);
         if (missing) {
             row.classList.add("wv-bm-missing");
-            const warn = idoc.createElementNS(NS, "span");
-            warn.className = "wv-bm-reader-missing-badge";
-            warn.textContent = "⚠";
+            const warn = wvHtmlEl(idoc, "span", "wv-bm-reader-missing-badge", "⚠");
             warn.setAttribute("title", "This bookmark's target no longer exists. Right-click → Delete to remove it.");
             row.appendChild(warn);
         }
@@ -21235,15 +21452,10 @@ class _ReaderPanelsMixin {
      *  12 px anti-aliases the stroke to a blur. Same .5-grid trick, no
      *  native title: the rich hover card already shows the comment text. */
     _wvBmCommentBadge(idoc: any) {
-        const badge = idoc.createElementNS(NS_HTML_RP, "span");
+        const badge = wvHtmlEl(idoc, "span");
         badge.className = "wv-bm-comment-badge";
-        const NS = "http://www.w3.org/2000/svg";
-        const svg = idoc.createElementNS(NS, "svg");
-        svg.setAttribute("viewBox", "0 0 12 12");
-        svg.setAttribute("width", "12");
-        svg.setAttribute("height", "12");
-        svg.setAttribute("fill", "none");
-        const path = idoc.createElementNS(NS, "path");
+        const svg = wvSvgEl(idoc, "svg", { viewBox: "0 0 12 12", width: "12", height: "12", fill: "none" });
+        const path = wvSvgEl(idoc, "path");
         path.setAttribute("d",
             "M0.5 2C0.5 1.17 1.17 0.5 2 0.5H10"
             + "C10.83 0.5 11.5 1.17 11.5 2V7"
@@ -21439,10 +21651,8 @@ class _ReaderPanelsMixin {
         try {
             this._wvReaderHideBmHoverCard(idoc);
             const info = this._wvReaderBmHoverInfo(reader, bm);
-            const NS = NS_HTML_RP;
-            const mk = (cls: string, txt?: string) => { const e = idoc.createElementNS(NS, "div"); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
-            const card = idoc.createElementNS(NS, "div");
-            card.className = "wv-bm-hovercard" + (info.color ? " wv-hc-has-color" : "");
+            const mk = (cls: string, txt?: string) => { const e = wvHtmlEl(idoc, "div"); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
+            const card = wvHtmlEl(idoc, "div", "wv-bm-hovercard" + (info.color ? " wv-hc-has-color" : ""));
             try { card.style.colorScheme = (this._bmIsDark && this._bmIsDark(idoc.defaultView)) ? "dark" : "light"; } catch (_) {}
             // Expose the annotation color to the CSS so the text/comment blocks
             // get a coloured left bar (matching the reader Annotations sidebar).
@@ -21461,15 +21671,15 @@ class _ReaderPanelsMixin {
             // and the author chip on the right (only annotations carry one in
             // practice; text/position have no author).
             const isLocLike = isAnn || bm.type === "text" || bm.type === "position";
-            const nm = idoc.createElementNS(NS, "span"); nm.className = "wv-hc-name";
+            const nm = wvHtmlEl(idoc, "span", "wv-hc-name");
             nm.textContent = isLocLike
                 ? (info.page ? "Page " + info.page : "")
                 : (bm.label || info.kind || "Bookmark");
             head.appendChild(nm);
             if (isLocLike) {
-                if (info.author) { const au = idoc.createElementNS(NS, "span"); au.className = "wv-hc-author"; au.textContent = info.author; head.appendChild(au); }
+                if (info.author) { const au = wvHtmlEl(idoc, "span"); au.className = "wv-hc-author"; au.textContent = info.author; head.appendChild(au); }
             } else if (info.page) {
-                const pg = idoc.createElementNS(NS, "span"); pg.className = "wv-hc-page"; pg.textContent = "p. " + info.page; head.appendChild(pg);
+                const pg = wvHtmlEl(idoc, "span", "wv-hc-page", "p. " + info.page, head);
             }
             card.appendChild(head);
             // Body: the variable-length content — capped by default, scrolls when expanded.
@@ -21502,17 +21712,15 @@ class _ReaderPanelsMixin {
                 const tg = mk("wv-hc-tags");
                 // Tag glyph in front of the row (mirrors the reader Annotations
                 // tab where tags are prefixed by an icon).
-                const tagIc = idoc.createElementNS(NS, "span");
-                tagIc.className = "wv-hc-tag-ic";
+                const tagIc = wvHtmlEl(idoc, "span", "wv-hc-tag-ic");
                 // Filled glyph from Zotero's own `tag.svg` (chrome://zotero/skin/
                 // 16/universal/tag.svg) — currentColor so we can theme it via CSS.
                 tagIc.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M6.086 1L14.586 9.5L9.5 14.586L1 6.086V1H6.086ZM6.5 0H0.5C0.367 0 0.24 0.053 0.146 0.146C0.053 0.24 0 0.367 0 0.5L0 6.5L9.146 15.646C9.24 15.74 9.367 15.792 9.5 15.792C9.632 15.792 9.759 15.74 9.853 15.646L15.646 9.853C15.74 9.759 15.792 9.632 15.792 9.5C15.792 9.367 15.74 9.24 15.646 9.146L6.5 0ZM4 2.75C3.586 2.75 3.211 2.918 2.94 3.189C2.668 3.461 2.5 3.836 2.5 4.25C2.5 4.664 2.668 5.039 2.94 5.311C3.211 5.582 3.586 5.75 4 5.75C4.414 5.75 4.789 5.582 5.061 5.311C5.332 5.039 5.5 4.664 5.5 4.25C5.5 3.836 5.332 3.461 5.061 3.189C4.789 2.918 4.414 2.75 4 2.75Z"/></svg>';
                 tg.appendChild(tagIc);
                 for (const t of info.tags) {
-                    const chip = idoc.createElementNS(NS, "div");
-                    chip.className = "wv-hc-tag";
+                    const chip = wvHtmlEl(idoc, "div", "wv-hc-tag");
                     if (t && t.color) {
-                        const dot = idoc.createElementNS(NS, "span");
+                        const dot = wvHtmlEl(idoc, "span");
                         dot.className = "wv-hc-tag-dot";
                         dot.style.backgroundColor = t.color;
                         chip.appendChild(dot);
@@ -21563,8 +21771,7 @@ class _ReaderPanelsMixin {
             }
             if (body.scrollHeight > body.clientHeight + 2) {
                 body.appendChild(mk("wv-hc-fade"));
-                const btn: any = idoc.createElementNS(NS, "button");
-                btn.className = "wv-hc-expand"; btn.type = "button"; btn.textContent = "Expand ▾";
+                const btn: any = wvHtmlEl(idoc, "button", "wv-hc-expand"); btn.type = "button"; btn.textContent = "Expand ▾";
                 btn.addEventListener("click", (e: any) => {
                     try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
                     const exp = card.classList.toggle("wv-hc-expanded");
@@ -21852,6 +22059,13 @@ class _ReaderPanelsMixin {
      *  subtree), then place it at the drop point. `target` is {id, mode} or
      *  null (section bottom). */
     async _wvReaderDropBmRow(reader: any, idoc: any, target: any) {
+        // ONE undo step: a cross-document copy is an add, then a move to the
+        // drop slot (survey §3.7).
+        try { await this._wvUndoBatch(() => this._wvReaderDropBmRowIn(reader, idoc, target)); }
+        catch (e) { Zotero.debug("[Weavero] _wvReaderDropBmRow err: " + e); }
+    }
+
+    async _wvReaderDropBmRowIn(reader: any, idoc: any, target: any) {
         try {
             const src = this._wvBmRowDrag;
             this._wvBmRowDrag = null;
@@ -22048,6 +22262,12 @@ class _ReaderPanelsMixin {
      *  otherwise a text selection → a location bookmark labelled with the text.
      *  Used by the Bookmarks tab button, the bookmarks pane, and rows. */
     async _wvReaderDropPayload(reader: any, idoc: any, payload: any, target?: any) {
+        // ONE undo step: N adds, then N moves to the drop slot (survey §3.7).
+        try { await this._wvUndoBatch(() => this._wvReaderDropPayloadIn(reader, idoc, payload, target)); }
+        catch (e) { Zotero.debug("[Weavero] _wvReaderDropPayload err: " + e); }
+    }
+
+    async _wvReaderDropPayloadIn(reader: any, idoc: any, payload: any, target?: any) {
         try {
             const att = this._wvReaderAtt(reader); if (!att) return;
             this._wvDraggedAnnKey = null;
@@ -22241,24 +22461,29 @@ class _ReaderPanelsMixin {
             } catch (_) {}
             await io.deferred.promise;
             const add = (rec: any) => this._bmReaderAdd(att.libraryID, att.itemKey, rec, addOpts);
-            if (io.dataOut && io.dataOut.length) {
-                const targets: any = await Zotero.Items.getAsync(io.dataOut);
-                for (const it of (targets || [])) {
-                    let label = "";
-                    try {
-                        if (it.isAnnotation && it.isAnnotation()) label = this._wvReaderAnnLabel(it);
-                        else label = it.getDisplayTitle ? it.getDisplayTitle() : (it.getField ? it.getField("title") : "");
-                    } catch (_) {}
-                    await add({ type: "item", libraryID: it.libraryID, itemKey: it.key, label: label || it.key });
+            // ONE undo step for the picked items, batched only once the
+            // dialog has closed: the batch depth is global, so a batch held
+            // across the dialog would swallow unrelated writes (§3.7).
+            await this._wvUndoBatch(async () => {
+                if (io.dataOut && io.dataOut.length) {
+                    const targets: any = await Zotero.Items.getAsync(io.dataOut);
+                    for (const it of (targets || [])) {
+                        let label = "";
+                        try {
+                            if (it.isAnnotation && it.isAnnotation()) label = this._wvReaderAnnLabel(it);
+                            else label = it.getDisplayTitle ? it.getDisplayTitle() : (it.getField ? it.getField("title") : "");
+                        } catch (_) {}
+                        await add({ type: "item", libraryID: it.libraryID, itemKey: it.key, label: label || it.key });
+                    }
+                } else if (pickedCollection && pickedCollection.key) {
+                    await add({ type: "collection", libraryID: pickedCollection.libraryID, collectionKey: pickedCollection.key, label: pickedCollection.name || pickedCollection.key });
+                } else if (typeof pickedLibraryID === "number") {
+                    let label = ""; try { const lib: any = Zotero.Libraries.get(pickedLibraryID); label = lib && lib.name; } catch (_) {}
+                    await add({ type: "library", libraryID: pickedLibraryID, label: label || ("Library " + pickedLibraryID) });
+                } else if (pickedTreeRow) {
+                    await add({ type: "treerow", rowID: pickedTreeRow.rowID, libraryID: pickedTreeRow.libraryID, label: pickedTreeRow.label || pickedTreeRow.rowID });
                 }
-            } else if (pickedCollection && pickedCollection.key) {
-                await add({ type: "collection", libraryID: pickedCollection.libraryID, collectionKey: pickedCollection.key, label: pickedCollection.name || pickedCollection.key });
-            } else if (typeof pickedLibraryID === "number") {
-                let label = ""; try { const lib: any = Zotero.Libraries.get(pickedLibraryID); label = lib && lib.name; } catch (_) {}
-                await add({ type: "library", libraryID: pickedLibraryID, label: label || ("Library " + pickedLibraryID) });
-            } else if (pickedTreeRow) {
-                await add({ type: "treerow", rowID: pickedTreeRow.rowID, libraryID: pickedTreeRow.libraryID, label: pickedTreeRow.label || pickedTreeRow.rowID });
-            }
+            });
             this._wvReaderRenderBmList(reader, idoc);
         } catch (e) { Zotero.debug("[Weavero] _wvReaderAddViaDialog err: " + e); }
     }
@@ -22275,21 +22500,11 @@ class _ReaderPanelsMixin {
     _wvShowReaderBmAddMenu(reader: any, idoc: any, anchor: any, destScope?: string, section?: string) {
         try {
             this._wvCloseReaderBmContextMenu(idoc);
-            const menu = idoc.createElementNS(NS_HTML_RP, "div");
+            const menu = wvHtmlEl(idoc, "div");
             menu.id = RP_BM_CTX_ID;
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
-            const mkItem = (label: string, icon: string, fn: () => void) => {
-                const it = idoc.createElementNS(NS_HTML_RP, "div");
-                it.className = "wv-ctx-item";
-                const ic = idoc.createElementNS(NS_HTML_RP, "span");
-                ic.className = "wv-ctx-ic";
-                ic.innerHTML = icon || "";
-                const lb = idoc.createElementNS(NS_HTML_RP, "span");
-                lb.textContent = label;
-                it.appendChild(ic); it.appendChild(lb);
-                it.addEventListener("click", () => { close(); fn(); });
-                menu.appendChild(it);
-            };
+            const mkItem = (label: string, icon: string, fn: () => void) =>
+                this._wvCtxItem(idoc, menu, { label, icon, close, onClick: fn });
             // destScope overrides the panel's active scope so a per-section
             // + button can route the add unambiguously: "library" for the
             // Library section, "document" for Elsewhere. Without it, fall
@@ -22338,9 +22553,7 @@ class _ReaderPanelsMixin {
                     if ((reader._type || "pdf") === "pdf") {
                         for (const c of this._wvPageAnchorChoices(pageLabelC, null, addPage)) mkItem(c.label, c.icon, c.fn);
                     }
-                    const s = idoc.createElementNS(NS_HTML_RP, "div");
-                    s.className = "wv-ctx-sep";
-                    menu.appendChild(s);
+                    const s = wvHtmlEl(idoc, "div", "wv-ctx-sep", undefined, menu);
                 }
             }
             // No icons yet for either entry — the user said icons can come
@@ -22414,7 +22627,7 @@ class _ReaderPanelsMixin {
     _wvShowReaderBmSortMenu(reader: any, idoc: any, anchor: any, section: WvBmSortSection) {
         try {
             this._wvCloseReaderBmContextMenu(idoc);
-            const menu = idoc.createElementNS(NS_HTML_RP, "div");
+            const menu = wvHtmlEl(idoc, "div");
             menu.id = RP_BM_CTX_ID;
             // Marks this as the sort menu for `section`, so the sort button's
             // click handler can recognise its own open menu and toggle it closed.
@@ -22432,23 +22645,12 @@ class _ReaderPanelsMixin {
             // (nothing to order). Clicking a different field keeps the current
             // direction unless the field has a better default (see setter).
             const heading = (text: string) => {
-                const hd = idoc.createElementNS(NS_HTML_RP, "div");
-                hd.className = "wv-ctx-heading"; hd.textContent = text; menu.appendChild(hd);
+                const hd = wvHtmlEl(idoc, "div", "wv-ctx-heading", text, menu);
             };
-            const mkItem = (label: string, active: boolean, onClick: () => void, disabled?: boolean) => {
-                const it = idoc.createElementNS(NS_HTML_RP, "div");
-                it.className = "wv-ctx-item";
-                if (disabled) it.setAttribute("style", "opacity:.4;pointer-events:none;");
-                const ic = idoc.createElementNS(NS_HTML_RP, "span");
-                ic.className = "wv-ctx-ic";
-                ic.innerHTML = active ? RP_CHECK_SVG : "";
-                const lb = idoc.createElementNS(NS_HTML_RP, "span");
-                lb.textContent = label;
-                it.appendChild(ic); it.appendChild(lb);
-                if (!disabled) it.addEventListener("click", onClick);
-                menu.appendChild(it);
-            };
-            const sep = () => { const s = idoc.createElementNS(NS_HTML_RP, "div"); s.className = "wv-ctx-sep"; menu.appendChild(s); };
+            // No close here: the callers close or re-render themselves.
+            const mkItem = (label: string, active: boolean, onClick: () => void, disabled?: boolean) =>
+                this._wvCtxItem(idoc, menu, { label, icon: active ? RP_CHECK_SVG : "", disabled, onClick: disabled ? undefined : onClick });
+            const sep = () => this._wvCtxSep(idoc, menu);
 
             heading("Sort by");
             mkItem("Manual order", curField === "manual", () => apply("manual"));
@@ -22647,19 +22849,15 @@ class _ReaderPanelsMixin {
     _wvShowUrlBookmarkDialog(idoc: any, initial: any): Promise<any> {
         return new Promise((resolve) => {
             try {
-                const NS = NS_HTML_RP;
-                const backdrop = idoc.createElementNS(NS, "div");
+                const backdrop = wvHtmlEl(idoc, "div");
                 backdrop.className = "wv-bm-url-dialog-backdrop";
-                const dlg = idoc.createElementNS(NS, "div");
-                dlg.className = "wv-bm-url-dialog";
+                const dlg = wvHtmlEl(idoc, "div", "wv-bm-url-dialog");
 
                 const mkRow = (label: string, initialVal: string) => {
-                    const row = idoc.createElementNS(NS, "div");
+                    const row = wvHtmlEl(idoc, "div");
                     row.className = "wv-bm-url-dialog-row";
-                    const lbl = idoc.createElementNS(NS, "label");
-                    lbl.className = "wv-bm-url-dialog-label";
-                    lbl.textContent = label;
-                    const input: any = idoc.createElementNS(NS, "input");
+                    const lbl = wvHtmlEl(idoc, "label", "wv-bm-url-dialog-label", label);
+                    const input: any = wvHtmlEl(idoc, "input");
                     input.className = "wv-bm-url-dialog-input";
                     input.setAttribute("type", "text");
                     input.value = initialVal || "";
@@ -22680,13 +22878,10 @@ class _ReaderPanelsMixin {
                     }
                 });
 
-                const btnRow = idoc.createElementNS(NS, "div");
-                btnRow.className = "wv-bm-url-dialog-btns";
-                const cancelBtn: any = idoc.createElementNS(NS, "button");
-                cancelBtn.textContent = "Cancel";
+                const btnRow = wvHtmlEl(idoc, "div", "wv-bm-url-dialog-btns");
+                const cancelBtn: any = wvHtmlEl(idoc, "button", undefined, "Cancel");
                 cancelBtn.className = "wv-bm-url-dialog-btn";
-                const applyBtn: any = idoc.createElementNS(NS, "button");
-                applyBtn.textContent = "Apply";
+                const applyBtn: any = wvHtmlEl(idoc, "button", undefined, "Apply");
                 applyBtn.className = "wv-bm-url-dialog-btn wv-bm-url-dialog-btn-primary";
                 btnRow.appendChild(cancelBtn); btnRow.appendChild(applyBtn);
 
@@ -22853,7 +23048,7 @@ class _ReaderPanelsMixin {
                 const loc = this._bmLocate(nodeId, docv.local) || this._bmLocate(nodeId, docv.global);
                 entry = loc && loc.entry;
             }
-            const menu = idoc.createElementNS(NS_HTML_RP, "div");
+            const menu = wvHtmlEl(idoc, "div");
             menu.id = RP_BM_CTX_ID;
             // `icon` is one of:
             //   • inline SVG markup       → assign to ic.innerHTML
@@ -22862,28 +23057,9 @@ class _ReaderPanelsMixin {
             //                               chrome:// images directly)
             //   • data: URI               → wrap in an <img src=…>; would
             //                               otherwise be inserted as text.
-            const item = (label: string, icon: string, fn: any) => {
-                const it = idoc.createElementNS(NS_HTML_RP, "div"); it.className = "wv-ctx-item";
-                const ic = idoc.createElementNS(NS_HTML_RP, "span"); ic.className = "wv-ctx-ic";
-                if (icon && icon.indexOf("chrome://") === 0) {
-                    ic.classList.add("wv-ctx-ic-native");
-                    this._wvChromeIconSvg(icon).then((svg: string) => { try { ic.innerHTML = svg || ""; } catch (_) {} });
-                } else if (icon && icon.indexOf("data:") === 0) {
-                    const img = idoc.createElementNS(NS_HTML_RP, "img");
-                    img.setAttribute("src", icon);
-                    img.setAttribute("width", "16");
-                    img.setAttribute("height", "16");
-                    img.setAttribute("style", "-moz-context-properties:fill;fill:currentColor;");
-                    ic.appendChild(img);
-                } else {
-                    ic.innerHTML = icon || "";
-                }
-                const lb = idoc.createElementNS(NS_HTML_RP, "span"); lb.textContent = label;
-                it.appendChild(ic); it.appendChild(lb);
-                it.addEventListener("click", () => { this._wvCloseReaderBmContextMenu(idoc); fn(); });
-                menu.appendChild(it);
-            };
-            const sep = () => { const s = idoc.createElementNS(NS_HTML_RP, "div"); s.className = "wv-ctx-sep"; menu.appendChild(s); };
+            const item = (label: string, icon: string, fn: any) =>
+                this._wvCtxItem(idoc, menu, { label, icon, close: () => this._wvCloseReaderBmContextMenu(idoc), onClick: fn });
+            const sep = () => this._wvCtxSep(idoc, menu);
             const reRender = () => { try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {} };
             // A parent menu item with a hover flyout of children — used for the
             // "Add Bookmark ▸ [Pick item…, Add Link…]" grouping, since adding a
@@ -22891,23 +23067,14 @@ class _ReaderPanelsMixin {
             // {label, icon, fn}. Mirrors the XUL submenu in the collections-pane.
             const itemSub = (label: string, icon: string,
                 children: Array<{ label: string; icon: string; fn: any }>) => {
-                const it = idoc.createElementNS(NS_HTML_RP, "div");
-                it.className = "wv-ctx-item wv-ctx-haschild";
-                const ic = idoc.createElementNS(NS_HTML_RP, "span"); ic.className = "wv-ctx-ic"; ic.innerHTML = icon || "";
-                const lb = idoc.createElementNS(NS_HTML_RP, "span"); lb.textContent = label;
-                const ar = idoc.createElementNS(NS_HTML_RP, "span"); ar.className = "wv-ctx-arrow"; ar.textContent = "▸";
-                it.appendChild(ic); it.appendChild(lb); it.appendChild(ar);
-                const fly = idoc.createElementNS(NS_HTML_RP, "div"); fly.className = "wv-ctx-submenu";
+                const it = this._wvCtxItem(idoc, menu, { label, icon, cls: "wv-ctx-haschild" });
+                const ar = wvHtmlEl(idoc, "span", "wv-ctx-arrow", "▸", it);
+                const fly = wvHtmlEl(idoc, "div", "wv-ctx-submenu");
                 for (const c of children) {
-                    const ci = idoc.createElementNS(NS_HTML_RP, "div"); ci.className = "wv-ctx-item";
-                    const cic = idoc.createElementNS(NS_HTML_RP, "span"); cic.className = "wv-ctx-ic"; cic.innerHTML = c.icon || "";
-                    const clb = idoc.createElementNS(NS_HTML_RP, "span"); clb.textContent = c.label;
-                    ci.appendChild(cic); ci.appendChild(clb);
-                    ci.addEventListener("click", (ev: any) => { try { ev.stopPropagation(); } catch (_) {} this._wvCloseReaderBmContextMenu(idoc); c.fn(); });
-                    fly.appendChild(ci);
+                    this._wvCtxItem(idoc, fly, { label: c.label, icon: c.icon, close: () => this._wvCloseReaderBmContextMenu(idoc),
+                        onClick: (ev: any) => { try { ev.stopPropagation(); } catch (_) {} c.fn(); } });
                 }
                 it.appendChild(fly);
-                menu.appendChild(it);
             };
             if (this._wvReaderBmScope() === "library") {
                 this._wvReaderBuildLibCtxItems(reader, idoc, e, item, sep, reRender, itemSub);
@@ -23323,6 +23490,58 @@ class _ReaderPanelsMixin {
         } catch (_) {}
     }
 
+    /** One row of a reader-panel context menu (`.wv-ctx-item`): the icon
+     *  cell (a tick, an emoji, an SVG string, a chrome:// icon fetched as
+     *  SVG, a data: image), the label, an optional hint (a shortcut, a count)
+     *  and the dimmed "(default)" mark; `close` runs before `onClick`.
+     *  Twelve menus built the row by hand (survey 2026-10-06 §4 #10). */
+    _wvCtxItem(idoc: any, parent: any, spec: { label: string; icon?: string; ticked?: boolean; hint?: string; def?: boolean; danger?: boolean; off?: boolean; disabled?: boolean; cls?: string; close?: () => void; onClick?: (ev: any) => void }): any {
+        const it = wvHtmlEl(idoc, "div", "wv-ctx-item" + (spec.danger ? " wv-ctx-danger" : "") + (spec.off ? " wv-ctx-off" : "") + (spec.cls ? " " + spec.cls : ""));
+        if (spec.disabled) it.setAttribute("style", "opacity:.5;pointer-events:none;");
+        const ic = wvHtmlEl(idoc, "span");
+        ic.className = "wv-ctx-ic";
+        const icon = spec.ticked ? "\u2713" : (spec.icon || "");
+        if (icon.indexOf("chrome://") === 0) {
+            ic.classList.add("wv-ctx-ic-native");
+            this._wvChromeIconSvg(icon).then((svg: string) => { try { ic.innerHTML = svg || ""; } catch (_) {} });
+        } else if (icon.indexOf("data:") === 0) {
+            const img = wvHtmlEl(idoc, "img");
+            img.setAttribute("src", icon); img.setAttribute("width", "16"); img.setAttribute("height", "16");
+            img.setAttribute("style", "-moz-context-properties:fill;fill:currentColor;");
+            ic.appendChild(img);
+        } else if (/^\s*</.test(icon)) ic.innerHTML = icon;
+        else ic.textContent = icon;
+        const lb = wvHtmlEl(idoc, "span", undefined, spec.label);
+        it.appendChild(ic); it.appendChild(lb);
+        if (spec.hint != null) {
+            const hn = wvHtmlEl(idoc, "span", "wv-ctx-hint", spec.hint, it);
+        }
+        if (spec.def) {
+            // Dimmed, as in the Outline / Bookmarks tab menus (MJT 2026-09-29).
+            const df = wvHtmlEl(idoc, "span", "wv-ctx-def", "(default)", it);
+        }
+        if (spec.onClick) {
+            const fn = spec.onClick, close = spec.close;
+            it.addEventListener("click", (ev: any) => { if (close) close(); fn(ev); });
+        }
+        if (parent) parent.appendChild(it);
+        return it;
+    }
+
+    /** A heading row of a reader-panel context menu. */
+    _wvCtxHeading(idoc: any, menu: any, text: string): any {
+        const hd = wvHtmlEl(idoc, "div", "wv-ctx-heading", text, menu);
+        return hd;
+    }
+
+    /** A separator; with `dedupe`, none right after another (the entries
+     *  between two hidden for a multi-selection would double it). */
+    _wvCtxSep(idoc: any, menu: any, dedupe = false): any {
+        if (dedupe) { const lc: any = menu.lastElementChild; if (!lc || (lc.classList && lc.classList.contains("wv-ctx-sep"))) return null; }
+        const s = wvHtmlEl(idoc, "div", "wv-ctx-sep", undefined, menu);
+        return s;
+    }
+
     /** One dismiss slot per plugin: a menu opening in ANOTHER reader first
      *  closes the one still open here, or that menu (and the toolbar's
      *  no-drag) would outlive its unhooked listeners (review 2026-10-05). */
@@ -23404,17 +23623,20 @@ class _ReaderPanelsMixin {
             const att = this._wvReaderAtt(reader);
             if (!att) return;
             const added: string[] = [];
-            for (const key of (keys || [])) {
-                let label = "";
-                try {
-                    const it: any = Zotero.Items.getByLibraryAndKey(lib, key);
-                    label = it ? String(it.annotationText || it.annotationComment || "").trim() : "";
-                } catch (_) {}
-                label = (label || "Annotation").slice(0, 100);
-                const e2 = await this._bmReaderAdd(att.libraryID, att.itemKey,
-                    { type: "item", libraryID: lib, itemKey: key, label }, { allowDuplicate: true });
-                if (e2 && e2.id) added.push(e2.id);
-            }
+            // ONE undo step for the N annotations (survey §3.7).
+            await this._wvUndoBatch(async () => {
+                for (const key of (keys || [])) {
+                    let label = "";
+                    try {
+                        const it: any = Zotero.Items.getByLibraryAndKey(lib, key);
+                        label = it ? String(it.annotationText || it.annotationComment || "").trim() : "";
+                    } catch (_) {}
+                    label = (label || "Annotation").slice(0, 100);
+                    const e2 = await this._bmReaderAdd(att.libraryID, att.itemKey,
+                        { type: "item", libraryID: lib, itemKey: key, label }, { allowDuplicate: true });
+                    if (e2 && e2.id) added.push(e2.id);
+                }
+            });
             // Open the pane on the result (last id focused when several were
             // picked — every new row is visible, the mark says where the batch
             // ends).
@@ -23922,14 +24144,7 @@ class _ReaderPanelsMixin {
                             menu.style.backgroundSize = "16px 16px";
                         } catch (_) {}
                         const sub = doc.createXULElement("menupopup");
-                        const mk = (lbl: string, img: string, anchor: "top" | "bottom") => {
-                            const it = doc.createXULElement("menuitem");
-                            it.setAttribute("label", lbl);
-                            it.classList.add("menuitem-iconic");
-                            it.setAttribute("image", img);
-                            it.addEventListener("command", () => { try { onPick(anchor); } catch (_) {} });
-                            sub.appendChild(it);
-                        };
+                        const mk = (lbl: string, img: string, anchor: "top" | "bottom") => { wvMenuItem(doc, { label: lbl, image: img, onCommand: () => onPick(anchor) }, sub); };
                         mk("Top of page " + pageNum, WV_PAGE_TOP_URI, "top");
                         mk("Bottom of page " + pageNum, WV_PAGE_BOTTOM_URI, "bottom");
                         menu.appendChild(sub);
@@ -24291,7 +24506,7 @@ class _ReaderPanelsMixin {
                     const pdfDoc = app.pdfDocument;
                     const Cu = (Components as any).utils;
                     if (pdfDoc && typeof pdfDoc.getPageData === "function") {
-                        Promise.resolve(pdfDoc.getPageData(Cu ? Cu.cloneInto({ pageIndex }, win) : { pageIndex }))
+                        Promise.resolve(pdfDoc.getPageData(Cu ? wvCloneFor({ pageIndex }, win) : { pageIndex }))
                             .then((pd: any) => {
                                 const top = wvPinLineTopFromChars(pd && pd.chars, rect[0], rect[1]);
                                 if (top == null) return;
@@ -24339,6 +24554,43 @@ class _ReaderPanelsMixin {
      *  pins included", 2026-07-29). An EDIT-mode pin (carries the Done/approve
      *  button) is exempt: wiping it would silently discard a tentative
      *  position edit. */
+    /** Remove THIS pin with its followers -- the hooks its draw registered on
+     *  `pin._wvOff` (fade timers, a persistent pin's away listener) and the
+     *  page-offset observer -- and, while it is the document's pin, the
+     *  caret bar. The fade's kill, a drag's drop or cancel and the away
+     *  press each removed the element alone and left the followers running
+     *  (survey 2026-10-06 §3.6: "follower unhook on clear"). */
+    _wvPinDrop(pin: any) {
+        try {
+            if (!pin) return;
+            for (const off of (pin._wvOff || [])) { try { off(); } catch (_) {} }
+            pin._wvOff = [];
+            try { if (pin._wvOffObs) { pin._wvOffObs.disconnect(); pin._wvOffObs = null; } } catch (_) {}
+            const d = pin.ownerDocument;
+            const connected = !!pin.isConnected;
+            try { pin.remove(); } catch (_) {}
+            if (connected && d) this._wvPinCaretRemove(d);
+        } catch (_) {}
+    }
+
+    /** Remove the document's pin (PDF: the page overlay; DOM: the body) and
+     *  its caret, one way. An EDIT pin -- the Done button of a tentative
+     *  position edit -- goes only with `force`: a jump or a new pin never
+     *  discards the user's pending edit (survey 2026-10-06 §3.6, "a new pin
+     *  deletes a pending Edit-Position pin"). Returns true when no pin is
+     *  left; false means the caller backs off. */
+    _wvPinRemove(doc: any, o?: { force?: boolean }): boolean {
+        try {
+            const pin = doc && doc.querySelector(".wv-reader-pin");
+            if (pin) {
+                if (!(o && o.force) && pin.querySelector(".wv-reader-pin-approve")) return false;   // tentative edit: keep it
+                this._wvPinDrop(pin);
+            }
+            else if (doc) this._wvPinCaretRemove(doc);
+            return true;
+        } catch (_) { return false; }
+    }
+
     _wvClearStalePin(pv: any) {
         try {
             // DOM views (snapshot / EPUB) expose `_iframeDocument`; the PDF
@@ -24347,11 +24599,7 @@ class _ReaderPanelsMixin {
             // 2026-09-09: in the snapshot the previous pin stayed on screen
             // after clicking another entry, unlike the PDF reader).
             const pd = pv && (pv._iframeDocument || (pv._iframeWindow && pv._iframeWindow.document));
-            const pin = pd && pd.querySelector(".wv-reader-pin");
-            if (!pin) return;
-            if (pin.querySelector(".wv-reader-pin-approve")) return;   // tentative edit: keep it
-            pin.remove();
-            this._wvPinCaretRemove(pd);
+            if (pd) this._wvPinRemove(pd);
         } catch (_) {}
     }
 
@@ -24401,7 +24649,7 @@ class _ReaderPanelsMixin {
                     this._wvOutlinePaint(pv, pv._wvHlPage, null);
                 }
                 const clean = (rects || []).map((r: any) => [r[0], r[1], r[2], r[3]]);
-                const pos = (Components as any).utils.cloneInto({ pageIndex, rects: clean }, pv._iframeWindow);
+                const pos = wvCloneFor({ pageIndex, rects: clean }, pv._iframeWindow);
                 this._wvOutlinePaint(pv, pageIndex, pos);
                 pv._wvHlPage = pageIndex;
                 pv._wvHlClearTimer = st(() => {
@@ -24612,8 +24860,7 @@ class _ReaderPanelsMixin {
                                 const pi = location.position.pageIndex;
                                 // New click generation — supersedes any in-flight
                                 // recovery/highlight from a previous click.
-                                const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
-                                plugin._wvClearStalePin(pv);
+                                const gen = plugin._wvHlNext(pv);
                                 // Scroll to the dest WITHOUT the reader's native
                                 // flash. The native _highlightPosition arms an
                                 // unconditional 2s timer that nulls
@@ -24626,20 +24873,8 @@ class _ReaderPanelsMixin {
                                 // Record the manual navigation (history + suppress the
                                 // reader's own scroll-spy) up front; the actual scroll is
                                 // done per-branch below.
-                                const markNav = function () {
-                                    try {
-                                        if (!(options && options.skipHistory) && typeof pv._onManualNavigation === "function") {
-                                            try { pv._onManualNavigation(); } catch (_) {}
-                                        }
-                                        try { pv._lastNavigationTime = Date.now(); } catch (_) {}
-                                        // The comment above promises "history" — deliver it.
-                                        // This is navigate()'s own tail; without it the Back
-                                        // button never learns about the jump (issue #28).
-                                        if (!(options && options.skipHistory)) {
-                                            plugin._wvReaderPushHistoryPoint(pv);
-                                        }
-                                    } catch (_) {}
-                                };
+                                // (navigate()'s own tail, the Back point included -- issue #28.)
+                                const markNav = function () { plugin._wvReaderMarkNav(pv, { history: !(options && options.skipHistory) }); };
                                 // Plain dest scroll (native-style centre on the bare point) —
                                 // the fallback when there's nothing better to aim at.
                                 const destScroll = function () {
@@ -24663,11 +24898,8 @@ class _ReaderPanelsMixin {
                                     ).then(function (res: any) {
                                         if (pv._wvHlSeq !== gen) return;   // superseded by a newer click
                                         if (!res) { destScroll(); return; }   // nothing recovered → plain dest scroll
-                                        markNav();
-                                        // Scroll the heading into view via a direct DOM scroll
-                                        // (navigateToPosition throws across the Xray boundary).
-                                        try { plugin._wvOutlineScrollToRect(pv, res.pageIndex, res.rect); } catch (_) {}
-                                        plugin._wvOutlineHighlightInPlace(pv, res.pageIndex, [res.rect], gen, 0);
+                                        // A direct DOM scroll (navigateToPosition throws across the Xray boundary).
+                                        plugin._wvJumpToRect(pv, res.pageIndex, [res.rect], { gen, mark: true, history: !(options && options.skipHistory), highlight: true });
                                     }).catch(function () { try { destScroll(); } catch (_) {} });
                                 } else {
                                     // Extracted: the entry already carries the real heading rect
@@ -24676,17 +24908,8 @@ class _ReaderPanelsMixin {
                                     // block:'start' top-jump — so both outline kinds land
                                     // identically and there's no flicker. Fall back to the native
                                     // nav only if the page isn't laid out yet.
-                                    const allR = location.position.rects || [];
-                                    const rr = allR[0];
-                                    markNav();
-                                    if (!plugin._wvOutlineScrollToRect(pv, pi, rr)) {
-                                        try { pv.navigateToPosition(location.position, options); }
-                                        catch (e) { try { origNavigate(location, options); } catch (_) {} }
-                                    }
-                                    // Every rect -- a region set from a selection has one per
-                                    // line, and highlighting only the first left the rest bare.
-                                    plugin._wvOutlineHighlightInPlace(pv, pi,
-                                        allR.map((r: number[]) => [r[0], r[1], r[2], r[3]]), gen, 0);
+                                    plugin._wvJumpToRect(pv, pi, location.position.rects || [], { gen, mark: true, history: !(options && options.skipHistory), highlight: true,
+                                        fallback: () => { try { pv.navigateToPosition(location.position, options); } catch (e) { try { origNavigate(location, options); } catch (_) {} } } });
                                 }
                             }
                         }
@@ -24785,7 +25008,7 @@ class _ReaderPanelsMixin {
         this._wvPinBitmap = null;
         try {
             const S = 320;
-            const cv: any = doc.createElementNS(NS_HTML_RP, "canvas");
+            const cv: any = wvHtmlEl(doc, "canvas");
             cv.width = S; cv.height = S;
             const cx = cv.getContext("2d");
             cx.font = Math.round(S * 0.8) + "px 'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif";
@@ -24810,7 +25033,7 @@ class _ReaderPanelsMixin {
             const tx = tipX - minX, ty = tipY - minY;
             const outW = 2 * Math.max(tx, w - tx), outH = ty;   // tip -> bottom-centre
             if (!(outW > 0 && outH > 0)) return this._wvPinBitmap;
-            const out: any = doc.createElementNS(NS_HTML_RP, "canvas");
+            const out: any = wvHtmlEl(doc, "canvas");
             out.width = outW; out.height = outH;
             out.getContext("2d").drawImage(cv, minX, minY, w, ty, outW / 2 - tx, 0, w, ty);
             this._wvPinBitmap = { url: out.toDataURL("image/png"), w: outW, h: outH };
@@ -24844,7 +25067,9 @@ class _ReaderPanelsMixin {
             const sf = pageView.viewport.scale || 1;
             const uLeft = left / sf, uTop = top / sf;
             const doc = win.document;
-            try { const old = doc.querySelector(".wv-reader-pin"); if (old) old.remove(); } catch (_) {}
+            // A pending Edit-Position pin stays and this draw backs off, unless
+            // the draw IS the edit's own (its Done button comes along).
+            if (!this._wvPinRemove(doc, { force: !!(opts && opts.approve) })) return;
             // Switching to a PIN also clears any active outline/bookmark TEXT
             // highlight -- the same supersede rule rapid highlight->highlight
             // clicks follow. Bump the click generation so an in-flight
@@ -24854,7 +25079,7 @@ class _ReaderPanelsMixin {
                 const hp = pv._highlightedPosition;
                 if (hp) this._wvOutlinePaint(pv, hp.pageIndex || 0, null);
             } catch (_) {}
-            const pin: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+            const pin: any = wvHtmlEl(doc, "div");
             pin.className = "wv-reader-pin";
             // Vector pin is primary. The emoji-bitmap marker is kept as a working
             // backup behind `RP_PIN_USE_EMOJI` (both anchor their tip identically,
@@ -24919,8 +25144,7 @@ class _ReaderPanelsMixin {
             // must be confirmed. Its own pointer handlers keep a click from
             // starting a pin drag. 2026-07-23.
             if (opts && opts.approve && typeof opts.approve.onClick === "function") {
-                const ab: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
-                ab.textContent = opts.approve.label || "Done";
+                const ab: any = wvHtmlEl(doc, "button", undefined, opts.approve.label || "Done");
                 ab.className = "wv-reader-pin-approve";
                 ab.setAttribute("style", "position:absolute;left:100%;top:0;transform:translate(8px,-4px);"
                     + "white-space:nowrap;padding:3px 12px;border-radius:5px;border:1px solid rgba(0,0,0,.35);"
@@ -24984,7 +25208,7 @@ class _ReaderPanelsMixin {
                     // being inside this try/catch, silently left the pin with a
                     // frozen --page-offset-left and reintroduced the zoom drift.
                     const Cu: any = (Components as any).utils;
-                    const init = Cu ? Cu.cloneInto({ attributes: true, attributeFilter: ["style"] }, win)
+                    const init = Cu ? wvCloneFor({ attributes: true, attributeFilter: ["style"] }, win)
                         : { attributes: true, attributeFilter: ["style"] };
                     const mo = new MO(applyPageOffsets);
                     const viewerEl = app.pdfViewer.viewer || pgDiv.parentNode;
@@ -24999,10 +25223,11 @@ class _ReaderPanelsMixin {
             // there's time to grab it.
             let fadeT: any = null, killT: any = null;
             const stopFade = () => { try { win.clearTimeout(fadeT); win.clearTimeout(killT); } catch (_) {} fadeT = killT = null; };
+            pin._wvOff = [stopFade];   // what a clear must unhook (see _wvPinDrop)
             const startFade = (delay: number) => {
                 stopFade();
                 fadeT = win.setTimeout(() => { try { pin.style.transition = "opacity .25s,transform .25s"; pin.style.opacity = "0"; pin.style.transform = "translate(-50%,-118%) scale(.6)"; } catch (_) {} }, delay);
-                killT = win.setTimeout(() => { try { pin.remove(); } catch (_) {} }, delay + 320);
+                killT = win.setTimeout(() => this._wvPinDrop(pin), delay + 320);
             };
             // persist: stay put (no auto-fade) -- used by the pin "Edit Position"
             // mode, where the marker must remain draggable until the user clicks
@@ -25122,7 +25347,7 @@ class _ReaderPanelsMixin {
                         // never lifted == the press was a CLICK, so nothing moves
                         // and the pin is simply re-shown where it already was.
                         if (!lifted) {
-                            try { pin.remove(); } catch (_) {}
+                            this._wvPinDrop(pin);
                             this._wvReaderShowPin(reader, position, bmId, opts);
                             return;
                         }
@@ -25130,7 +25355,7 @@ class _ReaderPanelsMixin {
                         // landed -- not where the cursor happens to be (see tipOf).
                         const [upX, upY] = tipOf(ev);
                         const newPos = this._wvReaderPdfPosFromPoint(pv, upX, upY);
-                        try { pin.remove(); } catch (_) {}
+                        this._wvPinDrop(pin);
                         // onMove caller (an outline pin entry): write back through the
                         // callback instead of the bookmark store, then re-show.
                         if (opts && opts.onMove) {
@@ -25183,7 +25408,7 @@ class _ReaderPanelsMixin {
                             this._wvReaderShowPin(reader, position, bmId);
                         }
                     };
-                    const onCancel = () => { cleanup(); pin._wvDragging = false; try { pin.remove(); } catch (_) {} };
+                    const onCancel = () => { cleanup(); pin._wvDragging = false; this._wvPinDrop(pin); };
                     // On the DOCUMENT, not on the pin. Hosting them on the pin only
                     // ever worked by accident: the old code lifted the pin on
                     // pointerDOWN so it chased the cursor, keeping the pointer over
@@ -25364,7 +25589,7 @@ class _ReaderPanelsMixin {
         try {
             let c: any = doc.querySelector(".wv-reader-pin-caret");
             if (!c) {
-                c = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+                c = wvHtmlEl(doc, "div");
                 c.className = "wv-reader-pin-caret";
                 c.style.cssText = "position:absolute;z-index:2147483645;pointer-events:none;"
                     + "width:2px;border-radius:1px;opacity:.9;transform:translate(-50%,0);"
@@ -25411,8 +25636,9 @@ class _ReaderPanelsMixin {
             const pt0 = this._wvDomPinDocPoint(rT, iwin.scrollX || 0, iwin.scrollY || 0, opts && opts.mediaOffset);
             const docX = pt0.x;
             const docY = pt0.y;
-            try { const old = doc.querySelector(".wv-reader-pin"); if (old) old.remove(); } catch (_) {}
-            try { const oc = doc.querySelector(".wv-reader-pin-caret"); if (oc) oc.remove(); } catch (_) {}
+            // A pending Edit-Position pin stays and this draw backs off, unless
+            // the draw IS the edit's own.
+            if (!this._wvPinRemove(doc, { force: !!(opts && opts.approve) })) return false;
             // CARET BAR at the anchored text position (MJT 2026-09-01: "the
             // pin is on the line above ... add a vertical bar at the position
             // in the text"). The pin's TIP marks the top of the anchored line,
@@ -25424,7 +25650,7 @@ class _ReaderPanelsMixin {
             if (!(opts && opts.mediaOffset) && rT && rT.height) {
                 caret = this._wvPinCaretEnsure(doc, docX, docY, rT.height);
             }
-            const pin: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+            const pin: any = wvHtmlEl(doc, "div");
             pin.className = "wv-reader-pin";
             const PIN_H = 32;
             pin.innerHTML = RP_PIN_TIP_SVG;
@@ -25446,6 +25672,7 @@ class _ReaderPanelsMixin {
                 try { w.clearTimeout(fadeT); } catch (_) {}
                 try { w.clearTimeout(killT); } catch (_) {}
             };
+            pin._wvOff = [clearT];   // what a clear must unhook (see _wvPinDrop)
             // arm() is IDEMPOTENT: it clears any pending timers first. Without
             // this, a double-arm (mouseleave then drop, with no disarm in
             // between) ORPHANED the earlier kill timer — disarm only clears
@@ -25462,10 +25689,7 @@ class _ReaderPanelsMixin {
                         if (caret) caret.style.opacity = "0";
                     } catch (_) {}
                 }, 2200);
-                killT = w.setTimeout(() => {
-                    try { pin.remove(); } catch (_) {}
-                    try { if (caret) caret.remove(); } catch (_) {}
-                }, 2520);
+                killT = w.setTimeout(() => this._wvPinDrop(pin), 2520);
             };
             const disarm = () => {
                 clearT();
@@ -25507,12 +25731,13 @@ class _ReaderPanelsMixin {
                 const away = (ev: any) => {
                     try {
                         if (wvWithin(pin, ev.target)) return;
-                        doc.removeEventListener("pointerdown", away, true);
-                        pin.remove();
-                        try { if (caret) caret.remove(); } catch (_) {}
+                        this._wvPinDrop(pin);   // runs the unhook registered below
                     } catch (_) {}
                 };
-                try { doc.addEventListener("pointerdown", away, true); } catch (_) {}
+                try {
+                    doc.addEventListener("pointerdown", away, true);
+                    pin._wvOff.push(() => doc.removeEventListener("pointerdown", away, true));
+                } catch (_) {}
             }
             if (draggable) this._wvWireDomPinDrag(iwin, doc, pin, docX, docY, reader, bm,
                                                  disarm, armIf, opts && opts.commit);
@@ -25601,7 +25826,7 @@ class _ReaderPanelsMixin {
                 mo = new MO(run);
                 const Cu: any = (Components as any).utils;
                 const init = { attributes: true, attributeFilter: ["style"] };
-                mo.observe(doc.documentElement, Cu ? Cu.cloneInto(init, iwin) : init);
+                mo.observe(doc.documentElement, wvCloneFor(init, iwin));
                 // Paginated EPUB: a page turn moves `.sections` by its
                 // left/top style. A pin drawn for a target on ANOTHER page
                 // of the mounted chapter was placed before the reader moved
@@ -25609,7 +25834,7 @@ class _ReaderPanelsMixin {
                 // click (MJT 2026-09-24).
                 try {
                     const secs = doc.body && doc.body.querySelector(":scope > .sections");
-                    if (secs) mo.observe(secs, Cu ? Cu.cloneInto(init, iwin) : init);
+                    if (secs) mo.observe(secs, wvCloneFor(init, iwin));
                 } catch (_) {}
             }
             iwin.addEventListener("resize", run);
@@ -25932,7 +26157,7 @@ class _ReaderPanelsMixin {
             let arg = position;
             try {
                 const Cu = (Components as any).utils;
-                if (Cu) arg = Cu.cloneInto(position, iwin);
+                if (Cu) arg = wvCloneFor(position, iwin);
             } catch (_) {}
             const range = pv.toDisplayedRange(arg);
             if (!range) return false;
@@ -26380,7 +26605,7 @@ class _ReaderPanelsMixin {
             try {
                 const iw = pv._iframeWindow;
                 const Cu = (Components as any).utils;
-                if (iw && Cu) arg = Cu.cloneInto(selector, iw);
+                if (iw && Cu) arg = wvCloneFor(selector, iw);
             } catch (_) {}
             const back = pv.toDisplayedRange(arg);
             if (!back) return false;
@@ -26843,28 +27068,22 @@ class _ReaderPanelsMixin {
                     || !Array.isArray(position.rects) || !position.rects.length) return false;
             const pi = position.pageIndex;
             const rects = position.rects.map((r: any) => [r[0], r[1], r[2], r[3]]);
-            const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
-            this._wvClearStalePin(pv);   // text-bookmark click supersedes a showing pin (2026-07-29)
             // Scroll WITHOUT the native flash (which arms the buggy 2s timer).
             // Land the target 1/4 from the top -- the SAME rule outline entries
             // use. This used to ask the reader for block:"center", so bookmarks
             // and outline entries placed the same target differently (reported
-            // 2026-07-29); navigateToPosition stays as the fallback.
-            try {
-                if (typeof pv._onManualNavigation === "function") { try { pv._onManualNavigation(); } catch (_) {} }
-                try { pv._lastNavigationTime = Date.now(); } catch (_) {}
-                // Back-button support (issue #28): the in-place jump bypasses
-                // navigate(), so run its history tail ourselves.
-                this._wvReaderPushHistoryPoint(pv);
-                if (!this._wvOutlineScrollToRect(pv, pi, rects[0])) {
-                    const cpos = (Components as any).utils.cloneInto({ pageIndex: pi, rects }, iwin);
-                    const copts = (Components as any).utils.cloneInto({ block: "center" }, iwin);
+            // 2026-07-29); navigateToPosition stays as the fallback. The jump
+            // bypasses navigate(): its tail, Back point included (issue #28),
+            // is run by hand (`mark`).
+            let failed = false;
+            this._wvJumpToRect(pv, pi, rects, { mark: true, highlight: true, fallback: () => {
+                try {
+                    const cpos = wvCloneFor({ pageIndex: pi, rects }, iwin);
+                    const copts = wvCloneFor({ block: "center" }, iwin);
                     pv.navigateToPosition(cpos, copts);
-                }
-            } catch (e) {
-                try { reader.navigate({ position: position }); return true; } catch (_) { return false; }
-            }
-            this._wvOutlineHighlightInPlace(pv, pi, rects, gen, 0);
+                } catch (e) { failed = true; }
+            } });
+            if (failed) { try { reader.navigate({ position: position }); return true; } catch (_) { return false; } }
             return true;
         } catch (_) { return false; }
     }
@@ -26889,9 +27108,7 @@ class _ReaderPanelsMixin {
                 && (reader._internalReader._primaryView || reader._internalReader._lastView);
             if (!pv || !pos || !Number.isInteger(pos.pageIndex)
                     || !Array.isArray(pos.rects) || !pos.rects.length) return false;
-            this._wvReaderPushHistoryPoint(pv);
-            try { if (typeof pv._onManualNavigation === "function") pv._onManualNavigation(); } catch (_) {}
-            try { pv._lastNavigationTime = Date.now(); } catch (_) {}
+            this._wvReaderMarkNav(pv);
             return !!this._wvOutlineScrollToRect(pv, pos.pageIndex, pos.rects[0]);
         } catch (_) { return false; }
     }
@@ -26953,11 +27170,11 @@ class _ReaderPanelsMixin {
                         const pv = reader._internalReader
                             && (reader._internalReader._primaryView || reader._internalReader._lastView);
                         if (pv) {
-                            const r0 = bm.position.rects && bm.position.rects[0];
-                            if (r0 && this._wvOutlineScrollToRect(pv, bm.position.pageIndex, r0)) scrolled = true;
-                            else if (typeof pv.navigateToPosition === "function") {
-                                pv.navigateToPosition(bm.position); scrolled = true;
-                            }
+                            this._wvJumpToRect(pv, bm.position.pageIndex, bm.position.rects || [], { fallback: () => {
+                                if (typeof pv.navigateToPosition === "function") pv.navigateToPosition(bm.position);
+                                else throw new Error("no navigateToPosition");
+                            } });
+                            scrolled = true;
                         }
                     } catch (_) {}
                     if (!scrolled) { try { reader.navigate({ position: bm.position }); } catch (_) {} }
@@ -27001,21 +27218,13 @@ class _ReaderPanelsMixin {
                 // threw the reader to the top of the book (2026-08-24).
                 // Scrolling to the resolved rect works for every anchor shape
                 // and keeps the shared 1/4-from-top rule.
+                // The shared DOM landing (text top at the quarter, nested
+                // scrollers); a degenerate rect means the anchor did not really
+                // resolve, and the view is left alone for the fallbacks below.
                 try {
                     const pvR = reader._internalReader
                         && (reader._internalReader._primaryView || reader._internalReader._lastView);
-                    const iwR = pvR && pvR._iframeWindow;
-                    const rngR = pvR && this._wvDomRangeForAnchor(pvR, bm);
-                    if (rngR && iwR) {
-                        const rc = rngR.getBoundingClientRect();
-                        const docY = rc.top + (iwR.scrollY || 0);
-                        // A degenerate rect means the anchor did not really
-                        // resolve; leave the view alone rather than jumping.
-                        if (rc.height > 0 || rc.width > 0 || docY > 0) {
-                            iwR.scrollTo(this._wvDomScrollX(iwR, rc), Math.max(0, Math.round(docY - (iwR.innerHeight || 800) * 0.25)));
-                            landed = true;
-                        }
-                    }
+                    if (pvR && this._wvDomQuarterPlace(pvR, bm)) landed = true;
                 } catch (_) {}
                 try {
                     if (landed) throw 0;   // resolved path won
@@ -27027,8 +27236,8 @@ class _ReaderPanelsMixin {
                         const Cu2 = (Components as any).utils;
                         const off = Math.round(((iwE.innerHeight || 800)) * 0.25);
                         pvE.navigate(
-                            Cu2.cloneInto({ pageNumber: loc.cfi }, iwE),
-                            Cu2.cloneInto({ behavior: "smooth", block: "start", offsetBlock: off }, iwE));
+                            wvCloneFor({ pageNumber: loc.cfi }, iwE),
+                            wvCloneFor({ behavior: "smooth", block: "start", offsetBlock: off }, iwE));
                         landed = true;
                     }
                 } catch (_) {}
@@ -27106,27 +27315,30 @@ class _ReaderPanelsMixin {
                             label: addBmLabel,
                             onCommand: async () => {
                                 try {
-                                    for (const pi of pageIndexes) {
-                                        const pageLabel = labelFor(pi);
-                                        await plugin._bmReaderAdd(att.libraryID, att.itemKey, {
-                                            // `type: "page"` is the dedicated
-                                            // whole-page bookmark type — the
-                                            // section classifier, icon picker,
-                                            // and navigator all key off this
-                                            // (ribbon icon, scroll-to-page,
-                                            // routes to "In this document").
-                                            type: "page",
-                                            viewType: "pdf",
-                                            location: { pageIndex: pi },
-                                            // Mirror pageIndex into `position`
-                                            // so `_bmReaderPageLabel` resolves
-                                            // the column label via its
-                                            // position branch.
-                                            position: { pageIndex: pi },
-                                            pageLabel,
-                                            label: "Page " + pageLabel,
-                                        }, { allowDuplicate: true });
-                                    }
+                                    // ONE undo step for the N pages (survey §3.7).
+                                    await plugin._wvUndoBatch(async () => {
+                                        for (const pi of pageIndexes) {
+                                            const pageLabel = labelFor(pi);
+                                            await plugin._bmReaderAdd(att.libraryID, att.itemKey, {
+                                                // `type: "page"` is the dedicated
+                                                // whole-page bookmark type — the
+                                                // section classifier, icon picker,
+                                                // and navigator all key off this
+                                                // (ribbon icon, scroll-to-page,
+                                                // routes to "In this document").
+                                                type: "page",
+                                                viewType: "pdf",
+                                                location: { pageIndex: pi },
+                                                // Mirror pageIndex into `position`
+                                                // so `_bmReaderPageLabel` resolves
+                                                // the column label via its
+                                                // position branch.
+                                                position: { pageIndex: pi },
+                                                pageLabel,
+                                                label: "Page " + pageLabel,
+                                            }, { allowDuplicate: true });
+                                        }
+                                    });
                                 } catch (e) {
                                     Zotero.debug("[Weavero] thumb-menu Add Bookmark err: " + e);
                                 }

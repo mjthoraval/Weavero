@@ -386,6 +386,7 @@
             { re: / \(Windows\)$/, why: "platform: Windows only" },
             { re: /^Weavero — tab-level undo choice a NEW main window gets the Edit hook/, why: "platform: Windows only, multi-main on" },
             { re: /^Weavero — window identity, lone window/, why: "needs the lone-window case" },
+            { re: /^Weavero — View → Layout follows the tab .*note tab/, why: "version: note tabs (note-in-tab) need a Zotero that loads 'note' tabs" },
         ],
     };
     globalThis.wvT = wvT;

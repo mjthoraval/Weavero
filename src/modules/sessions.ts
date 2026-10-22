@@ -1,6 +1,8 @@
 import { wvInjectStyle } from "../lib/style";
 import { wvStoreWrite, wvStoreRead } from "../lib/store";
 import { wvTimeout } from "../lib/timers";
+import { wvMenuItem } from "../lib/menu";
+import { wvHtmlEl } from "../lib/dom";
 
 // Module: named TAB SESSIONS — capture the set of open tabs across all main
 // windows into a NAMED session, and switch between sessions (close the current
@@ -54,9 +56,6 @@ declare const Zotero: any;
 declare const Services: any;
 declare const PathUtils: any;
 declare const IOUtils: any;
-
-const HTML_NS = "http://www.w3.org/1999/xhtml";
-
 /** Reserved id for the "snapshot before a switch" safety-net slot. */
 const WV_TABSESSION_AUTOSAVE_ID = "__wv_autosave__";
 
@@ -808,7 +807,7 @@ class _TabSessionsMixin {
             // Teardown left it at the library tab; restoreState re-adds the rest
             // (it honors each record's `selected`), then we restore the library
             // view (collection + columns + sort).
-            const primary = Zotero.getMainWindows().find((w: any) => !w._wvManagedWindow)
+            const primary = (this as any)._wvAnchorWindow()
                 || Zotero.getMainWindow();
             try {
                 const Z: any = primary && (primary as any).Zotero_Tabs;
@@ -1008,7 +1007,6 @@ class _TabSessionsMixin {
 
     _wvEnsureTabSessionStyles(doc: any) {
         try {
-            const HTML = "http://www.w3.org/1999/xhtml";
             const css = [
                 // The dimming sits on the title, not the header, so the sort
                 // chips keep full contrast (border pre-dimmed to match).
@@ -1176,15 +1174,14 @@ class _TabSessionsMixin {
             this._wvEnsureTabSessionStyles(doc);
             const activeId = this._wvTabSessionGetActiveId();
             const sess = activeId ? this._wvTabSessionList().find((s: any) => s.id === activeId) : null;
-            const hdr = doc.createElementNS(HTML_NS, "div");
-            hdr.className = "wv-cursess-header" + (sess ? " wv-sessmenu-active" : " wv-cursess-unsaved");
-            const dot = doc.createElementNS(HTML_NS, "span");
+            const hdr = wvHtmlEl(doc, "div", "wv-cursess-header" + (sess ? " wv-sessmenu-active" : " wv-cursess-unsaved"));
+            const dot = wvHtmlEl(doc, "span");
             dot.className = "wv-sessmenu-dot";
             dot.textContent = "S";
             hdr.appendChild(dot);
             // Name first, then the "Current session" tag (right-aligned) — mirrors
             // the saved-session rows' name-left / meta-right layout.
-            const label = doc.createElementNS(HTML_NS, "span");
+            const label = wvHtmlEl(doc, "span");
             label.className = "wv-cursess-label";
             label.textContent = sess ? (sess.name || this._wvTabSessionDefaultName()) : "Current session";
             hdr.appendChild(label);
@@ -1202,10 +1199,7 @@ class _TabSessionsMixin {
                 let nw = Zotero.getMainWindows().length;
                 const enw = Services.wm.getEnumerator("zotero:reader");
                 while (enw.hasMoreElements()) { const w: any = enw.getNext(); if (w._wvWT) nw++; }
-                const cnt = doc.createElementNS(HTML_NS, "span");
-                cnt.className = "wv-sessmenu-count";
-                cnt.textContent = this._wvTabSessionCountsLabel(nw, n);
-                hdr.appendChild(cnt);
+                const cnt = wvHtmlEl(doc, "span", "wv-sessmenu-count", this._wvTabSessionCountsLabel(nw, n), hdr);
             } catch (er) {}
             // No "Current session" eyebrow tag — the top position already
             // says it (user request 2026-07-13).
@@ -1245,12 +1239,9 @@ class _TabSessionsMixin {
             if (!this._wvGetEnableTabSessions()) return;
             this._wvEnsureTabSessionStyles(doc);
 
-            const header = doc.createElementNS(HTML_NS, "div");
+            const header = wvHtmlEl(doc, "div");
             header.className = "wv-sessmenu-header";
-            const hTitle = doc.createElementNS(HTML_NS, "span");
-            hTitle.className = "wv-sessmenu-header-title";
-            hTitle.textContent = "Sessions";
-            header.appendChild(hTitle);
+            const hTitle = wvHtmlEl(doc, "span", "wv-sessmenu-header-title", "Sessions", header);
             // Sort control at the header's right, the annotations pane's
             // pattern (MJT 2026-09-29, "like the annotations pane"): a
             // dropdown chip naming the kind (menu: Created / Name / Last used)
@@ -1259,16 +1250,11 @@ class _TabSessionsMixin {
             const sortMode = this._wvTabSessionSortMode();
             const sortRev = this._wvTabSessionSortReverse();
             const dirInfo = this._wvTabSessionSortDirInfo(sortMode, sortRev);
-            const drop = doc.createElementNS(HTML_NS, "button");
-            drop.className = "wv-sessmenu-sortdrop";
+            const drop = wvHtmlEl(doc, "button", "wv-sessmenu-sortdrop");
             drop.setAttribute("title", "Sort sessions");
             drop.setAttribute("data-wv-sort", sortMode + (sortRev ? " reversed" : ""));
-            const dropLab = doc.createElementNS(HTML_NS, "span");
-            dropLab.textContent = this._wvTabSessionSortLabel(sortMode);
-            drop.appendChild(dropLab);
-            const caret = doc.createElementNS(HTML_NS, "span");
-            caret.className = "wv-sessmenu-sortcaret";
-            caret.textContent = "▾";   // ▾
+            const dropLab = wvHtmlEl(doc, "span", undefined, this._wvTabSessionSortLabel(sortMode), drop);
+            const caret = wvHtmlEl(doc, "span", "wv-sessmenu-sortcaret", "▾");   // ▾
             drop.appendChild(caret);
             drop.addEventListener("click", (e: any) => {
                 try {
@@ -1278,9 +1264,7 @@ class _TabSessionsMixin {
                 } catch (er) {}
             });
             header.appendChild(drop);
-            const dir = doc.createElementNS(HTML_NS, "button");
-            dir.className = "wv-sessmenu-sortdir";
-            dir.textContent = dirInfo.arrow;
+            const dir = wvHtmlEl(doc, "button", "wv-sessmenu-sortdir", dirInfo.arrow);
             dir.setAttribute("title", dirInfo.label + " (click to reverse)");
             dir.setAttribute("data-wv-dir", dirInfo.asc ? "asc" : "desc");
             dir.addEventListener("click", (e: any) => {
@@ -1299,17 +1283,10 @@ class _TabSessionsMixin {
             // current session, so this doesn't "save" — it opens a FRESH empty
             // workspace as a new current session; the session you were in stays
             // saved in the list behind you.
-            const save = doc.createElementNS(HTML_NS, "div");
-            save.className = "wv-sessmenu-row";
+            const save = wvHtmlEl(doc, "div", "wv-sessmenu-row");
             save.setAttribute("title", "Open a fresh, empty workspace as a new session (the current session stays saved below)");
-            const plus = doc.createElementNS(HTML_NS, "span");
-            plus.className = "wv-sessmenu-glyph";
-            plus.textContent = "+";
-            save.appendChild(plus);
-            const saveName = doc.createElementNS(HTML_NS, "span");
-            saveName.className = "wv-sessmenu-name";
-            saveName.textContent = "New session";
-            save.appendChild(saveName);
+            const plus = wvHtmlEl(doc, "span", "wv-sessmenu-glyph", "+", save);
+            const saveName = wvHtmlEl(doc, "span", "wv-sessmenu-name", "New session", save);
             save.addEventListener("click", (e: any) => {
                 try {
                     e.stopPropagation();
@@ -1326,7 +1303,7 @@ class _TabSessionsMixin {
                 const isActive = s.id === activeId;
                 const n = this._wvTabSessionCountTabs(s);
                 const expanded = expandedSet.has(s.id);
-                const row = doc.createElementNS(HTML_NS, "div");
+                const row = wvHtmlEl(doc, "div");
                 row.className = "wv-sessmenu-row"
                     + (autoSlot ? " wv-sessmenu-auto" : "")
                     + (isActive ? " wv-sessmenu-active" : "");
@@ -1341,8 +1318,7 @@ class _TabSessionsMixin {
                     + (usedFull ? "\nLast used: " + usedFull : ""));
                 const sid = s.id;
                 // Disclosure twisty (expand to see the tabs). Empty spacer when 0 tabs.
-                const tw = doc.createElementNS(HTML_NS, "span");
-                tw.className = "wv-sessmenu-twisty";
+                const tw = wvHtmlEl(doc, "span", "wv-sessmenu-twisty");
                 if (n > 0) {
                     tw.textContent = expanded ? "▾" : "▸";   // ▾ / ▸
                     tw.setAttribute("title", expanded ? "Collapse" : "Show tabs");
@@ -1355,11 +1331,11 @@ class _TabSessionsMixin {
                     });
                 }
                 row.appendChild(tw);
-                const dot = doc.createElementNS(HTML_NS, "span");
+                const dot = wvHtmlEl(doc, "span");
                 dot.className = "wv-sessmenu-dot";
                 dot.textContent = "S";
                 row.appendChild(dot);
-                const name = doc.createElementNS(HTML_NS, "span");
+                const name = wvHtmlEl(doc, "span");
                 name.className = "wv-sessmenu-name";
                 name.textContent = s.name || "Untitled session";
                 // Sorting on a date: that date under the name (MJT 2026-09-29),
@@ -1368,17 +1344,16 @@ class _TabSessionsMixin {
                 const dateShort = dateKind
                     ? this._wvTabSessionDateLabel(sortMode === "created" ? s.created : this._wvTabSessionUsedAt(s), true) : "";
                 if (dateShort) {
-                    const box = doc.createElementNS(HTML_NS, "span");
-                    box.className = "wv-sessmenu-namebox";
+                    const box = wvHtmlEl(doc, "span", "wv-sessmenu-namebox");
                     box.appendChild(name);
-                    const date = doc.createElementNS(HTML_NS, "span");
+                    const date = wvHtmlEl(doc, "span");
                     date.className = "wv-sessmenu-date";
                     date.textContent = dateKind + " " + dateShort;
                     box.appendChild(date);
                     row.appendChild(box);
                 }
                 else row.appendChild(name);
-                const count = doc.createElementNS(HTML_NS, "span");
+                const count = wvHtmlEl(doc, "span");
                 count.className = "wv-sessmenu-count";
                 const suffix = autoSlot ? " · auto" : "";
                 count.textContent = this._wvTabSessionCountsLabel(this._wvTabSessionCountWindows(s), n) + suffix;
@@ -1402,11 +1377,10 @@ class _TabSessionsMixin {
                 // Tab-Stash–style: each session is a BOX whose title bar is the row
                 // (inside the box, top), with the expanded tabs in the body below —
                 // so the header and its content read as one connected unit.
-                const box = doc.createElementNS(HTML_NS, "div");
-                box.className = "wv-sessscope wv-sessmenu-scope";
+                const box = wvHtmlEl(doc, "div", "wv-sessscope wv-sessmenu-scope");
                 box.appendChild(row);
                 if (n > 0 && expanded) {
-                    const body = doc.createElementNS(HTML_NS, "div");
+                    const body = wvHtmlEl(doc, "div");
                     body.className = "wv-sess-body";
                     this._wvTabSessionRenderTabRows(doc, body, s, panel);
                     box.appendChild(body);
@@ -1542,12 +1516,7 @@ class _TabSessionsMixin {
                                 if (pop) pop.remove();
                                 pop = doc.createXULElement("menupopup");
                                 pop.id = "wv-sesswin-context";
-                                const mk = (lbl: string, fn: any) => {
-                                    const mi = doc.createXULElement("menuitem");
-                                    mi.setAttribute("label", lbl);
-                                    mi.addEventListener("command", () => { try { fn(); } catch (er2) {} });
-                                    pop.appendChild(mi);
-                                };
+                                const mk = (lbl: string, fn: any) => { wvMenuItem(doc, { label: lbl, onCommand: () => fn() }, pop); };
                                 const rec: any = sec.wvRec;
                                 mk("Rename Window…", () => {
                                     lp._wvShowRenameDialog(doc.defaultView, {
@@ -1689,17 +1658,12 @@ class _TabSessionsMixin {
             pop.id = "wv-sessmenu-context";
             const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
             const mk = (label: string, fn: (p: any) => void) => {
-                const mi = doc.createXULElement("menuitem");
-                mi.setAttribute("label", label);
-                mi.addEventListener("command", (ev: any) => {
-                    try {
-                        ev.stopPropagation();
-                        try { panel.hidePopup(); } catch (er) {}
-                        const p: any = live();
-                        if (p) fn(p);
-                    } catch (er) {}
-                });
-                pop.appendChild(mi);
+                wvMenuItem(doc, { label, onCommand: (ev: any) => {
+                    ev.stopPropagation();
+                    try { panel.hidePopup(); } catch (er) {}
+                    const p: any = live();
+                    if (p) fn(p);
+                } }, pop);
             };
             if (!isActive) {
                 mk("Switch to This Session", (p: any) => p._wvTabSessionConfirmSwitch(win, id));
@@ -1728,17 +1692,12 @@ class _TabSessionsMixin {
             pop.id = "wv-cursess-context";
             const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
             const mk = (label: string, fn: (p: any) => void) => {
-                const mi = doc.createXULElement("menuitem");
-                mi.setAttribute("label", label);
-                mi.addEventListener("command", (ev: any) => {
-                    try {
-                        ev.stopPropagation();
-                        try { panel.hidePopup(); } catch (er) {}
-                        const p: any = live();
-                        if (p) fn(p);
-                    } catch (er) {}
-                });
-                pop.appendChild(mi);
+                wvMenuItem(doc, { label, onCommand: (ev: any) => {
+                    ev.stopPropagation();
+                    try { panel.hidePopup(); } catch (er) {}
+                    const p: any = live();
+                    if (p) fn(p);
+                } }, pop);
             };
             if (activeId) {
                 mk("Rename Session…", (p: any) => p._wvTabSessionPromptRename(win, activeId));

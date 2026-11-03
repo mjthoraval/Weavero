@@ -348,6 +348,11 @@ export const PLUGIN_CSS = [
     // in "…": an overflowing line is start-aligned (CSS Text 3, 7.1).
     ".virtualized-table .cell.wv-count-cell, .cell.wv-count-cell { text-align: center; }",
     ".wv-count-list { max-height: min(60vh, 460px); overflow-y: auto; }",
+    // A count popup scrolls in one place, its list: the shared container's
+    // 400-px cap (the comment popup's, below) nested a second scroller
+    // around the 460-px list, and the header scrolled away (MJT 2026-11-03,
+    // "Why 2 scrollbars?").
+    ".wv-popup-container.wv-count-popup { max-height: none; overflow: visible; }",
     ".wv-count-group { display: flex; flex-direction: column; gap: 1px; }",
     ".wv-count-group + .wv-count-group { margin-top: 4px; }",
     // The Related popup's rows at the item pane Related section's geometry

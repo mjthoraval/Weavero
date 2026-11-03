@@ -508,6 +508,31 @@ describe("Weavero — clickable column counts open a popup of what was counted",
         closePanel();
     });
 
+    // MJT 2026-11-03 (screenshot of the 19-Backlinks popup): "Why 2
+    // scrollbars?" -> "Go". The popup's container keeps the comment popup's
+    // 400-px cap (.wv-popup-container) while a count popup's list scrolls
+    // inside it at up to 460 px: the list and its header no longer fit, and
+    // the container scrolled too, moving the header out of view. In a count
+    // popup only the list scrolls now; the comment popup keeps its cap.
+    // FAILED on 1.0.0-beta.2-dev.3.
+    it("a count popup scrolls in one place, its list: the container keeps no height cap of its own", function () {
+        closePanel();
+        wv._wvOpenCountPopup("backlinks", P.id, { anchorNode: doc.documentElement, scope: "subtree", win });
+        const box = panel().querySelector(".wv-popup-container.wv-count-popup");
+        const list = panel().querySelector(".wv-count-list");
+        assert.isOk(box && list, "the count popup's container and list");
+        const cs = win.getComputedStyle(box), ls = win.getComputedStyle(list);
+        assert.strictEqual(cs.maxHeight, "none", "no cap on the container");
+        assert.include(["visible", "clip"], cs.overflowY, "the container never scrolls: " + cs.overflowY);
+        assert.include(["auto", "scroll"], ls.overflowY, "the list scrolls");
+        assert.notStrictEqual(ls.maxHeight, "none", "within its own cap");
+        closePanel();
+        wv.openCommentPopup("a comment", { anchorNode: doc.documentElement });
+        const cbox = panel().querySelector(".wv-popup-container");
+        assert.strictEqual(win.getComputedStyle(cbox).maxHeight, "400px", "the comment popup keeps its 400-px scroll");
+        closePanel();
+    });
+
     // MJT 2026-10-29 (screenshot of a Related popup, the rows under "This
     // item" bracketed: "I would like to make the structure more clear: can
     // you add a vertical line like in the collections pane?"): a heading's

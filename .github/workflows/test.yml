@@ -117,5 +117,23 @@ jobs:
           echo "ZOTERO_PLUGIN_ZOTERO_BIN_PATH=$exe" >> "$GITHUB_ENV"
           echo "ZOTERO_SETUP_COMPLETE=1" >> "$GITHUB_ENV"
 
+      # A job passes only when the suite says so at its end. The scaffold
+      # exits 0 whenever Zotero closes, unless a test had already failed
+      # (scaffold-src-*.mjs ~4399-4406): in the first six-job run
+      # (41649386843) three jobs were "green" with no summary line -- Windows
+      # beta stopped after 101 tests, both macOS jobs after ~1300 (the
+      # 2026-11-03 study, work/zotero-release-ci-study-2026-11-03.md; Zotero's
+      # own runner passes only on a `success` file written at the end,
+      # test/runtests.sh). The summary line is required, without failures.
       - name: Run tests
-        run: npm test
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee "$RUNNER_TEMP/wv-test.log"
+          summary="$(grep -a -o 'Test run completed - [0-9]* passed[^[:cntrl:]]*' "$RUNNER_TEMP/wv-test.log" | tail -n 1 || true)"
+          echo "summary: ${summary:-none}"
+          if [ -z "$summary" ]; then
+            echo "::error::The suite did not finish: Zotero closed before the end of the run (no 'Test run completed' line)."
+            exit 1
+          fi
+          case "$summary" in *failed*) echo "::error::$summary"; exit 1;; esac

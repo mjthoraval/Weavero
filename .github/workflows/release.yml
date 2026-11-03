@@ -58,6 +58,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # The scaffold's update check off: a rate-limited answer crashes the
+      # CLI before the build (ci/prepare.mjs).
+      - name: Prepare (no outside downloads)
+        run: node ci/prepare.mjs
+
       - name: Type-check (regression gate)
         run: npm run typecheck
 

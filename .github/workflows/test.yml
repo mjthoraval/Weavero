@@ -14,10 +14,19 @@ name: Test
 on:
   # Main only: a release tag sits on a commit this has already passed, and
   # release.yml checks that run instead of starting another (2026-11-03).
+  # A push that changes only documentation starts no run (a release bump
+  # touches package.json, so the release gate still finds its run).
   push:
     branches: [main]
+    paths-ignore: ["docs/**", "**/*.md"]
   pull_request:
     branches: [main]
+    paths-ignore: ["docs/**", "**/*.md"]
+  # Weekly, against whatever Zotero release and beta are then: no Test run
+  # happened from 10-26 to 11-03 while Zotero 10.0.7 shipped on 10-29
+  # (the 2026-11-03 study, recommendation 4). Mondays 04:00 UTC.
+  schedule:
+    - cron: "0 4 * * 1"
   # Manual trigger from the Actions tab — handy when you want to
   # re-run after a flaky failure without pushing an empty commit.
   workflow_dispatch:
@@ -57,15 +66,31 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
+        id: node
         with:
           node-version: lts/*
           cache: npm
+
+      # node_modules kept per system, Node version and lockfile, as Zotero
+      # caches its own (its ci.yml): `npm ci` took ~3 min of each Windows job.
+      - name: Cache node_modules
+        id: nm
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: node-modules-${{ runner.os }}-${{ steps.node.outputs.node-version }}-${{ hashFiles('package-lock.json') }}
 
       # `npm ci` honours the lockfile exactly — fails fast if the
       # lockfile and package.json have drifted, which is what we
       # want for reproducible CI runs.
       - name: Install dependencies
+        if: steps.nm.outputs.cache-hit != 'true'
         run: npm ci
+
+      # No download but Zotero's: the scaffold's update check off, the
+      # pinned chai.js in place (ci/prepare.mjs, ci/README.md).
+      - name: Prepare (no outside downloads)
+        run: node ci/prepare.mjs
 
       # Platform-independent: once, on one job.
       - name: Type-check (tsc --noEmit)
@@ -137,3 +162,29 @@ jobs:
             exit 1
           fi
           case "$summary" in *failed*) echo "::error::$summary"; exit 1;; esac
+
+      # The run's log and the suite's quit trace (test/000-helpers.spec.js
+      # writes every quit request with its JS stack, and every window close,
+      # to the OS temp folder): kept with each job, red or green, to see why
+      # Zotero closed mid-suite (both macOS jobs at the reader-window wiring
+      # spec, 2026-11-03).
+      - name: Collect the run's logs
+        if: always()
+        shell: bash
+        run: |
+          out="$RUNNER_TEMP/wv-artifacts"
+          mkdir -p "$out"
+          cp "$RUNNER_TEMP/wv-test.log" "$out/" 2>/dev/null || true
+          for d in "${TMPDIR:-}" "${TEMP:-}" /tmp; do
+            if [ -n "$d" ] && [ -f "$d/wv-test-quit-trace.txt" ]; then cp "$d/wv-test-quit-trace.txt" "$out/"; break; fi
+          done
+          ls -la "$out"
+
+      - name: Upload the run's logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ matrix.label }}-${{ matrix.channel }}
+          path: ${{ runner.temp }}/wv-artifacts
+          if-no-files-found: warn
+          retention-days: 14

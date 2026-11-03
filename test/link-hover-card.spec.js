@@ -245,6 +245,33 @@ describe("Weavero — the hover card on links in notes and annotation comments",
         finally { probe.remove(); try { wv._wvLkHoverCardHide(doc.documentElement); } catch (e) {} }
     });
 
+    // MJT 2026-11-03 (screenshot): "Cards have the same background as the
+    // item pane. Can you suggest something better?" -> option A, "Try A":
+    // Zotero's raised surface, --material-button (#404040 dark, white
+    // light), over the pane's --material-sidepane, inside Zotero's popup
+    // border (--material-border); the discs behind the arrow's icons paint
+    // the card's colour. FAILED on dev.173 (the pane's own colour).
+    it("the card is a raised surface: Zotero's button material inside its popup border, the arrow's discs alike", async function () {
+        await ZP.selectItem(N.id);
+        const edoc = await wvT.waitFor(() => { try { wv._processNoteEditors(); } catch (e) {} const d = editorDoc(); return d && d.querySelector('a[href^="zotero://"], [data-wv-href^="zotero://"]') ? d : null; }, 45000, 500);
+        assert.isOk(edoc, "the note's editor");
+        assert.isTrue(wv._wvLkHoverCardShow(edoc.querySelector('a[href^="zotero://"], [data-wv-href^="zotero://"]'), N));
+        const cd = shown();
+        const probes = [];
+        const probe = (css) => { const p = doc.createElementNS("http://www.w3.org/1999/xhtml", "div"); p.style.cssText = "position:fixed;left:-99px;top:0;width:4px;height:4px;" + css; doc.documentElement.appendChild(p); probes.push(p); return win.getComputedStyle(p); };
+        try {
+            const btn = probe("background: var(--material-button)"), side = probe("background: var(--material-sidepane)"), bord = probe("border: var(--material-border)");
+            const cs = win.getComputedStyle(cd);
+            assert.notStrictEqual(btn.backgroundColor, side.backgroundColor, "Zotero's two materials differ in this theme");
+            assert.strictEqual(cs.backgroundColor, btn.backgroundColor, "the card paints Zotero's button material");
+            assert.strictEqual(cs.borderTopColor, bord.borderTopColor, "inside Zotero's popup border");
+            const disc = cd.querySelector(".wv-bl-card-icon-bg");
+            assert.isOk(disc, "the kind mark's disc on the arrow");
+            assert.strictEqual(win.getComputedStyle(disc).fill, btn.backgroundColor, "the disc paints the card's colour");
+        }
+        finally { for (const p of probes) p.remove(); wv._wvLkHoverCardHide(edoc.body); }
+    });
+
     // MJT 2026-11-03 ("Have you gated the new Links and Backlinks features
     // behind a toggle in the settings, so that users who don't like it can
     // disable it?" -> "Ok for the fixes you recommend"): the card is the

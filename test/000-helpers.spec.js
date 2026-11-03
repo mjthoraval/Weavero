@@ -425,6 +425,7 @@
     // synchronously, to <temp>/wv-test-quit-trace.txt -- observers only: a
     // probe that wrapped window.close() changed the timing and the quit
     // stopped happening.
+    let traceWrite = (line) => {};
     try {
         const tracePath = PathUtils.join(PathUtils.tempDir, "wv-test-quit-trace.txt");
         const write = (line) => {
@@ -439,6 +440,7 @@
             } catch (e) {}
         };
         const stack = () => { try { return String(new Error().stack).split("\n").slice(1, 14).join(" | "); } catch (e) { return "?"; } };
+        traceWrite = write;
         write("RUN START");
         for (const t of ["quit-application-requested", "quit-application-granted", "last-window-closing"]) {
             Services.obs.addObserver({ observe: (s, topic, data) => write("OBS " + topic + " data=" + data + " :: " + stack()) }, t);
@@ -488,6 +490,26 @@
     after(async function () {
         // Temp files the helpers created.
         for (const p of tempFiles.splice(0)) { try { await IOUtils.remove(p); } catch (e) {} }
+    });
+
+    // Memory growth, by test: the parent process's resident size after each
+    // test, a line in the quit trace whenever it grew by 64 MB or more since
+    // the last test ("MEMGROW +<delta> <now> MB :: <test>"). The CI runners'
+    // Zotero reached 5-11 GB over a run (2026-11-03: Ubuntu beta 10.7 GB,
+    // Windows' second half 7.9 GB, macOS 6 GB -- where a 7 GB runner killed
+    // it, silently); which tests grow it is the question.
+    let memLast = 0;
+    afterEach(async function () {
+        let now = 0;
+        try { now = Math.round(((await ChromeUtils.requestProcInfo()).memory || 0) / 1048576); } catch (e) { return; }
+        const d = now - memLast;
+        if (memLast && d >= 64) {
+            const t = this.currentTest;
+            const line = "MEMGROW +" + d + " " + now + " MB :: " + (t ? t.fullTitle() : "?");
+            try { Zotero.debug("[wv-test] " + line); } catch (e) {}
+            traceWrite(line);
+        }
+        memLast = now;
     });
 
     // A retried attempt (wvT.ciRetries), logged as it ends: which test, which

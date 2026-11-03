@@ -59,24 +59,36 @@ jobs:
       # One red job never cancels the others: each system and channel
       # reports on its own.
       fail-fast: false
-      # Windows (~15 min) and macOS (17-22 min) run in two shards each
-      # (WV_TEST_SHARD, zotero-plugin.config.ts: contiguous, size-balanced
-      # slices of the spec files, the 000- helpers in each); Ubuntu (~8 min)
-      # runs whole. Ten jobs, four on macOS (GitHub's free plan: 20, of which
-      # 5 macOS; the 2026-11-03 study, recommendation 7). `part` names the
-      # shard where a "/" cannot go (the logs' artifact).
+      # Shards (WV_TEST_SHARD, zotero-plugin.config.ts: contiguous,
+      # size-balanced slices of the spec files, the 000- helpers in each;
+      # the 2026-11-03 study, recommendation 7) -- for time, and since
+      # 2026-11-04 for MEMORY: Zotero's reader keeps ~90 MB per reader tab
+      # or window opened and closed (Zotero's, measured with Weavero
+      # disabled), so a run's Zotero grows by gigabytes -- 10.7 GB on a
+      # whole Ubuntu run, 7.9 GB on a Windows half, and a macOS half was
+      # killed at 6 GB (macos-latest has 7 GB of RAM, the others 16). Two
+      # shards per Ubuntu and Windows job, four per macOS job: ~3 GB at
+      # worst. Sixteen jobs, eight on macOS (GitHub's free plan runs 20 at
+      # once, 5 of them macOS: the rest queue, ~5 min each). `part` names
+      # the shard where a "/" cannot go (the logs' artifact).
       matrix:
         include:
-          - { os: ubuntu-latest, label: Ubuntu, channel: release, experimental: false, shard: "", part: "" }
-          - { os: ubuntu-latest, label: Ubuntu, channel: beta, experimental: false, shard: "", part: "" }
+          - { os: ubuntu-latest, label: Ubuntu, channel: release, experimental: false, shard: "1/2", part: "-1of2" }
+          - { os: ubuntu-latest, label: Ubuntu, channel: release, experimental: false, shard: "2/2", part: "-2of2" }
+          - { os: ubuntu-latest, label: Ubuntu, channel: beta, experimental: false, shard: "1/2", part: "-1of2" }
+          - { os: ubuntu-latest, label: Ubuntu, channel: beta, experimental: false, shard: "2/2", part: "-2of2" }
           - { os: windows-latest, label: Windows, channel: release, experimental: false, shard: "1/2", part: "-1of2" }
           - { os: windows-latest, label: Windows, channel: release, experimental: false, shard: "2/2", part: "-2of2" }
           - { os: windows-latest, label: Windows, channel: beta, experimental: false, shard: "1/2", part: "-1of2" }
           - { os: windows-latest, label: Windows, channel: beta, experimental: false, shard: "2/2", part: "-2of2" }
-          - { os: macos-latest, label: macOS, channel: release, experimental: true, shard: "1/2", part: "-1of2" }
-          - { os: macos-latest, label: macOS, channel: release, experimental: true, shard: "2/2", part: "-2of2" }
-          - { os: macos-latest, label: macOS, channel: beta, experimental: true, shard: "1/2", part: "-1of2" }
-          - { os: macos-latest, label: macOS, channel: beta, experimental: true, shard: "2/2", part: "-2of2" }
+          - { os: macos-latest, label: macOS, channel: release, experimental: true, shard: "1/4", part: "-1of4" }
+          - { os: macos-latest, label: macOS, channel: release, experimental: true, shard: "2/4", part: "-2of4" }
+          - { os: macos-latest, label: macOS, channel: release, experimental: true, shard: "3/4", part: "-3of4" }
+          - { os: macos-latest, label: macOS, channel: release, experimental: true, shard: "4/4", part: "-4of4" }
+          - { os: macos-latest, label: macOS, channel: beta, experimental: true, shard: "1/4", part: "-1of4" }
+          - { os: macos-latest, label: macOS, channel: beta, experimental: true, shard: "2/4", part: "-2of4" }
+          - { os: macos-latest, label: macOS, channel: beta, experimental: true, shard: "3/4", part: "-3of4" }
+          - { os: macos-latest, label: macOS, channel: beta, experimental: true, shard: "4/4", part: "-4of4" }
 
     steps:
       - uses: actions/checkout@v7

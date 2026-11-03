@@ -260,4 +260,33 @@ describe("Weavero — popup infrastructure", () => {
             expect(wv._attachOutsideClickDismiss.toString()).to.include("wvOutsideClick");
         });
     });
+
+    // -------- 5. No tooltip over an open popup ------------------------
+
+    // MJT 2026-11-03 (screenshot: an annotation row's Related icon clicked,
+    // its "1 Related" tooltip drawn over the popup's header): "avoid having
+    // the tooltip appear on top of that window". While the popup is open, a
+    // tooltip whose trigger is outside it is refused at its popupshowing
+    // (the pointer still rests on the icon that opened it); the popup's own
+    // titles keep theirs. FAILED on 1.0.0-beta.2-dev.2.
+    describe("no tooltip over an open popup", () => {
+        it("a tooltip from outside the open popup is refused, one from inside it and any once it is closed shown", function () {
+            expect(wv._wvPanelTooltipVeto, "the veto").to.be.a("function");
+            const main = Zotero.getMainWindow();
+            const doc = main.document;
+            const anchor = doc.documentElement;
+            wv.openCommentPopup("test comment", { anchorNode: anchor });
+            /** @type {any} */
+            const panel = doc.getElementById("weavero-panel");
+            try {
+                expect(panel.style.display).to.equal("block");
+                const outside = doc.getElementById("zotero-items-tree") || doc.documentElement;
+                expect(wv._wvPanelTooltipVeto(doc, outside), "a trigger outside the popup").to.equal(true);
+                expect(wv._wvPanelTooltipVeto(doc, panel.firstElementChild || panel), "a trigger inside it").to.equal(false);
+                expect(lib.wvListenKeys(doc).map((k) => k.key), "wired on the document").to.include("lazy:panelTooltip:popupshowing");
+            }
+            finally { try { panel.hidePopup(); } catch (e) {} }
+            expect(wv._wvPanelTooltipVeto(doc, doc.documentElement), "the popup closed").to.equal(false);
+        });
+    });
 });

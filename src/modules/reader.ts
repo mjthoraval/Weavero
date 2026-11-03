@@ -403,7 +403,30 @@ class _ReaderMixin {
                 cur.hidePopup();
             }
         }, false, (this as any)._wvWireTag());
+        // No tooltip over the open popup (MJT 2026-11-03, a Related icon's
+        // "1 Related" drawn over the popup it had just opened -- the pointer
+        // still rests on the icon): a tooltip whose trigger is outside the
+        // popup is refused at its popupshowing, on the document, ahead of the
+        // tooltip's own handler; the popup's own titles keep theirs.
+        wvListen(doc, "lazy:panelTooltip:popupshowing", "popupshowing", (e: any) => {
+            try {
+                const t = e.target;
+                if (!t || t.localName !== "tooltip") return;
+                const lp: any = wvLivePlugin();
+                if (lp && lp._wvPanelTooltipVeto(doc, t.triggerNode)) e.preventDefault();
+            } catch (err) {}
+        }, true, (this as any)._wvWireTag());
         return panel;
+    }
+
+    /** Whether a tooltip triggered on `trigger` would land over Weavero's
+     *  open popup in `doc`: the popup shown and the trigger outside it. */
+    _wvPanelTooltipVeto(doc: any, trigger: any): boolean {
+        try {
+            const p = doc && doc.getElementById(PANEL_ID);
+            if (!p || p.style.display === "none") return false;
+            return !(trigger && p.contains(trigger));
+        } catch (e) { return false; }
     }
 
     _makeLink(doc, url, panel, label?) {

@@ -556,8 +556,12 @@ describe("Weavero — clickable column counts open a popup of what was counted",
                 assert.strictEqual(g.top, "-1px", what + ": across the gap above the row");
                 assert.strictEqual(g.bottom, "0px", what + ": down to the row's end");
                 // Gecko serialises a color-mix() as "color(srgb r g b / a)".
-                const m = g.backgroundColor.match(/(?:rgba\((?:[^,]*,){3}|\/)\s*([\d.]+)\)$/);
-                assert.closeTo(m ? parseFloat(m[1]) : 1, 0.22, 0.01, what + ": the collections guide's 22%: " + g.backgroundColor);
+                const alphaOf = (c) => { const x = String(c).match(/(?:rgba\((?:[^,]*,){3}|\/)\s*([\d.]+)\)$/); return x ? parseFloat(x[1]) : 1; };
+                // 22% of the text colour, itself translucent in some themes
+                // (the macOS runner's light theme: 0.186 = 22% of ~0.85 black,
+                // 2026-11-03; opaque on this machine's dark theme).
+                const want = 0.22 * alphaOf(win.getComputedStyle(k).color);
+                assert.closeTo(alphaOf(g.backgroundColor), want, 0.01, what + ": the collections guide's 22% of the text colour: " + g.backgroundColor + " over " + win.getComputedStyle(k).color);
             }
         };
         closePanel();

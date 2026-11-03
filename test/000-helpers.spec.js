@@ -20,6 +20,18 @@
     const wvT = {
         /** The live plugin, or null. */
         plugin() { return (Zotero.Weavero && Zotero.Weavero.plugin) || null; },
+        /** On CI only, up to `n` more attempts for a test known to flake
+         *  there (call with the test's or the suite's `this`), as Zotero's
+         *  runner retries (`runtests.sh -r 3`; the 2026-11-03 study,
+         *  recommendation 3). Every retry is logged ("[wv-test] retry", the
+         *  root afterEach below) and counted in the run's closing line. Keep
+         *  the list short: a retry can hide a real intermittent bug unless
+         *  the log is read. A hook's failure is never retried. */
+        ciRetries(ctx, n = 2) {
+            try { if (Services.env.exists("CI") && ctx && typeof ctx.retries === "function") ctx.retries(n); } catch (e) {}
+        },
+        /** Titles of the tests that needed a retry in this run. */
+        retried: [],
         /** The shared helpers the plugin publishes (src/lib), or null. */
         lib() { return (Zotero.Weavero && Zotero.Weavero.lib) || null; },
         win() { return Zotero.getMainWindow(); },
@@ -469,6 +481,21 @@
         for (const p of tempFiles.splice(0)) { try { await IOUtils.remove(p); } catch (e) {} }
     });
 
+    // A retried attempt (wvT.ciRetries), logged as it ends: which test, which
+    // attempt, how it went -- Zotero's runner prints "(passed on retry N)".
+    afterEach(function () {
+        // `currentRetry()` is public in Mocha, protected in its typings.
+        const t = /** @type {any} */ (this.currentTest);
+        let k = 0;
+        try { k = t && typeof t.currentRetry === "function" ? t.currentRetry() : 0; } catch (e) {}
+        if (!k) return;
+        const title = t.fullTitle();
+        if (wvT.retried.indexOf(title) < 0) wvT.retried.push(title);
+        const line = "[wv-test] retry " + k + " (" + (t.state || "?") + "): " + title;
+        try { Zotero.debug(line); } catch (e) {}
+        try { if (typeof globalThis.debug === "function") globalThis.debug(line); } catch (e) {}
+    });
+
     after(function () {
         // Every pending test must be on the allowlist: the suite used to skip
         // silently exactly when a regression removed what a spec needed.
@@ -487,7 +514,8 @@
         const unlisted = pending.filter(title => !wvT.PENDING_ALLOWLIST.some(a => a.re.test(title)));
         // Into the scaffold's log (its `debug` channel), so a run's pending
         // tally is visible next to the pass/fail count.
-        const line = "[wv-test] pending: " + pending.length + ", allowlisted: " + (pending.length - unlisted.length) + ", unlisted: " + unlisted.length;
+        const line = "[wv-test] pending: " + pending.length + ", allowlisted: " + (pending.length - unlisted.length) + ", unlisted: " + unlisted.length
+            + ", retried: " + wvT.retried.length;
         try { Zotero.debug(line); } catch (e) {}
         try { if (typeof globalThis.debug === "function") globalThis.debug(line); } catch (e) {}
         if (unlisted.length) {

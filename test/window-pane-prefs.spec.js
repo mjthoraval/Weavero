@@ -23,7 +23,12 @@ describe("Weavero — pinned section and open sections per main window", functio
         const w = await wv._wvSpawnMainWindowWait(s, { wait: "init", timeoutMs: 25000, timerWin: win, dropOnTimeout: true });
         assert.isOk(w, "a new main window");
         opened.push(w);
-        await wvT.waitFor(() => det(w) && det(w)._paneParent && tags(w), 5000);
+        // Its collections view too: selectItem throws "Collections view not
+        // loaded" until ZoteroPane has built it (zoteroPane.js selectItems),
+        // which "init" does not wait for -- the before hook failed so on the
+        // Windows CI runners (2026-11-03, Zotero beta and stable).
+        const ready = await wvT.waitFor(() => w.ZoteroPane && w.ZoteroPane.collectionsView && det(w) && det(w)._paneParent && tags(w), 15000);
+        assert.isOk(ready, "the new window's collections view and item pane");
         return w;
     }
 

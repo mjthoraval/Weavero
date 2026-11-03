@@ -71,8 +71,12 @@ describe("Weavero — WV-TEMP-134490: a preview page that loads after the cutoff
         await wvT.waitFor(() => (box._item && box._item.id === P.id) || null, 10000);
     });
 
-    it("the live preview's page is fitted: a page ratio and 'page-height'", function () {
-        assert.isTrue(Number.isFinite(reader.getPageWidthHeightRatio()), "the first page's ratio");
+    it("the live preview's page is fitted: a page ratio and 'page-height'", async function () {
+        // Read once the page has its ratio: the local Zotero 11 suite read it
+        // before the first page had laid out (2026-11-03, green on all three
+        // CI beta jobs the same day).
+        const fit = await wvT.waitFor(() => Number.isFinite(reader.getPageWidthHeightRatio()) || null, 5000);
+        assert.isOk(fit, "the first page's ratio: " + reader.getPageWidthHeightRatio());
         const viewer = reader._internalReader._primaryView._iframeWindow.PDFViewerApplication.pdfViewer;
         assert.strictEqual(viewer.currentScaleValue, "page-height");
     });

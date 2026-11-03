@@ -16,6 +16,10 @@ name: Release
 #      It does not run the suite again (MJT 2026-11-03: the release run's
 #      single Ubuntu pass repeated what test.yml had just checked on six
 #      jobs, and cost ~10 minutes).
+#   4. It publishes the release and its XPI but leaves the update
+#      manifests alone (WV_RELEASE_STAGE): nobody is offered it yet. Install
+#      the published XPI, check it, then run flip.yml on the tag to switch
+#      the manifests on (2026-11-03, "stage, then flip").
 
 on:
   workflow_dispatch:
@@ -98,3 +102,6 @@ jobs:
           # — the tag has already determined the version.
           NODE_ENV: production
           CI: "true"
+          # Stage only: the release and its XPI, not the update manifests
+          # (zotero-plugin.config.ts); flip.yml switches them on afterwards.
+          WV_RELEASE_STAGE: "1"

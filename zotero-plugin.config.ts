@@ -177,6 +177,12 @@ export default defineConfig({
       // bug). "always" enables both CI runs and local
       // `npm run release` invocations.
       enable: "always",
+      // Stage, then flip (2026-11-03): release.yml publishes the release
+      // and its XPI with WV_RELEASE_STAGE=1, leaving the update manifests
+      // on the rolling `release` tag as they are; flip.yml writes them for
+      // the published XPI once it has been checked. Without the variable
+      // (a local `npm run release`), the scaffold's own refresh.
+      updater: process.env.WV_RELEASE_STAGE === "1" ? false : "release",
       // No custom `releaseNote` — fall back to the scaffold default
       // (`ctx => ctx.release.changelog`), which is changelogen's
       // convention-based changelog grouped by type (🚀 Enhancements,

@@ -1,0 +1,55 @@
+name: Switch on
+
+# The second step of a release (2026-11-03, "stage, then flip"; the
+# maintainer's /release skill, step 5). release.yml publishes the GitHub
+# release and its weavero.xpi but leaves the update manifests alone, so no
+# installed copy updates yet. Once that XPI has been installed from the
+# release and checked, run this on the tag: it writes update-beta.json (and,
+# for a release, update.json) for the XPI that is on the release -- its own
+# sha512, not a rebuild's -- and replaces them on the rolling `release` tag.
+# To stop a bad release spreading, run it on the previous good tag.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag whose XPI the manifests should offer (e.g. v1.0.0-beta.2)"
+        required: true
+
+permissions:
+  contents: write     # upload the manifests to the `release` tag
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  flip:
+    name: Switch the update manifests to the tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+
+      - name: Download the published XPI
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/flip"
+          gh release download "${{ github.event.inputs.tag }}" --repo "$GITHUB_REPOSITORY" --pattern weavero.xpi --dir "$RUNNER_TEMP/flip"
+          unzip -p "$RUNNER_TEMP/flip/weavero.xpi" manifest.json > "$RUNNER_TEMP/flip/manifest.json"
+
+      - name: Write the manifests for it
+        run: node ci/flip-manifest.mjs "$RUNNER_TEMP/flip/weavero.xpi" "$RUNNER_TEMP/flip/manifest.json" "${{ github.event.inputs.tag }}" "$RUNNER_TEMP/flip/out"
+
+      - name: Replace them on the release tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload release "$RUNNER_TEMP"/flip/out/update*.json --repo "$GITHUB_REPOSITORY" --clobber
+          for f in "$RUNNER_TEMP"/flip/out/update*.json; do echo "== $(basename "$f")"; cat "$f"; done

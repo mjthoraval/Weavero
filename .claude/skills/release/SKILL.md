@@ -76,8 +76,21 @@ is allowed; plain `--force` and `reset --hard` are not.
 git push origin main      # test.yml: Ubuntu, Windows, macOS x Zotero stable, beta
 gh run watch <that test.yml run id> --exit-status    # in the BACKGROUND
 git push origin vX.Y.Z    # starts no workflow
-gh workflow run release.yml -f tag=vX.Y.Z   # checks test.yml green on the tag's commit, builds, publishes
+gh workflow run release.yml -f tag=vX.Y.Z   # checks test.yml green on the tag's commit, builds, publishes -- manifests untouched
+# install the PUBLISHED weavero.xpi (gh release download vX.Y.Z -p weavero.xpi)
+# into the dev profile, force-reload, check version + a live feature, then:
+gh workflow run flip.yml -f tag=vX.Y.Z      # switches update-beta.json (and update.json for a release) to that XPI
 ```
+
+Stage, then flip (2026-11-03, the CI study's recommendation 6, Zotero's own
+"uploads ... but does not make the build live"): release.yml publishes the
+release with `WV_RELEASE_STAGE=1`, so the scaffold leaves the rolling
+`release` tag's manifests alone and nobody is offered the version yet.
+flip.yml writes the manifests for the XPI that is ON the release (its own
+sha512; ci/flip-manifest.mjs, checked to reproduce the 1.0.0-beta.1
+manifest exactly) -- a beta to `update-beta.json` only, a release to both.
+A broken XPI never reaches auto-update. The flip is the outward step that
+reaches users: it waits for the maintainer's word like the push.
 
 Main goes up FIRST and the tag only once test.yml is green: test.yml is
 the first CI run of every spec recorded or timed on the maintainer's
@@ -93,11 +106,12 @@ the maintainer at each step -- never chained 10-minute foreground waits
 (1.0.0-beta.1: "You should be replying to me faster").
 
 Monitor the run to conclusion (typecheck + the test.yml check + build +
-publish). Then verify: release exists with `weavero.xpi` attached, and the
-rolling `release` tag serves the new version -- `update.json` for a
-release; for a pre-release (a version with "-": the scaffold writes only
-`update-beta.json`, and the XPI's update_url points there), `update-beta.json`
-carries it and `update.json` still the last release.
+publish). Then verify: release exists with `weavero.xpi` attached and the
+manifests still on the previous version; after flip.yml, the rolling
+`release` tag serves the new version -- `update.json` for a release; for a
+pre-release (a version with "-", whose XPI's update_url points at
+`update-beta.json`), `update-beta.json` carries it and `update.json` still
+the last release.
 
 ## 6. Hand-edit the release notes
 
@@ -114,3 +128,28 @@ vX.Y.Z --notes-file …`.
 - Update the tracking registers whose entries just shipped.
 - Interim tags swallow commits from the next release's notes — don't create
   tags between releases.
+
+## 8. A bad release
+
+Plugin updates only move forward: the add-on update checker Zotero takes
+from Mozilla offers a version only when it is higher than the installed
+one, so a release cannot be withdrawn from users who already have it. Recovery is a fast next version, as Zotero itself
+does (10.0.3 eight days after 10.0.2 fixed what 10.0.2 broke; the
+2026-11-03 study). In order:
+
+1. **Stop the spread** (minutes): `gh workflow run flip.yml -f tag=<last
+   good tag>` -- the manifests offer the previous version again, so no new
+   install updates to the bad one. For a bad beta, the last good beta (or
+   the last release) on `update-beta.json`; `update.json` is untouched by a
+   beta. Users already on the bad version keep it until step 3.
+2. **Say so**: a pinned issue and, for a release, the release notes'
+   first line ("Withdrawn: do not install; X.Y.Z+1 follows"). Mark the
+   GitHub release a pre-release so README's "latest" link skips it
+   (`gh release edit vX.Y.Z --prerelease`). Outward: on the maintainer's
+   word.
+3. **Fix forward**: the fix on `main` (or, if `main` has moved on with
+   unreleased work, a `hotfix-X.Y.Z+1` branch from the bad tag carrying the
+   fix alone), the next patch version through this skill, gates included,
+   then flip.yml on it. Installed copies update to it.
+4. **Record it** in the mistakes ledger and the tracking registers: what
+   broke, which gate should have caught it, the guard added.

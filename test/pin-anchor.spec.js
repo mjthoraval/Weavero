@@ -82,10 +82,16 @@ describe("Weavero — WV-TEMP-134569: the pinned section stays at the top while 
 
     it("once the user has scrolled elsewhere, nothing is held in place", async function () {
         await pinTags();
-        pp.scrollTop = Math.max(0, pp.scrollTop - 200);
+        // Up by up to 200 px, as far as the pane lets: on the 1.0.0-beta.1
+        // CI's Windows runner Tags sat 103 px down, so a fixed 150-px
+        // expectation failed while the behaviour held (2026-11-03).
+        const s0 = pp.scrollTop;
+        pp.scrollTop = Math.max(0, s0 - 200);
         await settle();
+        const moved = s0 - pp.scrollTop;
+        assert.isAtLeast(moved, 50, "the user scrolled away from the pinned section: " + moved + " px");
         const t0 = top("tags");
-        assert.isAtLeast(t0, 150, "Tags scrolled down the pane by the user: " + t0);
+        assert.approximately(t0, moved, 2, "Tags scrolled down the pane by the user: " + t0);
         probeIn(300);
         await settle();
         assert.isAtLeast(top("tags") - t0, 290, "the growth moved Tags, as the user's scroll position stands: " + top("tags"));

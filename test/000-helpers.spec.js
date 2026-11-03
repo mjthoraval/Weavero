@@ -352,9 +352,17 @@
          *  still checks the Windows-only keys. */
         wiringNormalize(rec) {
             const winOnly = /^(_wvOv|_wvPrevWinIcons|_wvWinIconName|_wvRedoKeyH)|^listen ovFollow:/;
+            // The item pane's section state, there once Zotero has rendered
+            // a window's Item Links / Backlinks sections -- a lazy render
+            // (itemDetails asyncRender, while in view): the section menu's
+            // "Reset Filters to Default" and its separator, and the window's
+            // header filter. Wired on the 1.0.0-beta.1 CI's Windows runner,
+            // not yet on the machine that recorded (2026-11-03); pane-scope.
+            // spec.js holds both.
+            const lazyPane = /^(wv-scope-menu-(reset|sep)( x\d+)?|_wvScopeFilters:object)$/;
             const fixStr = (s) => typeof s === "string" ? s.replace(/menu_fileQuitItem(Win|Unix)/g, "menu_fileQuitItem") : s;
             const keep = (s) => typeof s !== "string"
-                || !(/^wv-ui-dark( x\d+)?$/.test(s) || (!Zotero.isWin && winOnly.test(s)));
+                || !(/^wv-ui-dark( x\d+)?$/.test(s) || lazyPane.test(s) || (!Zotero.isWin && winOnly.test(s)));
             const walk = (v) => {
                 if (Array.isArray(v)) return v.filter(keep).map(fixStr).map(walk);
                 if (v && typeof v === "object") {

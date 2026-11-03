@@ -81,7 +81,12 @@ paths:
   computes it from where the element is now, never from a whole-pixel
   start -- after an earlier spec opened a reader tab the item pane started
   at .7 and item-pane-creep.spec.js's `floor(h) + 0.5` header landed its
-  scroller on .2 (2026-10-28; passed alone, failed in sequence).
+  scroller on .2 (2026-10-28; passed alone, failed in sequence). After a
+  scroll, assert where the element IS relative to what the check needs
+  (off the top, in view), never a distance taken from the scroll asked
+  for: the pane may clamp it or re-lay itself out (pin-anchor.spec.js
+  asked 200 px back; Tags settled 103 px down on both 1.0.0-beta.1 CI
+  runners, red twice, 2026-11-03).
 - A RECORDED characterization (an EXPECTED literal from a WV_*_RECORD run)
   is recorded on the maintainer's machine -- Windows, French locale, dark
   theme -- and compared in the release CI on Linux, English, light. Record
@@ -96,7 +101,14 @@ paths:
   before any read, so the pref-getter characterization expects the closed
   gate there (v0.22.2's first release CI run went red on exactly that,
   2026-10-22; prefs-getters.spec.js WIN_ONLY). A new `win: true` row goes
-  into that list.
+  into that list. And nothing an item-pane SECTION wires when Zotero
+  renders it: Zotero renders a section only once it is in view
+  (itemDetails asyncRender), so whether a reader window's section had
+  rendered by recording time is the machine's timing -- the section menu's
+  "Reset Filters to Default" and `_wvScopeFilters` were there on the
+  1.0.0-beta.1 CI's Windows runner and not in the recording (2026-11-03).
+  Such marks go into wiringNormalize's `lazyPane` pattern; the section's
+  own spec checks them.
 - Zotero's OWN strings reach a live check in the runner's UI locale
   (French here: Zotero's Tags header read "1 marqueur", 2026-10-29,
   pane-scope.spec.js): assert the l10n id, or what Weavero adds to the text,

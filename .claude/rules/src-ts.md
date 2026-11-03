@@ -68,6 +68,18 @@ name to a Zotero object, window, or document.
   stand-in reader cannot see this boundary -- verify reader calls live.
   (2026-10-05: the annotation-undo scroll and selection were rejected on
   every real Ctrl+Z while the spec passed.)
+- A READER EVENT'S `doc` IS THE PAGE'S OWN VIEW. Zotero hands
+  `renderSidebarAnnotationHeader` & co. `event.detail.wrappedJSObject`
+  (xpcom/reader.js), so `doc`, and every element built with it, is waived:
+  chrome-only members are ABSENT there, silently `undefined`
+  (`defaultView.browsingContext` measured 2026-10-28; `mozInnerScreenX` stays
+  a number). The same element reached through
+  `reader._iframeWindow.document` (a re-inject pass, a probe) is an Xray and
+  has them -- so a live check through the bridge passes while the
+  event-built button fails. Unwaive before reading one:
+  `Cu.unwaiveXrays(el.ownerDocument.defaultView)`. (2026-10-28: the reader's
+  Backlinks popup opened inside the reader page instead of the main window;
+  guard backlinks.spec.js reader test.)
 - WINDOW DRAG AREAS EAT REAL CLICKS. Zotero's tab bar / title bar AND the
   reader toolbar's empty space (`.toolbar`, measured 2026-10-01) carry
   `-moz-window-dragging: drag`: the OS takes a real press there and NO DOM
@@ -188,7 +200,14 @@ name to a Zotero object, window, or document.
   (`orig.apply(this, arguments)` or `(a, ...rest) => orig(a, ...rest)`),
   never a fixed list: Zotero 11 added `Zotero_Tabs.close(ids,
   { skipHistory })` and the tracing layer's `origClose(ids)` dropped it
-  (2026-10-12; guard tabs-wrap-args.spec.js). `wvInjectStyle(doc, id, css)` / `wvRemoveStyle`
+  (2026-10-12; guard tabs-wrap-args.spec.js). A Zotero handler written as
+  an ARROW-FUNCTION FIELD (`_handleContainerScroll = () => {...}`) is an own
+  property of each instance, and `init()` registered THAT function as the
+  listener: wrapping the property changes nothing the event calls. Swap the
+  listener with the property both ways (remove the old value, add the new
+  one, on wrap and on unwrap); Zotero's own `destroy()` / re-`init()` then
+  stay consistent because they read the property (item-pane creep fix,
+  pane.ts `_wvFixItemPaneCreep`, 2026-10-28). `wvInjectStyle(doc, id, css)` / `wvRemoveStyle`
   — a sheet is always replaced, never skip-if-exists or version-stamped.
   It finds its sheet with `doc.getElementById`, which cannot see into a
   shadow root: a sheet that must live in one is looked up there
@@ -325,9 +344,29 @@ name to a Zotero object, window, or document.
   display:none behind its mirror: mirrors are drag sources AND drop
   elements in `_wvDragCacheGeom`; a group stamp counts only when its group
   is live (`_wvTabGroupLiveStamp`). Guard: `test/pinned-drag.spec.js`.
+- A WINDOW-level capture drag handler acts only over its own area: a
+  `stopPropagation` / `dropEffect = "none"` it applies elsewhere reaches
+  every drop target in the window first, iframes included. The reader and
+  note windows' strip handler refused library items off the strip, and
+  no note editor there could take an item as a citation for four months
+  (2026-06-30 to 2026-10-30). Guard: `test/window-item-drop.spec.js`.
+- Never set one `background-size` / `-position` / `-repeat` on a Zotero
+  `.icon-css` element: its rules are several `background` layers (the
+  item-type icons: the theme's icon at `contain`, then the white, light and
+  dark variants preloaded at `0px auto`), and a single value applies to
+  every layer, so the hidden variants paint under the icon (the header's
+  own-count icon showed a white page in dark mode, 2026-10-30). Size the
+  box; Zotero's `contain` fits it. Guard: `test/pane-scope.spec.js`.
 - `winOf(node)` from `src/lib/dom.ts`, never `node.ownerGlobal` (renamed in
   FF153/Zotero 11; works on the dev platform, breaks silently later —
   `test/compat.spec.js` enforces this on the bundle).
+- An HTML element toggled with `el.hidden` must not get an author
+  `display:` rule without its `[hidden] { display: none }` twin: the author
+  rule outranks the UA's `[hidden]`, and the element stays drawn whatever
+  the attribute says (2026-10-27: the Backlinks "N more…" and the Links
+  "N broken" bodies, `display: flex`, were always expanded while their
+  toggles flipped nothing visible). Assert the COMPUTED display in a spec,
+  not the attribute (links.spec.js's fold test).
 - Boolean XUL attributes (`hidden`, `collapsed`, `disabled`, `checked`,
   `selected`): write them with `wvSetBoolAttr(el, name, on)` from
   `src/lib/dom.ts` (the literal `"true"` or the attribute removed) and read
@@ -452,6 +491,65 @@ name to a Zotero object, window, or document.
   `expandToCollection` expands to the row and is the pane's own path (a
   manager drop under a closed collection waited its full 2 s before
   expanding, 2026-10-21, dev.113).
+- Zotero state kept in ONE pref for every window (`pinnedPane`,
+  `panes.<pane>.open`, `lastViewedFolder`, `sidebarState`, `pane.persist`)
+  is watched by pref observers BOUND AT INIT (`this._restoreX.bind(this)`):
+  wrapping the method later never reaches them. To make such state per
+  window: unregister the element's observer (`_prefsObserverID`) and wrap
+  the instance (item-details) or the window's own custom-element class --
+  each chrome window has its own `customElements` registry, so
+  `win.customElements.get("collapsible-section").prototype` is that window's
+  alone; elements built after the wrap bind to it. Also look for the other
+  readers (item-details re-reads `pinnedPane` on EVERY render). The first
+  window keeps Zotero's pref (works without Weavero). Example: pane.ts
+  `_wvWireWindowPanePrefs` (0.22.3-dev.47).
+- A NEW main window's collection tree selects `lastViewedFolder` when it
+  mounts (collectionTree.jsx makeVisible, not awaited), after a plugin's
+  init has run: one `selectByID` from the init loses to it. Set the pref to
+  the wanted row before the tree reads it (the adoption, window-wiring.ts)
+  or re-assert until it holds (the clean path's enforcer, tabs.ts). A
+  restored window's saved collection lost this race (2026-10-26, measured
+  on a library-only window: C16 applied, L1 130 ms later). Guard:
+  test/library-only-window-restart.spec.js.
+- `Zotero.DB.queryAsync` BINDS its LIKE patterns (`LIKE ?`, `["%x%"]`),
+  as Zotero's own queries do: an inline `LIKE '%zotero://%'` was refused
+  on the dev instance ("Please enter a LIKE clause with bindings") and the
+  backlinks index came up empty while the runner's copy passed
+  (2026-10-22, dev.4).
+- Fluent: `src/locale/<locale>/*.ftl`, shipped AS WRITTEN (the config's
+  `build.fluent` turns the scaffold's renaming and id-prefixing off), ids
+  spelled `weavero-…` by hand, the file linked into a window by
+  `MozXULElement.insertFTLIfNeeded("weavero.ftl")` (the wiring table's
+  `backlinks-ftl`). Zotero registers the directory itself at plugin start
+  (xpcom/plugins.js registerLocales). An ItemPaneManager section takes
+  l10n ids only: `header.l10nID` -> `.label`, `sidenav.l10nID` ->
+  `.tooltiptext`, args through `setL10nArgs(JSON.stringify({…}))`.
+  Plural selectors run under the UI locale's rules, not English ones:
+  registerLocales copies the en-US file into EVERY Zotero locale's bundle,
+  so under French `[one]` catches 0 ("0 Backlink", 2026-10-23, caught by
+  the test runner's French locale, not by the en-GB dev profile). A count
+  that must read plural at zero gets an exact `[0]` variant WITH the number.
+  Every linked FTL file goes away at shutdown (`_wvBlRemoveFtl`, as
+  make-it-red's removeFromWindow does): Zotero unregisters the plugin's
+  locale files AFTER its shutdown (plugins.js unregisterLocales), and one
+  linked file the registry cannot find makes the window's WHOLE
+  Localization resolve nothing -- Zotero's own strings included
+  (2026-10-26: item-pane headers and the column menu went blank). Guard:
+  backlinks.spec.js "shutdown unlinks weavero.ftl".
+- A dropdown Weavero draws itself (a div a click opens, as the filter's
+  ▾ "Apply to" menus) sets its anchor's `title` aside while it is open and
+  gives it back when it closes: Gecko keeps tooltips off a XUL menu
+  button's open menu only, and the ▾'s tooltip rose over its own menu while
+  the pointer rested on it (MJT 2026-11-02; a mousedown `wvDismissTooltip`
+  hides only the tooltip already up). Never cancel or open the engine's
+  tooltips instead (the stateful-engine incidents, the private
+  tooltip-conventions notes). Guard: filter-icons.spec.js "a ▾ shows no
+  tooltip while its menu is open".
+- The items VIEW's `rowCount` / `getRow` bypass the filter's translation;
+  a check of what a chip shows reads `rowProvider.getRowCount()` /
+  `rowProvider.getRow(i)` (memory `reference_weavero_filter_rowprovider_count`;
+  the Has Backlinks check read 441 raw rows for a 29-row view on
+  2026-10-22 and chased a bug that was not there).
 
 ## fix: commits name their guard
 
@@ -480,6 +578,53 @@ When adding a clamp / hide / overflow rule, grep for the rules meant to
 undo it and check their specificity; a spec reading the computed style in
 both contexts is the guard (test/annotation-popup-preview.spec.js).
 
+## Item-pane sections take Zotero's row geometry
+
+A Weavero section's rows sit where Zotero's own do: the body 12 px in, each
+row box 4 px padding, 4 px icon gap, 5 px corners (`_notesBox.scss`, shared
+by Related; the `clicky-item` mixin), and a nested level 16 px further in by
+margin (`_librariesCollectionsBox.scss`). Links and Backlinks started with
+their own 4 px / 22 px and read as misaligned against Related (MJT
+2026-10-28). Measure a new section against a native row in the same pane,
+as test/links.spec.js "the sections indent as Zotero's Related rows" does.
+
+An ITEM in such a row is drawn as Related draws one (relatedBox.js):
+`getCSSItemTypeIcon(item.getItemTypeIconName(), annotation key)` and
+`item.getDisplayTitle()` -- not a label of Weavero's own ("Annotation p. 26:
+…", "This item"). Anything else a row says goes after the title, muted
+(backlinks.ts `_wvBlEnd`; MJT 2026-10-29, "use the same pattern as in the
+related section").
+
+A block Weavero puts INSIDE one of Zotero's sections (pane-scope.ts, the
+widened Tags / Related; each cost a build on 2026-10-29):
+
+- `contain: inline-size` on it: a long line in it otherwise sets the pane's
+  minimum width, and the header's buttons (Zotero's + and twisty too) slide
+  out of view (dev.100: 422 -> 514 px in a 475-px pane). The same for ANY
+  new line in Weavero's own sections (Links, Backlinks): a heading copied
+  from the Tags / Related look without it held the Links section at 1053 px
+  in a 410-px pane (dev.121). Check with the longest real title in a
+  `width: min-content` host (links.spec.js "a long heading never widens
+  the item pane"). The section HEADER too: counts added to Zotero's title
+  box held the item details at 413 px in a 320-px pane (dev.130), every
+  section's right end -- Zotero's own Attachments header included -- under
+  the side navigation; the title box is contained and the counts fit by
+  dropping (pane-scope.ts `_wvScopeFitWire`). Measure a section's minimum
+  width as `width: min-content` on the section itself, not on a parent (a
+  parent's stretch hides it).
+- `data-wv-owned` on it when anything inside carries a Zotero class (an
+  annotation icon's `annotation-icon`): the shutdown sweep
+  (`_wvStripWindowChrome`) UNWRAPS an all-`wv-` element that holds native
+  content, and left every such icon on the section at each reload, 514 px
+  wide (dev.99: 280 after one reload). Guard by running the sweep on a copy
+  in a scratch document (pane-scope.spec.js), never on the live window.
+- A header changed through `data-l10n-args` gets an explicit
+  `doc.l10n.translateElements([section])`: Fluent's own observer left
+  Zotero's "5 Tags" in place (backlinks.ts `_wvBlSetHeader` met the same).
+- Find Zotero's item-pane sections by their pane id (`tags-box[data-pane=
+  "tags"]`): the note editor's links box holds a `tags-box` and a
+  `related-box` of its own, without one, and with no item.
+
 ## Editing mechanics
 
 Use the native Edit/Write tools. Quote-heavy or backslash-heavy scripted
@@ -502,6 +647,23 @@ This is invisible to standalone rasterisation: serialising the same markup to
 a data URI and drawing it to a canvas shows it crisp, because the class rule
 never applies there. **Verify icons in situ** — `getComputedStyle` on a child
 of the rendered node — not on a copy (2026-08-20, three rounds lost to it).
+
+A `chrome://zotero/skin/…` icon path is a claim: check that the file EXISTS
+(`await fetch(url)` in the running Zotero; `naturalWidth > 0` on the img), not
+just that the name matches. Not every icon lives in `16/universal/`: Zotero's
+scss `icon-url('x.svg')` resolves against the skin ROOT, so the Tags section's
+`tag-fill.svg` is `chrome://zotero/skin/tag-fill.svg` -- the
+`16/universal/tag-fill.svg` that dev.23 used does not exist and drew a
+broken-image square (MJT 2026-10-23). A spec asserting the file name passed;
+the guard now fetches it.
+
+Match the native DRAWING, not just the colour: an icon shown at 12 px uses
+Zotero's 12-px drawing when one exists (the skin-root `tag.svg` /
+`tag-fill.svg` of the Tags section), never a 16-px one shrunk -- its 1-px
+lines become 0.75 px and the same fill reads darker (MJT 2026-10-26, "Not the
+right color for automatic tags", with the fill measured equal to Zotero's).
+Read what the native element draws (`getComputedStyle(el).backgroundImage`
+or `content`) before picking a path.
 
 Zotero's context menus `#zotero-collectionmenu` and `#zotero-itemmenu` are
 addressed **by child index** in `buildCollectionContextMenu` /

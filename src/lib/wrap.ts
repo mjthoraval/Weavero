@@ -20,7 +20,14 @@ interface WvWrapRec { layer: string; tag: string; make: (orig: any) => any }
 interface WvWrapEntry { native: any; own: boolean; recs: WvWrapRec[] }
 
 function wvWrapTable(host: any): Record<string, WvWrapEntry> {
-    return host._wvWraps || (host._wvWraps = Object.create(null));
+    // The host's OWN table: an instance of a wrapped prototype inherits
+    // `_wvWraps` through the chain, and sharing it would put an instance's
+    // layers into the class's entry (2026-11-02: a class-level wrap of
+    // attachment-preview's setPreviewStatus took REG41's instance layer in,
+    // so unwrapping either would have rebuilt the prototype with the
+    // other's instance-bound wrapper).
+    if (!Object.prototype.hasOwnProperty.call(host, "_wvWraps")) host._wvWraps = Object.create(null);
+    return host._wvWraps;
 }
 
 function wvWrapRebuild(host: any, member: string, e: WvWrapEntry): void {
@@ -57,7 +64,7 @@ export function wvWrap(host: any, member: string, layer: string, tag: string, ma
  *  `layer` -- rebuilding the remaining chain on the native. Returns false
  *  when nothing was wrapped. */
 export function wvUnwrap(host: any, member: string, layer?: string): boolean {
-    if (!host || !host._wvWraps) return false;
+    if (!host || !Object.prototype.hasOwnProperty.call(host, "_wvWraps")) return false;
     const T = host._wvWraps;
     const e: WvWrapEntry = T[member];
     if (!e) return false;

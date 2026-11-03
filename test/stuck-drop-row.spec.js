@@ -5,8 +5,9 @@
 // row's dragleave, on drop and on dragend. A drag that ends without them
 // reaching the tree (an external file taken out of the window fast) left a
 // grey row, at the same position in every collection, until the next drag.
-// Weavero backports Zotero 896a3f829 (2026-10-13): the next mousemove over
-// the tree clears it, and so does any change of the items list's rows. The
+// Weavero backports Zotero 896a3f829 (2026-10-13; in 11.0-beta.2): the next
+// mousemove over the tree clears it, and so does any change of the items
+// list's rows -- Zotero's own code on 11.0-beta.2+, Weavero's twin on 10. The
 // state a lost drag leaves is set directly here -- a remembered drop row,
 // painted -- and then no drag event follows. FAILED on 0.22.2-dev.52.
 
@@ -210,10 +211,73 @@ describe("Weavero — a drop highlight left by a lost drag clears (WV-TEMP-13303
                 assert.strictEqual(greyRows(view), 0, "and no longer grey");
             });
         }
+
+        // The drag ring (2026-10-27): on a build with Zotero's `_setDropRow`
+        // every change of a drop row is recorded per drag session -- the row
+        // set, the clear and its path, whether a dragleave reached the tree.
+        it("the drag ring records the session: the row set, Weavero's clear on a drag event elsewhere, no dragleave reached the tree", async function () {
+            if (typeof ZP.itemsView._setDropRow !== "function") this.skip();   // Zotero 10: nothing recorded
+            const view = ZP.itemsView;
+            const row = view.getRowIndexByID(item.id);
+            wv._wvWireStuckDropRowFix(win);
+            if (wv._wvDragRingSessions) wv._wvDragRingSessions.length = 0;   // the replays above recorded sessions of their own
+            const before = 0;
+            zoteroDragOver(view, row);
+            await wvT.waitFor(() => greyRows(view) === 1, 3000);
+            sequences["dev.54: the next event lands on the item pane, no leave for the row"]();
+            await wvT.waitFor(() => view._dropRow === null, 3000);
+            // No native drag session in a test: the session closes 1.5 s after its last event.
+            await wvT.waitFor(() => (wv._wvDragRingSessions || []).length > before, 8000);
+            const s = wv._wvDragRingSessions[wv._wvDragRingSessions.length - 1];
+            assert.deepEqual(s.trees.items.set, [row], "the row set");
+            assert.isFalse(s.trees.items.leave, "no dragleave reached the items tree");
+            assert.strictEqual(s.trees.items.clears[0].via, "weavero:drag-elsewhere");
+            assert.isFalse(s.trees.items.clears[0].zoteroAlso);
+            assert.isFalse(s.trees.items.clears[0].leave, "no dragleave since the row was set");
+            assert.isUndefined(s.trees.items.clears[0].late, "Zotero made no attempt of its own");
+            assert.isUndefined(s.trees.items.stillSet);
+            assert.include(wv._wvDragRingReport(), "-- 1 with no dragleave reaching the tree");
+            assert.include(wv._wvDragRingLine(s), "items set " + row + ", NO leave: weavero:drag-elsewhere@");
+            assert.include(wv._wvDragRingLine(s), "(NO zotero attempt)");
+        });
+
+        // Gecko's order on a target change is dragexit, dragenter on the new
+        // target, THEN dragleave on the old: Weavero's clear on that dragenter
+        // precedes the row's dragleave by a couple of ms. Zotero's attempt
+        // on the already-cleared row is tapped and noted as `late` -- such a
+        // clear is Weavero winning a race, not a skipped leave.
+        it("the ring notes Zotero's late dragleave attempt on a row Weavero already cleared", async function () {
+            if (typeof ZP.itemsView._setDropRow !== "function") this.skip();
+            const view = ZP.itemsView;
+            const row = view.getRowIndexByID(item.id);
+            wv._wvWireStuckDropRowFix(win);
+            if (wv._wvDragRingSessions) wv._wvDragRingSessions.length = 0;
+            zoteroDragOver(view, row);
+            await wvT.waitFor(() => greyRows(view) === 1, 3000);
+            const pane = win.document.getElementById("zotero-item-pane") || outside();
+            drag("dragenter", pane, null);                                  // Weavero clears here
+            assert.isNull(view._dropRow);
+            view.onDragLeave();                                              // the row's dragleave, as Gecko sends it next
+            await wvT.waitFor(() => (wv._wvDragRingSessions || []).length > 0, 8000);
+            const s = wv._wvDragRingSessions[wv._wvDragRingSessions.length - 1];
+            assert.strictEqual(s.trees.items.clears.length, 1, "one clear: Zotero's attempt is a note on it, not a second clear");
+            assert.match(s.trees.items.clears[0].late || "", /^zotero:row-dragleave@\d+ms$/);
+            assert.include(wv._wvDragRingLine(s), "(zotero late zotero:row-dragleave@");
+            assert.include(wv._wvDragRingReport(), "-- 0 with no dragleave reaching the tree");
+        });
     });
 
-    it("Zotero's own fix is not in this build yet (fails once it is: retire WV-TEMP-133039)", function () {
-        assert.notStrictEqual(typeof ZP.itemsView._clearDropIndicator, "function",
-            "Zotero ships 896a3f829: delete _wvWireStuckDropRowFix, its wiring entry, the destroy call and this spec");
+    // Stage 1 of the retirement (register #23): 896a3f829 shipped in
+    // 11.0-beta.2 (2026-10-27) -- the trees carry `_clearDropIndicator` and
+    // Weavero's twin of it stays out (no rows-change wrap, no tree mousemove
+    // listener). Zotero 10 has neither, so the twin is wired there. Both
+    // states are asserted; the drag-event part (above) is wired on every
+    // build until Zotero clears on drag events too (stage 2).
+    it("Zotero's own mousemove / rows-change clear (896a3f829): Weavero's twin is wired only where it is missing", function () {
+        const native = typeof ZP.itemsView._clearDropIndicator === "function";
+        const layers = (host, member) => ((host && host._wvWraps && host._wvWraps[member]) || { recs: [] }).recs.map(r => r.layer);
+        assert.strictEqual(layers(ZP.itemsView, "handleRowModelUpdate").includes("stuckDropRow"), !native,
+            native ? "11.0-beta.2+: Zotero clears on row changes itself; the wrap must stay out" : "Zotero 10: the rows-change wrap is Weavero's");
+        assert.strictEqual(typeof ZP.collectionsView._clearDropIndicator === "function", native, "both trees inherit LibraryTree's clear together");
     });
 });

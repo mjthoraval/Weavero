@@ -16,6 +16,10 @@ describe("Weavero — hidden collections (per window)", () => {
     let timerWin = null;
     const sleep = (ms) => new Promise(r => (timerWin || (timerWin = Zotero.getMainWindow())).setTimeout(r, ms));
     const inTree = (obj) => cv.getRowIndexByID((obj.objectType === "search" ? "S" : "C") + obj.id) !== false;
+    // Zotero's own "Hide": Fluent `general-hide` (11.0-beta.2 dropped the .properties key
+    // `general.hide` from en-US; getString then throws on en-US and echoes the key elsewhere),
+    // else the key on Zotero 9/10 -- what pane.ts's wvHidHideLabel reads.
+    const HIDE = (() => { try { const s = /** @type {any} */ (Zotero).ftl.formatValueSync("general-hide"); if (s) return s; } catch (e) {} return Zotero.getString("general.hide"); })();
 
     // Both hooks have timed out together in 4 runs out of many (dev38,
     // dev44, dev46, coll-oiw-fix2b), no orphan runner holding the profile,
@@ -206,7 +210,7 @@ describe("Weavero — hidden collections (per window)", () => {
         // its crossed-eye icon class, as on Unfiled / Duplicates.
         const hi = menu.querySelector(".wv-hid-entry.zotero-menuitem-hide-collection");
         assert.isOk(hi, "the Hide item carries Zotero's hide-collection icon class");
-        assert.equal(hi.getAttribute("label"), Zotero.getString("general.hide"));
+        assert.equal(hi.getAttribute("label"), HIDE);
         assert.isTrue(hi.classList.contains("menuitem-iconic"));
         for (const e of [...menu.querySelectorAll(".wv-hid-entry")]) e.remove();
     });
@@ -393,7 +397,7 @@ describe("Weavero — hidden collections (per window)", () => {
                 const pop2 = await wvT.waitFor(() => { const p = win.document.getElementById("wv-hid-groups-menu"); return p && p.state !== "closed" ? p : null; }, 3000);
                 assert.isOk(pop2, "the menu opened");
                 // Hide (the whole section, 2026-10-20) comes first; then the plain item alone.
-                assert.deepEqual([...pop2.querySelectorAll("menu, menuitem")].map(m => m.getAttribute("label")), [Zotero.getString("general.hide"), "Manage Hidden…"], "Hide, then the plain item alone");
+                assert.deepEqual([...pop2.querySelectorAll("menu, menuitem")].map(m => m.getAttribute("label")), [HIDE, "Manage Hidden…"], "Hide, then the plain item alone");
                 try { pop2.hidePopup(); } catch (_) {}
             } finally { wv._wvHidListLibraries = origLibs; }
         } finally {
@@ -416,7 +420,7 @@ describe("Weavero — hidden collections (per window)", () => {
         const menu = win.document.getElementById("zotero-collectionmenu");
         const savedSet = JSON.parse(JSON.stringify(win._wvHid || {}));
         await wv._wvHidShow(win, LIB(), null, []);   // S was hidden by an earlier test
-        const hideLabel = Zotero.getString("general.hide");
+        const hideLabel = HIDE;
         try {
             for (const [what, id] of [["saved search", "S" + S.id], ["collection", "C" + B.id]]) {
                 await cv.selectByID(id);
@@ -589,7 +593,7 @@ describe("Weavero — hidden collections (per window)", () => {
             wv._wvHidBuildMenu(win, menu);
             const hi = menu.querySelector(".wv-hid-entry.zotero-menuitem-hide-collection");
             assert.isOk(hi, "Hide offered on My Library");
-            assert.equal(hi.getAttribute("label"), Zotero.getString("general.hide"));
+            assert.equal(hi.getAttribute("label"), HIDE);
             // Right above Show Hidden Collections (MJT 2026-10-20), both in
             // Zotero's Show group -- A and S are hidden here, so the submenu is up.
             const smLib = [...menu.querySelectorAll(".wv-hid-entry")].find(e => e.localName === "menu");
@@ -634,7 +638,7 @@ describe("Weavero — hidden collections (per window)", () => {
             assert.isTrue(dc.hidden, "Zotero's Hide steps aside");
             const hi = menu.querySelector(".wv-hid-entry.zotero-menuitem-hide-collection");
             assert.isOk(hi, "Weavero's Hide (this window) in its place");
-            assert.equal(hi.getAttribute("label"), Zotero.getString("general.hide"));
+            assert.equal(hi.getAttribute("label"), HIDE);
             fire(hi);
             clean();
             assert.isTrue(await wvT.waitFor(() => cv.getRowIndexByID("U" + LIB()) === false, 8000), "Unfiled Items hidden in this window");
@@ -1409,7 +1413,7 @@ describe("Weavero — hidden collections (per window)", () => {
             wv._wvHidBuildMenu(win, menu);
             const hi = menu.querySelector(":scope > .wv-hid-entry.zotero-menuitem-hide-collection");
             assert.isOk(hi, "Hide on the Feeds row");
-            assert.equal(hi.getAttribute("label"), Zotero.getString("general.hide"));
+            assert.equal(hi.getAttribute("label"), HIDE);
             clean();
             await wv._wvHidHide([cv.getRow(rowIdx("F1")).ref], win);
             assert.deepEqual(wv._wvHidState(win).sections, ["groups", "feeds"]);
@@ -1522,7 +1526,7 @@ describe("Weavero — hidden collections (per window)", () => {
             wv._wvHidBuildMenu(win, menu);
             const hi = menu.querySelector(":scope > .wv-hid-entry.zotero-menuitem-hide-collection");
             assert.isOk(hi, "Hide on a feed's menu");
-            assert.equal(hi.getAttribute("label"), Zotero.getString("general.hide"));
+            assert.equal(hi.getAttribute("label"), HIDE);
             assert.strictEqual(hi.nextElementSibling && hi.nextElementSibling.id, "deleteCollectionAndItems", "right above Unsubscribe");
             clean();
             await wv._wvHidHide([cv.getRow(rowIdx("L" + F1.libraryID)).ref], win);
@@ -1844,7 +1848,7 @@ describe("Weavero — hidden collections (per window)", () => {
             // The heading's own Hide (the whole section, 2026-10-20) comes
             // first, then its separator; the Show submenu starts with Manage Hidden….
             const top = [...pop.children].map(e => e.localName + ":" + (e.getAttribute("label") || ""));
-            assert.equal(top[0], "menuitem:" + Zotero.getString("general.hide"), "Hide first: " + top.join(" | "));
+            assert.equal(top[0], "menuitem:" + HIDE, "Hide first: " + top.join(" | "));
             assert.equal(top[1], "menuseparator:");
             assert.equal(pop.querySelector("menu > menupopup > menuitem").getAttribute("label"), "Manage Hidden…");
             try { pop.hidePopup(); } catch (_) {}
@@ -1885,13 +1889,39 @@ describe("Weavero — hidden collections (per window)", () => {
         const dc = menu.querySelector("#deleteCollection");
         await win.document.l10n.translateElements([dc]);
         const good = dc.getAttribute("label");
-        assert.notEqual(good, Zotero.getString("general.hide"));
-        dc.setAttribute("label", Zotero.getString("general.hide"));   // what Recently Read leaves behind
+        assert.notEqual(good, HIDE);
+        dc.setAttribute("label", HIDE);   // what Recently Read leaves behind
         await win.ZoteroPane.buildCollectionContextMenu();            // same id + args: Fluent skips it
         wv._wvHidBuildMenu(win, menu);                                 // Weavero's popupshowing
         await new Promise(r => win.setTimeout(r, 300));
         assert.equal(dc.getAttribute("label"), good, "retranslated back to Zotero's Delete label");
         for (const e of [...menu.querySelectorAll(".wv-hid-entry")]) e.remove();
+    });
+
+    // 11.0-beta.2 dropped `general.hide` from en-US's zotero.properties (zotero
+    // 59aaf8dfe, Hide through Fluent); Zotero.getString then throws on en-US
+    // and ECHOES the key on every other locale once its export catches up --
+    // a menu reading "general.hide". Weavero reads Fluent `general-hide` first
+    // (pane.ts wvHidHideLabel). FAILED on dev.59 (label "general.hide").
+    it("Weavero's Hide keeps Zotero's label when the .properties key is gone (the key echoed back)", async function () {
+        this.timeout(15000);
+        const menu = win.document.getElementById("zotero-collectionmenu");
+        await cv.selectByID("C" + B.id);
+        await win.ZoteroPane.buildCollectionContextMenu();
+        const Z = /** @type {any} */ (Zotero);
+        const orig = Z.getString;
+        Z.getString = function (name, ...rest) { return name === "general.hide" ? name : orig.call(this, name, ...rest); };
+        try {
+            wv._wvHidBuildMenu(win, menu);
+            const hi = menu.querySelector(".wv-hid-entry.zotero-menuitem-hide-collection");
+            assert.ok(hi, "Weavero's Hide is in the collection's menu");
+            assert.notEqual(hi.getAttribute("label"), "general.hide", "never the key");
+            assert.equal(hi.getAttribute("label"), HIDE);
+        }
+        finally {
+            Z.getString = orig;
+            for (const e of [...menu.querySelectorAll(".wv-hid-entry")]) e.remove();
+        }
     });
 
     it("hiding the selected collection moves the selection to its library row", async function () {

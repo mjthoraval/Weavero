@@ -266,6 +266,9 @@
 		// flush once dropped both; the fixture sets them so this sees them).
 		if (J(bm.title || null) !== J(am.title || null)) FAIL.push(label + ": custom title " + J(bm.title) + " -> " + J(am.title));
 		if (J(bm.hidden || null) !== J(am.hidden || null)) FAIL.push(label + ": hidden collections " + J(bm.hidden) + " -> " + J(am.hidden));
+		// Per-window pinned section and section state (0.22.3-dev.47).
+		if (J(bm.pin || null) !== J(am.pin || null)) FAIL.push(label + ": pinned section " + J(bm.pin) + " -> " + J(am.pin));
+		if (bm.tagsOpen != null && am.tagsOpen != null && bm.tagsOpen !== am.tagsOpen) FAIL.push(label + ": Tags section open " + bm.tagsOpen + " -> " + am.tagsOpen);
 		if (J(bm.itemPane) !== J(am.itemPane)) WARN.push(label + ": item pane " + J(bm.itemPane) + " -> " + J(am.itemPane));
 		if (!missing.length && !added.length && J(bk) === J(ak)) OK.push(label + ": " + bk.length + " tabs, order kept");
 	});

@@ -36,6 +36,16 @@ describe("Weavero — Settings pane: one search block per setting", () => {
         assert.deepEqual(crowded, []);
     });
 
+    // The item pane sections' defaults grid (dev.112-161, its grey cards
+    // and "always shown" rows) is gone from the pane (MJT 2026-11-03,
+    // "Remove these settings. They are just confusing at the moment, so I
+    // will just design the default first"): no paneScope box anywhere.
+    it("the item pane sections' defaults have no box in the pane", async () => {
+        const ms = await pane();
+        assert.isNull(ms.querySelector(".wv-scope-grid"), "no grid");
+        assert.deepEqual([...ms.querySelectorAll('checkbox[preference^="extensions.zotero.weavero.paneScope."]')].map((b) => b.getAttribute("preference")), [], "no paneScope box");
+    });
+
     it("every header key a block names exists, and comes before the block", async () => {
         const ms = await pane();
         const seen = new Set();

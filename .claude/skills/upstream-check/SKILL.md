@@ -47,6 +47,18 @@ Walk the high-risk surfaces (each has bitten before):
   the 2026-10-13 audit against that page found the menu-icon property
   (`--menuitem-icon`), native search clear buttons and boolean-attribute
   reads the 11.0-beta.1 commit scan had passed.
+- A string removed from `zotero.properties` / a `.dtd` (grep the delta's
+  locale files for `-` lines): list every `Zotero.getString("<key>")` in
+  src/ and test/ for it. Judge it against the build's **en-US** file
+  (`jar:file:///C:/Program Files/Zotero/app/omni.ja!/chrome/locale/en-US/zotero/zotero.properties`
+  through `Zotero.File.getContentsFromURL`), NOT the running locale: the
+  other locales ship a lagging export that keeps the key for a while
+  (en-GB still had `general.hide` on 11.0-beta.2 while en-US had lost it,
+  2026-10-27). `Zotero.getString` tries Fluent first (`Zotero.ftl`, the
+  `-` form of the id), then the key: on en-US a missing key THROWS, on
+  every other locale it ECHOES the key -- a label reading "general.hide".
+  Read the replacement through `Zotero.ftl.formatValueSync("<id>")` with
+  the old key as the Zotero 9/10 fallback (pane.ts `wvHidHideLabel`).
 
 ## 3. Check the registers
 

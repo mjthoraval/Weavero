@@ -21,6 +21,11 @@
  *   W2 managed main window: 3 PDFs + note (background) + a CROSS-WINDOW
  *                           DUPLICATE of an RTF-A member (ungrouped here);
  *                           group RTF-C; moved geometry
+ *   W3 managed main window: the LIBRARY TAB ONLY, a custom title ("RTF
+ *                           library-only"), moved geometry, its own
+ *                           collection ("RTF W3") selected after W1's, its
+ *                           own pinned section ("related") and a collapsed
+ *                           Tags section
  *   R1 reader window      : native PDF + PDF + snapshot + NOTE tab, note
  *                           moved FIRST (order), group RTF-D on two tabs,
  *                           one PINNED extra, sidebar open at 320 px, moved
@@ -199,6 +204,35 @@
 	try { W2.moveTo(200, 120); W2.resizeTo(1100, 750); } catch (e) {}
 	await sleep(300);
 	say("W2 (managed): " + Z2._tabs.length + " tabs");
+
+	// -------------------------------------- W3 managed, library tab only
+	// A restart reopens every main window that was open, one holding only
+	// its library tab included (MJT 2026-10-26; the store skipped it as
+	// "nothing to restore" before 0.22.3-dev.40, and W2 always had tabs).
+	const s3 = lp._wvSpawnMainWindowStart({ tabs: [{ type: "library", title: "My Library", data: { icon: "library" }, selected: true }] });
+	const W3 = await lp._wvSpawnMainWindowWait(s3, { wait: "init", timeoutMs: 15000, timerWin: W1 });
+	if (W3) {
+		try { lp._wvWindowSetCustomTitle(W3, O.prefix + " library-only"); } catch (e) { say("W3 custom title failed: " + e); }
+		try { W3.moveTo(320, 200); W3.resizeTo(900, 650); } catch (e) {}
+		// W3 views a collection of its own, selected AFTER W1's view: Zotero's
+		// single lastViewedFolder then names W3's, and W1 must still reopen
+		// on its own (MJT 2026-10-26, fixed in 0.22.3-dev.45).
+		try {
+			let c3 = Zotero.Collections.getByLibrary(lib).find(c => c.name === O.prefix + " W3");
+			if (!c3) { c3 = new Zotero.Collection(); c3.libraryID = lib; c3.name = O.prefix + " W3"; await c3.saveTx(); }
+			await W3.ZoteroPane.collectionsView.selectByID("C" + c3.id);
+		} catch (e) { say("W3 collection failed: " + e); }
+		// W3's own pinned section (set aside: no item shown) and a collapsed
+		// Tags section, while W1 keeps its own (0.22.3-dev.47).
+		try {
+			const d3 = W3.document.querySelector("#zotero-item-pane item-details");
+			d3.pinnedPane = "related";
+			const t3 = W3.document.querySelector('#zotero-item-pane collapsible-section[data-pane="tags"]');
+			if (t3) t3.open = false;
+		} catch (e) { say("W3 pin / sections failed: " + e); }
+		say("W3 (managed, library tab only): " + O.prefix + " library-only, on " + O.prefix + " W3");
+	}
+	else say("W3 did not initialise");
 
 	// --------------------------------- anchor title + hidden collection (W1)
 	// Both ride the quit flush's anchor record (anchorTitle / anchorHidden).

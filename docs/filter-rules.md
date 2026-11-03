@@ -173,7 +173,7 @@ What's *absent* is the point: both EPUBs (Fundamental Accessibility, Gulliver's)
 
 </summary>
 
-> Some chips don't pin a kind on their own — `Has Tag`, `Has Related`, `Has Link`, the `Tag`-with-value picker, `Has Annotations`, and `Item Note` (as the structural "tree has an item note" requirement). Each has a small **"Apply to" dropdown** with the four type toggles — Parent items, Attachments, Notes, Annotations (see [Types and positions](#types-and-positions)). The chip can only touch rows whose type is ticked in its scope. Scopes saved before the Notes toggle existed migrate transparently: notes follow whichever old toggles covered their positions until you set the Notes toggle explicitly.
+> Some chips don't pin a kind on their own — `Has Tag`, `Has Related`, `Has External Link`, `Has Item Links`, `Has Backlinks`, the `Tag`-with-value picker, `Has Annotations`, and `Item Note` (as the structural "tree has an item note" requirement). Each has a small **"Apply to" dropdown**. Most carry the four type toggles — Parent items, Attachments, Notes, Annotations (see [Types and positions](#types-and-positions)); for `Has Backlinks` they say *what is linked*. `Has External Link` and `Has Item Links` carry the three places a link can be written instead — Standalone Note Text, Item Note Text, Annotation Comment. The chip can only touch rows whose type is ticked in its scope. Scopes saved before the Notes toggle existed migrate transparently: notes follow whichever old toggles covered their positions until you set the Notes toggle explicitly.
 
 For each cross-level chip and each row:
 

@@ -87,6 +87,26 @@ function wvReadStatusDormant(): boolean {
     catch (e) { return true; }
 }
 
+/** Has Backlinks takes part only while the Backlinks section switch is on. */
+function wvBacklinksDormant(): boolean {
+    try {
+        const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+        if (!p || typeof p._getEnableBacklinks !== "function") return true;
+        return !p._getEnableBacklinks();
+    }
+    catch (e) { return true; }
+}
+
+/** Has Item Links takes part only while the Links section switch is on. */
+function wvItemLinksDormant(): boolean {
+    try {
+        const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+        if (!p || typeof p._getEnableLinks !== "function") return true;
+        return !p._getEnableLinks();
+    }
+    catch (e) { return true; }
+}
+
 export const WV_FILTER_DIMS: WvDim[] = [
     // ---- annotation rows ----
     { id: "annotationColor", shape: "list", level: "annotation", rows: "annotation", kindCheck: true, chip: "Annotation Color" },
@@ -123,10 +143,24 @@ export const WV_FILTER_DIMS: WvDim[] = [
     // Has Related / Has Link / Has Tag: applied to every row kind the same
     // way, each narrowed by its own scope object.
     { id: "hasRelated", shape: "tri", kids: true, sel: { rowScope: "hasRelatedScope" }, chip: "Has Related" },
-    { id: "hasLink", shape: "tri", kids: true, sel: { linkScope: true }, chip: "Has Link" },
+    // The chip reads "Has External Link" since 2026-10-30: only a link that
+    // leaves Zotero (a zotero:// one is Has Item Links'; MJT, "so that there
+    // is not overlap anymore"). Its id and stored state keep "hasLink".
+    { id: "hasLink", shape: "tri", kids: true, sel: { linkScope: true }, chip: "Has External Link" },
+    // Has Item Links (Links plan slice 3, MJT 2026-10-28): a note or an
+    // annotation comment in the tree links another Zotero item -- what the
+    // Links column counts (zotero:// links, citations, quotes; resolved;
+    // not into the source's own paper). A web URL alone is Has External Link's. No
+    // scope; dormant while the Links switch is off. Has Backlinks' mirror.
+    { id: "hasItemLinks", shape: "tri", chip: "Has Item Links", dormant: wvItemLinksDormant },
     // Has Bookmarks: an attachment carrying reader bookmarks (Weavero's
     // per-attachment store). No scope.
     { id: "hasBookmarks", shape: "tri", chip: "Has Bookmarks" },
+    // Has Backlinks (issue #60, 2026-10-22): an item, a child or one of its
+    // annotations is linked from another annotation comment or note
+    // (modules/backlinks.ts). No scope. Dormant while the Backlinks switch
+    // (Links & Relations -> Relations) is off, like Read Status.
+    { id: "hasBacklinks", shape: "tri", chip: "Has Backlinks", dormant: wvBacklinksDormant },
     { id: "hasTag", shape: "tri", kids: true, sel: { rowScope: "hasTagScope" }, chip: "Has Tag" },
     // ---- note / standalone rows (strict per row) ----
     // Item Note = a note attached to a regular item (Zotero's own wording).

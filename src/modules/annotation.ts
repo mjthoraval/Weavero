@@ -3,7 +3,8 @@ import { wvListen } from "../lib/listen";
 import { normalize as wvNormalize } from "../lib/text";
 import { wvSetBoolAttr } from "../lib/dom";
 import { wvSvgEl } from "../lib/svg";
-import { WV_LINK_PALETTE } from "../lib/links";
+import { wvCloneFor } from "../lib/xray";
+import { wvLinkGlyphEl, WV_LINK_MENU_ICON } from "../lib/link-glyph";
 
 // Module: annotation comment text + URL detection + icon
 // rendering + annotation model access + related-item nav
@@ -32,6 +33,26 @@ class _AnnotationMixin {
     // Thin adapter over src/lib/text.ts normalize() (pure, Node-testable).
     normalize(t) { return wvNormalize(t); }
     hasURI(t)    { return !!t && this.URL_REGEX.test(this.normalize(t)); }
+
+    /** A URL that leaves Zotero -- any but zotero:// -- in `t`: what the
+     *  filters' Has External Link looks for (MJT 2026-10-30, "Make the Has
+     *  Link become Has External Link, so that there is not overlap anymore"
+     *  -> "B"). zotero:// links, with Zotero's own citations and quotes, are
+     *  Has Item Links' and the Links section's. */
+    hasExternalURI(t) {
+        if (!t) return false;
+        const one = this.URL_REGEX;
+        let g = this._urlRegexAll;
+        if (!g || g.src !== one.source) g = this._urlRegexAll = { src: one.source, re: new RegExp(one.source, one.flags.replace("g", "") + "g") };
+        const text = this.normalize(t);
+        g.re.lastIndex = 0;
+        let m: RegExpExecArray | null;
+        while ((m = g.re.exec(text)) !== null) {
+            if (!/^zotero:/i.test(m[0])) return true;
+            if (!m[0].length) g.re.lastIndex++;
+        }
+        return false;
+    }
 
     /** Detect Mozilla "dead wrappers" — JS handles to XPCOM objects whose
      *  underlying native object has been destroyed. Common when our
@@ -193,25 +214,15 @@ class _AnnotationMixin {
      *  from `currentColor`, so it picks up the surrounding text color
      *  (or the amber-disc override for type-3 icons). Sized to 1em so it
      *  scales with the icon container's font-size. */
-    /** Build the URL/link icon — Weavero's needle logo, drawn
-     *  programmatically here to match the source SVG that the
-     *  rasterizer uses for the manifest / pref-pane PNGs.
-     *  Used as the visual marker on annotation comments and other
-     *  URL-bearing surfaces.
+    /** Build the URL/link icon -- the links glyph (lib/link-glyph.ts):
+     *  Weavero's logo WITHOUT its needle and thread, the two chain links
+     *  only. Used as the visual marker on annotation comments and other
+     *  URL-bearing surfaces. Until 2026-10-23 this drew the whole needle
+     *  logo, which MJT found misleading: it read as "Weavero", not "link".
      *
-     *  Theme-aware: the badge picks the LIGHT or DARK colour set
-     *  based on `_detectUIDark()` at render time. Light = deep
-     *  blue needle / black chain + thread; dark = lighter blue
-     *  needle / white chain + thread.
-     *
-     *  The source SVG uses two `<clipPath>` overlays for a "woven"
-     *  effect at large sizes; we skip them here because the
-     *  clip-path IDs would collide when multiple badges render on
-     *  the same page, and at the 16-px size this icon is most
-     *  often used the woven detail isn't legible anyway. */
+     *  Theme-aware: black chain on light, white on dark, the logo's own
+     *  chain colours. */
     _makeLinkSvg(doc) {
-        const svg = wvSvgEl(doc, "svg", { class: "wv-link-svg", viewBox: "0 0 24 24", "aria-hidden": "true" });
-
         // Theme detection per-doc, NOT per-UI:
         //  - Inner reader iframe (in-page badges) carries
         //    `wv-reader-dark` on its documentElement when the
@@ -236,70 +247,7 @@ class _AnnotationMixin {
             } catch (e) {}
             return false;
         })();
-        const bodyColor  = isDark ? WV_LINK_PALETTE.http.dark : "#253c97";   // the dark link colour; the light body is the icon's own
-        const chainColor = isDark ? "#ffffff" : "#000000";
-        const threadColor = chainColor;
-
-        const path = (attrs) => {
-            const p = wvSvgEl(doc, "path");
-            for (const [k, v] of Object.entries(attrs)) {
-                p.setAttribute(k, v);
-            }
-            return p;
-        };
-        const ellipse = (attrs) => {
-            const e = wvSvgEl(doc, "ellipse");
-            for (const [k, v] of Object.entries(attrs)) {
-                e.setAttribute(k, v);
-            }
-            return e;
-        };
-
-        // Eye outline (blue stroke ellipse).
-        svg.appendChild(ellipse({
-            cx: "18.52", cy: "18.52", rx: "1.5", ry: "2.78",
-            transform: "translate(-7.67 18.52) rotate(-45)",
-            fill: "none", stroke: bodyColor,
-            "stroke-miterlimit": "10",
-        }));
-        // Needle body (blue fill).
-        svg.appendChild(path({
-            d: "M0,0c4.92,3.42,8.62,8.25,12.97,12.33.79.71,2.39"
-                + ",2.54,3.42,2.9.47.24.93.48,1.49.61l-2.05,2.05"
-                + "c-.31-1.03-.77-1.99-1.44-2.78,0,0-2.08-2.14"
-                + "-2.08-2.14C8.25,8.62,3.42,4.92,0,0h0Z",
-            fill: bodyColor,
-        }));
-        // Thread waves at the bottom (stroke only, default 1px).
-        svg.appendChild(path({
-            d: "M12.63,18.34c1.04,3.94,1.89,5.05,2.54,5.03"
-                + ",1.39-.03,1.95-5.04,3.34-5.04,1.4,0,2.04,5.08"
-                + ",3.15,5.04.46-.02,1.08-.91,1.71-5.04",
-            fill: "none", stroke: threadColor,
-            "stroke-linecap": "round",
-            "stroke-miterlimit": "10",
-        }));
-        // Chain link 1 (top-right curve).
-        svg.appendChild(path({
-            d: "M10,12.76c1.65,2.21,4.79,2.66,7,1.01.19-.14.37"
-                + "-.3.54-.47l3-3c1.92-1.99,1.86-5.15-.12-7.07"
-                + "-1.94-1.87-5.01-1.87-6.95,0l-1.72,1.71",
-            fill: "none", stroke: chainColor,
-            "stroke-width": "2",
-            "stroke-linecap": "round",
-            "stroke-linejoin": "round",
-        }));
-        // Chain link 2 (bottom-left curve).
-        svg.appendChild(path({
-            d: "M14,10.76c-1.65-2.21-4.79-2.66-7-1.01-.19.14"
-                + "-.37.3-.54.47l-3,3c-1.92,1.99-1.86,5.15.12,7.07"
-                + ",1.94,1.87,5.01,1.87,6.95,0l1.71-1.71",
-            fill: "none", stroke: chainColor,
-            "stroke-width": "2",
-            "stroke-linecap": "round",
-            "stroke-linejoin": "round",
-        }));
-        return svg;
+        return wvLinkGlyphEl(doc, { cls: "wv-link-svg", paint: isDark ? "#ffffff" : "#000000" });
     }
 
     /** Build the inline relations SVG — same path as upstream Zotero's
@@ -880,20 +828,20 @@ class _AnnotationMixin {
         addSep();
 
         // ---- Copy links + Add Related (one group, separator above) ---------
-        // The needle icon distinguishes the Weavero copy-link affordances
-        // ("copy a zotero:// URI for this item") from the chain icon that
-        // means "related items". "Copy Open Link" is only added when an
+        // The links glyph marks the copy-link entries ("copy a zotero://
+        // URI for this item"); Zotero's two-link chain below means "related
+        // items". "Copy Open Link" is only added when an
         // open link applies (this item is a file attachment, has a best
         // attachment, or — for an annotation — its parent attachment is
         // openable).
         append("Copy Select Link",
             () => this._copyItemLinks([item], "select"),
-            { iconURL: this._menuItemIconURL });
+            { iconURL: WV_LINK_MENU_ICON });
         if (this._buildOpenLink(item)) {
             append("Copy Open Link"
                 + (this._isExternalOpenTarget(item) ? " (external app)" : ""),
                 () => this._copyItemLinks([item], "open"),
-                { iconURL: this._menuItemIconURL });
+                { iconURL: WV_LINK_MENU_ICON });
         }
         // "Add Related…" — opens Zotero's select-items dialog and adds
         // the chosen items as `dc:relation` peers of this one. Chain icon
@@ -959,6 +907,78 @@ class _AnnotationMixin {
             Zotero.debug("[Weavero] _openAnnotationInReader err: " + e);
             return false;
         }
+    }
+
+    /** Open `item` in a NEW window, Zotero's own Shift rule (zoteroPane.js
+     *  viewItems): a note in a note window, an annotation in a reader window
+     *  at itself, a file attachment in a reader window, a regular item as its
+     *  best attachment. False when nothing opens in a window (a regular item
+     *  without a readable file): the caller falls back to its plain action.
+     *  MJT 2026-10-26, Backlinks rows and the count popups: Shift+click or a
+     *  middle click. */
+    async _wvOpenItemInNewWindow(item: any): Promise<boolean> {
+        try {
+            if (!item) return false;
+            if (item.isNote && item.isNote()) {
+                const zp = Zotero.getMainWindow() && Zotero.getMainWindow().ZoteroPane;
+                if (!zp) return false;
+                await zp.openNote(item.id, { openInWindow: true });
+                return true;
+            }
+            if (item.isAnnotation && item.isAnnotation()) {
+                if (!item.parentItemID) return false;
+                const reader = await Zotero.Reader.open(item.parentItemID, { annotationID: item.key } as any, { openInWindow: true } as any);
+                await this._wvReaderSelectOnly(reader || this._wvReaderWindowFor(item.parentItemID), item.key);
+                return true;
+            }
+            let att: any = item;
+            if (item.isRegularItem && item.isRegularItem()) att = await item.getBestAttachment();
+            if (att && att.isAttachment && att.isAttachment() && att.attachmentReaderType) {
+                await Zotero.Reader.open(att.id, null as any, { openInWindow: true } as any);
+                return true;
+            }
+        } catch (e) { Zotero.debug("[Weavero] open in new window err: " + e); }
+        return false;
+    }
+
+    /** The reader WINDOW showing attachment `itemID`, if one is open. */
+    _wvReaderWindowFor(itemID: number): any {
+        try {
+            const main = Zotero.getMainWindow();
+            return (Zotero.Reader._readers || []).find((r: any) => r.itemID === itemID && r._window && r._window !== main) || null;
+        } catch (e) { return null; }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // WV-TEMP-REG39 (upstream register #39, 2026-10-27). The reader's
+    // setSelectedAnnotations reads its KeyboardManager's LIVE Shift state
+    // when nothing but a navigation triggers it, and a Shift it sees with a
+    // selection already there means "extend the range". A Shift+click on a
+    // Backlinks / Links row opens or re-targets a reader window while the
+    // key is still down: the window's keyboard manager learns the held Shift
+    // from the key's typematic keydown once it has focus, and the navigation
+    // to the annotation then selected everything between the window's
+    // previous selection and it (MJT 2026-10-27: six annotations selected
+    // "in the separate window"). After the open: select exactly the one,
+    // through an event that carries no modifier, which the reader honours
+    // over its keyboard state. RETIRE when a navigate() ignores the live
+    // modifiers (register #39).
+    // ─────────────────────────────────────────────────────────────────────
+    async _wvReaderSelectOnly(reader: any, key: string): Promise<void> {
+        try {
+            if (!reader || !key) return;
+            try { await reader._initPromise; } catch (e) {}
+            let ir: any = null;
+            for (let i = 0; i < 40; i++) {
+                ir = reader._internalReader;
+                if (ir && ir._state && ir._state.annotations && ir._state.annotations.length && typeof ir.setSelectedAnnotations === "function") break;
+                await new Promise((r) => setTimeout(r, 100));
+            }
+            if (!ir || !reader._iframeWindow) return;
+            try { if (ir._keyboardManager) { ir._keyboardManager.shift = false; ir._keyboardManager.mod = false; } } catch (e) {}
+            const iw = reader._iframeWindow;
+            ir.setSelectedAnnotations(wvCloneFor([key], iw), false, wvCloneFor({ shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, button: 0 }, iw));
+        } catch (e) { Zotero.debug("[Weavero] reader select-only err: " + e); }
     }
 }
 

@@ -370,11 +370,13 @@ describe("Weavero — default child (attachments, notes, links)", () => {
             await wv._wvClearDefaultChild(fileAtt);
         });
 
-        // A "Copy Open Link" bakes the chosen key into the URL, so getting
-        // this wrong is permanent and travels to whoever the link is sent to.
-        // `_openableAttachmentFor` (url.ts) is a third private replica of the
-        // ranking and used to ignore the marker entirely.
-        it("an Open link targets the chosen default, not the ranking", async function () {
+        // Since 0.22.3-dev.49 a paper's "Copy Open Link" carries the PAPER's
+        // key (MJT 2026-10-26, test/open-parent-link.spec.js): the chosen
+        // default applies when the link is CLICKED, so it follows a later
+        // change of default. Until then the link baked the chosen
+        // attachment's key (`_openableAttachmentFor`, a private replica of
+        // the ranking that once ignored the marker).
+        it("an Open link to a paper opens the chosen default, not the ranking", async function () {
             if (typeof wv._buildOpenLink !== "function") wvT.absent('typeof wv._buildOpenLink !== "function"');
             const second = new Zotero.Item("attachment");
             second.libraryID = Zotero.Libraries.userLibraryID;
@@ -383,17 +385,24 @@ describe("Weavero — default child (attachments, notes, links)", () => {
             second.attachmentContentType = "application/epub+zip";
             second.setField("title", "WV-TEST defatt link target");
             await second.saveTx();
+            const FH = /** @type {any} */ (Zotero.FileHandlers);
+            const orig = FH.open;
+            const opened = [];
+            FH.open = async (item) => { opened.push(item && item.id); return true; };
             try {
                 await wv._wvSetDefaultChild(second);
-                expect(wv._buildOpenLink(parent)).to.contain(second.key);
-                // A NOTE cannot be a zotero://open target — must fall through
-                // to a real file rather than producing a dead link.
+                const link = wv._buildOpenLink(parent);
+                expect(link).to.contain(parent.key);
+                await wv.handleZoteroURI(link);
+                expect(opened.pop()).to.equal(second.id);
+                // A NOTE cannot be opened as a file: the click falls through
+                // to a real file rather than doing nothing.
                 await wv._wvSetDefaultChild(note);
-                const noteLink = wv._buildOpenLink(parent);
-                expect(noteLink).to.not.contain(note.key);
-                expect(noteLink).to.contain(fileAtt.key);
+                await wv.handleZoteroURI(wv._buildOpenLink(parent));
+                expect(opened.pop()).to.equal(fileAtt.id);
             }
             finally {
+                FH.open = orig;
                 await wv._wvClearDefaultChild(note);
                 await second.eraseTx();
             }

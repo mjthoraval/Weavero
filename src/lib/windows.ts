@@ -36,3 +36,44 @@ export function wvWinType(winOrDoc: any): string {
         return "";
     }
 }
+
+/** Windows only: a window's native style (GWL_STYLE) through user32, read,
+ *  or with `next` rewritten and the frame refreshed (SWP_FRAMECHANGED --
+ *  without it the title bar keeps its old buttons until the next resize).
+ *  Returns the style now in force, null when it cannot be read (not
+ *  Windows, no native handle, ctypes unavailable). The same js-ctypes path
+ *  as the window icons (modules/tabs.ts _wvSetWindowIconFromFile). */
+export function wvWin32Style(win: any, next?: (style: number) => number): number | null {
+    let lib: any = null;
+    try {
+        const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs") as any;
+        const bw = win.docShell.treeOwner.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIBaseWindow);
+        const handle = bw.nativeHandle;
+        if (!handle) return null;
+        lib = ctypes.open("user32.dll");
+        const HWND = ctypes.voidptr_t;
+        const GWL_STYLE = -16;
+        const GetWindowLongPtrW = lib.declare("GetWindowLongPtrW", ctypes.winapi_abi, ctypes.intptr_t, HWND, ctypes.int);
+        const hwnd = HWND(ctypes.UInt64(handle));
+        // The style is 32 bits, sign-extended into LONG_PTR: `| 0` keeps it
+        // an int32 so the bit operations and the write-back agree.
+        const style = Number(GetWindowLongPtrW(hwnd, GWL_STYLE).toString()) | 0;
+        if (!next) return style;
+        const want = next(style) | 0;
+        if (want === style) return style;
+        const SetWindowLongPtrW = lib.declare("SetWindowLongPtrW", ctypes.winapi_abi, ctypes.intptr_t, HWND, ctypes.int, ctypes.intptr_t);
+        const SetWindowPos = lib.declare("SetWindowPos", ctypes.winapi_abi, ctypes.bool, HWND, HWND,
+            ctypes.int, ctypes.int, ctypes.int, ctypes.int, ctypes.unsigned_int);
+        SetWindowLongPtrW(hwnd, GWL_STYLE, ctypes.Int64(want));
+        // NOSIZE | NOMOVE | NOZORDER | NOACTIVATE | FRAMECHANGED
+        SetWindowPos(hwnd, HWND(0), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020);
+        return Number(GetWindowLongPtrW(hwnd, GWL_STYLE).toString()) | 0;
+    }
+    catch (e) {
+        try { Zotero.debug("[Weavero] wvWin32Style err: " + e); } catch (e2) {}
+        return null;
+    }
+    finally {
+        try { if (lib) lib.close(); } catch (e) {}
+    }
+}

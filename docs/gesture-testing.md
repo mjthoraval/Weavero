@@ -484,6 +484,21 @@ Annotations tab active, sort menu (the arrows icon) in view.
       restart.
 - [ ] **Reopen the tab / restart** -> the ticks and the sort survive.
 
+## Sidebar link icons while scrolling (after touching the sidebar comment previews)
+
+A sidebar card whose 3-line comment hides part of a link carries the link
+icon next to its ⋯ button. Open a PDF with more annotations than fit (the
+Weavero test fixtures PDF has short and long URL comments), Annotations
+tab active, nothing selected.
+
+- [ ] **Scroll the list down slowly** -> each card comes into view with
+      its final icons: the link icon only on cards whose comment is cut off
+      at three lines, never on a one-line comment. Nothing changes after a
+      pause or a click (2026-10-23: off-screen cards got the icon by mistake
+      and lost it only on the next click).
+- [ ] **A card with a Related button and a cut-off link** -> both icons,
+      the link icon left of the Related chain.
+
 ## Session list sort (after touching the Sessions section of the List-all-tabs panel)
 
 Open the List-all-tabs dropdown; the **Sessions** header carries the
@@ -522,6 +537,17 @@ Annotations / Tags / Related, then:
       columns shrink inside the items pane instead.
 - [ ] **Drag a column separator** (e.g. Creator | Year) → only that pair of
       columns changes; the centre pane and the other columns stay put.
+- [ ] **Drag the separator before / between Weavero's count columns**
+      (Notes | Annotations, Tags | Related, …) → they resize like Zotero's
+      Notes column (2026-10-23: they were fixed-width, two digits fit and
+      nothing moved); a 3-digit count shows in full once widened; the width
+      survives a restart.
+- [ ] **Right-click the header → Tags ▸** (two main windows open) → the
+      Tags line carries the column's check and opens a submenu: **Show
+      Column** hides / shows the column; **Automatic-Tag Count** turns the
+      second number on or off in THIS window only (the other window keeps
+      its own); flipping the Settings switch leaves a window that chose
+      alone; after a restart each window keeps its choice (2026-10-26).
 - [ ] **Watch truncated titles** for a few seconds at that width → no
       blinking between "Tes…" and "Test12"-style renderings.
 - [ ] **Narrow the window to ~1000 px with a dozen columns shown** → at
@@ -761,6 +787,192 @@ Run `test/popups.spec.js` first, then by hand:
 - [ ] Second click on the same anchor toggles the popup closed.
 - [ ] A click anywhere outside — including other documents/iframes —
       dismisses it.
+
+## Backlinks rows and count-popup rows: new window (after touching their click handling)
+
+The specs drive synthetic clicks; a real Shift press and a real middle
+button are only checked by hand (2026-10-26).
+
+- [ ] Backlinks section, a note row: Shift+click → the note opens in a note
+      window, scrolled to the link, which flashes; a plain click → a tab.
+- [ ] The same row with the middle button → a note window, and no
+      autoscroll cursor appears.
+- [ ] An annotation row (a link in an annotation comment): Shift+click → a
+      reader window at that annotation.
+- [ ] Tab to a row, Shift+Enter → a new window.
+- [ ] Items list, click a Backlinks number, then middle-click a row in the
+      popup → a new window, and the popup closes.
+- [ ] Click a Related number; Shift+click a related paper → its PDF in a
+      reader window; a related note → a note window; a paper with no file →
+      selected in the library, as a plain click.
+
+## Backlinks on the children (after touching the attachment badge, the reader buttons or the by-part popup)
+
+Backlinks part 2 (2026-10-28). `test/backlinks.spec.js` and
+`test/count-popups.spec.js` drive these with synthetic clicks and a
+hand-built PDF popup; the real pointer, the keyboard and the placement are
+checked by hand.
+
+- [ ] Collapse a paper whose links aim at its children and click its
+      Backlinks number: the popup is grouped by PART -- "This item", each
+      file, the file's annotations in reading order, each note -- each
+      heading with its share, the shares adding up to the title's count;
+      the rows under a heading carry no "→ …" chip. Expand the row and click
+      again: the item's own, no headings.
+- [ ] Attachments section of that paper: a file that is linked, or whose
+      annotations are, shows the backlinks glyph and a number right after
+      Zotero's annotation count, in the same grey; hover → "N Backlinks";
+      click → the same popup for the file. Tab to it, Enter and Space open it
+      too. A file nothing links shows nothing. Settings → Backlinks off → the
+      badges go; back on → they return.
+- [ ] Write a link to that file in a note: the badge's number moves within a
+      second, without reselecting the paper.
+- [ ] Reader tab: a linked annotation's card carries a Backlinks button after
+      Related, before ⋯. Click → the popup opens in the window holding the
+      reader, right under the button; a second click closes it; a click
+      anywhere else in the reader closes it too. The same in a standalone
+      reader window.
+- [ ] With the sidebar closed, click a linked highlight in the PDF: its popup
+      carries the same button, after Related, before ⋯.
+- [ ] With the reader open, add a link to one of its annotations in a note:
+      the card's button appears, or its count moves, without reopening the
+      reader.
+- [ ] Links buttons (2026-10-28, "Same also for links"): an annotation whose
+      comment links another Zotero item shows the Links glyph (arrow out)
+      just before Backlinks -- on its items-list line while the Links column
+      is shown, on its item-pane card, on its reader card and in its PDF
+      popup; a web URL alone shows none. Click → "N Links" under a "This
+      item" heading with its share. Turn Links off in Settings → the card
+      and reader buttons go, back on → they return; the items-list icon
+      follows the Links column, as the Backlinks icon follows its column.
+- [ ] Any annotation popup (Links or Backlinks, from any of those places)
+      looks like a collapsed paper's: the "This item" heading with its
+      share, then the rows (2026-10-28).
+- [ ] A Links row aimed at an annotation ("→ annotation p. 4") in a count
+      popup shows that annotation's highlighted text on one line with a bar
+      in its colour; a row aimed at a paper or a file shows none, and the
+      item pane's rows show none at all. In the card, each annotation's
+      highlighted text has the same bar, in the normal text colour
+      (2026-10-28).
+
+## Links section (after touching links.ts, the index or the shared row helpers)
+
+`test/links.spec.js` drives the rows with synthetic events; the real pointer
+and the item pane's own render are checked by hand (2026-10-27).
+
+- [ ] Select a paper with a note that links other items: the *Links* section
+      lists them under the note's title, in the order they are written; a
+      paper whose notes and annotations carry nothing reads "0 Links", greyed.
+      With broken references among them the header reads "3 Links · 48
+      broken" -- the resolved count (what the column shows) and the greyed
+      rows' count, so the rows add up (2026-10-27); the broken ones sit in
+      ONE collapsed "N broken links" row at the end of the section, each
+      under the note or annotation it is written in -- a source whose links
+      are all broken is named nowhere else (2026-10-28) (click or Enter /
+      Right to expand, Left to fold).
+- [ ] The *Links* section sits right above *Backlinks*, in the item pane and
+      in the side navigation (2026-10-27) -- on a fresh profile, and again
+      after Settings turns Links off and back on. A drag of a button in the
+      side navigation (or the header's right-click *Move Section Up / Down*)
+      is the user's own order and stays.
+- [ ] Backlinks: a paper with links aimed at its children reads "0 Backlinks
+      · 1 to its children" over the collapsed "1 more aimed at its …" row
+      (2026-10-27).
+- [ ] The section's rows (Links and Backlinks, in the item pane and the
+      context panes) carry no preview: icon, title, kind line and chip only
+      -- no excerpt, no annotated text (2026-10-28, "too small to show
+      anything useful"). Click a count in the Links or Backlinks column: the
+      popup's rows keep the two-line excerpt with the link highlighted, and
+      a row whose source is an annotation shows the annotated text, quoted
+      and in italics, right above it (2026-10-27).
+- [ ] With that PDF already open in a separate window and another of its
+      annotations selected there: Shift+click the annotation's row → the
+      window shows the row's annotation selected ALONE, not a range from
+      the previous one (WV-TEMP-REG39, 2026-10-27). Same from the count
+      popups and the Links section.
+- [ ] The card's arrow never crosses text: it leaves the source's line,
+      runs through the gap between the columns, and arrives along the
+      target's line (2026-10-27).
+- [ ] Rest the pointer on a row → the card: SOURCE on the left (paper ›
+      file › annotation, or paper › note, each with Zotero's icon; the
+      annotation's text), TARGET on the right climbed the same way
+      (a broken one: "Item not found" + the address), and an arrow drawn
+      from the note or annotation the link is written in to what it points
+      at (the target's deepest node); under both, across the card's whole
+      width, the reference's kind and excerpt with the link highlighted, up
+      to 600 characters before it (2026-10-28, "the link can use the full
+      width"); move off →
+      it hides. Tab to a row → the card at once; Esc hides it. The same card
+      on Backlinks rows and in the count popups -- there the TARGET is on
+      the left and the source on the right, the arrow running back. Narrow
+      the window under ~480 px: the two columns stack.
+- [ ] Click a row aimed at a paper → the paper is selected; aimed at a note
+      → the note opens in a tab; Shift+click → a note window; a middle click
+      → the same, with no autoscroll cursor.
+- [ ] A citation row → the cited item is selected; a quote row → the quoted
+      annotation opens in its file.
+- [ ] A link to a deleted item (or into a group this profile has not got):
+      the row is greyed and says why; a click shows the link in its note;
+      the header does not count it.
+- [ ] Right-click a row → Show in Library, Copy Link, Show in Source, Add as
+      Related; *Show in Source* opens the note scrolled to the reference,
+      which flashes.
+- [ ] A note tab: its context pane's Links section is flat (no group head).
+- [ ] With Better Notes enabled, a note tab shows both its Outbound Links
+      and Weavero's Links; neither breaks the other. A Better Notes link
+      copied with *Copy Link of Line* or a section link reads "→ note line
+      3" / "→ note #Methods" in the Links row (alone, "→ line 3", when the
+      target is a standalone note), the position Better Notes' own Outbound
+      Links shows; clicking the row opens it there through Better Notes
+      (2026-10-28; checked live on 3.3.3: the two sections list the same
+      note-to-note link).
+- [ ] *Has External Link* (2026-10-30, was *Has Link*): a note or comment
+      with only `zotero://` links no longer matches it (it is *Has Item
+      Links*'s); one with an `https://`, `mailto:` or app link does, in the
+      library, the reader and the annotations-pane funnels.
+- [ ] *Has Item Links* (2026-10-28): the library filter's tile sits between
+      *Has External Link* and *Has Backlinks*; click it → the items whose Links
+      column shows a number stay, a note or annotation that links an item
+      is the matched row; Alt+click → the others. The reader funnel and the
+      annotations-pane funnel carry the same tile (an annotation whose
+      comment links another item); a web URL alone does not count. Turn
+      Links off in Settings → the tiles go and a set chip stops filtering;
+      back on → it applies again.
+- [ ] The *Links* column (column picker, next to Backlinks): a paper's number
+      is its notes' and annotations' references together; expand the row →
+      the paper's cell goes blank and the note row carries its own; click a
+      number → the popup lists the rows, a broken one greyed, under the
+      Links glyph. Enable / disable the column in Settings → Extras.
+- [ ] The hover card (Backlinks and Links) is opaque on the dark theme: the
+      rows under it do not show through (2026-10-27).
+- [ ] A paper with several files (PDF + EPUB…): its annotations' group heads
+      and rows read the annotation's text, then in grey "File · p. N" (the
+      file cut first, the page whole at any pane width; 2026-10-30), and
+      "→ annotation" chips name the file in parentheses; a one-file paper's
+      show the page alone (2026-10-27), and so does a paper whose
+      other files Zotero cannot annotate, e.g. a PDF + a Word file
+      (2026-10-30).
+
+## Settings window buttons (Windows, after touching the Settings opener or its watcher)
+
+The spec drives destroy/init directly; the real toggle goes through the
+Plugins Manager (2026-10-26).
+
+- [ ] Weavero enabled, open Settings → minimize, maximize and close.
+- [ ] With Settings still open, disable Weavero in the Plugins Manager →
+      the open Settings window keeps only close (a maximized one is
+      restored first); enable it again → minimize and maximize come back.
+- [ ] Weavero disabled, open Settings, then enable Weavero → the buttons
+      appear on that window.
+- [ ] Plugins Manager open (Weavero enabled: minimize, maximize, close).
+      Click Weavero's own toggle and keep the pointer still → the card stays
+      where it is, like any other plugin's, and can be switched back on at
+      once; the window is back to Zotero's close-only title bar. Move the
+      pointer off the list → the card moves to Disabled and the list narrows.
+
+<!-- 2026-10-26: Weavero's widened list used to shrink under the pointer at
+     disable, so the page moved the card at once. -->
+
 
 ## File / Edit menubar entries (macOS, after touching the window commands)
 

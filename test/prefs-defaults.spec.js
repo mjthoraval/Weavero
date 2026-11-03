@@ -30,11 +30,11 @@ describe("Weavero — Settings prefs have registered defaults", () => {
         "compactTitleBarMain", "compactTitleBarNote", "compactTitleBarReader", "debug", "defattMarkAuto",
         "defattSortFirstAuto", "defattSortFirstDefault", "enableAddRelatedMenu", "enableAddedByColors",
         "enableAnnSort", "enableAnnotationAddedBy", "enableAnnotationsCountColumn", "enableAppLinks",
-        "enableAppLinksSkipConfirm", "enableBookmarks", "enableChainBadge", "enableCommentMarkdown",
+        "enableAppLinksSkipConfirm", "enableBacklinks", "enableBacklinksColumn", "enableBookmarks", "enableChainBadge", "enableCommentMarkdown",
         "enableCopyCollectionLink", "enableCopyItemLink", "enableDefaultChild", "enableDiscordScheme",
         "enableEvernoteScheme", "enableFigmaScheme", "enableFileScheme", "enableFilters", "enableFtpScheme",
         "enableGroupLibraryGlyph", "enableInlineUrls", "enableItemsList", "enableItemsTreeFilter",
-        "enableLibrariesHighlight", "enableLibraryBookmarks", "enableLinksAndRelations", "enableMagnetScheme",
+        "enableLibrariesHighlight", "enableLibraryBookmarks", "enableLinksAndRelations", "enableLinksColumn", "enableMagnetScheme",
         "enableMailtoScheme", "enableMsteamsScheme", "enableNotes", "enableNotesList", "enableNotesPane",
         "enableNotionScheme", "enableObsidianScheme", "enableOpenExternalViewer", "enableOpenRelatedSubmenu",
         "enableOutlineTextHighlight", "enablePluginsSearch", "enableReadStatusFilter", "enableReaderBookmarks",
@@ -45,26 +45,37 @@ describe("Weavero — Settings prefs have registered defaults", () => {
         "enableUriUtilities", "enableVisualExtras", "enableVscodeScheme", "enableZoomScheme", "enableZoteroLinks",
         "itemCountBreakdown", "collapseAdvancedToQuickSearch", "newMainWindow", "noteOpenInDeckWindow", "outlinePageNumbers",
         "readerItemPane", "separateTaskbarButtons",
-        "sessionAutoReopen", "showLibraryBookmarksInReader", "windowIcons", "windowTitleGlyphs"];
+        "sessionAutoReopen", "showLibraryBookmarksInReader", "windowIcons", "windowTitleGlyphs",
+        // Pinned section headers in the item pane (2026-11-03).
+        "itemPaneStickyHeaders",
+        // The Tags and Related sections' counts and lists (2026-11-03).
+        "enableTagsRelatedScope"];
+        // The item pane sections' paneScope.* prefs (levels, kinds, "always
+        // shown" pins) had their grid here from dev.114 to dev.161 and are
+        // off the pane since (MJT 2026-11-03); registered still
+        // (prefs-registry.spec.js).
 
     // Getters written as `v === undefined ? true : !!v`.
     const DEFAULT_TRUE = ["advSearchWindowHidePanes", "collectionsPaneToggle", "tagSelectorHandle", "readerLayoutMenu", "advSearchShortcutNewWindow",
         "annListShowHighlight", "annListShowImage", "annListShowInk", "annListShowNote",
         "annListShowText", "annListShowUnderline", "enableAnnPaneFilter", "annSelectorHandle", "bookmarkPageNumbers",
         "enableAddRelatedMenu", "enableAddedByColors", "enableAnnSort",
-        "enableAnnotationAddedBy", "enableAnnotationsCountColumn", "enableBookmarks", "enableChainBadge",
+        "enableAnnotationAddedBy", "enableAnnotationsCountColumn", "enableBacklinks", "enableBacklinksColumn", "enableBookmarks", "enableChainBadge",
         "enableCommentMarkdown", "enableCopyCollectionLink", "enableCopyItemLink", "enableDefaultChild",
         "enableFilters", "collapseAdvancedToQuickSearch", "itemCountBreakdown",
         "enableGroupLibraryGlyph",
         "enableInlineUrls", "enableItemsList", "enableItemsTreeFilter", "enableLibrariesHighlight",
-        "enableLibraryBookmarks", "enableLinksAndRelations", "enableNotes", "enableNotesList", "enableNotesPane",
+        "enableLibraryBookmarks", "enableLinksAndRelations", "enableLinksColumn", "enableNotes", "enableNotesList", "enableNotesPane",
         "enableOpenExternalViewer", "enableOpenRelatedSubmenu", "enableOutlineTextHighlight", "enablePluginsSearch",
         "enableReadStatusFilter", "enableReaderBookmarks", "enableReaderSidebar", "enableReaderView",
         "enableReaderViewIcons", "enableRelatedColumn", "enableRelations", "enableRightPane", "enableSelectionTarget",
         "enableTabGroups", "enableTabSessions", "enableTabsFileTypeFilter", "enableTabsLibraryFilter",
         "enableTagsCountAuto", "enableUriUtilities", "enableVisualExtras", "enableZoteroLinks", "inlineLinks",
         "outlinePageNumbers", "readerItemPane", "readerOutlineTakeover", "recolorAmLinks",
-        "showLibraryBookmarksInReader", "windowIcons"];
+        "showLibraryBookmarksInReader", "windowIcons", "itemPaneStickyHeaders", "enableTagsRelatedScope",
+        "paneScope.tags.own", "paneScope.related.own", "paneScope.links.note", "paneScope.links.ann", "paneScope.links.loop", "paneScope.links.broken",
+        "paneScope.backlinks.own", "paneScope.backlinks.loop",
+        "paneScope.links.zlinks", "paneScope.links.citations", "paneScope.backlinks.zlinks", "paneScope.backlinks.citations"];
 
     const defaultOf = (k) => {
         try { return db.getBoolPref("weavero." + k); }

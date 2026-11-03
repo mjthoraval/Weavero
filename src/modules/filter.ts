@@ -42,6 +42,9 @@ import { wvTimeout } from "../lib/timers";
 import { wvListen, wvUnlisten } from "../lib/listen";
 import { wvMainWins } from "../lib/windows";
 import { wvSvgEl } from "../lib/svg";
+import { wvExternalLinkGlyphEl } from "../lib/link-glyph";
+import { WV_BL_ICON_CONTEXT } from "./backlinks";
+import { WV_LK_ICON_CONTEXT } from "./links";
 import { WV_FILTER_DIMS, wvDimSet, wvDimDefaults, wvDimLevels, wvDimChildFields } from "./filter-facets";
 import type { WvDim } from "./filter-facets";
 import { URL_SCHEMES } from "./url";
@@ -3414,6 +3417,13 @@ class _FilterMixin {
                 itemNoteText: true,
                 standaloneText: true,
             },
+            // Has Item Links' ▾: where the link is written, Has External
+            // Link's three sources; Has Backlinks' ▾: what is linked, the
+            // four kinds (MJT 2026-10-30, "The Has Item Link and Has Backlink
+            // filters should also get a dropdown next to them" -> "Ok for
+            // what is proposed"). All on = the whole item, as before.
+            hasItemLinksScope: { standaloneText: true, itemNoteText: true, annotationComment: true },
+            hasBacklinksScope: { parent: true, attachment: true, note: true, annotation: true },
             // Shared by Has Tag (presence) AND Tag (specific value): two
             // facets of one concept, one scope, one picker.
             hasTagScope: { annotation: true, attachment: true, parent: true },
@@ -4173,7 +4183,7 @@ class _FilterMixin {
         // (added by _markCellLinks / _decorateAnnotationRowRelations)
         // appends after the badge naturally.
         const icon = cell.querySelector(
-            ":scope > .wv-tree-icon, :scope > .wv-tree-rel-icon");
+            ":scope > .wv-tree-icon, :scope > .wv-tree-rel-icon, :scope > .wv-tree-lk-icon, :scope > .wv-tree-bl-icon");
         if (icon) icon.before(badge);
         else cell.appendChild(badge);
     }
@@ -5169,6 +5179,28 @@ class _FilterMixin {
             }
             if (anyHas !== group.hasBookmarks) return false;
         }
+        if (group.hasBacklinks != null) {
+            // The tree "has backlinks" when the root item, a child or one of
+            // its annotations is linked from another comment or note
+            // (modules/backlinks.ts) -- of the kinds its ▾ keeps (dev.133).
+            // Before the index's first build every tree passes; the build's
+            // end re-applies.
+            const sc = group.hasBacklinksScope;
+            const narrowed = !!sc && ["parent", "attachment", "note", "annotation"].some((k) => !this._wvScopeAllows(sc, k));
+            const has = narrowed ? this._wvBlTreeHasIn(root, sc) : this._wvBlTreeHas(root);
+            if (has !== null && has !== group.hasBacklinks) return false;
+        }
+        if (group.hasItemLinks != null) {
+            // Has Item Links (Links plan slice 3): the tree is in when the
+            // Links column would show a number for its root -- a note or an
+            // annotation in it links another item -- written where its ▾
+            // keeps (dev.133). Before the index's first build every tree
+            // passes.
+            const sc = group.hasItemLinksScope;
+            const narrowed = !!sc && (sc.annotationComment === false || sc.itemNoteText === false || sc.standaloneText === false);
+            const has = narrowed ? this._wvLkTreeHasIn(root, sc) : this._wvLkTreeHas(root);
+            if (has !== null && has !== group.hasItemLinks) return false;
+        }
         // ── Kind-specific tri-state chips also enforce tree-level
         // constraints per Rule 2. We only enforce the INCLUDE
         // direction here ("=true"); EXCLUDE ("=false") behaves as
@@ -5479,6 +5511,25 @@ class _FilterMixin {
             // cascade keeps them + their parent item). No scope.
             const has = this._bmAttachmentHasReaderBookmarks(item.libraryID, item.key);
             if (has === group.hasBookmarks) return true;
+        }
+        if (group.hasBacklinks != null && cInScope(group.hasBacklinksScope, this._rowKindOf(item))) {
+            // A row that is itself a link target is primary (the cascade
+            // keeps it and its ancestors), when its ▾ keeps its kind.
+            const has = this._wvBlRowHas(item);
+            if (has !== null && has === group.hasBacklinks) return true;
+        }
+        if (group.hasItemLinks != null) {
+            // A note or an annotation that links another item itself is
+            // primary (the cascade keeps it and its ancestors), when its ▾
+            // keeps where it is written (Has External Link's keys).
+            // A paper or a file has no such place (`sk` null): judged as
+            // before the ▾, whatever it keeps.
+            const sk = this._hasLinkScopeKeyOf(item);
+            const sc = group.hasItemLinksScope;
+            if (!sk || !sc || sc[sk] !== false) {
+                const has = this._wvLkRowHas(item);
+                if (has !== null && has === group.hasItemLinks) return true;
+            }
         }
         if (group.hasTag != null) {
             const k = this._rowKindOf(item);
@@ -9608,23 +9659,27 @@ class _FilterMixin {
         opts.appendChild(this._makeHasCommentTile(doc, refreshAll));
     }
 
-    /** True iff `item` is one of the three text sources Has Link
-     *  scans AND that text contains a URL. The three sources are:
+    /** True iff `item` is one of the three text sources Has External
+     *  Link scans AND that text contains a URL that leaves Zotero (any
+     *  but zotero://; `hasExternalURI`). The three sources are:
      *    - annotation.annotationComment
      *    - item-note body (note with a regular-item parent)
      *    - standalone-note body (top-level note)
      *  Attachment URL fields and regular-item URL fields are
-     *  intentionally NOT checked — Has Link is about URLs the user
-     *  embedded in their own text, not metadata fields. */
+     *  intentionally NOT checked — the chip is about URLs the user
+     *  embedded in their own text, not metadata fields. Until
+     *  2026-10-30 ("Has Link") a zotero:// link counted too, which Has
+     *  Item Links counts (MJT: "Make the Has Link become Has External
+     *  Link, so that there is not overlap anymore"). */
     _itemHasLinks(item) {
         if (!item) return false;
         try {
             if (item.isAnnotation && item.isAnnotation()) {
-                return this.hasURI(item.annotationComment || "");
+                return this.hasExternalURI(item.annotationComment || "");
             }
             if (item.isNote && item.isNote()) {
                 const note = (item.getNote && item.getNote()) || "";
-                return this.hasURI(note);
+                return this.hasExternalURI(note);
             }
             return false;
         } catch (e) {
@@ -9987,11 +10042,63 @@ class _FilterMixin {
             + "Alt+click to exclude. ▾ to scope by row kind.");
         buildBtn(
             "hasLink", "hasLinkScope", KINDS_HAS_LINK,
-            "Has Link",
+            "Has External Link",
             (d) => this._makeLinkTileSvg(d),
-            "Has Link — items whose annotation comment or note text "
-            + "contains a URL. Alt+click to exclude. ▾ to choose "
-            + "which text source(s) to scan.");
+            "Has External Link — items whose annotation comment or note "
+            + "text contains a link that leaves Zotero (https://, mailto:, "
+            + "app links). A zotero:// link is Has Item Links'. Alt+click "
+            + "to exclude. ▾ to choose which text source(s) to scan.");
+        // Has Item Links (Links plan slice 3, MJT 2026-10-28): no scope --
+        // the whole item, what the Links column counts. Only with the Links
+        // switch on; between Has Link and Has Backlinks, the item pane's
+        // order (Links above Backlinks).
+        let lkOn = false;
+        try { lkOn = !!this._getEnableLinks(); } catch (e) {}
+        if (lkOn) {
+            try { this._wvBlEnsure(); } catch (e) {}
+            // Its ▾: where the link is written, Has External Link's three
+            // sources (MJT 2026-10-30, "Ok for what is proposed").
+            buildBtn(
+                "hasItemLinks", "hasItemLinksScope", KINDS_HAS_LINK,
+                "Has Item Links",
+                (d) => {
+                    const icon = wvHtmlEl(d, "img", "wv-filter-svg");
+                    icon.src = WV_LK_ICON_CONTEXT;
+                    icon.alt = "Has Item Links";
+                    return icon;
+                },
+                "Has Item Links — items whose notes or annotation comments "
+                + "link to another Zotero item (Zotero links and note "
+                + "citations), on the item, a note or an annotation. A web URL "
+                + "alone is Has External Link's. Alt+click to exclude. "
+                + "▾ to choose where the link is written.");
+        }
+        // Has Backlinks (issue #60): no scope -- the whole item. Only with
+        // the Backlinks switch on (Links & Relations -> Relations); opening
+        // the panel kicks the index build so the first click has data.
+        let blOn = false;
+        try { blOn = !!this._getEnableBacklinks(); } catch (e) {}
+        if (blOn) {
+            try { this._wvBlEnsure(); } catch (e) {}
+            // Its ▾: what is linked, Has Tag's four kinds (MJT 2026-10-30).
+            buildBtn(
+                "hasBacklinks", "hasBacklinksScope", KINDS_ROW,
+                "Has Backlinks",
+                (d) => {
+                    const icon = wvHtmlEl(d, "img", "wv-filter-svg");
+                    icon.src = WV_BL_ICON_CONTEXT;
+                    icon.alt = "Has Backlinks";
+                    // No colour of its own: the tile's text colour, like
+                    // its neighbour Has Link, whose glyph it extends
+                    // (2026-10-23). A Zotero-link brown once sat here and
+                    // read as Has Related's wood on the dark theme.
+                    return icon;
+                },
+                "Has Backlinks — items linked from another annotation comment "
+                + "or note (Zotero links and note citations), on the item, a child or an "
+                + "annotation. Alt+click to exclude. ▾ to choose what is "
+                + "linked: the item, its attachments, notes or annotations.");
+        }
     }
 
     /** Open a small dropdown anchored under `anchor` with checkboxes
@@ -10016,7 +10123,7 @@ class _FilterMixin {
         let ownWasOpen = false;
         for (const s of stale) {
             if ((s as any)._wvScopeAnchor === anchor) ownWasOpen = true;
-            s.remove();
+            if ((s as any)._wvClose) (s as any)._wvClose(); else s.remove();
         }
         if (ownWasOpen) return;
 
@@ -10069,10 +10176,28 @@ class _FilterMixin {
             pop.style.top = (r.bottom - ir.top + 2) + "px";
         } catch (e) {}
 
+        // No tooltip over its own open menu, as Zotero's toolbar dropdown
+        // buttons (MJT 2026-11-02, "This popup is annoying as it appears on
+        // top of the useful content. I do not see the problem for the native
+        // dropdown icons in the toolbar. Can you do the same?"): this menu is
+        // a div, not a XUL menu the tooltip engine knows of, and the ▾'s
+        // title rose again over it while the pointer rested on the ▾ (the
+        // panel's mousedown dismissal only hides the one already up). The
+        // title is set aside while the menu is open and given back when it
+        // closes -- the engine is left alone (work/tooltip-conventions.md).
+        const tip = anchor.getAttribute("title");
+        anchor.removeAttribute("title");
+        try { wvDismissTooltip(doc); } catch (e) {}
+
         // Close on outside-click, attached a tick later so the click that
         // opened the popup doesn't immediately re-close it.
         let off: (() => void) | null = null;
-        const close = () => { try { pop.remove(); } catch (e) {} if (off) { off(); off = null; } };
+        const close = () => {
+            try { pop.remove(); } catch (e) {}
+            if (tip != null && !anchor.hasAttribute("title")) anchor.setAttribute("title", tip);
+            if (off) { off(); off = null; }
+        };
+        (pop as any)._wvClose = close;
         off = wvOutsideClick({ panel: pop, keep: [anchor], defer: true, hostWin: winOf(doc), owner: this, onOutside: () => close() });
     }
 
@@ -10541,35 +10666,16 @@ class _FilterMixin {
         bar(10, 4, 5, 4);   // body
     }
 
-    /** Has Link glyph FOR THE TILE: two interlocking links drawn on a
-     *  16 grid. The shared badge (`_makeLinkSvg`, annotation.ts) is a
-     *  24-unit viewBox reused at 16px on other surfaces -- a 0.67 scale
-     *  that lands its 1-px strokes between pixel rows, so the tile
-     *  rendered as grey fuzz (MJT 2026-08-20). Strokes are centred on
-     *  half-pixels here, which is what puts a 1-px line exactly on one
-     *  pixel row. The shared badge is left alone: it renders at 1em on
-     *  surfaces where the font size varies, so there is no single grid
-     *  to snap it to. */
+    /** Has External Link glyph FOR THE TILE, in every filter popup (library
+     *  and reader annotations): the box with an arrow out (lib/link-glyph.ts
+     *  WV_EXTLINK_PATHS; MJT 2026-10-30, "B: box + arrow out"), stroked in
+     *  the tile's text colour. From 2026-10-23 to dev.130 it was the links
+     *  chain, the comment marker's, which Has Item Links' glyph extends --
+     *  the chain no longer meant a web link once Has Link became Has
+     *  External Link. Until 2026-10-23 the library tile was two hand-snapped
+     *  rectangles and the reader tile the whole needle logo. */
     _makeLinkTileSvg(doc) {
-        const svg = wvSvgEl(doc, "svg", { class: "wv-filter-svg", viewBox: "0 0 16 16", width: "16", height: "16", fill: "none" });
-        svg.style.stroke = "none";   // children set their own stroke
-        const link = (x) => {
-            const r = wvSvgEl(doc, "rect", { x, y: "5.5", width: "7", height: "5" });
-            // rx=1, measured: the straight runs then land on exactly
-            // one pixel row/column each and only the four small corners
-            // soften -- 45% antialiased pixels against 86% at rx=2.5
-            // (fully rounded ends are ALL curve) and 84% for Zotero's
-            // own link.svg. Square corners measure a perfect 0%, kept in
-            // reserve if this still reads soft.
-            r.setAttribute("rx", "1");
-            r.setAttribute("stroke", "currentColor");
-            r.setAttribute("stroke-width", "1");
-            r.setAttribute("fill", "none");
-            svg.appendChild(r);
-        };
-        link(1.5);
-        link(7.5);
-        return svg;
+        return wvExternalLinkGlyphEl(doc, { cls: "wv-filter-svg", size: 16 });
     }
 
     /** Rectangular knockout on whole pixels, giving the badge clear

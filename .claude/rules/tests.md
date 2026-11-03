@@ -64,13 +64,24 @@ paths:
   during which the library changed is not evidence (`itemsChangedDuringRun`).
   Reset `search.quicksearch-mode` to `fields` before and after — a polluted
   mode produces phantom failures.
+- An ANNOTATION FIXTURE is validated per attachment type when saved
+  (item.js, the `sortIndex` case): a PDF annotation takes
+  `"00001|000001|00000"`, an EPUB one `"00001|00000001"`, an HTML snapshot
+  one 7-8 digits (`"00000001"`) and a CssSelector position -- the PDF
+  helper's shape throws "Invalid sortIndex ... for HTML annotation"
+  (links.spec.js, 2026-11-03).
 - A spec runs in a FRESH TEMP PROFILE, not the dev one: no user column
   choices (the items tree shows Zotero's three defaults, none of Weavero's
   opt-in columns), no collections, no stored widths, no saved searches.
   Never assert on profile-specific state — `assert.isAbove(cells, 3)` in
   the header-containment guard passed on dev (12 columns) and failed at 3
   on both `npm test` and CI (2026-09-14). Assert the INVARIANT, and derive
-  the comparison from what the run itself measures.
+  the comparison from what the run itself measures. The same for layout
+  GEOMETRY: a fixture that needs an element on a given sub-pixel offset
+  computes it from where the element is now, never from a whole-pixel
+  start -- after an earlier spec opened a reader tab the item pane started
+  at .7 and item-pane-creep.spec.js's `floor(h) + 0.5` header landed its
+  scroller on .2 (2026-10-28; passed alone, failed in sequence).
 - A RECORDED characterization (an EXPECTED literal from a WV_*_RECORD run)
   is recorded on the maintainer's machine -- Windows, French locale, dark
   theme -- and compared in the release CI on Linux, English, light. Record
@@ -86,6 +97,11 @@ paths:
   gate there (v0.22.2's first release CI run went red on exactly that,
   2026-10-22; prefs-getters.spec.js WIN_ONLY). A new `win: true` row goes
   into that list.
+- Zotero's OWN strings reach a live check in the runner's UI locale
+  (French here: Zotero's Tags header read "1 marqueur", 2026-10-29,
+  pane-scope.spec.js): assert the l10n id, or what Weavero adds to the text,
+  never Zotero's English words. Weavero's own strings are English
+  everywhere (weavero.ftl is copied into every locale).
 - A DOM read right after an async reload (a tree's `reload()`, a manager
   build) is a race: the row paints on a later frame, and the CI's xvfb
   runner is slower than this machine (the manager's "no arrow" check read

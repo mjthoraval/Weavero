@@ -528,7 +528,7 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         await wv._wvAnnListUseAsDefault(reader);
         popup = await openPane();
         assert.isTrue(chip(popup, "Has Tag").classList.contains("wv-al-def-chip"), "Has Tag marked");
-        assert.isFalse(chip(popup, "Has Link").classList.contains("wv-al-def-chip"), "Has Link untouched");
+        assert.isFalse(chip(popup, "Has External Link").classList.contains("wv-al-def-chip"), "Has Link untouched");
         wv._wvCloseReaderFilterPopup(idoc);
 
         // The READER funnel has no default of its own: nothing is marked
@@ -597,7 +597,7 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         wv._wvAnnListTogglePopup(reader, idoc, idoc.querySelector("#sidebarContainer .wv-al-btn"));
         let popup = await waitFor(() => idoc.getElementById("wv-reader-filter-popup-v2"), 5000, "popup");
         const tile = (label) => [...popup.querySelectorAll(".wv-filter-opt")].find(b => (b.title || "").indexOf(label) === 0);
-        for (const label of ["Has Tag", "Has Related", "Has Link"]) {
+        for (const label of ["Has Tag", "Has Related", "Has External Link"]) {
             assert.equal(tile(label).dataset.inactive, "true", label + " fades: nothing visible has it");
         }
         assert.isNotOk(tile("Has Comment"), "no comment anywhere -> the tile is not even built");
@@ -619,8 +619,8 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         await setPane({ hasLink: true });
         wv._wvAnnListTogglePopup(reader, idoc, idoc.querySelector("#sidebarContainer .wv-al-btn"));
         popup = await waitFor(() => idoc.getElementById("wv-reader-filter-popup-v2"), 5000, "popup");
-        assert.equal(tile("Has Link").dataset.selected, "true");
-        assert.notEqual(tile("Has Link").dataset.inactive, "true", "set: never faded");
+        assert.equal(tile("Has External Link").dataset.selected, "true");
+        assert.notEqual(tile("Has External Link").dataset.inactive, "true", "set: never faded");
         assert.equal(tile("Has Tag").dataset.inactive, "true", "nothing visible now, so the tag tile fades too");
         wv._wvCloseReaderFilterPopup(idoc);
         hl.removeTag("wv-fade-probe");
@@ -674,6 +674,111 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         assert.sameMembers(wv._wvAnnPaneState(reader).types, ["highlight", "ink"]);
         wv._wvCloseReaderFilterPopup(idoc);
         await wv._wvAnnPaneClear(reader);
+    });
+
+    // MJT 2026-10-23: "Add Has Backlinks to all filters where relevant" --
+    // the reader's two annotation filters (the pane funnel and the reader
+    // funnel, one renderer) next to Has Link; the bookmarks and tabs popups
+    // have no Has Related / Has Link and get none.
+    it("Has Backlinks keeps the annotations another note links to, in the pane and on the page", async function () {
+        const idoc = reader._iframeWindow.document;
+        const n = /** @type {any} */ (new Zotero.Item("note"));
+        n.libraryID = att.libraryID;
+        n.setNote('<p>see <a href="zotero://open-pdf/library/items/' + att.key + '?annotation=' + hl.key + '">the highlight</a></p>');
+        await n.saveTx();
+        try {
+            await wv._wvBlEnsure();
+            await waitFor(() => wv._wvBlDirect(hl).some(s => s.srcID === n.id), 10000, "indexed");
+            await setPane({ hasBacklinks: true });
+            await waitFor(() => cards(idoc).join() === hl.key, 15000, "the pane: the linked highlight only");
+            assert.include(wv._wvAnnPaneDescribe(wv._wvAnnPaneState(reader)), "Has Backlinks");
+            await setPane({ hasBacklinks: false });
+            await waitFor(() => cards(idoc).join() === ink.key, 15000, "Alt+click: the unlinked ink only");
+            await setPane({ hasBacklinks: null });
+            await waitFor(() => cards(idoc).length === 2, 15000, "both back");
+            if (idoc.getElementById("wv-reader-filter-popup-v2")) wv._wvCloseReaderFilterPopup(idoc);
+            wv._wvAnnListTogglePopup(reader, idoc, idoc.querySelector("#sidebarContainer .wv-al-btn"));
+            const popup = await waitFor(() => idoc.getElementById("wv-reader-filter-popup-v2"), 5000, "popup");
+            const titles = [...popup.querySelectorAll(".wv-filter-opt")].map(b => (b.title || "").split(" — ")[0]);
+            const iLink = titles.indexOf("Has External Link"), iBl = titles.indexOf("Has Backlinks");
+            assert.isAbove(iBl, -1, "the tile is there");
+            // Has Link, Has Item Links, Has Backlinks: the item pane's order,
+            // Links above Backlinks (2026-10-28).
+            assert.strictEqual(iBl, iLink + 2, "after Has Link and Has Item Links");
+            const tile = popup.querySelectorAll(".wv-filter-opt")[iBl];
+            assert.notEqual(tile.dataset.inactive, "true", "a visible annotation has a backlink: not faded");
+            wv._wvCloseReaderFilterPopup(idoc);
+            // The reader funnel takes it off the page too.
+            const st = wv._wvReaderFilterState(reader);
+            st.hasBacklinks = true;
+            await wv._wvApplyReaderFilter(reader);
+            await waitFor(() => pageKeys().join() === hl.key, 15000, "the page: the linked highlight only");
+            st.hasBacklinks = null;
+            await wv._wvApplyReaderFilter(reader);
+            await waitFor(() => pageKeys().length === 2, 15000, "the page: both");
+        }
+        finally {
+            try { wv._wvReaderFilterState(reader).hasBacklinks = null; await wv._wvApplyReaderFilter(reader); } catch (e) {}
+            try { await wv._wvAnnPaneClear(reader); } catch (e) {}
+            await n.eraseTx();
+        }
+    });
+
+    // Has Item Links (Links plan slice 3; MJT 2026-10-28: the name "Has Item
+    // Links", "Library + reader filters"): an annotation whose comment links
+    // another Zotero item -- what the Links column counts; a web URL alone is
+    // Has Link's. Between Has Link and Has Backlinks. FAILED on dev.78.
+    it("Has Item Links keeps the annotations whose comment links another item, in the pane and on the page", async function () {
+        const idoc = reader._iframeWindow.document;
+        const T = await wvT.createItem("book", { title: "WVAL item link target" });
+        const was = hl.annotationComment;
+        hl.annotationComment = "see zotero://select/library/items/" + T.key;
+        await hl.saveTx();
+        const inkWas = ink.annotationComment;
+        ink.annotationComment = "web only https://example.org/wval";   // Has Link, not Has Item Links
+        await ink.saveTx();
+        try {
+            await wv._wvBlEnsure();
+            await waitFor(() => wv._wvLkOut(hl).some(r => r.target && r.target.id === T.id), 10000, "indexed");
+            await setPane({ hasItemLinks: true });
+            await waitFor(() => cards(idoc).join() === hl.key, 15000, "the pane: the item-linking highlight only");
+            assert.include(wv._wvAnnPaneDescribe(wv._wvAnnPaneState(reader)), "Has Item Links");
+            await setPane({ hasItemLinks: false });
+            await waitFor(() => cards(idoc).join() === ink.key, 15000, "Alt+click: the web-link ink only");
+            assert.include(wv._wvAnnPaneDescribe(wv._wvAnnPaneState(reader)), "No Item Links");
+            await setPane({ hasItemLinks: null });
+            await waitFor(() => cards(idoc).length === 2, 15000, "both back");
+            if (idoc.getElementById("wv-reader-filter-popup-v2")) wv._wvCloseReaderFilterPopup(idoc);
+            wv._wvAnnListTogglePopup(reader, idoc, idoc.querySelector("#sidebarContainer .wv-al-btn"));
+            const popup = await waitFor(() => idoc.getElementById("wv-reader-filter-popup-v2"), 5000, "popup");
+            const titles = [...popup.querySelectorAll(".wv-filter-opt")].map(b => (b.title || "").split(" — ")[0]);
+            const iLink = titles.indexOf("Has External Link"), iIl = titles.indexOf("Has Item Links");
+            assert.isAbove(iIl, -1, "the tile is there");
+            assert.strictEqual(iIl, iLink + 1, "right after Has Link");
+            const tile = popup.querySelectorAll(".wv-filter-opt")[iIl];
+            assert.notEqual(tile.dataset.inactive, "true", "a visible annotation links an item: not faded");
+            wv._wvCloseReaderFilterPopup(idoc);
+            // The reader funnel takes it off the page too.
+            const st = wv._wvReaderFilterState(reader);
+            st.hasItemLinks = true;
+            await wv._wvApplyReaderFilter(reader);
+            await waitFor(() => pageKeys().join() === hl.key, 15000, "the page: the item-linking highlight only");
+            // Dormant while the Links switch is off: the selection is kept, nothing filtered.
+            await wvT.withPref("weavero.enableLinks", false, async () => {
+                await wv._wvApplyReaderFilter(reader);
+                await waitFor(() => pageKeys().length === 2, 15000, "dormant: both on the page");
+            });
+            st.hasItemLinks = null;
+            await wv._wvApplyReaderFilter(reader);
+            await waitFor(() => pageKeys().length === 2, 15000, "the page: both");
+        }
+        finally {
+            try { wv._wvReaderFilterState(reader).hasItemLinks = null; await wv._wvApplyReaderFilter(reader); } catch (e) {}
+            try { await wv._wvAnnPaneClear(reader); } catch (e) {}
+            hl.annotationComment = was; await hl.saveTx();
+            ink.annotationComment = inkWas; await ink.saveTx();
+            await T.eraseTx();
+        }
     });
 
     it("no error-console entries from the feature", function () {

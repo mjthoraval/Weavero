@@ -540,7 +540,47 @@ class _NoteEditorMixin {
                 // mirror the in-app behaviour the user already sees
                 // in annotation comments rather than the reader.
                 const DELAY_MS = 500;
+                // The hover card on a zotero:// link, a note citation or a
+                // quoted annotation (links.ts _wvLkHoverCardShow; MJT
+                // 2026-11-03, "Hovering on a Zotero link in a note or an
+                // annotation, or a Note Citation in a note should display a
+                // similar preview as in the item pane"): after the rows'
+                // rest (450 ms) while the pointer stays on the node; gone
+                // when it moves off it, leaves the editor, presses or types.
+                // Those nodes get no link tooltip (the card says more).
+                let cardNode: any = null, cardTimer: any = null;
+                const cardHide = () => {
+                    if (cardTimer) { try { iwin.clearTimeout(cardTimer); } catch (err) {} cardTimer = null; }
+                    if (cardNode) { const n = cardNode; cardNode = null; try { this._wvLkHoverCardHide(n); } catch (err) {} }
+                };
+                const cardMove = (e) => {
+                    // The Item Links switch off: no card node, the link's
+                    // tooltip as before (MJT 2026-11-03).
+                    const cn = this._wvLkCardOn() ? this._wvLkHoverNode(e.target) : null;
+                    if (cn === cardNode) return !!cn;
+                    cardHide();
+                    if (!cn) return false;
+                    cardNode = cn;
+                    cardTimer = iwin.setTimeout(() => {
+                        cardTimer = null;
+                        try {
+                            const item = noteEditorEl.item;
+                            if (item && cn.isConnected && cardNode === cn) this._wvLkHoverCardShow(cn, item);
+                        } catch (err) {}
+                    }, 450);
+                    return true;
+                };
+                wvListen(idoc, "lkcard:down", "mousedown", cardHide, true, (this as any)._wvWireTag());
+                wvListen(idoc, "lkcard:key", "keydown", cardHide, true, (this as any)._wvWireTag());
                 const onMove = (e) => {
+                    if (cardMove(e)) {
+                        if (this._noteLinkTooltipTimer) {
+                            try { iwin.clearTimeout(this._noteLinkTooltipTimer); } catch (err) {}
+                            this._noteLinkTooltipTimer = null;
+                        }
+                        if (this._noteLinkTooltipCurrentAnchor) this._hideLinkTooltipFromIframe();
+                        return;
+                    }
                     const a = findAnchor(e);
                     // PERSIST MODE (hidden pref weavero.tooltipPersist):
                     // industry standard (surveyed 2026-08-27) — the open
@@ -612,6 +652,7 @@ class _NoteEditorMixin {
                     // tooltip would pop up on top of the menu.
                     if (!e.relatedTarget) {
                         this._dbg("[Weavero] tooltip out: cursor left iframe");
+                        cardHide();
                         if (this._noteLinkTooltipTimer) {
                             try {
                                 iwin.clearTimeout(this._noteLinkTooltipTimer);

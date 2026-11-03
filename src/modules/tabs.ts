@@ -7706,6 +7706,11 @@ class _TabsMixin {
                 // spawn wrapper (see _wvSuppressNativePaneRestore) has
                 // been swallowing the native mirror until now.
                 try { (this as any)._wvUnsuppressNativePaneRestore(win); } catch (e) {}
+                // Its own pinned section and open sections (pane.ts
+                // _wvWireWindowPanePrefs); one with no saved state starts
+                // unpinned (MJT 2026-10-26 intake), whatever Zotero's shared pin.
+                try { (this as any)._wvWireWindowPanePrefs(win); } catch (e) {}
+                if (!(group && group.wvMainState)) { try { (this as any)._wvPanePrefsApply(win, {}); } catch (e) {} }
                 const tabs = win.Zotero_Tabs;
                 if (tabs && typeof tabs.closeAll === "function") {
                     try { this._wvBlindAutomationTabClose((tabs._tabs || []).map((t: any) => t.id)); } catch (e) {}
@@ -7771,18 +7776,20 @@ class _TabsMixin {
                         const flag = () => { try { for (const t of (tabs._tabs || [])) if (t && t.data && t.data.itemID != null && !t.data.wvGroupId && !(this as any)._wvTabGroupStamp(t)) t._wvGroupExcluded = true; } catch (e) {} };
                         win.setTimeout(flag, 300); win.setTimeout(flag, 1500);
                     } catch (e) {}
-                    // Session reconstruct carries this window's library-view state
-                    // (collection + items-tree columns/sort); the dev "New Window"
-                    // path leaves wvMainState unset, so this is a no-op there.
-                    if (group.wvMainState) {
-                        try {
-                            const plugin = Zotero.Weavero && Zotero.Weavero.plugin;
-                            if (plugin && plugin._wvTabSessionApplyMainState) {
-                                plugin._wvTabSessionApplyMainState(win, group.wvMainState);
-                            }
-                        } catch (e) { Zotero.debug("[Weavero] dev wvMainState err: " + e); }
-                    }
-                } else {
+                }
+                if (group && group.wvMainState) {
+                    // A saved window's library view (collection, columns/sort,
+                    // hidden collections, title, Tags choice) -- a window that
+                    // held only its library tab too (restart, MJT 2026-10-26),
+                    // so it skips the clean path's My Library below. The dev
+                    // "New Window" paths leave wvMainState unset.
+                    try {
+                        const plugin = Zotero.Weavero && Zotero.Weavero.plugin;
+                        if (plugin && plugin._wvTabSessionApplyMainState) {
+                            plugin._wvTabSessionApplyMainState(win, group.wvMainState);
+                        }
+                    } catch (e) { Zotero.debug("[Weavero] dev wvMainState err: " + e); }
+                } else if (!(group && group.tabs && group.tabs.length > 1)) {
                     // CLEAN window (Ctrl+N / hamburger): land on My Library --
                     // or on the row the opener asked for (`_wvPendingDevWindowSelect`
                     // = {id, libraryID}: "Open in New Window" on a collection,
@@ -8141,7 +8148,10 @@ class _TabsMixin {
                     tabs = Z && Z.getState();   // full, normalized (the "normalize" layer)
                     tabs = this._wvApplyDeferredSelectionToState(w, tabs);
                 } catch (e) {}
-                if (!tabs || tabs.length < 2) continue;   // library tab only → nothing to restore
+                // A window holding only its library tab is captured too: a
+                // restart reopens what was open (MJT 2026-10-26, after one
+                // vanished), and its own view state is not nothing.
+                if (!tabs || !tabs.length) continue;
                 // Persist the window's stable id so its items-tree column layout
                 // can be re-bound to the same window on the next restart. Also
                 // the library-view state (selected collection + column/sort) —
@@ -8151,7 +8161,7 @@ class _TabsMixin {
                 try {
                     const ms = (this as any)._wvTabSessionCaptureMainState
                         ? (this as any)._wvTabSessionCaptureMainState(w) : null;
-                    if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl || ms.title)) wvMainState = ms;
+                    if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl || ms.title || typeof ms.tagsAuto === "boolean" || ms.pinnedPane || ms.paneOpen)) wvMainState = ms;
                 } catch (e) {}
                 groups.push({ kind: "main-dev", tabs, wvWinId: (w._wvWindowId != null ? w._wvWindowId : null),
                     geom: (this as any)._wvWindowGeom(w), wvMainState });
@@ -8218,7 +8228,7 @@ class _TabsMixin {
             try {
                 const ms = (this as any)._wvTabSessionCaptureMainState
                     ? (this as any)._wvTabSessionCaptureMainState(w) : null;
-                if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl || ms.title)) wvMainState = ms;
+                if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl || ms.title || typeof ms.tagsAuto === "boolean" || ms.pinnedPane || ms.paneOpen)) wvMainState = ms;
             } catch (e) {}
             return { kind: "main-anchor", tabs, geom: (this as any)._wvWindowGeom(w), wvMainState };
         } catch (e) { return null; }
@@ -8233,10 +8243,13 @@ class _TabsMixin {
      *  used to build its document by hand without these two fields, so a
      *  clean quit lost both while a crash kept them (survey 2026-10-06). */
     _wvWindowStoreBuildDoc(windows: any[]) {
-        let anchorHidden: any, anchorTitle: any;
+        let anchorHidden: any, anchorTitle: any, anchorTagsAuto: any;
         try { const a0: any = (Zotero.getMainWindows() || [])[0]; anchorHidden = a0 && (this as any)._wvHidCapture ? (this as any)._wvHidCapture(a0) : undefined; } catch (e) {}
         try { const a0: any = (Zotero.getMainWindows() || [])[0]; anchorTitle = (a0 && a0._wvWindowTitle) || undefined; } catch (e) {}
-        return { version: 4, windows, focused: this._wvWindowStoreFocusDescriptor(), anchorHidden, anchorTitle };
+        // The anchor's own Tags-column automatic-count choice, same reason
+        // (pane.ts _wvTagsAutoFor; undefined = follows Settings).
+        try { const a0: any = (Zotero.getMainWindows() || [])[0]; anchorTagsAuto = a0 && (this as any)._wvTagsAutoCapture ? (this as any)._wvTagsAutoCapture(a0) : undefined; } catch (e) {}
+        return { version: 4, windows, focused: this._wvWindowStoreFocusDescriptor(), anchorHidden, anchorTitle, anchorTagsAuto };
     }
 
     _wvWindowStoreSaveSync() {
@@ -8347,7 +8360,7 @@ class _TabsMixin {
                 try {
                     const ms = (this as any)._wvTabSessionCaptureMainState
                         ? (this as any)._wvTabSessionCaptureMainState(win) : null;
-                    if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl || ms.title)) wvMainState = ms;
+                    if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl || ms.title || typeof ms.tagsAuto === "boolean" || ms.pinnedPane || ms.paneOpen)) wvMainState = ms;
                 } catch (e) {}
             }
             const entry = {
@@ -8926,7 +8939,7 @@ class _TabsMixin {
             try { const v = Zotero.Prefs.get("weavero.sessionAutoReopen"); auto = (v === undefined) ? true : !!v; } catch (e) {}
             if (!auto) return;
             const groups = (await this._wvWindowStoreLoad())
-                .filter((g: any) => g && g.kind === "main-dev" && g.tabs && g.tabs.length > 1);
+                .filter((g: any) => g && g.kind === "main-dev" && g.tabs && g.tabs.length);   // library-only too
             if (!groups.length) return;
             // FOCUSED-FIRST: when the quit-time focus was a managed window,
             // spawn that one before its siblings so the user's window is
@@ -9059,7 +9072,7 @@ class _TabsMixin {
      *  _wvSpawnMainWindowWait, or null when Zotero's open threw -- the flag
      *  lowered and the state unqueued again. Synchronous up to the open, so
      *  a caller can read the flag right after. */
-    _wvSpawnMainWindowStart(state?: any): { before: Set<any>; queued: any } | null {
+    _wvSpawnMainWindowStart(state?: any, opts?: { restore?: boolean }): { before: Set<any>; queued: any } | null {
         const p: any = this;
         const before = new Set<any>(Zotero.getMainWindows() || []);
         let queued: any = null;
@@ -9070,6 +9083,13 @@ class _TabsMixin {
         }
         p._wvPendingDevWindow = true;
         try { p._wvClearSessionPaneState(); } catch (e) {}
+        // Every spawn but the restore chain's is the user's command. The
+        // window is created INSIDE openMainWindow (domwindowopened fires
+        // there), so the restart's focus guard reads this flag to tell it
+        // from a restore window: it was taken for one and pushed back when
+        // opened inside the hold (MJT 2026-10-26: "Window behind: Still not
+        // working", an Open in New Window 22.6 s into the boot).
+        p._wvUserWindowOpening = !(opts && opts.restore);
         try { (Zotero as any).openMainWindow(); }
         catch (e) {
             p._wvPendingDevWindow = false;
@@ -9077,6 +9097,7 @@ class _TabsMixin {
             Zotero.debug("[Weavero] spawn: openMainWindow threw: " + e);
             return null;
         }
+        finally { p._wvUserWindowOpening = false; }
         return { before, queued };
     }
 
@@ -9123,7 +9144,7 @@ class _TabsMixin {
         try {
             if (!this._wvDevSpawnQueue || !this._wvDevSpawnQueue.length) return;
             try { (this as any)._wvTrace && (this as any)._wvTrace("restore: spawning dev main window (" + this._wvDevSpawnQueue.length + " queued)"); } catch (e) {}
-            this._wvSpawnMainWindowStart();
+            this._wvSpawnMainWindowStart(undefined, { restore: true });
         } catch (e) { Zotero.debug("[Weavero] _wvSpawnNextDevWindow err: " + e); }
     }
 
@@ -9519,6 +9540,7 @@ class _TabsMixin {
                 const hw: any = (this as any)._wvAnchorWindow();
                 if (hw && doc && doc.anchorHidden) (this as any)._wvHidRestore(hw, doc.anchorHidden);
                 if (hw && doc && doc.anchorTitle && hw._wvWindowTitle == null) this._wvWindowSetCustomTitle(hw, doc.anchorTitle);
+                if (hw && doc && typeof doc.anchorTagsAuto === "boolean" && (this as any)._wvTagsAutoSet) (this as any)._wvTagsAutoSet(hw, doc.anchorTagsAuto, { save: false });
             } catch (e) {}
             if (!entry) return;   // pre-takeover store → Zotero restored natively
             const win: any = (this as any)._wvAnchorWindow();
@@ -10690,7 +10712,23 @@ class _TabsMixin {
                 observe(subject: any, topic: string) {
                     try {
                         if (topic !== "domwindowopened") return;
+                        // A window opening once the hold is over is the user's,
+                        // whether or not the next check has run yet: end the
+                        // guard instead of arming it (the belt to the timer
+                        // below, 2026-10-26).
+                        if (expired()) { stop(); return; }
                         const w: any = subject;
+                        // A window the user asked for (a Weavero spawn not
+                        // from the restore chain, opening right now) is their
+                        // choice: left in front and made the window later
+                        // re-asserts focus -- not armed like the restore's.
+                        const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (lp && lp._wvUserWindowOpening) {
+                            (w as any)._wvBgUserClaimed = true;
+                            (self as any)._wvBgUserChosenWin = w;
+                            try { (self as any)._wvTrace("bg-restore: user opened a window — redirect target"); } catch (e2) {}
+                            return;
+                        }
                         hook(w);                                   // BEFORE first show/activate
                         w.addEventListener("load", () => settle(w), { once: true });
                     } catch (e) {}
@@ -10706,25 +10744,33 @@ class _TabsMixin {
                 while (en0.hasMoreElements()) wireClaim(en0.getNext());
             } catch (e) {}
             // Lifetime mirrors the shepherd: poll the guard, then tear down.
-            let ticks = 0;
-            // The timer host is RE-RESOLVED every tick: binding setTimeout to
-            // the start-time main window let the whole teardown chain die
-            // when THAT window closed mid-restore, leaving _wvBgRestoreOn
-            // stuck true forever -- every later window open got fought
-            // ("went to the back again, with several flickering", MJT
-            // 2026-09-01; the stuck flag was measured live).
-            const setT = (fn: any, ms: number) => {
-                try {
-                    const wLive: any = Zotero.getMainWindow();
-                    if (wLive && wLive.setTimeout && !wLive.closed) { wLive.setTimeout(fn, ms); return; }
-                } catch (_) {}
-                try { setTimeout(fn, ms); } catch (_) {}
-            };
-            const tick = () => {
-                ticks++;
+            let ticks = 0, stopped = false;
+            // The SANDBOX clock, never a window's: a window's pending timer
+            // dies with it, and the teardown chain with it, leaving
+            // _wvBgRestoreOn stuck true for the session -- every later window
+            // armed at open and pushed back. Re-resolving the host per tick
+            // (2b959d36, after "went to the back again, with several
+            // flickering", MJT 2026-09-01) still lost the tick already
+            // waiting on the window that closed: MJT closed the restored
+            // second window 18 s in, the window he had last focused, and his
+            // "Open in New Window" opened behind for the rest of the session
+            // (2026-10-26, measured: guard on at +206 s, hold expired 158 s).
+            const setT = (fn: any, ms: number) => { wvTimeout(fn, ms); };
+            const expired = () => {
                 const hu = (this as any)._wvBgRestoreHoldUntil || 0;
                 const held = (this as any)._wvTabGroupRestoreGuard || (hu && Date.now() < hu);
-                if (held && ticks <= 60) { setT(tick, 700); return; }
+                return !(held && ticks <= 60);
+            };
+            const tick = () => {
+                if (stopped) return;
+                ticks++;
+                if (!expired()) { setT(tick, 700); return; }
+                stop();
+            };
+            const stop = () => {
+                if (stopped) return;
+                stopped = true;
+                if ((this as any)._wvBgRestoreStopFn === stop) (this as any)._wvBgRestoreStopFn = null;
                 (this as any)._wvBgRestoreOn = false;
                 (this as any)._wvBgRestoreHoldUntil = 0;
                 (this as any)._wvBgRestoreTargetWin = null;
@@ -10740,8 +10786,17 @@ class _TabsMixin {
                 try { if (dwmapi) dwmapi.close(); } catch (e) {}
                 try { if (user32) user32.close(); } catch (e) {}
             };
+            (this as any)._wvBgRestoreStopFn = stop;
             setT(tick, 700);
         } catch (e) {}
+    }
+
+    /** End the background-restore guard now (Weavero's shutdown): its
+     *  window observer and claim listeners must not outlive the instance --
+     *  a stale observer kept arming new windows after a reload. */
+    _wvBgRestoreStop() {
+        try { const f = (this as any)._wvBgRestoreStopFn; if (typeof f === "function") f(); } catch (e) {}
+        (this as any)._wvBgRestoreOn = false;
     }
 
     _wvFocusShepherdStart() {
@@ -10890,6 +10945,27 @@ class _TabsMixin {
         } catch (e) {}
     }
 
+    /** Zotero keeps ONE `lastViewedFolder` for every main window: each
+     *  window's selection writes it (zoteroPane.js onCollectionSelected) and
+     *  the main window's collection tree selects it at startup
+     *  (collectionTree.jsx makeVisible). With a second window, the row
+     *  selected last ANYWHERE became the main window's after a restart (MJT
+     *  2026-10-26: a collection opened in a new window from My Library came
+     *  back in the main window). At quit, point it at the main window's own
+     *  row: Zotero then reopens it there itself, and each other window gets
+     *  its own from the store (the adoption, window-wiring.ts). Also what
+     *  the connector saves into while no window is open. */
+    _wvPinAnchorLastViewed() {
+        try {
+            const a0: any = (Zotero.getMainWindows() || [])[0];
+            const ms = a0 && (this as any)._wvTabSessionCaptureMainState ? (this as any)._wvTabSessionCaptureMainState(a0) : null;
+            const id = ms && ms.collection;
+            if (!id || Zotero.Prefs.get("lastViewedFolder") === id) return;
+            Zotero.Prefs.set("lastViewedFolder", id);
+            this._wvTrace && this._wvTrace("quit-flush: lastViewedFolder -> the main window's " + id);
+        } catch (e) {}
+    }
+
     /** The authoritative FINAL capture at quit: cancel pending debounced saves,
      *  capture every still-open window, fold in windows closed in the final
      *  series (last 20 s) that the live capture no longer sees, un-park the
@@ -10962,9 +11038,12 @@ class _TabsMixin {
                     }
                 }
                 for (const q of ((this as any)._wvDevSpawnQueue || [])) {
-                    if (!q || q.kind !== "main-dev" || !Array.isArray(q.tabs) || q.tabs.length < 2) continue;
+                    if (!q || q.kind !== "main-dev" || !Array.isArray(q.tabs) || !q.tabs.length) continue;
                     const qIds = new Set(ids(q));
-                    const represented = live.some((en: any) => en.kind === "main-dev" && ids(en).some((i: any) => qIds.has(i)));
+                    // A library-only entry has no item to recognise it by:
+                    // its window id does (a spawned window keeps the queued one).
+                    const represented = live.some((en: any) => en.kind === "main-dev"
+                        && (qIds.size ? ids(en).some((i: any) => qIds.has(i)) : (q.wvWinId != null && en.wvWinId === q.wvWinId)));
                     if (represented) continue;
                     live.push(q);
                     this._wvTrace && this._wvTrace("quit-flush: kept queued managed window (" + q.tabs.length + " tabs)");
@@ -10982,6 +11061,7 @@ class _TabsMixin {
                 } catch (e) {}
             }
             this._wvWindowStoreWrite(this._wvWindowStoreBuildDoc(live));
+            this._wvPinAnchorLastViewed();
             this._wvWindowStoreFrozen = true;
             // Namespace copy (stale-closure-proof): with the capture frozen,
             // the getState / getWindowStates wraps now hand Zotero's own
@@ -12720,6 +12800,17 @@ class _TabsMixin {
             const ftRow: any = wvHtmlEl(doc, "div", "wv-tabs-menu-filetype-row", undefined, popup);
             for (const def of this._ATTACHMENT_FILE_TYPES) {
                 // `def.value` already matches Zotero's camelCase `data-item-type`.
+                // Except the Linked File pseudo-kind: Zotero's item-type CSS
+                // has no rule for it and drew the generic document icon --
+                // the same as Other File -- while the library filter's tile
+                // shows the page with the link badge from its `icon`
+                // (2026-10-23, one icon per concept across filter popups).
+                // `accentColor` routes it through the context-fill <img>
+                // path; the text colour is the library tile's.
+                if (def.value === "attachmentLinkedFile" && def.icon) {
+                    ftRow.appendChild(makeOpt(def.value, def.label, { iconSrc: def.icon, accentColor: "currentColor" }));
+                    continue;
+                }
                 ftRow.appendChild(makeOpt(def.value, def.label, { itemType: def.value }));
             }
             // A separator, then the Note tile: notes are a different kind of

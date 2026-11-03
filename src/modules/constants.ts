@@ -172,6 +172,20 @@ export const BOOKMARK_PATH_14 =
 // call sites (CSS selector building, default-pref seeding,
 // destroy-time pref cleanup).
 
+/** The count columns' (Annotations, Tags, Related, Backlinks) minimum and
+ *  starting width: 16 px of cell padding + one bold digit (7.2 px) + the
+ *  bold ellipsis (10.6 px), measured on the 13-px items list. Gecko keeps
+ *  the first character of a cut line and draws "…" only when the ellipsis
+ *  fits after it, so a narrower cell cut "55|1" or "226" with no ellipsis
+ *  at all (MJT 2026-10-23, "The ellipsis has disappeared", once the
+ *  columns could be dragged down to Zotero's 26-px Notes minimum). */
+export const WV_COUNT_COL_MIN = 34;
+/** The Tags column with its automatic count: "55|1" in full. */
+export const WV_TAGS_COL_TWO = 48;
+/** The colour of Weavero's indent guides: the collections pane's
+ *  (collectionsIndentGuides, pane.ts) and the count popups' (2026-10-29). */
+export const WV_GUIDE_COLOR = "color-mix(in srgb, currentColor 22%, transparent)";
+
 export const MENU_LABEL_PREFIXES = [
     // Each prefix covers the single + multi-select label variants
     // ("Copy Select Link" / "Copy Select Links  (N annotations)" etc.).
@@ -230,6 +244,10 @@ export const PLUGIN_CSS = [
     "  width: 14px; height: 14px; display: block; flex-shrink: 0;",
     "}",
     ":root.wv-ui-dark .wv-btn-relations { color: #ffb84d; }",
+    // Item-pane annotation card's Links and Backlinks buttons (2026-10-23 /
+    // 10-28): the columns' neutral colour, the Related button's size.
+    ".wv-btn-ref { color: var(--fill-secondary); }",
+    ".wv-btn-ref .wv-bl-btn-svg { width: 14px; height: 14px; display: block; flex-shrink: 0; }",
     // Relations popup — laid out like the item pane's "Related"
     // section (scss/elements/_collapsibleSection.scss +
     // _notesBox.scss): a header [related icon] "<N> Related" + "+" add
@@ -317,6 +335,157 @@ export const PLUGIN_CSS = [
     ".wv-rel-empty {",
     "  padding: 4px 6px; opacity: 0.6; font-style: italic;",
     "}",
+    // Clickable column counts (Tags / Related / Backlinks, 2026-10-22;
+    // modules/count-popups.ts): the number reads as a link, and its popup
+    // groups the entries under where they sit, capped to scroll.
+    ".wv-col-count { cursor: pointer; }",
+    ".wv-col-count:hover { text-decoration: underline; }",
+    // The count columns' numbers centred, as Zotero centres its own count
+    // columns (_item-tree.scss: .cell.numNotes / .hasAttachment
+    // text-align: center; MJT 2026-10-26, "What is the standard alignment
+    // for count columns?" -> "Ok to fix"). Their header icons already are.
+    // A number too wide for its cell still starts at the left edge and ends
+    // in "…": an overflowing line is start-aligned (CSS Text 3, 7.1).
+    ".virtualized-table .cell.wv-count-cell, .cell.wv-count-cell { text-align: center; }",
+    ".wv-count-list { max-height: min(60vh, 460px); overflow-y: auto; }",
+    ".wv-count-group { display: flex; flex-direction: column; gap: 1px; }",
+    ".wv-count-group + .wv-count-group { margin-top: 4px; }",
+    // The Related popup's rows at the item pane Related section's geometry
+    // (Zotero's related-box rows: _notesBox.scss + the clicky-item mixin, a
+    // 4/3 line and 2 px above and below it, 2 more in the comfortable
+    // density, no gap between rows -- 21.3 / 25.3 px a line at 13 px; MJT
+    // 2026-11-02, "The vertical spacing between related items when clicking
+    // on the count column number should be the same as in the item pane
+    // Related section"; 26.8-px rows 1 px apart until dev.140).
+    ".wv-count-list[data-kind='related'] .wv-count-group { gap: 0; }",
+    ".wv-count-list[data-kind='related'] .wv-rel-row { padding-block: 2px; }",
+    ".wv-count-list[data-kind='related'][data-wv-density='comfortable'] .wv-rel-row { padding-block: 4px; }",
+    ".wv-count-list[data-kind='related'] .wv-rel-title { line-height: 1.3333333333; }",
+    ".wv-count-group-head {",
+    "  display: flex; align-items: center; gap: 4px; padding: 2px 4px;",
+    "  color: var(--fill-secondary, #5a5a5a); font-size: 0.92em;",
+    "}",
+    ".wv-count-group-head .wv-rel-icon { opacity: 0.85; }",
+    ".wv-count-group-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }",
+    // An annotation heading's grey end, a row's line (count-popups.ts
+    // _wvCountHeadChip; MJT 2026-10-30): its file, cut first, then its page,
+    // kept whole -- one shade lighter than the heading's own grey. The file
+    // at most ~6 em, as in the rows (MJT 2026-11-02, "Fixed, ~6 em").
+    ".wv-count-group-chip { flex: 0 0 auto; max-width: 60%; display: flex; min-width: 0; overflow: hidden; white-space: nowrap; color: var(--fill-tertiary, #8c8c8c); }",
+    ".wv-count-group-file, .wv-count-group-place { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }",
+    ".wv-count-group-file { max-width: 6em; }",
+    ".wv-count-group-file + .wv-count-group-place { flex-shrink: 0; }",
+    // The External Links popup's rows (count-popups.ts, 2026-10-30): the
+    // link as written on one line, cut, the text around it under it.
+    ".wv-count-row.wv-ext-row { align-items: flex-start; }",
+    ".wv-ext-row-icon { width: 16px; height: 16px; flex: none; margin-top: 1px; color: var(--fill-secondary); }",
+    ".wv-ext-text { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }",
+    ".wv-ext-text > .wv-rel-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }",
+    // A tag row's icon at Zotero's Tags-section size (12 px, _tagsBox.scss),
+    // centred in the 16-px slot the other rows' icons use.
+    ".wv-count-row .wv-count-tag-icon { width: 12px; height: 12px; margin: 3px 2px 0; }",
+    // The group's share of the total, at the right end of its heading.
+    ".wv-count-group-n { margin-inline-start: auto; padding-inline-start: 10px; flex-shrink: 0; font-variant-numeric: tabular-nums; }",
+    ".wv-count-group-head ~ .wv-count-row { margin-inline-start: 14px; position: relative; }",
+    // A heading's rows hang on the collections pane's indent guide (MJT
+    // 2026-10-29, screenshot of this popup: "can you add a vertical line like
+    // in the collections pane?"), under the heading's icon (its 4-px padding
+    // + 7, the guide's place in a 16-px column; the rows 14 px in): each row
+    // draws its own length and the 1-px gap above it.
+    ".wv-count-group-head ~ .wv-count-row::before { content: ''; position: absolute; inset-inline-start: -3px; top: -1px; bottom: 0; width: 1px; background: " + WV_GUIDE_COLOR + "; }",
+    // A widened Tags or Related section's block of children (pane-scope.ts):
+    // the count popups' groups at the item pane's row geometry (src-ts.md
+    // "Item-pane sections take Zotero's row geometry") -- a heading where a
+    // native row sits (body 12 px in, 4 px padding and icon gap), its rows
+    // one 16-px level step in, the guide under the heading's icon.
+    // `contain: inline-size`: a long part name never sets the pane's
+    // minimum width, it is cut and its count stays in view (the block took
+    // a Tags section from 422 to 514 px in a 475-px pane, dev.100; the
+    // dev.52 rule, backlinks.ts BL_CSS).
+    ".wv-scope-block { display: flex; flex-direction: column; gap: 1px; padding-inline-start: 12px; padding-block: 2px 4px; contain: inline-size; }",
+    ".wv-scope-block .wv-count-group-head { gap: 4px; padding: 2px 4px; border-radius: 5px; cursor: default; }",
+    ".wv-scope-block .wv-count-group-head:hover { background: var(--fill-quinary); }",
+    ".wv-scope-block .wv-count-group-head ~ .wv-count-row { margin-inline-start: 16px; padding-inline-start: 4px; border-radius: 5px; }",
+    ".wv-scope-block .wv-count-group-head ~ .wv-count-row::before { inset-inline-start: -5px; }",
+    // A part's tags drawn as Zotero's Tags rows draw theirs: the 12-px icon
+    // at the row's start, the name 4 px after it (_tagsBox.scss), so they sit
+    // level with Zotero's own under "This item".
+    ".wv-scope-block .wv-count-row .wv-count-tag-icon { margin: 3px 0 0; }",
+    // A part's entry wraps as Zotero's Related title does, cut at 10 lines
+    // (the clicky-item mixin's `.label`, _mixins.scss; MJT 2026-10-29,
+    // "What I'd suggest: Ok"). Links and Backlinks keep one line a row.
+    ".wv-scope-block .wv-count-row .wv-rel-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 10; overflow: hidden; }",
+    // "This item" over Zotero's own list while widened (pane-scope.ts
+    // _wvScopeOwnHeading; MJT 2026-10-29, "This Item classification should
+    // also appear in the Related section"), at the parts' headings' place;
+    // Zotero's rows one 16-px step in under it, hung on the guide under its
+    // icon (the body's left + 7 = the icon's centre column).
+    // The levels' counts beside a section's title (pane-scope.ts
+    // _wvScopeSetCounts; MJT 2026-10-29, "I would like to use icons to make
+    // it more compact"): each level's icon in the title's muted colour, its
+    // number after it, no wrap. The icons at 14 px on purpose: Zotero's
+    // 16-px icons lose some sharpness there at 1x, but 16 px was tried
+    // (dev.117) and MJT kept 14 ("Go back to 14 px. It felt better",
+    // 2026-10-30).
+    ".wv-scope-counts { display: inline-flex; align-items: center; gap: 2px; margin-inline-start: 4px; flex: none; white-space: nowrap; color: var(--fill-secondary); font-weight: normal; }",
+    ".wv-scope-count { display: inline-flex; align-items: center; gap: 2px; padding: 0 3px; border: 1px solid transparent; border-radius: 4px; }",
+    // The counts that do not add up to the title's -- the links and Zotero's
+    // references, the internal links, the broken links -- at the end of the
+    // title's line (pane-scope.ts _wvScopeSetCounts; MJT 2026-10-30).
+    ".wv-scope-counts-end { margin-inline-start: auto; padding-inline-start: 6px; }",
+    // A header carrying counts never sets the pane's width (pane-scope.ts
+    // _wvScopeFitWire; MJT 2026-10-30): Zotero's title box (`flex: 1`)
+    // contained, a count dropped to fit hidden.
+    ".title-box[data-wv-counts] { contain: inline-size; min-width: 0; overflow: hidden; }",
+    ".wv-scope-count[hidden] { display: none; }",
+    // A set a row or a reference holds only one of -- the levels, the two
+    // kinds -- on the funnel filter's grey card (.wv-filter-or-group's tint
+    // and corners; pane-scope.ts _wvScopeSetCounts, MJT 2026-11-02).
+    ".wv-scope-or-group { background: rgba(127,127,127,0.18); border-radius: 5px; padding: 0 1px; }",
+    ".wv-scope-kinds { display: inline-flex; align-items: center; gap: 2px; }",
+    ".wv-scope-or-group[hidden] { display: none; }",
+    // Zotero's summary is transparent while the section is open
+    // (_collapsibleSection.scss) but kept its width and its 8-px gap -- the
+    // "empty space" before the end counts (MJT 2026-10-30).
+    "collapsible-section[open] > .head > .title-box[data-wv-counts] > .summary { display: none; }",
+    // The last resort, the counts that may go gone: the title cut (Zotero's
+    // title is a flex box -- its icon, its text -- so clipped, no "…").
+    // (Zotero's `collapsible-section > .head .title-box .title { flex: 0 0
+    // auto }` outranks a shorter selector.)
+    "collapsible-section > .head > .title-box[data-wv-tight] > .title { flex-shrink: 1; min-width: 0; overflow: hidden; white-space: nowrap; }",
+    // The broken links' icon and number in red, the convention for a broken
+    // thing (MJT 2026-10-30, the number too: "Also make the count for broken
+    // links in red"); Zotero's own red, its item tree's cross for a missing
+    // file (_item-tree.scss `cross: --accent-red`). On the children, so a
+    // count shown alone (`data-selected`, the primary text) stays red.
+    ".wv-scope-count[data-kind='broken'] :is(.wv-scope-count-icon, .wv-scope-count-n) { color: var(--accent-red, #db2c3a); }",
+    // Each count is a filter toggle, the items list's (pane-scope.ts; MJT
+    // 2026-10-30, "just the same filtering as in the items list"), in the
+    // filter funnel's states (lib/style.ts wvFilterTileRules): shown alone,
+    // the accent wash and border; hidden, the red slash.
+    ".wv-scope-count[role='button'] { cursor: default; }",
+    ".wv-scope-count[role='button']:hover { background: rgba(127,127,127,0.14); }",
+    ".wv-scope-count[role='button']:focus-visible { outline: 2px solid var(--color-focus-border, var(--color-accent, #4072e5)); outline-offset: -1px; }",
+    ".wv-scope-count[data-selected='true'] { color: var(--fill-primary); background: rgba(94,106,210,0.34); border-color: rgba(94,106,210,0.95); }",
+    ".wv-scope-count[data-selected='true']:hover { background: rgba(94,106,210,0.45); }",
+    ":root.wv-ui-dark .wv-scope-count[data-selected='true'] { background: rgba(120,134,255,0.40); border-color: rgba(150,162,255,1); }",
+    ".wv-scope-count[data-excluded='true'] { border-color: rgba(220,72,72,0.7); background: linear-gradient(to top right, transparent calc(50% - 1px), rgba(220,72,72,0.85) calc(50% - 1px), rgba(220,72,72,0.85) calc(50% + 1px), transparent calc(50% + 1px)), rgba(220,72,72,0.10); }",
+    // The item's own count carries its item-type icon (a CSS icon,
+    // components/icons getCSSItemTypeIcon): drawn at the counts' 14 px.
+    // No background-size: Zotero's item-type rule is several layers, its
+    // other variants preloaded at 0 px; one size here showed them all (the
+    // light theme's white page under the dark outline, 2026-10-30). Its
+    // own `contain` fits the box.
+    ".wv-scope-count .wv-scope-count-type { width: 14px; height: 14px; min-width: 14px; margin: 0; }",
+    // A level shown alone hides Zotero's own list -- the item's own tags or
+    // related items, which no count stands for -- and its "This item" head.
+    "collapsible-section[data-wv-scope-hide-own] > .body, collapsible-section[data-wv-scope-hide-own] > .wv-scope-own { display: none; }",
+    ".wv-scope-count-icon { width: 14px; height: 14px; -moz-context-properties: fill, fill-opacity; fill: currentColor; }",
+    ".wv-scope-own { padding-inline-start: 12px; padding-block-start: 2px; contain: inline-size; }",
+    ".wv-scope-own .wv-count-group-head { gap: 4px; padding: 2px 4px; border-radius: 5px; }",
+    "collapsible-section[data-wv-scope-wide] > .body { margin-inline-start: 16px; position: relative; }",
+    "collapsible-section[data-wv-scope-wide] > .body::before { content: ''; position: absolute; inset-inline-start: 7px; top: -1px; bottom: 0; width: 1px; background: " + WV_GUIDE_COLOR + "; }",
+    ".wv-count-popup .wv-bl-body { min-width: 260px; max-width: 460px; }",
     // Link colours via CSS custom properties — `:root.wv-ui-dark`
     // swaps the values, so `var(--wv-link-*)` references everywhere
     // (class rules + inline styles set via JS) react to theme
@@ -442,6 +611,20 @@ export const PLUGIN_CSS = [
     ":root.wv-ui-dark .wv-tree-rel-icon:hover {",
     "  background: rgba(255, 255, 255, 0.08);",
     "}",
+    // Items-tree Links and Backlinks icons on annotation rows (they have no
+    // column cells, 2026-10-23 / 10-28): last after the Related icon, in the
+    // columns' neutral colour.
+    ".wv-tree-lk-icon, .wv-tree-bl-icon {",
+    "  display: inline-flex; align-items: center; justify-content: center;",
+    "  flex-shrink: 0; cursor: pointer;",
+    "  padding: 1px 2px; border-radius: 3px;",
+    "  margin-inline-start: 4px;",
+    "  color: var(--fill-secondary);",
+    "  transition: background 0.15s;",
+    "}",
+    ".wv-tree-lk-icon .wv-tree-lk-svg, .wv-tree-bl-icon .wv-tree-bl-svg { width: 14px; height: 14px; display: block; flex-shrink: 0; }",
+    ".wv-tree-lk-icon:hover, .wv-tree-bl-icon:hover { background: rgba(0, 0, 0, 0.07); }",
+    ":root.wv-ui-dark .wv-tree-lk-icon:hover, :root.wv-ui-dark .wv-tree-bl-icon:hover { background: rgba(255, 255, 255, 0.08); }",
     // The items-list HEADER must never size the centre pane. It is a
     // nowrap flex row whose intrinsic width is the sum of its cells'
     // label widths plus every fixed-width column (Weavero adds three:
@@ -789,6 +972,16 @@ export const PLUGIN_CSS = [
     "  color: currentColor; opacity: 0.45;",
     "  margin: 0 2px;",
     "}",
+    // Two numbers: no dead gap between the links. Each link's padding
+    // reaches under the "|" (0.2em covers half a bar in Segoe UI and
+    // DejaVu Sans alike), the bar's negative margins keep every glyph where
+    // it was, and the bar lets the pointer through. The hand and the click
+    // then run without a break across a cut cell's "1…" (MJT 2026-10-23:
+    // "The hand appears on the number and on the right side of the
+    // ellipsis, but not in between"). No :has() -- Zotero 7 is Firefox 115.
+    ".wv-tags-count-pair > .wv-tags-count-manual { padding-right: calc(2px + 0.2em); }",
+    ".wv-tags-count-pair > .wv-tags-count-auto { padding-left: calc(2px + 0.2em); }",
+    ".wv-tags-count-pair > .wv-tags-count-sep { margin: 0 -0.2em; pointer-events: none; }",
     // Column-header icons need three things to render properly:
     //   1. `-moz-context-properties: fill, fill-opacity, stroke,
     //      stroke-opacity` so the SVG's `context-fill` /
@@ -826,6 +1019,22 @@ export const PLUGIN_CSS = [
     ".virtualized-table-header .cell[class*=\"weaveroAnnotations\"] .icon-bg {",
     "  -moz-context-properties: fill, fill-opacity;",
     "  fill: var(--fill-secondary);",
+    "}",
+    // Backlinks (issue #60): neutral like Annotations. Every icon column
+    // needs a rule here or its header paints black (invisible on the dark
+    // theme: shipped so in 0.22.3-dev.4..11, MJT 2026-10-22). Not an accent:
+    // the Zotero-link brown and Related's wood are one colour on dark.
+    // Guard: test/column-header-icons.spec.js.
+    ".virtualized-table-header .cell[class*=\"weaveroBacklinks\"] .icon-bg {",
+    "  fill: var(--fill-secondary); stroke: var(--fill-secondary);",
+    "}",
+    // Links (slice 2, 2026-10-27): the same glyph, arrow out, same neutral.
+    ".virtualized-table-header .cell[class*=\"weaveroLinks\"] .icon-bg {",
+    "  fill: var(--fill-secondary); stroke: var(--fill-secondary);",
+    "}",
+    // External Links (2026-10-30): Has External Link's box-and-arrow, same.
+    ".virtualized-table-header .cell[class*=\"weaveroExtLinks\"] .icon-bg {",
+    "  fill: var(--fill-secondary); stroke: var(--fill-secondary);",
     "}",
     // FF153/Zotero 11: plain (non-arrow) XUL panels no longer get an
     // opaque native background — the toolkit paints the panel's shadow
@@ -1275,15 +1484,6 @@ export const PLUGIN_CSS = [
     ".wv-filter-opt-text {",
     "  font-size: 11px; font-weight: 600; letter-spacing: 0.02em;",
     "  padding: 4px 7px;",
-    "}",
-    // The link SVG (built by `_makeLinkSvg`) is sized `1em × 1em` by
-    // default so it scales with surrounding text in reader/annotation
-    // overlays. Inside a filter popup tile the surrounding text is 12px
-    // → 12×12 icon, smaller than the 16×16 icons in adjacent Has Tag /
-    // Has Related buttons. Force 16×16 here so all cross-level icons
-    // read as the same family.
-    ".wv-filter-opt-icon .wv-link-svg {",
-    "  width: 16px; height: 16px;",
     "}",
     // (Old in-search Item Type picker CSS removed — Item Type now
     // has its own dedicated row above the search box, styled by

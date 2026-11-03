@@ -23,7 +23,8 @@
 //
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
-import { BOOKMARK_PATH, BOOKMARK_PATH_14, BOOKMARK_PATH_20, SCHEME_SVG_TEMPLATE, URL_GLOBE_SVG, URL_EXTERNAL_SVG, WV_FUNNEL_DATA_URI, WV_FUNNEL_PATH, WV_FUNNEL_STEM_COLOR } from "./constants";
+import { BOOKMARK_PATH, BOOKMARK_PATH_14, BOOKMARK_PATH_20, URL_GLOBE_SVG, URL_EXTERNAL_SVG, WV_FUNNEL_DATA_URI, WV_FUNNEL_PATH, WV_FUNNEL_STEM_COLOR } from "./constants";
+import { wvLinkGlyphMarkup, wvLinkGlyphEl, WV_LINK_MENU_ICON } from "../lib/link-glyph";
 import { wvPopupHost, wvDismissTooltip, wvSetBoolAttr, wvBoolAttrOn, wvReaderMenuEvent, wvWithin, wvIsTextEntry, wvHtmlEl } from "../lib/dom";
 import { wvLivePlugin } from "../lib/live";
 import { wvStoreWrite, wvStoreRead } from "../lib/store";
@@ -277,11 +278,6 @@ const RP_POPUP_CSS = [
     // library popup, the reader-window file-type popup and the bookmarks
     // chip popup below.
     ...wvFilterTileRules("#" + RP_FILTER_POPUP_ID),
-    // `_makeLinkSvg` builds a 1em×1em SVG so it scales with surrounding
-    // text in reader badges. Inside a filter-popup tile (font-size:12px
-    // → 12×12 icon) that ends up smaller than the 16×16 icons next to
-    // it (Has Tag / Has Related). Force 16×16 here for visual parity.
-    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt-icon .wv-link-svg{width:16px;height:16px;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-svg{display:inline-block;width:16px;height:16px;",
     "  -moz-context-properties:fill,stroke,fill-opacity,stroke-opacity;fill:currentColor;stroke:currentColor;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-chip-swatch{width:12px;height:12px;border-radius:50%;display:inline-block;box-sizing:border-box;border:1px solid rgba(0,0,0,0.15);}",
@@ -290,8 +286,6 @@ const RP_POPUP_CSS = [
     // OR-group card tint (same as the library's .wv-filter-or-group) for
     // the "pick any of these" rows (colour, tags, added/modified by).
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-or-group{background:rgba(127,127,127,0.18);border-radius:6px;padding:5px 6px;margin:1px 0;}",
-    // Has Link inline SVG sizing inside a chip.
-    "#" + RP_FILTER_POPUP_ID + " .wv-link-svg{width:16px;height:16px;display:inline-block;}",
     // Added By / Modified By person glyph.
     "#" + RP_FILTER_POPUP_ID + " .wv-rf-user-svg{display:inline-flex;align-items:center;margin-right:5px;}",
     // Match Zotero's annotations-view author chip — `.author svg`
@@ -13893,6 +13887,12 @@ class _ReaderPanelsMixin {
                 hasRelated: null as (boolean | null),
                 hasLink: null as (boolean | null),
                 hasTag: null as (boolean | null),
+                // Linked from another comment or note (backlinks.ts index;
+                // ignored while the Backlinks switch is off). 2026-10-23.
+                hasBacklinks: null as (boolean | null),
+                // Links another Zotero item (the Links column's count;
+                // ignored while the Links switch is off). 2026-10-28.
+                hasItemLinks: null as (boolean | null),
                 // TWO independent date-range dimensions (2026-08-03) --
                 // Added and Modified each get a mode (null = off; "last" =
                 // rolling window of N hours/days; "custom" = absolute bounds,
@@ -13934,6 +13934,18 @@ class _ReaderPanelsMixin {
         return out;
     }
 
+    /** The Backlinks switch (Links & Relations -> Relations), the master of
+     *  every Has Backlinks filter. */
+    _wvRfBacklinksOn(): boolean {
+        try { return !!this._getEnableBacklinks(); } catch (_) { return false; }
+    }
+
+    /** The Links switch (Links & Relations -> Relations), the master of
+     *  every Has Item Links filter. */
+    _wvRfLinksOn(): boolean {
+        try { return !!this._getEnableLinks(); } catch (_) { return false; }
+    }
+
     _wvReaderFilterActive(reader: any) {
         const st = this._wvReaderFilterState(reader);
         const nat = this._wvReaderNativeIncludes(reader);
@@ -13942,6 +13954,8 @@ class _ReaderPanelsMixin {
             || st.colorsExcl.length || st.tagsExcl.length
             || st.addedByExcl.length || st.modifiedBy.length || st.modifiedByExcl.length
             || st.hasComment !== null || st.hasRelated !== null || st.hasLink !== null || st.hasTag !== null
+            || (st.hasBacklinks != null && this._wvRfBacklinksOn())
+            || (st.hasItemLinks != null && this._wvRfLinksOn())
             || st.dateAddedMode != null || st.dateModMode != null
             // "Hide Annotations in the Reader" counts as an active filter.
             || this._wvReaderAnnotationsHidden(reader));
@@ -14420,7 +14434,7 @@ class _ReaderPanelsMixin {
             tags: [], tagsExcl: [],
             addedBy: [], addedByExcl: [],
             modifiedBy: [], modifiedByExcl: [],
-            hasComment: null, hasRelated: null, hasLink: null, hasTag: null,
+            hasComment: null, hasRelated: null, hasLink: null, hasTag: null, hasBacklinks: null, hasItemLinks: null,
             dateAddedMode: null, dateAddedN: 1, dateAddedUnit: "d",
             dateAddedFrom: null, dateAddedTo: null, dateAddedNeg: false,
             dateModMode: null, dateModN: 1, dateModUnit: "d",
@@ -14681,7 +14695,9 @@ class _ReaderPanelsMixin {
         flag(st.hasComment, "Has Comment", "No Comment");
         flag(st.hasTag, "Has Tag", "No Tag");
         flag(st.hasRelated, "Has Related", "No Related");
-        flag(st.hasLink, "Has Link", "No Link");
+        flag(st.hasLink, "Has External Link", "No External Link");
+        flag(st.hasItemLinks, "Has Item Links", "No Item Links");
+        flag(st.hasBacklinks, "Has Backlinks", "No Backlinks");
         const date = (pre: string, word: string) => {
             const mode = st[pre + "Mode"];
             if (!mode) return;
@@ -14721,7 +14737,7 @@ class _ReaderPanelsMixin {
             out[inc] = Array.from(incSet);
             out[exc] = Array.from(excSet);
         }
-        for (const k of ["hasComment", "hasRelated", "hasLink", "hasTag"]) {
+        for (const k of ["hasComment", "hasRelated", "hasLink", "hasTag", "hasBacklinks", "hasItemLinks"]) {
             out[k] = (st[k] === null || st[k] === undefined) ? base[k] : st[k];
         }
         for (const pre of ["dateAdded", "dateMod"]) {
@@ -15744,7 +15760,10 @@ class _ReaderPanelsMixin {
         // tile whose property no VISIBLE annotation has would select nothing
         // (MJT, 2026-09-18: they never greyed). Same predicates as
         // `_wvReaderPluginMatch`, so the fade agrees with the filter.
-        const act = { hasTag: false, hasComment: false, hasRelated: false, hasLink: false };
+        const act = { hasTag: false, hasComment: false, hasRelated: false, hasLink: false, hasBacklinks: false, hasItemLinks: false };
+        const blOn = this._wvRfBacklinksOn();
+        const lkOn = this._wvRfLinksOn();
+        if ((blOn || lkOn) && !this._wvBlReady()) { try { this._wvBlEnsure(); } catch (_) {} }
         for (const a of visible) {
             if (a.annotationColor) actColors.add(a.annotationColor);
             if (a.annotationType) actTypes.add(a.annotationType);
@@ -15754,7 +15773,9 @@ class _ReaderPanelsMixin {
             if (tags.length) act.hasTag = true;
             if (a.annotationComment && String(a.annotationComment).trim()) act.hasComment = true;
             if (a.relatedItems && a.relatedItems.length) act.hasRelated = true;
-            try { if (this.hasURI(a.annotationComment || "")) act.hasLink = true; } catch (_) {}
+            try { if (this.hasExternalURI(a.annotationComment || "")) act.hasLink = true; } catch (_) {}
+            if (blOn && !act.hasBacklinks) { try { if (this._wvBlRowHas(a) === true) act.hasBacklinks = true; } catch (_) {} }
+            if (lkOn && !act.hasItemLinks) { try { if (this._wvLkRowHas(a) === true) act.hasItemLinks = true; } catch (_) {} }
             if (a.createdByUserID != null) actAddedBy.add(this._wvUserName(a.createdByUserID));
             if (a.lastModifiedByUserID != null) actModifiedBy.add(this._wvUserName(a.lastModifiedByUserID));
         }
@@ -15795,7 +15816,7 @@ class _ReaderPanelsMixin {
         const clearState = async () => {
             st.types = []; st.typesExcl = []; st.colorsExcl = []; st.tagsExcl = [];
             st.addedByExcl = []; st.modifiedBy = []; st.modifiedByExcl = [];
-            st.hasComment = null; st.hasRelated = null; st.hasLink = null; st.hasTag = null;
+            st.hasComment = null; st.hasRelated = null; st.hasLink = null; st.hasTag = null; st.hasBacklinks = null; st.hasItemLinks = null;
             st.dateAddedMode = null; st.dateAddedFrom = null; st.dateAddedTo = null; st.dateAddedNeg = false;
             st.dateModMode = null; st.dateModFrom = null; st.dateModTo = null; st.dateModNeg = false;
             // The hide-annotations toggle counts as a filter — clear it too
@@ -16066,8 +16087,10 @@ class _ReaderPanelsMixin {
         });
 
         // ---- Cross-level: Has Tag → Has Related → Has Link (mirrors the
-        //      library filter's order AND icon colors: orange tag, wood
-        //      related, red link). Single-level here → no per-kind scope arrow.
+        //      library filter's order AND icons: orange tag, wood related,
+        //      the links glyph in the text colour -- the SAME builder as the
+        //      library tile since 2026-10-23, when this one still drew the
+        //      needle logo). Single-level here → no per-kind scope arrow.
         addRow((opts: any) => {
             opts.appendChild(mkTriTile(st.hasTag,
                 "Has Tag — annotations with at least one tag. Alt+click to exclude.",
@@ -16102,10 +16125,32 @@ class _ReaderPanelsMixin {
                 (alt: boolean) => { st.hasRelated = alt ? (st.hasRelated === false ? null : false) : (st.hasRelated === true ? null : true); },
                 defFlag("hasRelated"), act.hasRelated));
             opts.appendChild(mkTriTile(st.hasLink,
-                "Has Link — annotations whose comment contains a URL. Alt+click to exclude.",
-                () => this._makeLinkSvg(idoc),
+                "Has External Link — annotations whose comment contains a link that leaves Zotero (https://, mailto:, app links); a zotero:// link is Has Item Links'. Alt+click to exclude.",
+                () => this._makeLinkTileSvg(idoc),
                 (alt: boolean) => { st.hasLink = alt ? (st.hasLink === false ? null : false) : (st.hasLink === true ? null : true); },
                 defFlag("hasLink"), act.hasLink));
+            // Has Item Links (Links plan slice 3, MJT 2026-10-28: "Library +
+            // reader filters"): an annotation whose comment links another
+            // Zotero item, what the Links column counts. Only with the Links
+            // switch on; before Has Backlinks, the item pane's order.
+            if (lkOn) {
+                opts.appendChild(mkTriTile(st.hasItemLinks,
+                    "Has Item Links — annotations whose comment links another Zotero item. Alt+click to exclude.",
+                    () => wvLinkGlyphEl(idoc, { cls: "wv-filter-svg", size: 16, backlink: "out" }),
+                    (alt: boolean) => { st.hasItemLinks = alt ? (st.hasItemLinks === false ? null : false) : (st.hasItemLinks === true ? null : true); },
+                    defFlag("hasItemLinks"), act.hasItemLinks));
+            }
+            // Has Backlinks (MJT 2026-10-23: "Add Has Backlinks to all
+            // filters where relevant"): an annotation another comment or
+            // note links to directly. Only with the Backlinks switch on, as
+            // in the library filter; the glyph is Has Link's with the arrow.
+            if (blOn) {
+                opts.appendChild(mkTriTile(st.hasBacklinks,
+                    "Has Backlinks — annotations another comment or note links to. Alt+click to exclude.",
+                    () => wvLinkGlyphEl(idoc, { cls: "wv-filter-svg", size: 16, backlink: true }),
+                    (alt: boolean) => { st.hasBacklinks = alt ? (st.hasBacklinks === false ? null : false) : (st.hasBacklinks === true ? null : true); },
+                    defFlag("hasBacklinks"), act.hasBacklinks));
+            }
         });
 
         // ---- Tags (coloured dot when the tag has a colour) — include via native.
@@ -17024,7 +17069,8 @@ class _ReaderPanelsMixin {
                 if (st.hasRelated === false && rel) return false;
             }
             if (st.hasLink !== null) {
-                const link = !!this.hasURI(a.annotationComment || "");
+                // A link that leaves Zotero (Has External Link, 2026-10-30).
+                const link = !!this.hasExternalURI(a.annotationComment || "");
                 if (st.hasLink === true && !link) return false;
                 if (st.hasLink === false && link) return false;
             }
@@ -17033,6 +17079,24 @@ class _ReaderPanelsMixin {
                 try { hasT = !!(a.getTags && a.getTags().length); } catch (_) {}
                 if (st.hasTag === true && !hasT) return false;
                 if (st.hasTag === false && hasT) return false;
+            }
+            // Has Backlinks: dormant while the switch is off; before the
+            // index is built everything passes and the build's end
+            // re-applies (backlinks.ts _wvBlChanged).
+            if (st.hasBacklinks != null && this._wvRfBacklinksOn()) {
+                const bl = this._wvBlRowHas(a);
+                if (bl !== null) {
+                    if (st.hasBacklinks === true && !bl) return false;
+                    if (st.hasBacklinks === false && bl) return false;
+                }
+            }
+            // Has Item Links: the same rules, on the Links switch.
+            if (st.hasItemLinks != null && this._wvRfLinksOn()) {
+                const il = this._wvLkRowHas(a);
+                if (il !== null) {
+                    if (st.hasItemLinks === true && !il) return false;
+                    if (st.hasItemLinks === false && il) return false;
+                }
             }
             if (st.addedByExcl.length) {
                 const an = a.createdByUserID != null ? this._wvUserName(a.createdByUserID) : null;
@@ -19743,7 +19807,11 @@ class _ReaderPanelsMixin {
                     ["text", "Text selections", RP_TEXT_SVG],
                     ["annotation", "Annotations", RP_ANNOTATION_GENERIC_SVG],
                     ["item", "Items", RP_BM_TYPE_ITEM_SVG],
-                    ["link", "Links", URL_GLOBE_SVG],
+                    // The links glyph, as Has Link in the filter popups: the
+                    // kind holds web, app AND zotero:// links, so the web
+                    // globe (Zotero's Has URL tile) was one kind of link
+                    // standing for all three (2026-10-23).
+                    ["link", "Links", wvLinkGlyphMarkup("currentColor", 16)],
                 ];
                 const row = mkRow("line");
                 for (const [cat, label, svg] of BM_TYPE_META) {
@@ -19755,6 +19823,10 @@ class _ReaderPanelsMixin {
                     if (this._wvIsSet(st.bmTypes) && st.bmTypes.has(cat)) (chip as any).dataset.selected = "true";
                     if (this._wvBmChipExcl(st, "bmTypes").has(cat)) (chip as any).dataset.excluded = "true";
                     chip.innerHTML = svg;
+                    // Annotations in the library filter's purple (its Has
+                    // Annotations tile draws the same path), so one concept
+                    // keeps one colour across the filter popups (2026-10-23).
+                    if (cat === "annotation" && chip.firstElementChild) (chip.firstElementChild as any).style.color = "var(--tag-purple)";
                     chip.addEventListener("click", (e: any) => { this._wvBmChipToggle(st, "bmTypes", cat, !!e.altKey); rerender(); });
                     row.appendChild(chip);
                 }
@@ -21338,7 +21410,9 @@ class _ReaderPanelsMixin {
         else if (bm.type === "url") {
             // Scheme-aware icon: globe for http(s)://, external-link arrow
             // for app-link schemes (obsidian://, slack://, mailto:, …),
-            // chain for the few zotero:// links that aren't auto-converted.
+            // the links glyph for the few zotero:// links that aren't
+            // auto-converted (Zotero's two-link chain until 2026-10-23 --
+            // that chain is Zotero's Related icon).
             // (Zotero `select`/`open` links are normally rewritten to
             // native `item`/`collection` bookmark types at save time and
             // never hit this branch — they get their own type icons via
@@ -21347,7 +21421,7 @@ class _ReaderPanelsMixin {
             const cls = this._urlLinkClass(String(bm.url || ""));
             if (cls === "wv-link-http") ic.innerHTML = URL_GLOBE_SVG;
             else if (cls === "wv-link-app") ic.innerHTML = URL_EXTERNAL_SVG;
-            else ic.innerHTML = SCHEME_SVG_TEMPLATE.replace("__FILL__", "currentColor");
+            else ic.innerHTML = wvLinkGlyphMarkup("currentColor", 16);
         }
         else {
             let done = false;
@@ -27403,7 +27477,7 @@ class _ReaderPanelsMixin {
                         }
                         if (copyLinkLabel) {
                             plugin._wvReaderStampMenuIcon(reader, copyLinkLabel,
-                                plugin._menuItemIconURL);
+                                WV_LINK_MENU_ICON);
                         }
                     } catch (_) {}
                 } catch (e) {

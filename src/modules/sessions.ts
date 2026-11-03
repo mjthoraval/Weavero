@@ -400,6 +400,16 @@ class _TabSessionsMixin {
             // window's own saved state").
             const ct = (this as any)._wvWindowCustomTitle ? (this as any)._wvWindowCustomTitle(w) : null;
             if (ct) state.title = ct;
+            // And its own Tags-column automatic-count choice (pane.ts
+            // _wvTagsAutoFor; absent = follow Settings).
+            const ta = (this as any)._wvTagsAutoCapture ? (this as any)._wvTagsAutoCapture(w) : undefined;
+            if (typeof ta === "boolean") state.tagsAuto = ta;
+            // And, for a window other than the first, its own pinned section
+            // and open / collapsed sections (pane.ts _wvPanePrefsCapture; the
+            // first window's ride Zotero's own settings).
+            const pp = (this as any)._wvPanePrefsCapture ? (this as any)._wvPanePrefsCapture(w) : null;
+            if (pp && pp.pinnedPane) state.pinnedPane = pp.pinnedPane;
+            if (pp && pp.paneOpen) state.paneOpen = pp.paneOpen;
         } catch (e) { Zotero.debug("[Weavero] _wvTabSessionCaptureMainState err: " + e); }
         return state;
     }
@@ -758,6 +768,13 @@ class _TabSessionsMixin {
                 const want = entry.title || "";
                 if (((w as any)._wvWindowTitle || "") !== want && (this as any)._wvWindowSetCustomTitle) (this as any)._wvWindowSetCustomTitle(w, want);
             } catch (_) {}
+            // The Tags column's automatic count, same rule (absent = follow
+            // Settings). No save: the restore itself is what is saved.
+            try { if ((this as any)._wvTagsAutoSet) (this as any)._wvTagsAutoSet(w, typeof entry.tagsAuto === "boolean" ? entry.tagsAuto : null, { save: false }); } catch (_) {}
+            // A window other than the first: its own pin (absent = none) and
+            // section states (pane.ts _wvPanePrefsApply; the first window keeps
+            // Zotero's own settings).
+            try { if ((this as any)._wvPanePrefsApply) (this as any)._wvPanePrefsApply(w, entry); } catch (_) {}
             // Collection first — selecting it reloads the items view.
             if (entry.collection && zp.collectionsView
                     && typeof zp.collectionsView.selectByID === "function") {
@@ -824,7 +841,7 @@ class _TabSessionsMixin {
                     tabs: this._wvTabSessionToGetStateTabs(m.tabs),
                     // Carried into the spawned window so it restores its OWN
                     // collection + items-tree columns/sort, not the anchor's.
-                    wvMainState: { collection: m.collection, columnPrefs: m.columnPrefs, hiddenColl: m.hiddenColl, title: m.title },
+                    wvMainState: { collection: m.collection, columnPrefs: m.columnPrefs, hiddenColl: m.hiddenColl, title: m.title, tagsAuto: m.tagsAuto, pinnedPane: m.pinnedPane, paneOpen: m.paneOpen },
                     // Placement (2026-07-15) — the spawn path applies it;
                     // entries without one (legacy sessions) get maximized
                     // there instead of the tiny default window.
@@ -1581,8 +1598,8 @@ class _TabSessionsMixin {
                                                             kind: isReader ? "reader" : "main",
                                                             tabs, count: tabs.length,
                                                             geom: rec.geom || null, glyph: null,
-                                                            wvMainState: (rec.collection || rec.columnPrefs || rec.hiddenColl || rec.title)
-                                                                ? { collection: rec.collection, columnPrefs: rec.columnPrefs, hiddenColl: rec.hiddenColl, title: rec.title } : null,
+                                                            wvMainState: (rec.collection || rec.columnPrefs || rec.hiddenColl || rec.title || typeof rec.tagsAuto === "boolean" || rec.pinnedPane || rec.paneOpen)
+                                                                ? { collection: rec.collection, columnPrefs: rec.columnPrefs, hiddenColl: rec.hiddenColl, title: rec.title, tagsAuto: rec.tagsAuto, pinnedPane: rec.pinnedPane, paneOpen: rec.paneOpen } : null,
                                                             sessionId: activeId, savedAt: Date.now(),
                                                         });
                                                         p2._wvSavedWindowsPersist();

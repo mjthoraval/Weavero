@@ -14,6 +14,7 @@ import {
     BTN_CLASS, BTN_TREE_CLASS, BTN_PANE_CLASS,
     BTN_POPUP_CLASS, BTN_SIDEBAR_CLASS,
     SCHEME_SVG_TEMPLATE, MENU_LABEL_PREFIXES, PLUGIN_CSS,
+    WV_COUNT_COL_MIN, WV_TAGS_COL_TWO,
 } from "./modules/constants";
 import { makeInvisibleRe, TRAILING_RE as TRAILING_RE_LIB } from "./lib/text";
 import { wvLivePlugin } from "./lib/live";
@@ -23,17 +24,19 @@ import { wvWrap, wvUnwrap, wvWrapLayers } from "./lib/wrap";
 import { wvWhenWindowLoaded, wvBoolAttrOn, wvReaderMenuEvent, wvWithin, wvIsTextEntry, wvHtmlEl, WV_XHTML_NS } from "./lib/dom";
 import { wvListen, wvUnlisten, wvUnlistenAll, wvListenKeys, wvUnlistenAllOn, wvSweepTagOnChrome } from "./lib/listen";
 import { wvStoreDir, wvStorePath, wvStoreChain, wvStoreWrite, wvStoreRead, wvStoreRemove } from "./lib/store";
-import { wvMainWins, wvWinType } from "./lib/windows";
+import { wvMainWins, wvWinType, wvWin32Style } from "./lib/windows";
 import { wvAccel, wvAccelAny } from "./lib/keys";
 import { wvCloneFor } from "./lib/xray";
 import { wvMenuItem, wvMenuSeparator } from "./lib/menu";
 import { wvSvgEl, WV_SVG_NS } from "./lib/svg";
+import { WV_LINK_CHAIN_PATHS, WV_BACKLINK_ARROW_PATH, WV_OUTLINK_ARROW_PATH, WV_LOOPLINK_ARROW_PATH, WV_BROKENLINK_MARK_PATH, WV_ZLINK_KIND_PATH, WV_CITE_KIND_PATH, WV_REF_MARK_TIGHT_VIEWBOX, WV_EXTLINK_PATHS, WV_LINK_MENU_ICON, wvLinkGlyphEl, wvLinkGlyphMarkup, wvLinkGlyphUri } from "./lib/link-glyph";
 import { wvOutsideClick, wvReachableDocs, wvDismissOff } from "./lib/dismiss";
 import { wvAltReveal } from "./lib/menubar";
 
 /** The shared helpers, published as `Zotero.Weavero.lib` so the suite can
  *  exercise them directly (they are bundled, not otherwise reachable). */
-const WV_LIB = { wvLivePlugin, wvMainWins, wvWinType, wvIsTextEntry, wvAccel, wvAccelAny, wvCloneFor, wvMenuItem, wvMenuSeparator, wvSvgEl, WV_SVG_NS, wvHtmlEl, WV_XHTML_NS, WV_LINK_PALETTE, wvLinkVars, wvLinkColor, wvLinkClassRules, wvOutsideClick, wvReachableDocs, wvDismissOff, wvAltReveal, wvTimeout, wvClearTimeout, wvSleep, wvInjectStyle, wvRemoveStyle, wvFilterTileRules, wvWrap, wvUnwrap, wvWrapLayers,
+const WV_LIB = { wvLivePlugin, wvMainWins, wvWinType, wvIsTextEntry, wvAccel, wvAccelAny, wvCloneFor, wvMenuItem, wvMenuSeparator, wvSvgEl, WV_SVG_NS,
+    WV_LINK_CHAIN_PATHS, WV_BACKLINK_ARROW_PATH, WV_OUTLINK_ARROW_PATH, WV_LOOPLINK_ARROW_PATH, WV_BROKENLINK_MARK_PATH, WV_ZLINK_KIND_PATH, WV_CITE_KIND_PATH, WV_REF_MARK_TIGHT_VIEWBOX, WV_EXTLINK_PATHS, WV_LINK_MENU_ICON, wvLinkGlyphEl, wvLinkGlyphMarkup, wvLinkGlyphUri, wvHtmlEl, WV_XHTML_NS, WV_LINK_PALETTE, wvLinkVars, wvLinkColor, wvLinkClassRules, wvOutsideClick, wvReachableDocs, wvDismissOff, wvAltReveal, wvTimeout, wvClearTimeout, wvSleep, wvInjectStyle, wvRemoveStyle, wvFilterTileRules, wvWrap, wvUnwrap, wvWrapLayers,
     wvWhenWindowLoaded, wvBoolAttrOn, wvReaderMenuEvent, wvWithin,
     wvListen, wvUnlisten, wvUnlistenAll, wvListenKeys,
     wvStoreDir, wvStorePath, wvStoreChain, wvStoreWrite, wvStoreRead, wvStoreRemove };
@@ -51,6 +54,10 @@ import { sessionsMethods } from "./modules/sessions";
 import { undoMethods } from "./modules/undo";
 import { outlineEvalMethods } from "./modules/outline-eval";
 import { attachmentsMethods } from "./modules/attachments";
+import { backlinksMethods } from "./modules/backlinks";
+import { linksMethods } from "./modules/links";
+import { countPopupsMethods } from "./modules/count-popups";
+import { paneScopeMethods } from "./modules/pane-scope";
 import { windowWiringMethods } from "./modules/window-wiring";
 import { prefsTableMethods } from "./modules/prefs-table";
 import { WV_PREF_OBSERVERS } from "./modules/prefs-observers";
@@ -604,11 +611,28 @@ class WeaveroPlugin {
                     openItem = this._wvResolveItemByKey(getLib(), parts[0]);
                     if (openItem) zotfilePage = parts[1];
                 }
-                const item = openItem || this._wvResolveItemByKey(getLib(), lastKey);
+                let item = openItem || this._wvResolveItemByKey(getLib(), lastKey);
                 if (!item) {
                     this._showLinkWarning("The file this link points to no longer exists (key "
                         + (openItem === null && zotfilePage === null ? lastKey : parts[0]) + ").");
                     return;
+                }
+                // A PAPER's key (the form Copy Open Link writes since
+                // 0.22.3-dev.49, url.ts _buildOpenLink): open what a
+                // double-click opens -- the best attachment (Weavero's
+                // default-attachment choice included), else the URL / DOI.
+                // Zotero's own handler ignores this form.
+                if (item.isRegularItem && item.isRegularItem()) {
+                    let best: any = null;
+                    try { best = await item.getBestAttachment(); } catch (e) { best = null; }
+                    if (best && this._isOpenableFileAttachment(best)) item = best;
+                    else {
+                        try {
+                            const zp: any = Zotero.getActiveZoteroPane();
+                            if (zp && typeof zp.viewItems === "function") await zp.viewItems([item]);
+                        } catch (e) { Zotero.debug("[Weavero] paper-key open err: " + e); }
+                        return;
+                    }
                 }
                 let openTrashed = false;
                 try { openTrashed = !!(item as any).deleted; } catch (e) {}
@@ -1215,6 +1239,49 @@ class WeaveroPlugin {
         } catch (e) {}
     }
 
+    /** The Settings window's minimize / maximize buttons follow Weavero (MJT
+     *  2026-10-26, "Option 3"): Weavero's opener creates the window with
+     *  them (minimizable=yes, dialog=no, below); Zotero's makes a close-only
+     *  dialog; and a window keeps the buttons it was created with -- Gecko's
+     *  chromeFlags never reach the native frame (tried) -- so a live enable
+     *  or disable left the wrong ones (two screenshots). Windows only: the
+     *  native style bits through user32, then a frame refresh. A maximized
+     *  window is restored before it loses its maximize button. True when the
+     *  window has the requested buttons. Guard: test/prefs-window-buttons.spec.js. */
+    _wvWindowButtons(win: any, on: boolean, tries = 0): boolean {
+        if (!Zotero.isWin || !win || win.closed) return false;
+        const BOXES = 0x20000 | 0x10000;   // WS_MINIMIZEBOX | WS_MAXIMIZEBOX
+        // Before Gecko shows a new window (no WS_VISIBLE yet, ~0.5 s after
+        // its load on the dev instance), a style written to it does not
+        // stick: the watcher's write at load was lost live while the runner
+        // passed (2026-10-26). Try again until it is shown -- never once
+        // this instance has stopped.
+        const cur = wvWin32Style(win);
+        if (on && cur !== null && !(cur & 0x10000000)) {
+            if (tries < 40) {
+                try {
+                    win.setTimeout(() => {
+                        try { if (!(this as any)._wvDestroyed) this._wvWindowButtons(win, on, tries + 1); } catch (e) {}
+                    }, 100);
+                } catch (e) {}
+            }
+            return false;
+        }
+        return wvWin32Style(win, (style) => {
+            const want = on ? (style | BOXES) : (style & ~BOXES);
+            if (want !== style && !on) {
+                try { if (win.windowState === win.STATE_MAXIMIZED) win.restore(); } catch (e) {}
+            }
+            return want;
+        }) !== null;
+    }
+
+    /** The native style (GWL_STYLE) of a window; null off Windows. */
+    _wvWindowStyle(win: any): number | null {
+        if (!Zotero.isWin) return null;
+        return wvWin32Style(win);
+    }
+
     /** Every open Settings window (windowtype "zotero:pref"). */
     _wvPrefsWindows(fn: (w: any) => void) {
         try {
@@ -1239,6 +1306,9 @@ class WeaveroPlugin {
             if (this._wvPrefsWindowObserver) return;
             const tryApply = (win: any) => {
                 try { if (this._getEnableVisualExtras()) this._wvPrefsAlignSearch(win); } catch (e) {}
+                // Whatever opened it (Zotero's own opener too), a Settings
+                // window has both buttons while Weavero runs.
+                try { if (win && win.document && wvWinType(win.document) === "zotero:pref") this._wvWindowButtons(win, true); } catch (e) {}
             };
             const obs = {
                 observe: (subject: any, topic: string) => {
@@ -1266,7 +1336,8 @@ class WeaveroPlugin {
                 try { Services.obs.removeObserver(this._wvPrefsWindowObserver, "chrome-document-global-created"); } catch (e) {}
                 this._wvPrefsWindowObserver = null;
             }
-            this._wvPrefsWindows((w: any) => this._wvPrefsUnalignSearch(w));
+            // Weavero stopping: back to Zotero's close-only dialog.
+            this._wvPrefsWindows((w: any) => { this._wvPrefsUnalignSearch(w); this._wvWindowButtons(w, false); });
         } catch (e) {
             Zotero.debug("[Weavero] _teardownPrefsWindowWatcher err: " + e);
         }
@@ -1377,6 +1448,31 @@ class WeaveroPlugin {
     _getEnableLibrariesHighlight() {
         return this._wvPref("enableLibrariesHighlight");
     }
+    /** Backlinks (issue #60): the item-pane section and the Has Backlinks
+     *  chip, under Links & Relations -> Relations. */
+    _getEnableBacklinks() {
+        return this._wvPref("enableBacklinks");
+    }
+    /** The items-tree "Backlinks" column, with the other columns under
+     *  Extras (its own switch; the index serves whichever consumer is on). */
+    _getEnableBacklinksColumn() {
+        return this._wvPref("enableBacklinksColumn");
+    }
+    /** Links (the mirror of Backlinks, 2026-10-27): the item-pane section
+     *  of an item's outgoing references, under Links & Relations -> Relations. */
+    _getEnableLinks() {
+        return this._wvPref("enableLinks");
+    }
+    /** The items-tree "Links" column (slice 2), under Extras with the other
+     *  columns, as the Backlinks column is. */
+    _getEnableLinksColumn() {
+        return this._wvPref("enableLinksColumn");
+    }
+    /** The items-tree "External Links" column (2026-10-30): the web and app
+     *  links, beside Item Links. */
+    _getEnableExtLinksColumn() {
+        return this._wvPref("enableExtLinksColumn");
+    }
 
     // ---- Group 3: External viewer (was Group 1; moved to Visual extras) ----
     /** "Open in External Viewer" right-click menu entry that launches
@@ -1452,7 +1548,7 @@ class WeaveroPlugin {
      *  auto count is on, otherwise the same 30px the Annotations column
      *  uses for a single number. */
     _tagsColumnWidth() {
-        return this._getEnableTagsCountAuto() ? 44 : 30;
+        return this._getEnableTagsCountAuto() ? WV_TAGS_COL_TWO : WV_COUNT_COL_MIN;
     }
 
     /** Hidden debug pref. When true, every routine sidebar/render pass
@@ -1613,7 +1709,7 @@ class WeaveroPlugin {
             // lastElementChild. That way new buttons land as siblings
             // of any pre-existing icon.
             let existingBtn = row.querySelector(
-                "." + BTN_SIDEBAR_CLASS + ":not(.wv-btn-relations)");
+                "." + BTN_SIDEBAR_CLASS + ":not(.wv-btn-relations):not(.wv-btn-ref)");
             let existingRel = row.querySelector(".wv-btn-relations");
             const comment = key ? this.getModelComment(lib, key) : "";
             const wantsComment = !!key
@@ -1689,12 +1785,19 @@ class WeaveroPlugin {
                     existingBtn.parentNode.insertBefore(
                         relBtn, existingBtn.nextSibling);
                 } else {
-                    const last = target.lastElementChild;
+                    const ref = row.querySelector(".wv-btn-ref");
+                    const last = (ref && ref.parentNode === target) ? ref : target.lastElementChild;
                     if (last) target.insertBefore(relBtn, last);
                     else      target.appendChild(relBtn);
                 }
                 addedRel++;
             }
+
+            // ---- Links and Backlinks icons (2026-10-28) ------------------
+            // Last of Weavero's icons: [comment, relations, links,
+            // backlinks, kebab].
+            if (ann) this._wvBlSyncSidebarCard(row, ann, findSlot);
+            else for (const b of row.querySelectorAll(".wv-btn-ref")) b.remove();
         }
         if (addedComment || addedRel) {
             this._dbg("[Weavero] sidebar reinject: comment=" + addedComment
@@ -1997,6 +2100,9 @@ class WeaveroPlugin {
             // Trigger a fresh pane scan so right-pane rows re-mark per the
             // new mode (no-op in Mode 2 since _markTextLinks skips early).
             try { this._scanPaneRows(); } catch(e) {}
+            // The Links and Backlinks sections mark their rows' titles at
+            // render: render them again.
+            try { (this as any)._wvBlRefreshBodies(); } catch(e) {}
 
             // Reader iframe(s): unwrap leftover spans, then explicitly re-run
             // the sidebar marker + popup icon pass for the new mode. Relying
@@ -3461,6 +3567,12 @@ class WeaveroPlugin {
         } catch (e) {}
         // Items-list "Related" column.
         this._registerItemTreeColumns();
+        // Backlinks (issue #60): the item notifier and the item-pane section;
+        // after the windows' wiring, which links weavero.ftl into each.
+        try { (this as any)._wvBlInit(); } catch (e) { Zotero.debug("[Weavero] backlinks init err: " + e); }
+        // The scope buttons on Zotero's Tags and Related sections (Links and
+        // Backlinks carry theirs from their registration).
+        try { (this as any)._wvScopeInit(); } catch (e) { Zotero.debug("[Weavero] pane scope init err: " + e); }
         this._applyInlineLinksPref(this._getInlineLinks());
         // Defensive: prune dead entries from `Zotero.Reader._readers`.
         // Earlier dev builds occasionally left a ReaderWindow in the list
@@ -4228,6 +4340,9 @@ class WeaveroPlugin {
             }
         } catch (e) {}
         this._unregisterItemTreeColumns();
+        try { (this as any)._wvBgRestoreStop(); } catch (e) {}
+        try { (this as any)._wvScopeDestroy(); } catch (e) {}
+        try { (this as any)._wvBlDestroy(); } catch (e) {}
         try { this._unpatchAnnotationRow(); } catch (e) {}
         try { (this as any)._unpatchHideContextAttachments(); } catch (e) {}
 
@@ -4247,6 +4362,14 @@ class WeaveroPlugin {
         try { (this as any)._wvTeardownTagSelectorHandle(); } catch (e) {}
         try { (this as any)._wvTeardownStuckDropRowFix(); } catch (e) {}   // WV-TEMP-133039
         try { (this as any)._wvTeardownTagScopeRowsFix(); } catch (e) {}   // WV-TEMP-134330
+        try { (this as any)._wvTeardownTreeScrollAnchorFix(); } catch (e) {}   // WV-TEMP-6023
+        try { (this as any)._wvTeardownPinDeferFix(); } catch (e) {}   // WV-TEMP-REG37
+        try { (this as any)._wvTeardownItemPaneCreepFix(); } catch (e) {}   // WV-TEMP-131000
+        try { (this as any)._wvTeardownStalePreviewFix(); } catch (e) {}   // WV-TEMP-REG41
+        try { (this as any)._wvTeardownPinAnchorFix(); } catch (e) {}   // WV-TEMP-134569
+        try { (this as any)._wvTeardownPreviewFitFix(); } catch (e) {}   // WV-TEMP-134490
+        try { (this as any)._wvTeardownItemPaneStickyHeads(); } catch (e) {}   // pinned section headers
+        try { (this as any)._wvTeardownWindowPanePrefs(); } catch (e) {}
         try { (this as any)._wvTeardownNewNoteMenuFix(); } catch (e) {}   // WV-TEMP-134357
         try { (this as any)._wvTeardownCollectionDropFix(); } catch (e) {}   // WV-TEMP-134361
         try { (this as any)._wvTeardownLayoutMenus(); } catch (e) {}
@@ -4664,6 +4787,22 @@ Object.defineProperties(
 );
 Object.defineProperties(
     WeaveroPlugin.prototype,
+    backlinksMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    linksMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    countPopupsMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    paneScopeMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
     outlineEvalMethods,
 );
 Object.defineProperties(
@@ -4712,6 +4851,9 @@ Zotero.Weavero = {
                 // be applied to windows that are ALREADY open at reload time.
                 // See modules/attachments.ts.
                 try { _Weavero._wvWireDefaultAttachment(); } catch (e) {}
+                // WV-TEMP-134355: lookup engine icons whose stored file path
+                // died with a moved data directory (modules/pane.ts).
+                try { _Weavero._wvRepairLocateIconsAtStartup(); } catch (e) {}
                 // Keep that wrapper outermost when a COMPETING plugin is
                 // installed/enabled later: startup wiring only sees plugins
                 // already loaded. See modules/attachments.ts.

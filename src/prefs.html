@@ -536,6 +536,21 @@
       <html:p class="wv-desc">A chain icon next to annotations that have related items; click it for the list.</html:p>
   </vbox>
   <vbox class="wv-block wv-subblock" data-gated-by="enableLinksAndRelations enableRelations" data-wv-in="links relations">
+      <checkbox label="“Backlinks” section in the item pane" native="true"
+        preference="extensions.zotero.weavero.enableBacklinks"/>
+      <html:p class="wv-desc">What links here: the annotation comments and notes that carry a Zotero link (zotero://) or a note citation of the selected item, grouped by their item, with the text around the link. Also in the reader&#8217;s and note tabs&#8217; context pane, and the “Has Backlinks” filter.</html:p>
+  </vbox>
+  <vbox class="wv-block wv-subblock" data-gated-by="enableLinksAndRelations enableRelations" data-wv-in="links relations">
+      <checkbox label="“Item Links” section in the item pane" native="true"
+        preference="extensions.zotero.weavero.enableLinks"/>
+      <html:p class="wv-desc">Where the selected item links out: the Zotero links (zotero://) and note citations (the citations and annotations Zotero&#8217;s note editor adds to a note) written in its notes and annotation comments, grouped by the note or annotation that carries them, with the text around each. A link whose item is gone, or whose group library is not in this profile, is listed greyed and not counted. Also in the reader&#8217;s and note tabs&#8217; context pane, and the card shown when the pointer rests on a Zotero link or a note citation in a note, an annotation comment or the items list.</html:p>
+  </vbox>
+  <vbox class="wv-block wv-subblock" data-gated-by="enableLinksAndRelations enableRelations" data-wv-in="links relations">
+      <checkbox label="Count and list the children&#8217;s tags and related items in the Tags and Related sections" native="true"
+        preference="extensions.zotero.weavero.enableTagsRelatedScope"/>
+      <html:p class="wv-desc">Beside the Tags and Related section titles, how many the item has itself and how many its attachments, notes and annotations have. Click a count to show only those, Alt+click to hide them; a child&#8217;s tags or related items are listed under the item&#8217;s own, under a heading for that child. Off, the two sections are as Zotero draws them.</html:p>
+  </vbox>
+  <vbox class="wv-block wv-subblock" data-gated-by="enableLinksAndRelations enableRelations" data-wv-in="links relations">
       <checkbox label="“Open Related Item” submenu in the reader" native="true"
         preference="extensions.zotero.weavero.enableOpenRelatedSubmenu"/>
       <html:p class="wv-desc">Open in Reader / In New Window entries for each related item, in the annotation context menu.</html:p>
@@ -789,12 +804,27 @@
   <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-in="extras x-columns">
       <checkbox label="“Tags” column — add the automatic-tag count" native="true"
         preference="extensions.zotero.weavero.enableTagsCountAuto"/>
-      <html:p class="wv-desc">Shows manual tags (blue) and automatic tags. Uncheck to show only the manual count.</html:p>
+      <html:p class="wv-desc">Shows manual tags (blue) and automatic tags. Uncheck to show only the manual count. This is the default for every window: a window can choose for itself from the column header's right-click menu (Tags › Automatic-Tag Count).</html:p>
   </vbox>
   <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-in="extras x-columns">
       <checkbox label="“Related” column" native="true"
         preference="extensions.zotero.weavero.enableRelatedColumn"/>
       <html:p class="wv-desc">Count of related items per row.</html:p>
+  </vbox>
+  <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-in="extras x-columns">
+      <checkbox label="“Backlinks” column" native="true"
+        preference="extensions.zotero.weavero.enableBacklinksColumn"/>
+      <html:p class="wv-desc">Count of annotation comments and notes elsewhere that link to the item, its attachments, notes or annotations.</html:p>
+  </vbox>
+  <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-in="extras x-columns">
+      <checkbox label="“Item Links” column" native="true"
+        preference="extensions.zotero.weavero.enableLinksColumn"/>
+      <html:p class="wv-desc">Count of the Zotero items that the row&#8217;s notes and annotation comments link to by Zotero links or note citations (a broken link is listed, not counted).</html:p>
+  </vbox>
+  <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-in="extras x-columns">
+      <checkbox label="“External Links” column" native="true"
+        preference="extensions.zotero.weavero.enableExtLinksColumn"/>
+      <html:p class="wv-desc">Count of the web and app links written in the row&#8217;s notes and annotation comments (each link once; a zotero:// link is Item Links&#8217;). Click the number for the list.</html:p>
   </vbox>
 
   <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-head="x-tabs" data-wv-in="extras">
@@ -853,6 +883,11 @@
         <html:label>Up to <html:input id="wv-coll-sticky-max" type="number" min="1" max="10" step="1" style="width:4em"/> levels</html:label>
       </html:div>
       <html:p class="wv-desc">The parents of the collections at the top of the pane stay pinned above them, as in VS Code&#8217;s file tree. Click a pinned parent to go to it; its arrow collapses it. The two trees of the Collections and Libraries Manager pin the same way.</html:p>
+  </vbox>
+  <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-in="extras x-collections">
+      <checkbox label="Keep section headers pinned at the top of the item pane while scrolling" native="true"
+        preference="extensions.zotero.weavero.itemPaneStickyHeaders"/>
+      <html:p class="wv-desc">Each section&#8217;s header stays pinned at the top of the item pane while its section scrolls past, the next header pushing it out; inside Item Links, Backlinks and the widened Tags and Related sections, the heading of the part whose rows are passing stays under it. A click on a pinned header still collapses its section. In the library&#8217;s item pane and the reader and note tabs&#8217; context panes.</html:p>
   </vbox>
   <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-in="extras x-collections">
       <checkbox label="Show a collection&#8217;s full path when hovering it" native="true"

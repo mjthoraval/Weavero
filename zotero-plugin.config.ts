@@ -95,6 +95,13 @@ export default defineConfig({
     // filename. Setting both flags false makes `buildPrefs` return
     // before parsing.
     prefs: { prefixPrefKeys: false, dts: false, prefix: "" },
+    // Fluent files are shipped AS WRITTEN: `src/locale/en-US/weavero.ftl`
+    // is the file each window links (`insertFTLIfNeeded("weavero.ftl")`),
+    // and its ids already carry the `weavero-` prefix. The scaffold's
+    // defaults rename the file `weavero-weavero.ftl`, prefix every id
+    // again and write a typings/i10n.d.ts (found on the first .ftl,
+    // 2026-10-22: the Backlinks section's header stayed untranslated).
+    fluent: { prefixFluentMessages: false, prefixLocaleFiles: false, ignore: [], dts: false },
   },
 
   test: {

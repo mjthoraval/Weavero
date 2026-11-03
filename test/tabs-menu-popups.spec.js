@@ -87,6 +87,39 @@ describe("Weavero — tabs-menu popups: one builder for the main window and the 
         }
     });
 
+    // Zotero's item-type CSS has no rule for the Linked File pseudo-kind, so
+    // its tile drew the generic document icon -- Other File's -- while the
+    // library filter shows the page with the link badge (2026-10-23, "make
+    // sure that all icons are consistent across all filter popups").
+    it("the Linked File tile shows the library filter's linked-file icon, not the generic document", () => {
+        const doc = win.document;
+        const host = el("div"), anchor = el("button");
+        host.appendChild(anchor);
+        doc.documentElement.appendChild(host);
+        const saved = { ft: wv._tabsMenuFileTypeFilter, lf: wv._tabsMenuLibraryFilter };
+        wv._tabsMenuFileTypeFilter = { include: new Set(), exclude: new Set() };
+        wv._tabsMenuLibraryFilter = new Map();
+        try {
+            withStubs({ _refreshFileTypeFilterButtonState: () => {}, _wvRegroupTabsMenu: () => {} }, () => {
+                wv._toggleTabsMenuFileTypePopup(win, host, anchor);
+                const pop = host.querySelector("#wv-tabs-menu-filetype-popup");
+                const i = types().findIndex((d) => d.value === "attachmentLinkedFile");
+                assert.isAtLeast(i, 0, "the pseudo-kind is listed");
+                const tile = pop.querySelectorAll(".wv-filter-opt-icon")[i];
+                const img = tile.querySelector("img.wv-filter-svg");
+                assert.isOk(img, "an image tile, like the library filter's");
+                assert.strictEqual(img.getAttribute("src"), types()[i].icon, "the same icon data");
+                assert.isNull(tile.querySelector(".icon-item-type"), "not Zotero's generic item-type icon");
+                wv._toggleTabsMenuFileTypePopup(win, host, anchor);
+            });
+        } finally {
+            lib.wvDismissOff(wv, "_wvFileTypeOutsideClose");
+            host.remove();
+            wv._tabsMenuFileTypeFilter = saved.ft;
+            wv._tabsMenuLibraryFilter = saved.lf;
+        }
+    });
+
     it("the settings popup: two checkbox rows bound to the plugin-global toggles and their prefs, the surface refreshed on change; the reader entry builds the same rows", () => {
         const doc = win.document;
         const host = el("div"), anchor = el("button"), wrapper = el("div");

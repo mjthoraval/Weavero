@@ -56,6 +56,10 @@ for (const w of Zotero.getMainWindows()) {
 		// 2026-10-06 §2 #1) -- the fixture now sets both so this diff sees them.
 		title: w._wvWindowTitle || null,
 		hidden: (() => { try { return lp._wvHidCapture(w) || null; } catch (e) { return null; } })(),
+		// The window's pinned section (set aside counts: no item shown) and the
+		// "tags" section's open state -- per window since 0.22.3-dev.47.
+		pin: (() => { try { const d = w.document.querySelector("#zotero-item-pane item-details"); return (d && (d.pinnedPane || d._pendingPinnedPane)) || null; } catch (e) { return null; } })(),
+		tagsOpen: (() => { try { const s = w.document.querySelector('#zotero-item-pane collapsible-section[data-pane="tags"]'); return s ? !!s.open : null; } catch (e) { return null; } })(),
 		tabs: w.Zotero_Tabs._tabs.map(t => {
 			// Reader page index for LOADED reader tabs (scroll comes back via
 			// Zotero's per-item view state; this asserts it end-to-end).

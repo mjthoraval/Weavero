@@ -40,7 +40,9 @@ import { wvMainWins, wvWinType } from "../lib/windows";
 import { wvAccel } from "../lib/keys";
 import { wvCloneFor } from "../lib/xray";
 import { wvSvgEl } from "../lib/svg";
+import { WV_LINK_MENU_ICON } from "../lib/link-glyph";
 import { wvStageNativeUndo } from "./undo";
+import { wvRefTitle, type WvRefKind } from "./backlinks";
 import { wvAltReveal } from "../lib/menubar";
 
 class _ReaderMixin {
@@ -825,7 +827,12 @@ class _ReaderMixin {
             row.className = "wv-rel-row";
             row.setAttribute("role", "button");
             row.setAttribute("tabindex", "0");
-            row.title = "Open in library";
+            // Both ends with their lineage on a rest or keyboard focus, as
+            // every other Related row (backlinks.ts _wvRelCardShow; MJT
+            // 2026-11-02, "The preview on hover is missing here"), the
+            // press's effect in its foot -- no tooltip over it ("Open in
+            // library" until dev.148).
+            this._wvBlCardHover(row, "relCard", (lp: any) => lp._wvRelCardShow(row, annotationItem, item, "Click: open · Right-click for more"));
 
             // Type icon. Zotero stores annotation icons in the
             // `universal` colour folder
@@ -1207,6 +1214,12 @@ class _ReaderMixin {
             + "  width: 14px; height: 14px; display: block; flex-shrink: 0;"
             + "}"
             + ":root.wv-ui-dark .wv-btn-relations { color: #ffb84d; }"
+            // The Links and Backlinks buttons (2026-10-28): the item pane's
+            // look (constants.ts `.wv-btn-ref`), the reader's own grey.
+            + ".wv-btn-ref { color: var(--fill-secondary); }"
+            + ".wv-btn-ref .wv-bl-btn-svg {"
+            + "  width: 14px; height: 14px; display: block; flex-shrink: 0;"
+            + "}"
             + "";
         (doc.head || doc.documentElement).appendChild(s);
     }
@@ -1305,6 +1318,16 @@ class _ReaderMixin {
                 });
                 group.appendChild(relBtn);
                 appended++;
+            }
+            // --- Links and Backlinks icons (MJT 2026-10-28) -----------------
+            // After Related, Links then Backlinks, as on the item pane's
+            // annotation cards (Backlinks part 2; "Same also for links").
+            // A link written elsewhere re-renders nothing here: the index's
+            // change refreshes the drawn cards (backlinks.ts _wvBlRefreshReaders).
+            for (const kind of ["links", "backlinks"]) {
+                const b = !(row && row.querySelector(".wv-btn-" + kind))
+                    ? (this as any)._wvBlReaderBtn(doc, ann, BTN_SIDEBAR_CLASS, false, kind) : null;
+                if (b) { group.appendChild(b); appended++; }
             }
         } catch (e) {
             Zotero.debug("[Weavero] sidebar relations icon err: " + e.message);
@@ -1805,11 +1828,13 @@ class _ReaderMixin {
                 Zotero.debug("[Weavero] _viewContextHandler append err: " + e);
             }
 
-            // Stamp the Weavero glyph onto the entry once the popup renders.
+            // Stamp the links glyph onto the entry once the popup renders
+            // (every MENU_LABEL here is a "Copy Link to ..." entry; the
+            // Weavero logo until 2026-10-23).
             try {
                 const win = reader._window;
                 const ps  = reader._popupset;
-                const iconURL = this._menuItemIconURL;
+                const iconURL = WV_LINK_MENU_ICON;
                 if (win && ps && typeof ps.addEventListener === "function" && iconURL) {
                     const st = (win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
                     const ct = (win.clearTimeout) ? win.clearTimeout.bind(win) : clearTimeout;
@@ -2765,10 +2790,11 @@ class _ReaderMixin {
     }
 
     /** Window-level dragover/drop absorber for the standalone reader window.
-     *  Only acts on drags carrying our `application/x-weavero-reader-merge`
-     *  MIME — other drags (e.g. annotation-area selections) are untouched.
-     *  Idempotent via `win._wvReaderMergeAbsorberWired`. Capture phase so we
-     *  beat the PDF reader's own auto-scroll handler.
+     *  Acts on Weavero's tab drags (the `application/x-weavero-reader-merge`
+     *  MIME, a main-window tab) and on library items over the strip; other
+     *  drags (annotation-area selections, an item over a note editor) are
+     *  untouched. Idempotent via `win._wvReaderMergeAbsorberWired`. Capture
+     *  phase so we beat the PDF reader's own auto-scroll handler.
      *
      *  Behavior differs by target:
      *  - Over the tab strip (`.wv-window-tabstrip`): preventDefault so the
@@ -2850,9 +2876,18 @@ class _ReaderMixin {
                             // Firefox-style blue bar at the drop slot (same as main window).
                             try { P && P._wvShowReaderStripItemDropIndicator(win, e.clientX); } catch (er) {}
                         } else {
-                            e.stopPropagation();
-                            if (e.dataTransfer) e.dataTransfer.dropEffect = "none";
                             try { P && P._wvHideReaderStripItemDropIndicator(win); } catch (er) {}
+                            // Off the strip the drag is not ours: a note editor
+                            // (note tab, note window, the notes pane beside a
+                            // PDF) makes a citation of it and must see the
+                            // dragover to accept it. Refusing it everywhere
+                            // here (2026-06-30) killed every such drop (MJT
+                            // 2026-10-30). A strip that can't host a tab (a
+                            // note window's) still refuses.
+                            if (isOverStrip(e)) {
+                                e.stopPropagation();
+                                if (e.dataTransfer) e.dataTransfer.dropEffect = "none";
+                            }
                         }
                     } catch (er) {}
                     return;
@@ -9409,8 +9444,8 @@ class _ReaderMixin {
                         this.openRelationsPopup(freshAnn,
                             sc ? { anchorScreen: sc } : { anchorNode: relBtn });
                     });
-                    const moreBtn = target.querySelector("button.more");
-                    if (moreBtn) target.insertBefore(relBtn, moreBtn);
+                    const before = target.querySelector(".wv-btn-ref") || target.querySelector("button.more");
+                    if (before) target.insertBefore(relBtn, before);
                     else target.appendChild(relBtn);
                 } else if (!related.length && existingRel) {
                     existingRel.remove();
@@ -9419,13 +9454,37 @@ class _ReaderMixin {
                 Zotero.debug("[Weavero] popup relations icon err: " + e.message);
             }
 
+            // --- Links and Backlinks icons (MJT 2026-10-28) -----------------
+            // After Related, before the kebab:
+            // [comment][related][links][backlinks][⋯].
+            for (const kind of ["links", "backlinks"]) {
+                try {
+                    const ann = key ? this._getAnnotationItem(lib, key) : null;
+                    const existing = target.querySelector(".wv-btn-" + kind);
+                    const n = ann ? (this as any)._wvBlReaderCount(ann, kind) : 0;
+                    if (!n) existing?.remove();
+                    else if (existing) {
+                        const t = wvRefTitle(n, kind as WvRefKind);
+                        if (existing.title !== t) existing.title = t;
+                    }
+                    else {
+                        const b = (this as any)._wvBlReaderBtn(doc, ann, BTN_POPUP_CLASS, true, kind);
+                        const before = (kind === "links" && target.querySelector(".wv-btn-backlinks")) || target.querySelector("button.more");
+                        if (b) { if (before) target.insertBefore(b, before); else target.appendChild(b); }
+                    }
+                } catch (e) {
+                    Zotero.debug("[Weavero] popup " + kind + " icon err: " + e.message);
+                }
+            }
+
             const commentEl = preview.querySelector(".comment");
 
             if (!commentEl) {
                 // Popup lost its comment — remove the stale comment button
-                // (leave the relations button: it doesn't need a comment).
+                // (leave the relations, links and backlinks buttons: they
+                // don't need a comment).
                 preview.querySelector("." + BTN_POPUP_CLASS
-                    + ":not(.wv-btn-relations)")?.remove();
+                    + ":not(.wv-btn-relations):not(.wv-btn-ref)")?.remove();
                 return;
             }
 
@@ -9438,8 +9497,10 @@ class _ReaderMixin {
             // could only colourise URLs and missed every other markdown form.
             this._renderPreviewPanel(commentEl);
 
+            // The comment icon only: the Related, Links and Backlinks buttons
+            // carry the same popup class.
             const existingBtn = target.querySelector("." + BTN_POPUP_CLASS
-                + ":not(.wv-btn-relations)");
+                + ":not(.wv-btn-relations):not(.wv-btn-ref)");
 
             const comment = this.getModelComment(lib, key) ?? (commentEl.textContent || "");
             const anchors = this.collectAnchorURLs(commentEl);
@@ -9487,9 +9548,11 @@ class _ReaderMixin {
                     ...(sc ? { anchorScreen: sc } : { anchorNode: btn })
                 });
             });
-            // Order: [comment][relations][more] — keep relations adjacent to
-            // the native kebab, matching the sidebar's icon-group policy.
+            // Order: [comment][relations][links][backlinks][more] — keep
+            // relations, links and backlinks next to the native kebab,
+            // matching the sidebar's icon-group policy.
             const before = target.querySelector(".wv-btn-relations")
+                || target.querySelector(".wv-btn-ref")
                 || target.querySelector("button.more");
             if (before) target.insertBefore(btn, before); else target.appendChild(btn);
         } catch (err) {
@@ -13020,8 +13083,8 @@ class _ReaderMixin {
                     + ".wv-link-svg, .wv-relations-svg {"
                     + "  width: 1em; height: 1em; display: block; flex-shrink: 0;"
                     + "}"
-                    // (Stroke-tint of `.wv-link-svg path` removed —
-                    // the needle has its own multi-colour paint.)
+                    // (No stroke tint for `.wv-link-svg path`: the links
+                    // glyph bakes its own black / white chain colour.)
                     // Relations marker — chain icon for `dc:relation`
                     // triples, painted in the same amber-brown as
                     // every other chain icon across the plugin
@@ -13985,6 +14048,28 @@ class _ReaderMixin {
         preview.setAttribute("data-source", cacheKey);
         commentEl.setAttribute("data-wv-last-rebuild", String(Date.now()));
         commentEl.classList.add("wv-comment-preview");
+        // The hover card on a zotero:// link in the comment (links.ts
+        // _wvLkHoverCardShow; MJT 2026-11-03, "Hovering on a Zotero link in
+        // ... an annotation ... should display a similar preview as in the
+        // item pane"): the annotation is the reference's source, read from
+        // the row at the gesture; the rows' rest and dismissal
+        // (backlinks.ts _wvBlCardHover), the card in the chrome window.
+        // Under the Item Links switch, here and at the gesture
+        // (_wvLkHoverCardShow; MJT 2026-11-03).
+        if ((this as any)._wvLkCardOn()) try {
+            for (const span of preview.querySelectorAll(".wv-url-span.wv-link-zotero")) {
+                (this as any)._wvBlCardHover(span, "lkcard", (lp: any) => {
+                    try {
+                        const row = commentEl.closest("[data-sidebar-annotation-id]");
+                        const key = row && row.getAttribute("data-sidebar-annotation-id");
+                        const reader = lp._findReaderForDoc(doc);
+                        const lib = reader ? lp.libraryIDFromReader(reader) : null;
+                        const ann = key && lib != null ? Zotero.Items.getByLibraryAndKey(lib, key) : null;
+                        if (ann) lp._wvLkHoverCardShow(span, ann, preview);
+                    } catch (e) {}
+                });
+            }
+        } catch (e) {}
         return true;
     }
 
@@ -14425,14 +14510,22 @@ class _ReaderMixin {
             if (!cmt) continue;
             const preview = cmt.querySelector(".wv-md-preview");
             if (!preview) continue;
-            rows.push({ row, preview, existing: row.querySelector("." + BTN_SIDEBAR_CLASS) });
+            // The COMMENT icon only: a row's Related button carries the same
+            // sidebar class, and taking it for the comment icon left a row
+            // with relations and a clipped URL without its link icon
+            // (2026-10-23).
+            rows.push({ row, preview, existing: this._wvSidebarCommentBtn(row) });
         }
         // READ phase — no DOM writes in here.
         for (const r of rows) {
-            r.overflows = r.preview.scrollHeight > r.preview.clientHeight + 1;
+            r.overflows = this._wvSidebarOverflowVerdict(r.preview);
         }
+        // Rows whose preview is not drawn yet are left as they are and
+        // measured when they scroll into view (see the verdict below).
+        this._wvWatchSkippedOverflow(idoc, rows.filter(r => r.overflows === "skipped").map(r => r.row));
         // WRITE phase — no layout reads in here.
         for (const { row, overflows, existing } of rows) {
+            if (overflows === "skipped" || overflows === null) continue;
             if (overflows) {
                 if (existing) continue;
                 const key = this._findAnnotationKey(row, reader);
@@ -14479,6 +14572,70 @@ class _ReaderMixin {
                 existing.remove();
             }
         }
+    }
+
+    /** The row's comment-icon button, never its Related, Links or Backlinks
+     *  button (all carry the sidebar button class). */
+    _wvSidebarCommentBtn(row: any): any {
+        try { return row.querySelector("." + BTN_SIDEBAR_CLASS + ":not(.wv-btn-relations):not(.wv-btn-ref)"); }
+        catch (e) { return null; }
+    }
+
+    /** Does a sidebar preview overflow its line clamp? `true` / `false`;
+     *  "skipped" while the browser is not drawing its contents
+     *  (`content-visibility: auto`, the row off-screen); null when there is
+     *  nothing to probe (a plain-text preview, which never wants an icon).
+     *  A skipped preview reads scrollHeight - clientHeight = its own padding
+     *  (3.25 + 3.25 px, measured on all 15 skipped rows of the fixture PDF,
+     *  2026-10-23) -- a false overflow that gave every off-screen row a link
+     *  icon, corrected only when a click re-ran the pass (MJT: "the icons
+     *  are not immediately updated"). `checkVisibility` with
+     *  `contentVisibilityAuto` tells a skipped subtree; a build whose engine
+     *  lacks the option answers true and measures as before. */
+    _wvSidebarOverflowVerdict(preview: any): boolean | "skipped" | null {
+        const probe = preview && preview.firstElementChild;
+        if (!probe) return null;
+        try {
+            if (typeof probe.checkVisibility === "function"
+                && !probe.checkVisibility({ contentVisibilityAuto: true })) return "skipped";
+        } catch (e) {}
+        return preview.scrollHeight > preview.clientHeight + 1;
+    }
+
+    /** Re-run the overflow pass when a skipped row scrolls into view.
+     *  Scrolling changes no DOM, so the iframe observer that normally
+     *  re-runs the pass never fires for it. One IntersectionObserver per
+     *  reader document, the implicit root (the sidebar's scroll clip counts),
+     *  so a React re-created sidebar needs no rewiring; the callback runs
+     *  the LIVE plugin's pass on the next frame. */
+    _wvWatchSkippedOverflow(idoc: any, rows: any[]) {
+        if (!rows.length) return;
+        const win = idoc && idoc.defaultView;
+        const IO = win && win.IntersectionObserver;
+        if (typeof IO !== "function") return;
+        let w = idoc.__wvOverflowWatch;
+        if (!w) {
+            w = { pending: false, io: null };
+            w.io = new IO((entries: any[]) => {
+                let any = false;
+                for (const e of entries) {
+                    if (!e.isIntersecting) continue;
+                    try { w.io.unobserve(e.target); } catch (_) {}
+                    any = true;
+                }
+                if (!any || w.pending) return;
+                w.pending = true;
+                win.requestAnimationFrame(() => {
+                    w.pending = false;
+                    const lp = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (!lp || lp._wvDestroyed) return;
+                    try { lp._updateSidebarOverflowIcons(idoc); }
+                    catch (e) { Zotero.debug("[Weavero] overflow re-measure: " + e); }
+                });
+            });
+            idoc.__wvOverflowWatch = w;
+        }
+        for (const row of rows) { try { w.io.observe(row); } catch (_) {} }
     }
 
     /** Find sidebar annotation comment elements and inject URL spans
@@ -16948,13 +17105,13 @@ class _ReaderMixin {
                         const item = Zotero.Items.get(itemID);
                         if (item) (this as any)._copyItemLinks([item], "select");
                     } catch (e) {}
-                }, { icon: wvIcon, getVisible: () => (this as any)._getEnableCopyItemLink?.() ?? false });
+                }, { icon: WV_LINK_MENU_ICON, getVisible: () => (this as any)._getEnableCopyItemLink?.() ?? false });
                 const copyOpen = mkItem("Copy Open Link", () => {
                     try {
                         const item = Zotero.Items.get(itemID);
                         if (item) (this as any)._copyItemLinks([item], "open");
                     } catch (e) {}
-                }, { icon: wvIcon, getVisible: () => (this as any)._getEnableCopyItemLink?.() ?? false });
+                }, { icon: WV_LINK_MENU_ICON, getVisible: () => (this as any)._getEnableCopyItemLink?.() ?? false });
                 const sep2 = doc.createXULElement("menuseparator");
                 const closeItem = mkItem("Close", () => {
                     try { win.close(); } catch (e) {}

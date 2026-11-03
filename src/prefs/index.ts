@@ -550,6 +550,12 @@ import { wvSetBoolAttr } from "../lib/dom";
         }
     }
 
+    // The item pane sections' Settings grid (the levels' defaults and the
+    // "always shown" pins, dev.112-161) is gone from the pane (MJT
+    // 2026-11-03, "Remove these settings. They are just confusing at the
+    // moment, so I will just design the default first"); the prefs stay,
+    // read by pane-scope.ts, at their table defaults.
+
     function bindAll(doc) {
         try { bindMode(doc.getElementById("wv-mode")); } catch (e) { dbg("bindMode err: " + e); }
         try { bindSplit(doc.getElementById("wv-ctrlsplit")); } catch (e) { dbg("bindSplit err: " + e); }

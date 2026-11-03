@@ -61,6 +61,11 @@ describe("Weavero — a popup's click-outside dismisser torn down at once leaves
     it("a popup closed without an outside click drops its dismisser on the next mousedown", async () => {
         const panel = doc.createElement("div");
         doc.documentElement.appendChild(panel);
+        // An earlier spec's popup hidden directly (`style.display = "none"`)
+        // keeps ITS dismisser until the next mousedown too: that mousedown
+        // first, else the one below drops two and the count reads one short
+        // (the full run on dev.91, 2026-10-28: 3 for 4).
+        doc.documentElement.dispatchEvent(new win.MouseEvent("mousedown", { bubbles: true }));
         const before = weaveroMousedowns();
         try {
             wv._attachOutsideClickDismiss(panel, doc, win, () => {});

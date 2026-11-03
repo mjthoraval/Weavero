@@ -15,6 +15,7 @@
 // methods one change calls, in order, recorded on 0.22.2-prefs.2).
 
 import { wvMainWins, wvWinType } from "../lib/windows";
+import { wvScopePrefKeys } from "../lib/pane-scope-defaults";
 /* eslint-disable */
 declare const Zotero: any;
 declare const Services: any;
@@ -363,17 +364,32 @@ export const WV_PREF_OBSERVERS: WvPrefObserver[] = [
                             c && typeof c.dataKey === "string"
                             && /(^|[-_])weaveroTags$/.test(c.dataKey));
                         if (col && colMgr) {
-                            col.width = want;
-                            col.minWidth = p._getEnableTagsCountAuto() ? 30 : 26;
-                            if (typeof colMgr.onResize === "function") {
-                                colMgr.onResize({ [col.dataKey]: want }, true);
+                            // The column is resizable since 2026-10-23 (MJT:
+                            // "relax the fix width constrain on count
+                            // columns"): turning the second number on only
+                            // widens it to the room two numbers need; turning
+                            // it off keeps the user's width.
+                            const cur = Number(col.width) || 0;
+                            const on = !!p._getEnableTagsCountAuto();
+                            if (on && cur < want) {
+                                col.width = want;
+                                if (typeof colMgr.onResize === "function") {
+                                    colMgr.onResize({ [col.dataKey]: want }, true);
+                                }
                             }
                         }
                     } catch(e) {
                         Zotero.debug("[Weavero] tags-col width err: " + e);
                     }
-                    if (iv && iv.tree && iv.tree.invalidate) {
-                        iv.tree.invalidate();
+                    // Every main window following the default redraws (a
+                    // window with its own choice from the header menu keeps
+                    // it -- its cells read _wvTagsAutoFor; MJT 2026-10-26).
+                    // Only the focused one redrew before.
+                    for (const mw of wvMainWins()) {
+                        try {
+                            const miv: any = mw && mw.ZoteroPane && mw.ZoteroPane.itemsView;
+                            if (miv && miv.tree && miv.tree.invalidate) miv.tree.invalidate();
+                        } catch (e) {}
                     }
                 } catch(e) {
                     Zotero.debug("[Weavero] tags-pref invalidate err: " + e);
@@ -699,12 +715,16 @@ export const WV_PREF_OBSERVERS: WvPrefObserver[] = [
         },
     },
     {
-        keys: ["extensions.zotero.weavero.enableAnnotationsCountColumn", "extensions.zotero.weavero.enableRelatedColumn", "extensions.zotero.weavero.enableRelations"],
+        keys: ["extensions.zotero.weavero.enableAnnotationsCountColumn", "extensions.zotero.weavero.enableRelatedColumn", "extensions.zotero.weavero.enableBacklinksColumn", "extensions.zotero.weavero.enableLinksColumn", "extensions.zotero.weavero.enableExtLinksColumn", "extensions.zotero.weavero.enableRelations"],
         run(p: any, data: string) {
-            // Items-tree column toggles (Annotations / Related):
-            // unregister all and re-register with the new gates.
+            // Items-tree column toggles (Annotations / Related / Backlinks /
+            // Item Links / External Links): unregister all and re-register
+            // with the new gates.
             if (data === "extensions.zotero.weavero.enableAnnotationsCountColumn"
                 || data === "extensions.zotero.weavero.enableRelatedColumn"
+                || data === "extensions.zotero.weavero.enableBacklinksColumn"
+                || data === "extensions.zotero.weavero.enableLinksColumn"
+                || data === "extensions.zotero.weavero.enableExtLinksColumn"
                 || data === "extensions.zotero.weavero.enableRelations") {
                 try {
                     p._unregisterItemTreeColumns();
@@ -712,6 +732,57 @@ export const WV_PREF_OBSERVERS: WvPrefObserver[] = [
                 } catch (e) {
                     Zotero.debug("[Weavero] re-register cols err: " + e);
                 }
+            }
+        },
+    },
+    {
+        keys: ["extensions.zotero.weavero.enableBacklinks", "extensions.zotero.weavero.enableRelations", "extensions.zotero.weavero.enableLinksAndRelations"],
+        run(p: any, data: string) {
+            // Backlinks section (issue #60): registered / unregistered after
+            // its own switch or a master above it; the chip follows through
+            // its dormant rule, re-applied here when it is set.
+            if (data === "extensions.zotero.weavero.enableBacklinks"
+                || data === "extensions.zotero.weavero.enableRelations"
+                || data === "extensions.zotero.weavero.enableLinksAndRelations") {
+                try { p._wvBlApplySectionPref(); } catch (e) {}
+            }
+        },
+    },
+    {
+        keys: ["extensions.zotero.weavero.enableLinks", "extensions.zotero.weavero.enableRelations", "extensions.zotero.weavero.enableLinksAndRelations"],
+        run(p: any, data: string) {
+            // Links section (the mirror of Backlinks, 2026-10-27): registered
+            // / unregistered after its own switch or a master above it.
+            if (data === "extensions.zotero.weavero.enableLinks"
+                || data === "extensions.zotero.weavero.enableRelations"
+                || data === "extensions.zotero.weavero.enableLinksAndRelations") {
+                try { p._wvLkApplySectionPref(); } catch (e) {}
+            }
+        },
+    },
+    {
+        keys: ["extensions.zotero.weavero.enableRelations", "extensions.zotero.weavero.enableLinksAndRelations", "extensions.zotero.weavero.enableTagsRelatedScope"],
+        run(p: any, data: string) {
+            // The item pane's sections' level counts and lists
+            // (pane-scope.ts) follow the Relations switch and, for Zotero's
+            // Tags and Related, their own (2026-11-03): drawn, or the two
+            // given back as Zotero built them.
+            if (data === "extensions.zotero.weavero.enableRelations"
+                || data === "extensions.zotero.weavero.enableLinksAndRelations"
+                || data === "extensions.zotero.weavero.enableTagsRelatedScope") {
+                try { p._wvScopeRefresh(); } catch (e) {}
+            }
+        },
+    },
+    {
+        // The sections' Settings grid (pane-scope.ts): a default or a pin
+        // changed, and the pinned toggles follow in every window at once; a
+        // window's own filter is kept (the defaults are for new windows,
+        // dev.113). No observer until dev.159 (a pin is drawn from the prefs).
+        keys: wvScopePrefKeys().map((k) => "extensions.zotero.weavero.paneScope." + k),
+        run(p: any, data: string) {
+            if (data.startsWith("extensions.zotero.weavero.paneScope.")) {
+                try { p._wvScopeRefreshAll(); } catch (e) {}
             }
         },
     },
@@ -932,6 +1003,17 @@ export const WV_PREF_OBSERVERS: WvPrefObserver[] = [
         run(p: any, data: string) {
             try { p._applyAppLinkConfirmPref(); }
             catch (e) { Zotero.debug("[Weavero] confirm sync err: " + e); }
+        },
+    },
+    // Pinned section headers in the item pane (pane.ts, 2026-11-03): its
+    // option, or Extras, in every main window at once.
+    {
+        keys: ["extensions.zotero.weavero.itemPaneStickyHeaders", "extensions.zotero.weavero.enableVisualExtras"],
+        run(p: any, data: string) {
+            if (data === "extensions.zotero.weavero.itemPaneStickyHeaders"
+                || data === "extensions.zotero.weavero.enableVisualExtras") {
+                try { p._wvApplyItemPaneStickyHeadsAll(); } catch (e) {}
+            }
         },
     },
 ];

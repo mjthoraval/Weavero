@@ -66,7 +66,7 @@ export const URL_SCHEMES = [
 // BibLaTeX" submenu entries, which are only shown when BBT is active.
 // Wire version for the ZoteroPane.loadURI hook. BUMP on any change to the
 // wrapped closure -- a reload must unhook the stale copy and re-hook.
-export const WV_LOADURI_WIRE_V = 1;
+export const WV_LOADURI_WIRE_V = 2;   // 2: also the paper-key open links (0.22.3-dev.49)
 
 // Wire version for the Zotero.CommandLineIngester.ingest wrap (stolen-focus
 // fix). Same bump discipline as WV_LOADURI_WIRE_V.
@@ -207,7 +207,9 @@ export const urlMethods = {
     //     selects the item in the library.
     //   • OPEN   — `zotero://open/<lib>/items/<key>[?annotation=…]`
     //     — for a *stored file* attachment (any type), the annotation's
-    //     parent attachment, or a regular item's best attachment.
+    //     parent attachment, or a regular item ITSELF (its own key since
+    //     0.22.3-dev.49; Weavero opens its best attachment -- see
+    //     _buildOpenLink for why that form is Weavero-only).
     //     Clicking it does exactly what Zotero's own `zotero://open`
     //     handler does (`Zotero.FileHandlers.open`): PDF / EPUB / HTML-
     //     snapshot files open in Zotero's reader (or the user's
@@ -474,8 +476,9 @@ export const urlMethods = {
      *  they never reached here -- which is why a link clicked in another app
      *  only ever landed on the page (trace ring stayed empty, 2026-07-31).
      *
-     *  Only wvpos links are diverted; everything else calls straight through,
-     *  so no existing behaviour changes. Versioned re-wiring (not a boolean):
+     *  Only wvpos links and paper-key open links (Zotero ignores a regular
+     *  item's key, 0.22.3-dev.49) are diverted; everything else calls
+     *  straight through, so no existing behaviour changes. Versioned re-wiring (not a boolean):
      *  a reload must be able to unhook the STALE closure and re-hook, or the
      *  dead copy keeps running -- the trap `Notes.open` / `Reader.open` hit. */
     _wvWireLoadURIHook(win: any) {
@@ -499,8 +502,10 @@ export const urlMethods = {
                         && (Zotero as any).Weavero.plugin;
                     if (plugin && typeof uri === "string"
                         && /^zotero:\/\/open/i.test(uri)
-                        && /[?&]wvpos=/i.test(uri)) {
-                        plugin._wvLinkRing("loadURI: intercepted wvpos link");
+                        && (/[?&]wvpos=/i.test(uri) || plugin._wvIsPaperOpenLink(uri))) {
+                        // wvpos: a position Zotero's handler drops; a paper's
+                        // key: a link Zotero's handler ignores (_buildOpenLink).
+                        plugin._wvLinkRing("loadURI: intercepted " + (/[?&]wvpos=/i.test(uri) ? "wvpos" : "paper-key open") + " link");
                         Promise.resolve(plugin.handleZoteroURI(uri)).catch(() => {});
                         return;
                     }
@@ -1020,8 +1025,17 @@ export const urlMethods = {
      *  file applies:
      *    stored file attachment → …/items/<key>
      *    annotation             → …/items/<parentAttachmentKey>?annotation=<key>
-     *    regular item           → …/items/<bestAttachmentKey>  (see above)
-     *    note / linked-URL / no-attachment / other → null */
+     *    regular item           → …/items/<itemKey>  (the PAPER's key)
+     *    note / linked-URL / no-attachment / other → null
+     *  A paper's link carries its own key, not its best attachment's (MJT
+     *  2026-10-26: "Copying the open link from an item should just use the
+     *  item key of the parent item"): it survives a replaced PDF and is
+     *  the paper's backlink. A deliberate exception to "links work without
+     *  Weavero": Zotero's own handler ignores a regular item's key
+     *  (OpenExtension, "is not a file attachment"; MJT's zotero-dev request
+     *  KqL6Tx88SRw, 2026-08-04, unanswered) -- Weavero opens what a
+     *  double-click opens (handleZoteroURI, the loadURI hook). Offered only
+     *  when the paper has something to open now. */
     _buildOpenLink(item) {
         if (!item) return null;
         try {
@@ -1038,13 +1052,25 @@ export const urlMethods = {
                     + "/items/" + item.key;
             }
             if (item.isRegularItem && item.isRegularItem()) {
-                const att = this._openableAttachmentFor(item);
-                if (!att) return null;
-                return "zotero://open/" + this._zoteroLibPrefix(att.libraryID)
-                    + "/items/" + att.key;
+                if (!this._openableAttachmentFor(item)) return null;
+                return "zotero://open/" + this._zoteroLibPrefix(item.libraryID)
+                    + "/items/" + item.key;
             }
         } catch (e) {}
         return null;
+    },
+
+    /** Whether `url` is a `zotero://open` link whose key names a REGULAR
+     *  item (the paper form `_buildOpenLink` writes): Zotero's own handler
+     *  ignores it, Weavero opens it. */
+    _wvIsPaperOpenLink(url: string): boolean {
+        try {
+            const m = /^zotero:\/\/open(?:-pdf)?\/(?:library|groups\/(\d+))\/items\/([^/?#]+)/i.exec(String(url || ""));
+            if (!m) return false;
+            const libID = m[1] ? Zotero.Groups.getLibraryIDFromGroupID(Number(m[1])) : Zotero.Libraries.userLibraryID;
+            const it: any = libID && Zotero.Items.getByLibraryAndKey(libID, m[2]);
+            return !!(it && it.isRegularItem && it.isRegularItem());
+        } catch (e) { return false; }
     },
 
     /** Whether `item`'s open link (if any) opens in an *external* app

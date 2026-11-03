@@ -65,6 +65,30 @@ marker for ~2.2 s (pin).
 Diagnostics for a misbehaving link are recorded automatically in a capped ring:
 `Zotero._wvLinkLog.join("\n")` in the Run JavaScript window.
 
+## Open links to a paper (Weavero-only)
+
+Since 0.22.3-dev.49, "Copy Open Link" on a **paper** (a regular item, not one
+of its files) writes the paper's own key:
+
+```
+zotero://open/library/items/R67RRNPR        (the paper, not its PDF)
+```
+
+Clicking it opens what a double-click on the paper opens: its best attachment
+(Weavero's default-attachment choice included), else its URL or DOI. Such a
+link survives a replaced PDF (a preprint swapped for the published version, a
+re-downloaded file), and it counts as a backlink of the paper itself.
+
+**This form needs Weavero.** Zotero's own `zotero://open` handler ignores a
+regular item's key ("is not a file attachment"), so on a Zotero without
+Weavero -- a collaborator's, the mobile apps, Weavero disabled -- the link does
+nothing. It is a deliberate exception to Weavero's rule that the links it
+writes work without it (decided 2026-10-26); a request to Zotero to accept the
+form natively is open on zotero-dev ("zotero://open link with the parent item
+key", 2026-08-04). Links into one file keep the file's key and work
+everywhere: a page (`?page=`), a position (`wvpos`), an annotation
+(`?annotation=`), and links copied from an attachment or a reader tab.
+
 ## Versioning policy
 
 - The decoder stays tolerant of every shape it has ever accepted (including

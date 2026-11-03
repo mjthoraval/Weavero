@@ -37,6 +37,14 @@ when they ask (or when the report clearly requests one).
   build at FIRST report.** Instance tracers die on reload; the user should
   never hit a bug three times before anything records it.
 - Log via `Zotero.debug("[Weavero] …")`; read with `zotero_read_logs`.
+- **A measurement run states its preconditions and CHECKS them first** --
+  the pinned section, the selected item, the window visible
+  (`document.hidden`), which plugins are active -- and re-checks them after
+  any state change it makes (a plugin disable/enable, a pref write), aborting
+  on a mismatch instead of recording. Record the precondition in every
+  sample so a flip mid-run is visible. (2026-11-02: a Weavero-disabled run
+  measured the pinned section's offset for nine switches while the pin had
+  silently become another section; every number was meaningless.)
 - Filter bugs: suspect GENERATION MISMATCH first (state from one apply read
   during another). Verify across TWO consecutive applies, never one. Measure
   through `rowProvider` (`iv.rowCount`/`getRow` bypass the filter patch).

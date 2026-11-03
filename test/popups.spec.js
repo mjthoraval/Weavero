@@ -75,10 +75,20 @@ describe("Weavero — popup infrastructure", () => {
     // -------- 2. Icon embedding -------------------------------------
 
     describe("_makeItemTypeIcon() / _makeChromeIcon()", () => {
-        let main, doc;
+        let main, doc, savedCache;
+        // The file-name checks read the src set SYNCHRONOUSLY, which is the
+        // chrome URL only while the plugin's data-URI cache has no entry for
+        // it: any earlier spec that drew the same icon (count-popups.spec,
+        // 2026-10-22) turned these into order-dependent failures. Start from
+        // an empty cache and put the session's back afterwards.
         before(() => {
             main = Zotero.getMainWindow();
             doc = main.document;
+            savedCache = wv._iconDataUriCache;
+            wv._iconDataUriCache = null;
+        });
+        after(() => {
+            if (savedCache) wv._iconDataUriCache = Object.assign(savedCache, wv._iconDataUriCache || {});
         });
 
         it("converts camelCase data-item-type to kebab-case file name", () => {

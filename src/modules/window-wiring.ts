@@ -119,6 +119,43 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     // dropped on the library row (upstream register #35; installs nothing once
     // Zotero compares the dragged id against collection rows only).
     { id: "collection-drop-lib", on: "both", wire: (p, win) => p._wvWireCollectionDropFix(win) },
+    // Weavero's Fluent file into the window (the Backlinks section's header
+    // and sidenav are l10n ids; issue #60). `refresh`: replace a link an older
+    // build left behind (a stale link blanks the window's strings).
+    { id: "backlinks-ftl", on: "both", wire: (p, win) => p._wvBlEnsureFtl(win, true) },
+    // WV-TEMP-6023: an expanded row stays where it was (zotero/zotero#6023,
+    // PR #6049 mirrored; upstream register #24; installs nothing once
+    // Zotero's own scroll save changes).
+    { id: "tree-scroll-anchor", on: "both", views: true, wire: (p, win) => p._wvWireTreeScrollAnchorFix(win) },
+    // WV-TEMP-REG37: a window that cannot show the pinned section no longer
+    // clears the pin for every window (upstream register #37).
+    { id: "pin-defer", on: "both", views: true, wire: (p, win) => p._wvWirePinDeferFix(win) },
+    // WV-TEMP-131000: an item pane scrolled to its bottom stops there instead
+    // of creeping down 1 px per scroll event (upstream register #40; installs
+    // nothing once Zotero's scroll handler stops adding the integer
+    // clientHeight). The context panes created later: the pane observer.
+    { id: "item-pane-creep", on: "both", wire: (p, win) => p._wvWireItemPaneCreepFix(win) },
+    // WV-TEMP-134490: a preview page that loads after Zotero's one-second
+    // cutoff is fitted when it arrives (upstream register #42; installs
+    // nothing once ReaderPreview._open waits for the document). Before
+    // stale-preview: this one wraps the element class, that one instances.
+    { id: "preview-fit", on: "both", wire: (p, win) => p._wvWirePreviewFitFix(win) },
+    // WV-TEMP-REG41: the Attachments section hides the previous item's
+    // preview and rows until it has drawn the new item's (upstream register
+    // #41; installs nothing once Zotero's sync render() touches them). The
+    // context panes created later: the pane observer.
+    { id: "stale-preview", on: "both", wire: (p, win) => p._wvWireStalePreviewFix(win) },
+    // WV-TEMP-134569: the pinned section stays at the top while a section
+    // above it changes height (upstream register #43 / #44, forum 113626's
+    // resize; installs nothing once Zotero's item pane watches its sections'
+    // sizes). The context panes created later: the pane observer.
+    { id: "pin-anchor", on: "both", wire: (p, win) => p._wvWirePinAnchorFix(win) },
+    // Pinned section headers in the item pane (Extras; 2026-11-03).
+    { id: "sticky-heads", on: "both", wire: (p, win) => p._wvApplyItemPaneStickyHeads(win) },
+    // The pinned section and open sections per main window (the first keeps
+    // Zotero's own settings; pane.ts _wvWireWindowPanePrefs). The managed
+    // init wires a new window itself; this entry covers a reload.
+    { id: "window-pane-prefs", on: "both", views: true, wire: (p, win) => p._wvWireWindowPanePrefs(win) },
     // WV-TEMP-133039: Zotero 896a3f829's stuck drop-row clear, backported
     // until a Zotero carries it (then it installs nothing).
     { id: "stuck-drop-row", on: "both", views: true, wire: (p, win) => p._wvWireStuckDropRowFix(win) },
@@ -219,6 +256,9 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
         catch (e) { p.injectStyles(); }
     } },
     { id: "tree-click-delegate", on: "both", wire: (p, win) => p._setupTreeClickDelegate(win) },
+    // Weavero's tooltip on a cut count cell: the 500 ms / hide-on-move /
+    // show-again rule, in the numbers' colours (count-popups.ts).
+    { id: "count-tooltip", on: "both", wire: (p, win) => p._wvWireCountTip(win) },
     { id: "items-list-context-menu", on: "load", wire: (p) => p._setupItemsListContextMenu() },
     { id: "collections-context-menu", on: "load", wire: (p) => p._setupCollectionsContextMenu() },
     { id: "tab-external-repositioner", on: "both", wire: (p, win) => p._setupTabExternalRepositioner(win) },
@@ -465,6 +505,19 @@ class _WindowWiringMixin {
                 if (this._wvDevSpawnQueue && this._wvDevSpawnQueue.length) {
                     group = this._wvDevSpawnQueue.shift();
                 }
+                // The saved window's collection. Zotero's collection tree
+                // selects `lastViewedFolder` when it mounts (collectionTree.jsx
+                // makeVisible, not awaited), AFTER this window's restore has
+                // applied its state, so the last row viewed in ANY window won
+                // over the restored one (2026-10-26, measured: C16 applied,
+                // L1 130 ms later). Point the pref at this window's row before
+                // the tree reads it; selecting the row sets the same pref
+                // anyway (zoteroPane.js), and a row that no longer exists
+                // falls back to My Library there.
+                try {
+                    const coll = group && group.wvMainState && group.wvMainState.collection;
+                    if (coll) Zotero.Prefs.set("lastViewedFolder", coll);
+                } catch (e) {}
                 // Stable per-window id: a restored window carries it in its saved
                 // group; a manual new window gets a fresh one. Drives the
                 // per-window items-tree column key so layouts persist across

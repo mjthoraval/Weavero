@@ -34,6 +34,7 @@
 
 import { WV_PREF_OBSERVERS, WvPrefObserver } from "./prefs-observers";
 import { URL_SCHEMES } from "./url";
+import { wvScopePinPrefKeys } from "../lib/pane-scope-defaults";
 
 declare const Zotero: any;
 declare const Services: any;
@@ -103,11 +104,58 @@ export const WV_PREFS: Record<string, WvPrefRow> = {
     enableChainBadge: { def: true, masters: [REL] },
     enableOpenRelatedSubmenu: { def: true, masters: [REL] },
     enableLibrariesHighlight: { def: true, masters: [REL] },
+    // Backlinks (issue #60): the item-pane section + the Has Backlinks chip.
+    enableBacklinks: { def: true, masters: [REL] },
+    // Links (2026-10-27): the item-pane section of outgoing references.
+    enableLinks: { def: true, masters: [REL] },
+    // The counts, filters and children's lists Weavero adds to Zotero's own
+    // Tags and Related sections (pane-scope.ts _wvScopeOn; MJT 2026-11-03,
+    // "users who don't like it can disable it"). Item Links and Backlinks
+    // keep theirs: their sections' own switches.
+    enableTagsRelatedScope: { def: true, masters: [REL] },
+    // What the item pane's Tags, Related, Links and Backlinks sections show
+    // in a new window and after a restart (pane-scope.ts _wvScopeFilterFor):
+    // per level -- the item itself, its attachments, notes, annotations, and
+    // Links' / Backlinks' internal links -- checked = shown. The header's
+    // counts filter each window from there, as the items list's funnel does
+    // (MJT 2026-10-30: "I should be able to decide in the settings what is
+    // the default for new windows and after restart"). The defaults are the
+    // header button's before dev.112: Tags, Related and Backlinks the item
+    // itself only; Links its notes' and annotations'.
+    "paneScope.tags.own": { def: true, masters: [REL] },
+    "paneScope.tags.att": { def: false, masters: [REL] },
+    "paneScope.tags.note": { def: false, masters: [REL] },
+    "paneScope.tags.ann": { def: false, masters: [REL] },
+    "paneScope.related.own": { def: true, masters: [REL] },
+    "paneScope.related.att": { def: false, masters: [REL] },
+    "paneScope.related.note": { def: false, masters: [REL] },
+    "paneScope.related.ann": { def: false, masters: [REL] },
+    "paneScope.links.note": { def: true, masters: [REL] },
+    "paneScope.links.ann": { def: true, masters: [REL] },
+    "paneScope.links.loop": { def: true, masters: [REL] },
+    // Shown by default (MJT 2026-10-30, "Always show broken links. The square
+    // barred is too flashy to be the default"; hidden in dev.121-127).
+    "paneScope.links.broken": { def: true, masters: [REL] },
+    "paneScope.backlinks.own": { def: true, masters: [REL] },
+    "paneScope.backlinks.att": { def: false, masters: [REL] },
+    "paneScope.backlinks.note": { def: false, masters: [REL] },
+    "paneScope.backlinks.ann": { def: false, masters: [REL] },
+    "paneScope.backlinks.loop": { def: true, masters: [REL] },
+    // Item Links' and Backlinks' two kinds of reference, Zotero links and
+    // note citations: both checked or none, no filter; one alone, only those
+    // (MJT 2026-11-02, "The new additions are missing from here").
+    "paneScope.links.zlinks": { def: true, masters: [REL] },
+    "paneScope.links.citations": { def: true, masters: [REL] },
+    "paneScope.backlinks.zlinks": { def: true, masters: [REL] },
+    "paneScope.backlinks.citations": { def: true, masters: [REL] },
 
     // ---- Extras (Visual extras)
     enableAnnotationAddedBy: { def: true, masters: [VE] },
     enableAddedByColors: { def: true, masters: [VE] },
     enableRelatedColumn: { def: true, masters: [VE] },
+    enableBacklinksColumn: { def: true, masters: [VE] },
+    enableLinksColumn: { def: true, masters: [VE] },
+    enableExtLinksColumn: { def: true, masters: [VE] },
     enableOpenExternalViewer: { def: true, masters: [VE] },
     enablePluginsSearch: { def: true, masters: [VE] },
     enableAnnotationsCountColumn: { def: true, masters: [VE] },
@@ -121,6 +169,8 @@ export const WV_PREFS: Record<string, WvPrefRow> = {
     tagSelectorHandle: { def: true, masters: [VE] },
     paneDragNoCollapse: { def: true, masters: [VE] },
     enableTagsCountAuto: { def: true, masters: [VE] },
+    // Pinned section headers in the item pane (pane.ts, 2026-11-03).
+    itemPaneStickyHeaders: { def: true, masters: [VE] },
 
     // ---- Bookmarks
     enableLibraryBookmarks: { def: true, masters: [BM] },
@@ -203,6 +253,14 @@ export const WV_PREFS: Record<string, WvPrefRow> = {
 // the link pattern only while App links is on (url.ts), so App links -- and
 // through it Links & Relations -- gate them, as Settings greys them.
 for (const d of URL_SCHEMES as any[]) WV_PREFS[d.pref] = { def: false, gate: ["enableAppLinks"] };
+
+// The item pane sections' pinned toggles, a `paneScope.<kind>.pin.<cell>`
+// under each default box (MJT 2026-11-02, "the settings could decide which
+// toggle is pinned, as well as what is the default"): a cell checked here
+// is drawn in its section's header on every item, at 0 too (pane-scope.ts
+// _wvScopePinned); the cells the default row puts in a non-neutral state
+// are pinned whatever these say. All off by default.
+for (const k of wvScopePinPrefKeys()) WV_PREFS["paneScope." + k] = { def: false, masters: [REL] };
 
 /** String and number defaults, registered beside the booleans. */
 export const WV_PREF_VALUES: Record<string, string | number> = {

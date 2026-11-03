@@ -36,7 +36,18 @@
 //     tree mark and the items-view wrap since dev.53, the window's drag
 //     listeners since dev.55; they go when the workaround retires), and with
 //     WV-TEMP-134330's Tag Selector scope (`wrap setTagScope:tagScopeRows` on
-//     ZoteroPane, dev.59; it goes when that workaround retires). Set
+//     ZoteroPane, dev.59; it goes when that workaround retires). And with the count
+//     tooltip's hide-on-key / hide-on-blur (`countTip:keydown`, `countTip:blur`
+//     on the window, 0.22.3-dev.31: Weavero's own tooltip on a cut count cell). And
+//     with WV-TEMP-6023's scroll anchor (`_saveScrollPosition`,
+//     `_restoreScrollPosition`, `notify` wrapped `scrollAnchor6023` on the items
+//     view, 0.22.3-dev.43: zotero/zotero PR #6049 mirrored; they go when the
+//     workaround retires). And with a second window's own open / collapsed
+//     item-pane sections (`_wvPaneOpen` on the window, 0.22.3-dev.47: the
+//     pinned section and the sections per main window). And with the pinned
+//     section headers' stylesheet (`wv-sticky-heads-styles`, 0.22.3-dev.166;
+//     its scroll listener sits on the item pane's scroller, not a recorded
+//     host, and its per-section observers in a WeakMap). Set
 //     WV_WIRING_RECORD=<path> to dump a new recording instead of comparing.
 //     A deliberate change edits the affected lines here, in the same commit,
 //     with the reason.
@@ -196,7 +207,27 @@ describe("Weavero — per-main-window wiring, characterized", function () {
             }
             return out;
         };
-        assert.deepEqual(wvT.wiringNormalize(firstApplyOff(got)), wvT.wiringNormalize(firstApplyOff(WIRING_EXPECTED)));
+        // Build-dependent marks, left out on both sides: WV-TEMP-133039's
+        // mousemove / rows-change twin installs only where Zotero lacks its
+        // own `_clearDropIndicator` (Zotero 10; gone on 11.0-beta.2+, found
+        // by the first full run on beta.2, 2026-10-27). stuck-drop-row.spec.js
+        // asserts their presence or absence per build.
+        const BUILD_DEPENDENT = /^(wrap handleRowModelUpdate:stuckDropRow|listen stuckDropRow:(items|collections)|wrap (_setDropRow|_clearDropIndicator):dragRing)$/;
+        // A host those marks emptied (`#zotero-collections-tree` carries only
+        // the mousemove listener) goes too: a build without the mark has no
+        // such host at all.
+        const buildNeutral = (v) => {
+            if (Array.isArray(v)) return v.filter(x => !(typeof x === "string" && BUILD_DEPENDENT.test(x))).map(buildNeutral);
+            if (!v || typeof v !== "object") return v;
+            const out = {};
+            for (const [k, x] of Object.entries(v)) {
+                const y = buildNeutral(x);
+                if (Array.isArray(x) && x.length && Array.isArray(y) && !y.length) continue;
+                out[k] = y;
+            }
+            return out;
+        };
+        assert.deepEqual(wvT.wiringNormalize(buildNeutral(firstApplyOff(got))), wvT.wiringNormalize(buildNeutral(firstApplyOff(WIRING_EXPECTED))));
     });
 });
 
@@ -212,9 +243,9 @@ const WIRING_EXPECTED = {
             "_wvOvPollId:number", "_wvOvPosKey:string", "_wvOvSettled:boolean", "_wvPaneObs:object",
             "_wvPinnedTabIDs:object", "_wvRedoKeyH:function", "_wvStrayObs:object", "_wvStrayObsVer:number", "_wvTabBarDecoMo:object",
             "_wvTabExtRepositioner:object", "_wvTabGroupWinDnDOff:function", "_wvTabMultiSelOff:function",
-            "_wvThemeMQ:object", "_wvTreeDelegate:object", "listen newWindowKey", "listen ovFollow:unload",
-            "listen reopenClosedKey", "listen stuckDropRow:dragenter", "listen stuckDropRow:dragexit", "listen stuckDropRow:dragleave",
-            "listen stuckDropRow:dragover", "listen tabGroupDnD:escKey", "listen tabGroupWinDnD:dragover",
+            "_wvThemeMQ:object", "_wvTreeDelegate:object", "listen countTip:blur", "listen countTip:keydown", "listen newWindowKey", "listen ovFollow:unload",
+            "listen reopenClosedKey", "listen stuckDropRow:dragend", "listen stuckDropRow:dragenter", "listen stuckDropRow:dragexit", "listen stuckDropRow:dragleave",
+            "listen stuckDropRow:dragover", "listen stuckDropRow:drop", "listen tabGroupDnD:escKey", "listen tabGroupWinDnD:dragover",
             "listen tabGroupWinDnD:drop", "listen xwinDrop:dragover", "listen xwinDrop:drop",
         ],
         ZoteroPane: [
@@ -230,7 +261,8 @@ const WIRING_EXPECTED = {
         itemsView: [
             "_wvCacheStateWired", "_wvCollChangeWrapped", "_wvIsSelectableOrig", "_wvOrigResetColumns",
             "_wvResetColumnsWrapVer", "_wvSelChangeWired", "_wvSetFilterWrapped",
-            "wrap handleRowModelUpdate:stuckDropRow", "wrap selectItems:filterParity",
+            "wrap _restoreScrollPosition:scrollAnchor6023", "wrap _saveScrollPosition:scrollAnchor6023",
+            "wrap handleRowModelUpdate:stuckDropRow", "wrap notify:scrollAnchor6023", "wrap selectItems:filterParity",
         ],
         rowProvider: [
             "_wvExpandMatchParentsPatched", "_wvNotifyForFilterPatched", "_wvOrigNotifyForFilter",
@@ -299,7 +331,7 @@ const WIRING_EXPECTED = {
             "wv-anchor-indicator-style", "wv-bookmarks-toolbar-button", "wv-coll-aids-sheet",
             "wv-compact-titlebar-styles", "wv-early-compact-css", "wv-filter-bar", "wv-filter-popup",
             "wv-filter-tb-button", "wv-hamburger-popup", "wv-hid-sheet", "wv-pinned-tab-style",
-            "wv-selected-tab-ring", "wv-tab-group-styles", "wv-tab-library-tooltip", "wv-tabs-menu-clear-btn",
+            "wv-selected-tab-ring", "wv-sticky-heads-styles", "wv-tab-group-styles", "wv-tab-library-tooltip", "wv-tabs-menu-clear-btn",
             "wv-tabs-menu-filetype-btn", "wv-tabs-menu-settings-btn", "wv-tb-toggle-collections-pane",
             "wv-view-menuitem-outline", "wv-view-menuitem-pane", "wv-view-menuitem-selector",
             "wv-view-menuitem-sidebar", "wv-win-name-tooltip",
@@ -318,14 +350,14 @@ const WIRING_EXPECTED = {
             "_wvItemDropOff:function", "_wvLibrariesBoxMo:object", "_wvMainNewTabKeyH:function",
             "_wvManagedWindow:boolean", "_wvOvActivateHandler:function", "_wvOvBirthMon:string",
             "_wvOvFollowWired:number", "_wvOvMoveHandler:function", "_wvOvPollId:number",
-            "_wvOvPosKey:string", "_wvOvSettled:boolean", "_wvPaneObs:object", "_wvPinnedTabIDs:object",
+            "_wvOvPosKey:string", "_wvOvSettled:boolean", "_wvPaneObs:object", "_wvPaneOpen:object", "_wvPinnedTabIDs:object",
             "_wvPrevWinIcons:object",
             "_wvRedoKeyH:function", "_wvStrayObs:object", "_wvStrayObsVer:number", "_wvTabBarDecoMo:object",
             "_wvTabExtRepositioner:object", "_wvTabGroupWinDnDOff:function", "_wvTabMultiSelOff:function",
             "_wvThemeMQ:object", "_wvTitleGlyphIdx:number", "_wvTreeDelegate:object", "_wvWinIconName:string",
-            "_wvWindowId:number", "listen newWindowKey", "listen ovFollow:unload", "listen reopenClosedKey",
-            "listen stuckDropRow:dragenter", "listen stuckDropRow:dragexit", "listen stuckDropRow:dragleave", "listen stuckDropRow:dragover",
-            "listen tabGroupDnD:escKey", "listen tabGroupWinDnD:dragover", "listen tabGroupWinDnD:drop",
+            "_wvWindowId:number", "listen countTip:blur", "listen countTip:keydown", "listen newWindowKey", "listen ovFollow:unload", "listen reopenClosedKey",
+            "listen stuckDropRow:dragend", "listen stuckDropRow:dragenter", "listen stuckDropRow:dragexit", "listen stuckDropRow:dragleave", "listen stuckDropRow:dragover",
+            "listen stuckDropRow:drop", "listen tabGroupDnD:escKey", "listen tabGroupWinDnD:dragover", "listen tabGroupWinDnD:drop",
             "listen xwinDrop:dragover", "listen xwinDrop:drop",
         ],
         ZoteroPane: [
@@ -340,7 +372,8 @@ const WIRING_EXPECTED = {
         ],
         itemsView: [
             "_wvColIsolated", "_wvColKey", "_wvCollChangeWrapped", "_wvIsSelectableOrig",
-            "_wvSetFilterWrapped", "wrap handleRowModelUpdate:stuckDropRow", "wrap selectItems:filterParity",
+            "_wvSetFilterWrapped", "wrap _restoreScrollPosition:scrollAnchor6023", "wrap _saveScrollPosition:scrollAnchor6023",
+            "wrap handleRowModelUpdate:stuckDropRow", "wrap notify:scrollAnchor6023", "wrap selectItems:filterParity",
         ],
         rowProvider: [
             "_wvExpandMatchParentsPatched", "wrap toggleOpenState:userOpenTracking",
@@ -407,7 +440,7 @@ const WIRING_EXPECTED = {
             "wv-anchor-indicator-style", "wv-bookmarks-toolbar-button", "wv-coll-aids-sheet",
             "wv-compact-titlebar-styles", "wv-early-compact-css", "wv-filter-bar", "wv-filter-popup",
             "wv-filter-tb-button", "wv-hamburger-popup", "wv-hid-sheet", "wv-pinned-tab-style",
-            "wv-selected-tab-ring", "wv-tab-group-styles", "wv-tab-library-tooltip", "wv-tabs-menu-clear-btn",
+            "wv-selected-tab-ring", "wv-sticky-heads-styles", "wv-tab-group-styles", "wv-tab-library-tooltip", "wv-tabs-menu-clear-btn",
             "wv-tabs-menu-filetype-btn", "wv-tabs-menu-settings-btn", "wv-tb-toggle-collections-pane",
             "wv-view-menuitem-outline", "wv-view-menuitem-pane", "wv-view-menuitem-selector",
             "wv-view-menuitem-sidebar", "wv-win-name-tooltip", "wv-window-badge-dot-style",

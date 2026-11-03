@@ -28,9 +28,14 @@
 import {
     BTN_CLASS, BTN_PANE_CLASS, BTN_TREE_CLASS, BTN_POPUP_CLASS,
     BTN_SIDEBAR_CLASS, MENU_LABEL_PREFIXES, SCHEME_SVG_TEMPLATE,
+    WV_COUNT_COL_MIN, WV_GUIDE_COLOR,
 } from "./constants";
 import { BBT_BIBTEX_TRANSLATOR_ID, BBT_BIBLATEX_TRANSLATOR_ID } from "./url";
 import { winOf, wvSetBoolAttr, wvWhenWindowLoaded, wvWithin, wvHtmlEl } from "../lib/dom";
+import { WV_BL_COLUMN_KEY, WV_BL_ICON_CONTEXT, WV_LK_COLUMN_KEY, WV_EXT_COLUMN_KEY, wvRefTitle, type WvRefKind } from "./backlinks";
+import { WV_LK_ICON_CONTEXT } from "./links";
+import { WV_EXT_ICON_CONTEXT } from "./count-popups";
+import { wvLinkGlyphEl, WV_LINK_MENU_ICON } from "../lib/link-glyph";
 import { wvInjectStyle, wvRemoveStyle } from "../lib/style";
 import { wvTimeout } from "../lib/timers";
 import { wvMenuItem } from "../lib/menu";
@@ -41,6 +46,7 @@ import { wvMainWins, wvWinType } from "../lib/windows";
 import { wvAccel, wvAccelAny } from "../lib/keys";
 import { wvLinkVars } from "../lib/links";
 import { wvAltReveal } from "../lib/menubar";
+import { wvStorePath, wvStoreWrite, wvStoreRead } from "../lib/store";
 
 
 /** about:addons page rules for the Zotero 11 sidebar (see _wvPMEnsureSidebar).
@@ -75,6 +81,36 @@ const WV_TS_CLASS: WeakMap<any, any> = new WeakMap();
 /** WV-TEMP-133039: per window, cancel its pending drag-session watchdog
  *  (a teardown or a re-wire must not leave a timer behind). */
 const WV_DROP_WATCH: WeakMap<any, () => void> = new WeakMap();
+/** The window's drag ring (`_wvDragRingFor`), cancelled at teardown. */
+const WV_DRAG_RING: WeakMap<any, any> = new WeakMap();
+/** Pinned section headers: per section, the ResizeObserver on its head
+ *  (off the window and the element: window-wiring.spec.js). */
+const WV_STICKY_RO: WeakMap<any, any> = new WeakMap();
+const WV_STICKY_HEADS_STYLE_ID = "wv-sticky-heads-styles";
+/** The section heads over the pane's background (`--material-sidepane`,
+ *  _itemDetails.scss) above the rows; the part headings under them. The
+ *  hairline is Zotero's items-tree `.stuck` rule, a box-shadow so toggling
+ *  it shifts nothing. */
+const WV_STICKY_HEADS_CSS = [
+    ".zotero-view-item collapsible-section > .head { position: sticky; top: 0; z-index: 3; background: var(--material-sidepane); }",
+    ".zotero-view-item collapsible-section > .head[data-wv-stuck] { box-shadow: inset 0 -1px 0 var(--color-panedivider); }",
+    ".zotero-view-item :is(.wv-bl-hgroup, .wv-scope-block .wv-count-group) > .wv-count-group-head { position: sticky; top: var(--wv-head-h, 26px); z-index: 2; background: var(--material-sidepane); }",
+].join("\n");
+
+/** WV-TEMP-REG41: per window, the observer of its item pane's view switch
+ *  (`_wvWireStalePreviewFix`), disconnected at teardown. */
+const WV_STALE_VIEW_MO: WeakMap<any, any> = new WeakMap();
+
+/** Gecko's drag session for `win`: on while a native drag is in flight, off
+ *  once it dropped or left the window -- whatever events it skipped. */
+function wvDragSessionOn(win: any): boolean {
+    try {
+        const ds = (Components as any).classes["@mozilla.org/widget/dragservice;1"].getService((Components as any).interfaces.nsIDragService);
+        let ses: any = null;
+        try { ses = ds.getCurrentSession(win); } catch (_) { ses = ds.getCurrentSession(); }
+        return !!ses;
+    } catch (_) { return true; }   // unknown: never clear on a guess
+}
 // A collection tree's rule for the special collections (hidden-collections
 // feature): keyed by the tree, so it is no mark on the window (the wiring
 // characterization records `_wv*` expandos on the views).
@@ -98,6 +134,19 @@ const WV_COLL_STICKY_CSS = [
     ".wv-coll-sticky .row { position: relative; cursor: default; }",
     ".wv-coll-sticky .row:hover { background: color-mix(in srgb, currentColor 10%, transparent); }",
 ];
+
+/** Zotero's own "Hide" (the label it gives its Delete item on Unfiled /
+ *  Duplicates / My Publications...). Fluent `general-hide` first: the
+ *  .properties key `general.hide` left 11.0-beta.2 (zotero 59aaf8dfe,
+ *  2026-10-13) -- gone from en-US, still in the lagging locale exports --
+ *  and getString THROWS on en-US / ECHOES the key elsewhere for a missing
+ *  key (checked live on beta.2, 2026-10-27). Zotero 9/10 have no
+ *  `general-hide`: the key, then the literal. */
+function wvHidHideLabel(): string {
+    try { const s = (Zotero as any).ftl?.formatValueSync?.("general-hide"); if (s) return s; } catch (_) {}
+    try { const s = Zotero.getString("general.hide"); if (s && s !== "general.hide") return s; } catch (_) {}
+    return "Hide";
+}
 
 /** Every node of ours out of the collection menu: by class, by marker, and
  *  any `menu` that still holds a marked node (a stripped Show submenu). */
@@ -3555,6 +3604,10 @@ class _PaneMixin {
             // Hide (MJT's screenshot 2026-10-05). The menu is fully built
             // before popupshowing: in delete mode (its delete-collection icon
             // class), retranslate. Hide mode is left alone.
+            // FIXED UPSTREAM in 11.0-beta.2 (zotero 59aaf8dfe: Hide through
+            // Fluent `collections-menu-hide` too; not on the 10.0 branch).
+            // Kept for Zotero 10 -- a no-op retranslation on 11; retire with
+            // a floor >= 11.
             try {
                 const dc = menu.querySelector("#deleteCollection");
                 if (dc && !dc.hidden && dc.getAttribute("data-l10n-id")
@@ -3594,8 +3647,8 @@ class _PaneMixin {
             // Duplicates / Recently Read, MJT 2026-10-05): its localized
             // "Hide" label and its crossed-eye icon class (scss _menu.scss,
             // hide-collection: "hide"). Several rows keep a count.
-            let hideLabel = "", hideStr = "Hide";
-            try { hideStr = Zotero.getString("general.hide") || "Hide"; } catch (_) {}
+            let hideLabel = "";
+            const hideStr = wvHidHideLabel();
             if (rows.every((r: any) => r.isCollection() || r.isSearch() || P._wvHidVirtualOf(r))) {
                 // A special collection counts as a collection to the user.
                 const nc = rows.filter((r: any) => r.isCollection()).length + special, ns = rows.length - nc;
@@ -3948,7 +4001,7 @@ class _PaneMixin {
             ".wv-hid-mgr-tree.wv-indent-guides .row .cell-indent {",
             "  align-self: stretch; display: inline-block;",
             "  background-image: repeating-linear-gradient(to right, transparent 0 7px,",
-            "    color-mix(in srgb, currentColor 22%, transparent) 7px 8px, transparent 8px 16px);",
+            "    " + WV_GUIDE_COLOR + " 7px 8px, transparent 8px 16px);",
             "  background-repeat: no-repeat; }",
             ".wv-hid-mgr-mid { display: flex; flex-direction: column; justify-content: center; gap: 8px; }",
             ".wv-hid-mgr-btn { font: inherit; font-size: 12px; padding: 5px 12px; border-radius: 5px; border: 1px solid var(--material-panedivider, rgba(127,127,127,.4)); background: var(--fill-quinary, rgba(127,127,127,.08)); color: inherit; cursor: pointer; white-space: nowrap; }",
@@ -5105,9 +5158,7 @@ class _PaneMixin {
             // groups joined later too (MJT 2026-10-20) -- in Zotero's own Hide
             // look; only while My Library is shown, the row to come back from.
             if (P._wvHidCanHideSection(win, "groups")) {
-                let hideStr = "Hide";
-                try { hideStr = Zotero.getString("general.hide") || "Hide"; } catch (_) {}
-                const hi = mk(hideStr, () => P._wvHidHide([{ id: "group-libraries-header", libraryID: -1 }], win));
+                const hi = mk(wvHidHideLabel(), () => P._wvHidHide([{ id: "group-libraries-header", libraryID: -1 }], win));
                 hi.classList.add("menuitem-iconic", "zotero-menuitem-hide-collection");
                 pop.appendChild(hi);
                 pop.appendChild(doc.createXULElement("menuseparator"));
@@ -5204,7 +5255,7 @@ class _PaneMixin {
                     "#collection-tree.wv-indent-guides .row .cell-indent {",
                     "  align-self: stretch; display: inline-block;",
                     "  background-image: repeating-linear-gradient(to right, transparent 0 7px,",
-                    "    color-mix(in srgb, currentColor 22%, transparent) 7px 8px, transparent 8px 16px);",
+                    "    " + WV_GUIDE_COLOR + " 7px 8px, transparent 8px 16px);",
                     // Leading columns whose parent has no arrow (the Group
                     // Libraries header) carry no guide: --wv-guide-skip.
                     "  background-repeat: no-repeat;",
@@ -6174,9 +6225,11 @@ class _PaneMixin {
 
     // ─────────────────────────────────────────────────────────────────────────
     // TEMPORARY BACKPORT — REMOVE WHEN ZOTERO SHIPS IT  (grep tag: WV-TEMP-133039)
-    // Zotero 896a3f829 (Dan Stillman, 2026-10-13, main; NOT in
-    // 11.0-beta.1+b0db83d9d), "Clear stuck drag-and-drop row highlight in
-    // trees" -- forums 133039 and 134011, upstream register #23. Both trees
+    // Zotero 896a3f829 (Dan Stillman, 2026-10-13, main; shipped in
+    // 11.0-beta.2+433c109b7 on 2026-10-27 with ca3261ae7, a tree-level
+    // dragleave clear; neither on the 10.0 branch), "Clear stuck
+    // drag-and-drop row highlight in trees" -- forums 133039 and 134011,
+    // upstream register #23. Both trees
     // remember the drop target by row INDEX (`_dropRow`), cleared only on the
     // row's dragleave, on drop and on dragend; a drag that ends without those
     // reaching the tree (an external file taken out of the window fast) left
@@ -6205,17 +6258,22 @@ class _PaneMixin {
     // RETIRE the mousemove / rows-change part WHEN the trees carry Zotero's
     // own `_clearDropIndicator` (it then installs nothing;
     // test/stuck-drop-row.spec.js's tripwire says when). The drag-event part
-    // stays until Zotero clears on drag events too.
+    // stays until Zotero clears on drag events too. The drag ring
+    // (`_wvDragRingFor`, 2026-10-27) records what each real drag went through,
+    // the evidence that decides stage 2.
     // ─────────────────────────────────────────────────────────────────────────
     _wvWireStuckDropRowFix(win: any) {
         try {
             const ZP = win && win.ZoteroPane;
             if (!ZP) return;
             const tag = this._wvWireTag();
-            const clear = (tree: any) => {
+            const ring = this._wvDragRingFor(win);   // null on Zotero 10
+            const clear = (tree: any, via?: string, ev?: any) => {
                 try {
                     const r = tree._dropRow;
                     if (r === null || r === undefined) return;
+                    // The ring reads this off the `_setDropRow(null)` below.
+                    if (ring) tree._wvClearVia = { via: "weavero:" + (via || "?"), zoteroAlso: ring.zoteroWouldClear(tree, ev) };
                     // Zotero's own clear once it ships (896a3f829), else its twin.
                     if (typeof tree._clearDropIndicator === "function") { tree._clearDropIndicator(); return; }
                     tree._dropRow = null;
@@ -6226,14 +6284,7 @@ class _PaneMixin {
             const trees = (): Array<[string, any]> => [["items", ZP.itemsView], ["collections", ZP.collectionsView]];
             // Gecko's drag session for this window: it ends when the drag
             // leaves the window or drops, whatever events it skipped.
-            const sessionOn = (): boolean => {
-                try {
-                    const ds = (Components as any).classes["@mozilla.org/widget/dragservice;1"].getService((Components as any).interfaces.nsIDragService);
-                    let ses: any = null;
-                    try { ses = ds.getCurrentSession(win); } catch (_) { ses = ds.getCurrentSession(); }
-                    return !!ses;
-                } catch (_) { return true; }   // unknown: never clear on a guess
-            };
+            const sessionOn = (): boolean => wvDragSessionOn(win);
             // While a tree holds a drop row, check every 250 ms that a drag is
             // still on; once it is over, the row is stale. (dev.55 ring, MJT's
             // real drag: dragover on row 20, then the drag left the window
@@ -6247,7 +6298,7 @@ class _PaneMixin {
                     watch = null;
                     try {
                         if (!trees().some(([, t]) => t && t._dropRow != null)) return;
-                        if (!sessionOn()) { for (const [, t] of trees()) if (t) clear(t); return; }
+                        if (!sessionOn()) { for (const [, t] of trees()) if (t) clear(t, "session-watchdog"); return; }
                         watch = win.setTimeout(tick, 250);
                     } catch (_) {}
                 };
@@ -6259,6 +6310,10 @@ class _PaneMixin {
             // keep it from us; cheap -- a contains() only while a row is set.
             const onDragElsewhere = (e: any) => {
                 try {
+                    // The ring sees every drag event first (its `leave` flags
+                    // come from the same dragleave the clears below act on).
+                    if (ring) ring.event(e);
+                    if (e.type === "drop" || e.type === "dragend") return;   // recorded only; Zotero's own paths clear
                     // A leave / exit with no related target: the drag left the
                     // window (dev.55: a dragexit on the tab bar was the only one).
                     const leaving = e.type === "dragleave" || e.type === "dragexit";
@@ -6266,23 +6321,42 @@ class _PaneMixin {
                     for (const [name, tree] of trees()) {
                         if (!tree || tree._dropRow == null || !tree.domEl) continue;
                         if (!leaving && tree.domEl.contains(e.target)) continue;
-                        clear(tree);
+                        clear(tree, leaving ? "window-exit" : "drag-elsewhere", e);
                     }
                     if (!leaving) arm();
                 } catch (_) {}
             };
-            for (const t of ["dragenter", "dragover", "dragleave", "dragexit"]) wvListen(win, "stuckDropRow:" + t, t, onDragElsewhere, true, tag);
+            for (const t of ["dragenter", "dragover", "dragleave", "dragexit", "drop", "dragend"]) wvListen(win, "stuckDropRow:" + t, t, onDragElsewhere, true, tag);
             for (const [name, tree] of [["items", ZP.itemsView], ["collections", ZP.collectionsView]] as Array<[string, any]>) {
                 if (!tree || !tree.domEl || typeof tree._clearDropIndicator === "function") continue;
-                wvListen(tree.domEl, "stuckDropRow:" + name, "mousemove", () => clear(tree), { passive: true }, tag);
+                wvListen(tree.domEl, "stuckDropRow:" + name, "mousemove", () => clear(tree, "mousemove"), { passive: true }, tag);
             }
             const iv = ZP.itemsView;
             if (iv && typeof iv._clearDropIndicator !== "function") {
                 // Row indexes are about to change: the index-based highlight goes.
                 wvWrap(iv, "handleRowModelUpdate", "stuckDropRow", tag, (orig: any) => function (this: any, ...args: any[]) {
-                    clear(this);
+                    clear(this, "rows-change");
                     return orig.apply(this, args);
                 });
+            }
+            // The ring's tap: every change of a tree's drop row goes through
+            // Zotero's `_setDropRow` (ca3261ae7), Weavero's clears included.
+            if (ring) {
+                for (const [name, tree] of trees()) {
+                    if (!tree || typeof tree._setDropRow !== "function") continue;
+                    wvWrap(tree, "_setDropRow", "dragRing", tag, (orig: any) => function (this: any, row: any) {
+                        try { const via = this._wvClearVia || null; this._wvClearVia = null; ring.setRow(name, row, this._dropRow, via); } catch (_) {}
+                        return orig.call(this, row);
+                    });
+                    // Zotero's late attempt: its own paths (row / tree dragleave,
+                    // drop) on a row Weavero's part already cleared.
+                    if (typeof tree._clearDropIndicator === "function") {
+                        wvWrap(tree, "_clearDropIndicator", "dragRing", tag, (orig: any) => function (this: any, ...args: any[]) {
+                            try { if (!this._wvClearVia && (this._dropRow === null || this._dropRow === undefined)) ring.late(name, ring.classify()); } catch (_) {}
+                            return orig.apply(this, args);
+                        });
+                    }
+                }
             }
         } catch (e) { Zotero.debug("[Weavero] _wvWireStuckDropRowFix err: " + e); }
     }
@@ -6296,11 +6370,178 @@ class _PaneMixin {
                 for (const [name, tree] of [["items", ZP.itemsView], ["collections", ZP.collectionsView]] as Array<[string, any]>) {
                     try { if (tree && tree.domEl) wvUnlisten(tree.domEl, "stuckDropRow:" + name); } catch (e) {}
                 }
-                for (const t of ["dragenter", "dragover", "dragleave", "dragexit"]) { try { wvUnlisten(w, "stuckDropRow:" + t); } catch (e) {} }
+                for (const t of ["dragenter", "dragover", "dragleave", "dragexit", "drop", "dragend"]) { try { wvUnlisten(w, "stuckDropRow:" + t); } catch (e) {} }
                 try { const cancel = WV_DROP_WATCH.get(w); if (cancel) { cancel(); WV_DROP_WATCH.delete(w); } } catch (e) {}
                 try { if (ZP.itemsView) wvUnwrap(ZP.itemsView, "handleRowModelUpdate", "stuckDropRow"); } catch (e) {}
+                try { const ring = WV_DRAG_RING.get(w); if (ring) { ring.cancel(); WV_DRAG_RING.delete(w); } } catch (e) {}
+                for (const tree of [ZP.itemsView, ZP.collectionsView]) {
+                    try { if (tree) wvUnwrap(tree, "_setDropRow", "dragRing"); } catch (e) {}
+                    try { if (tree) wvUnwrap(tree, "_clearDropIndicator", "dragRing"); } catch (e) {}
+                }
             }
         } catch (e) {}
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Drag ring -- the evidence for retiring WV-TEMP-133039 (MJT 2026-10-27,
+    // no stuck row by hand on 11.0-beta.2 with Weavero off: "record if the
+    // problem could still happen"). Per native drag session, for each tree
+    // whose drop row was set: the rows set; who cleared it and how -- Zotero's
+    // own path read off the stack of `_setDropRow(null)` (tree dragleave /
+    // row dragleave / mousemove / rows change / drop), or Weavero's part (a
+    // drag event elsewhere / window exit / the session watchdog) with whether
+    // that event was one Zotero's tree handler acts on too; whether ANY
+    // dragleave reached the tree with the pointer outside it; the drag events
+    // the window saw (dragover once per target); a row still set when the
+    // session ended. A Weavero clear on a tree no dragleave reached is a drag
+    // Zotero alone would have left grey until the next mouse move over that
+    // tree -- the case stage 2 is about. Zotero 11 only (`_setDropRow`,
+    // ca3261ae7): on 10 nothing is recorded. Last 40 sessions, kept across
+    // restarts in <data dir>/weavero/drag-ring.json; `_wvDragRingReport()`.
+    //
+    // Gecko's order on a target change (MJT's drags, 2026-10-27): dragexit
+    // on the old target, dragenter on the new, THEN dragleave on the old.
+    // Weavero's capture listener clears on that dragenter, 1-2 ms before the
+    // row's dragleave reaches Zotero -- a race Weavero wins, not a leave
+    // Gecko skipped. Zotero's `_clearDropIndicator` returns at a null row,
+    // so its late attempt is tapped there and noted on the clear it follows
+    // (`late`): a Weavero clear with no `late` within 500 ms is the real
+    // thing. `leave` is per highlight (since the last set), sessions split
+    // at 400 ms of quiet so one drag is one session.
+    // ─────────────────────────────────────────────────────────────────────────
+    _wvDragRingFor(win: any): any {
+        const ZP = win && win.ZoteroPane;
+        if (!ZP || !ZP.itemsView || typeof ZP.itemsView._setDropRow !== "function") return null;
+        const P: any = this;
+        const sessions: any[] = P._wvDragRingSessions || (P._wvDragRingSessions = []);
+        if (!P._wvDragRingLoaded) {
+            P._wvDragRingLoaded = true;
+            wvStoreRead(wvStorePath("drag-ring.json"), { onParseError: "keep" }).then((r) => {
+                try { if (r.status === "ok" && r.doc && Array.isArray(r.doc.sessions)) sessions.unshift(...r.doc.sessions.slice(-40)); } catch (_) {}
+            }).catch(() => {});
+        }
+        try { const prev = WV_DRAG_RING.get(win); if (prev) prev.cancel(); } catch (_) {}
+        const trees = (): Array<[string, any]> => [["items", ZP.itemsView], ["collections", ZP.collectionsView]];
+        const desc = (n: any): string => {
+            try {
+                if (!n) return "none";
+                for (const [name, tree] of trees()) if (tree && tree.domEl && tree.domEl.contains(n)) return name + (n.closest && n.closest(".row") ? "-row" : "-tree");
+                const el = n.nodeType === 1 ? n : n.parentElement;
+                if (!el) return String(n.nodeName || n);
+                return el.localName + (el.id ? "#" + el.id : el.classList && el.classList.length ? "." + el.classList[0] : "");
+            } catch (_) { return "?"; }
+        };
+        const now = () => Date.now();
+        const ring: any = { cur: null, endTimer: null };
+        ring.open = () => ring.cur || (ring.cur = { iso: new Date().toISOString(), t0: now(), ev: [], trees: {} });
+        ring.tree = (name: string) => { const s = ring.open(); return s.trees[name] || (s.trees[name] = { set: [], clears: [], leave: false, leaveSinceSet: false }); };
+        // A session ends on drop / dragend, or 400 ms after its last drag
+        // event once Gecko reports no drag session (one drag per session:
+        // MJT's consecutive drags were ~750 ms apart).
+        ring.touch = () => {
+            if (ring.endTimer) { try { win.clearTimeout(ring.endTimer); } catch (_) {} }
+            ring.endTimer = win.setTimeout(() => {
+                ring.endTimer = null;
+                if (!ring.cur) return;
+                if (wvDragSessionOn(win)) { ring.touch(); return; }
+                ring.close("quiet");
+            }, 400);
+        };
+        ring.cancel = () => { if (ring.endTimer) { try { win.clearTimeout(ring.endTimer); } catch (_) {} ring.endTimer = null; } ring.cur = null; };
+        // What Zotero's own tree handler (ca3261ae7) acts on: a dragleave
+        // inside the tree with the pointer outside it (or gone).
+        ring.zoteroWouldClear = (tree: any, e: any): boolean => {
+            try { return !!(e && e.type === "dragleave" && tree && tree.domEl && tree.domEl.contains(e.target) && (!e.relatedTarget || !tree.domEl.contains(e.relatedTarget))); } catch (_) { return false; }
+        };
+        ring.event = (e: any) => {
+            const s = ring.open();
+            if (e.type === "dragover" && s._last === e.target) { ring.touch(); return; }
+            s._last = e.target;
+            const t = now() - s.t0;
+            if (s.ev.length < 200) s.ev.push(t + " " + e.type + " " + desc(e.target) + (e.type === "dragleave" || e.type === "dragexit" ? " -> " + desc(e.relatedTarget) : ""));
+            if (e.type === "dragleave") for (const [name, tree] of trees()) if (ring.zoteroWouldClear(tree, e)) { const tr = ring.tree(name); tr.leave = true; tr.leaveSinceSet = true; }
+            if (e.type === "drop" || e.type === "dragend") ring.close(e.type); else ring.touch();
+        };
+        // Zotero's own clear attempt on a row already cleared (its
+        // `_clearDropIndicator` returns at null): noted on the Weavero clear
+        // it follows within 500 ms -- Zotero would have cleared there too.
+        ring.late = (name: string, how: string) => {
+            if (!ring.cur || !/dragleave|drop/.test(how)) return;   // a mousemove is the wait the ring measures
+            const tr = ring.cur.trees[name];
+            const c = tr && tr.clears[tr.clears.length - 1];
+            if (!c || !String(c.via).startsWith("weavero:") || c.late) return;
+            const t = now() - ring.cur.t0;
+            if (t - c.t <= 500) c.late = how + "@" + t + "ms";
+            ring.touch();
+        };
+        // Zotero's own clear, named by the frame that called `_setDropRow(null)`.
+        ring.classify = (): string => {
+            const st = String(new Error().stack || "");
+            return st.includes("_handleTreeDragLeave") ? "zotero:tree-dragleave"
+                : st.includes("onDragLeave") ? "zotero:row-dragleave"
+                : st.includes("onDrop") ? "zotero:drop"
+                : st.includes("onDragOver") ? "zotero:dragover"
+                : /refresh|handleRowModelUpdate/.test(st) ? "zotero:rows-change"
+                : st.includes("_clearDropIndicator") ? "zotero:mousemove" : "zotero:?";
+        };
+        ring.setRow = (name: string, row: any, prev: any, via: any) => {
+            if ((row === null || row === undefined) && (prev === null || prev === undefined)) return;   // a no-op clear
+            const tr = ring.tree(name);
+            const t = now() - ring.cur.t0;
+            if (row === null || row === undefined) tr.clears.push(via ? { via: via.via, t, leave: tr.leaveSinceSet, zoteroAlso: !!via.zoteroAlso } : { via: ring.classify(), t, leave: tr.leaveSinceSet });
+            else { if (tr.set[tr.set.length - 1] !== row) tr.set.push(row); tr.leaveSinceSet = false; }
+            ring.touch();
+        };
+        ring.close = (how: string) => {
+            const s = ring.cur;
+            if (!s) return;
+            ring.cur = null;
+            if (ring.endTimer) { try { win.clearTimeout(ring.endTimer); } catch (_) {} ring.endTimer = null; }
+            delete s._last;
+            s.end = how; s.ms = now() - s.t0;
+            let any = false;
+            for (const [name, tree] of trees()) {
+                const tr = s.trees[name];
+                if (!tr) continue;
+                if (tr.set.length) any = true;
+                if (tree && tree._dropRow != null) tr.stillSet = tree._dropRow;
+            }
+            if (!any) return;   // a drag that never made a tree row its target
+            sessions.push(s);
+            while (sessions.length > 40) sessions.shift();
+            try { Zotero.debug("[Weavero] drag ring: " + P._wvDragRingLine(s)); } catch (_) {}
+            try { wvStoreWrite(wvStorePath("drag-ring.json"), { sessions }); } catch (_) {}
+        };
+        WV_DRAG_RING.set(win, ring);
+        return ring;
+    }
+
+    _wvDragRingLine(s: any): string {
+        const parts: string[] = [];
+        for (const [name, tr] of Object.entries<any>(s.trees || {})) {
+            if (!tr.set || !tr.set.length) continue;
+            parts.push(name + " set " + tr.set.join(",") + (tr.leave ? ", leave reached" : ", NO leave") + ": "
+                + ((tr.clears || []).map((c: any) => c.via + "@" + c.t + "ms" + (c.zoteroAlso ? " (zotero too)" : c.late ? " (zotero late " + c.late + ")" : String(c.via).startsWith("weavero:") ? (c.leave ? " (leave before)" : " (NO zotero attempt)") : "")).join(", ") || "no clear")
+                + (tr.stillSet != null ? " -- STILL SET " + tr.stillSet : ""));
+        }
+        return String(s.iso || "").slice(0, 19).replace("T", " ") + " " + s.ms + "ms " + s.end + " | " + parts.join(" | ") + " | " + (s.ev ? s.ev.length : 0) + " events";
+    }
+
+    /** The ring read out: totals, then the last 12 sessions one per line. */
+    _wvDragRingReport(): string {
+        const ss: any[] = (this as any)._wvDragRingSessions || [];
+        let zo = 0, wv = 0, wvAlone = 0, stuck = 0, highlights = 0;
+        for (const s of ss) for (const tr of Object.values<any>(s.trees || {})) {
+            if (!tr.set || !tr.set.length) continue;
+            highlights++;
+            for (const c of tr.clears || []) { if (String(c.via).startsWith("weavero:")) { wv++; if (!c.zoteroAlso && !c.late && !c.leave) wvAlone++; } else zo++; }
+            if (tr.stillSet != null) stuck++;
+        }
+        const lines = [ss.length + " drag sessions with a drop row (" + highlights + " tree highlights): cleared by Zotero " + zo
+            + ", by Weavero " + wv + " -- " + wvAlone + " with no dragleave reaching the tree (no Zotero attempt within 500 ms: Zotero alone would have waited for the mouse)"
+            + ", still set at session end " + stuck + ". File: " + wvStorePath("drag-ring.json")];
+        for (const s of ss.slice(-12)) lines.push(this._wvDragRingLine(s));
+        return lines.join("\n");
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -6350,6 +6591,966 @@ class _PaneMixin {
             const wins: any[] = wvMainWins();
             for (const w of wins) {
                 try { if (w && w.ZoteroPane) wvUnwrap(w.ZoteroPane, "setTagScope", "tagScopeRows"); } catch (e) {}
+            }
+        } catch (e) {}
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // WV-TEMP-6023 -- expanding a row above the selection pushes the expanded
+    // row up, off screen when it was at the top (zotero/zotero#6023, upstream
+    // register #24). The items view saves its scroll position before a change
+    // anchored on the first visible SELECTED row, by row index: rows inserted
+    // above it push everything above it, the row just expanded included.
+    // zotero/zotero PR #6049 (Dan Stillman, Adomas Venčkauskas; open since
+    // 2026-09-17): anchor on the first visible row at its pixel offset, keep
+    // the selection anchor only for a single-item edit that keeps its parent
+    // (an edit that re-sorts the item), and leave the list at the top when it
+    // was there. MJT 2026-10-26: "Can you add it to Weavero while the PR gets
+    // accepted?" Mirrored here: `_saveScrollPosition` / `_restoreScrollPosition`
+    // as the PR writes them, and `notify` computing the PR's single-edit flag
+    // for the save its `_cacheState()` makes before its first await.
+    //
+    // Installs only while Zotero's own methods are the ones with the bug (the
+    // row-index offset in both): any change to them -- the PR, or another
+    // fix -- leaves Zotero's code alone. RETIRE WHEN that happens;
+    // test/tree-scroll-anchor.spec.js's tripwire says when.
+    // ─────────────────────────────────────────────────────────────────────────
+    _wvTreeScrollAnchorNeeded(iv: any): boolean {
+        try {
+            const native = (m: string) => {
+                const w = iv && iv._wvWraps && iv._wvWraps[m];
+                return w ? w.native : iv && iv[m];
+            };
+            return /offset:\s*i\s*-\s*first/.test(String(native("_saveScrollPosition")))
+                && /scrollToRow\(\s*Math\.max\(\s*row\s*-\s*scrollPosition\.offset/.test(String(native("_restoreScrollPosition")));
+        } catch (e) { return false; }
+    }
+
+    _wvWireTreeScrollAnchorFix(win: any) {
+        try {
+            const iv = win && win.ZoteroPane && win.ZoteroPane.itemsView;
+            if (!iv || !this._wvTreeScrollAnchorNeeded(iv)) return;   // Zotero's own fix is in
+            const tag = this._wvWireTag();
+            // PR #6049 renames windowed-list's _getItemPosition to getRowPosition.
+            const rowPos = (tb: any, i: number): number =>
+                typeof tb.getRowPosition === "function" ? tb.getRowPosition(i) : tb._getItemPosition(i);
+            wvWrap(iv, "_saveScrollPosition", "scrollAnchor6023", tag, () => function (this: any, opts?: any) {
+                const tb = this._treebox;
+                if (!tb) return false;
+                const first = tb.getFirstVisibleRow();
+                if (first === undefined || first === null) return false;
+                const scrollOffset = tb.scrollOffset;
+                if (scrollOffset == 0) return { offset: 0 };
+                const keepSelection = (opts && opts.preserveSelectionScroll !== undefined)
+                    ? !!opts.preserveSelectionScroll : !!this._wvPreserveSelectionScroll;
+                let anchor = first;
+                if (keepSelection) {
+                    for (let i = first; i <= tb.getLastVisibleRow(); i++) {
+                        if (this.selection.isSelected(i)) { anchor = i; break; }
+                    }
+                }
+                const row = this.getRow(anchor);
+                if (!row) return false;
+                return { id: row.ref.treeViewID, offset: rowPos(tb, anchor) - scrollOffset };
+            });
+            wvWrap(iv, "_restoreScrollPosition", "scrollAnchor6023", tag, () => function (this: any, scrollPosition: any = null) {
+                if (scrollPosition === null) {
+                    scrollPosition = this._cachedScrollPosition;
+                    this._cachedScrollPosition = null;
+                }
+                if (!scrollPosition || !this._treebox) return;
+                if (scrollPosition.id === undefined) {
+                    this._treebox.scrollTo(scrollPosition.offset);
+                    return;
+                }
+                const row = this._rowMap[scrollPosition.id];
+                if (row === undefined) return;
+                this._treebox.scrollTo(rowPos(this._treebox, row) - scrollPosition.offset);
+            });
+            wvWrap(iv, "notify", "scrollAnchor6023", tag, (orig: any) => function (this: any, action: any, type: any, ids: any, ...rest: any[]) {
+                // A single-item edit that keeps its parent may re-sort the
+                // item: keep the selection where it is on screen.
+                let keepSelection = false;
+                try {
+                    if (action == "modify" && type == "item" && ids && ids.length == 1) {
+                        const row = this._rowMap[ids[0]];
+                        if (row !== undefined) {
+                            const parentIndex = this.getParentIndex(row);
+                            const oldParentID = parentIndex == -1 ? null : this.getRow(parentIndex).ref.id;
+                            keepSelection = oldParentID == (this.getRow(row).ref.parentItemID || null);
+                        }
+                    }
+                } catch (e) {}
+                // Read by the save, which Zotero's notify makes before its
+                // first await; gone again after it (no expando left behind).
+                this._wvPreserveSelectionScroll = keepSelection;
+                try { return orig.call(this, action, type, ids, ...rest); }
+                finally { delete this._wvPreserveSelectionScroll; }
+            });
+        } catch (e) { Zotero.debug("[Weavero] _wvWireTreeScrollAnchorFix err: " + e); }
+    }
+
+    _wvTeardownTreeScrollAnchorFix() {
+        try {
+            for (const w of wvMainWins()) {
+                const iv = w && w.ZoteroPane && w.ZoteroPane.itemsView;
+                if (!iv) continue;
+                for (const m of ["_saveScrollPosition", "_restoreScrollPosition", "notify"]) {
+                    try { wvUnwrap(iv, m, "scrollAnchor6023"); } catch (e) {}
+                }
+                try { delete iv._wvPreserveSelectionScroll; } catch (e) {}
+            }
+        } catch (e) {}
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // WV-TEMP-REG37 -- a pane that cannot show the pinned section yet clears
+    // Zotero's pinned-pane setting (upstream register #37; MJT 2026-10-26: "A
+    // double click on the Backlinks icon does not pin it"). A pane that cannot
+    // show the section -- a plugin section exists only once an item renders
+    // there -- sets the pin aside (`_pendingPinnedPane`) and then saves its
+    // EMPTY pin: the `pinnedPane` pref is cleared until the section renders
+    // and the pin is saved again (lost if Zotero quits before). With Zotero's
+    // one pin for every window this un-pinned the window that pinned it (a
+    // second window with no item selected); since dev.47 the windows after
+    // the first keep their own pin (`_wvWireWindowPanePrefs`), so what is
+    // left is the first window's own setting. A pane whose pin is only set
+    // aside now leaves the pref alone.
+    //
+    // Installs only while Zotero's deferred pin still saves an empty pin.
+    // RETIRE WHEN that changes; test/pin-deferred.spec.js's tripwire says when.
+    // ─────────────────────────────────────────────────────────────────────────
+    _wvPinDeferNeeded(det: any): boolean {
+        try {
+            const w = det && det._wvWraps && det._wvWraps._savePinnedPane;
+            const save = String(w ? w.native : det && det._savePinnedPane);
+            if (!/Prefs\.clear\(\s*['"]pinnedPane['"]\s*\)/.test(save) || /_pendingPinnedPane/.test(save)) return false;
+            let proto = det && Object.getPrototypeOf(det), d: any = null;
+            while (proto && !(d = Object.getOwnPropertyDescriptor(proto, "pinnedPane"))) proto = Object.getPrototypeOf(proto);
+            const setter = String(d && d.set);
+            return /_pendingPinnedPane\s*=\s*val/.test(setter) && /_savePinnedPane\(\)/.test(setter);
+        } catch (e) { return false; }
+    }
+
+    _wvWirePinDeferFix(win: any) {
+        try {
+            const det = win && win.document && win.document.querySelector("#zotero-item-pane item-details");
+            if (!det || typeof det._savePinnedPane !== "function" || !this._wvPinDeferNeeded(det)) return;   // Zotero's own fix is in
+            wvWrap(det, "_savePinnedPane", "pinDefer", this._wvWireTag(), (orig: any) => function (this: any, ...args: any[]) {
+                // Set aside, not un-pinned by the user: the saved pin stays.
+                if (!this.pinnedPane && this._pendingPinnedPane) return;
+                return orig.apply(this, args);
+            });
+        } catch (e) { Zotero.debug("[Weavero] _wvWirePinDeferFix err: " + e); }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // WV-TEMP-131000 (upstream register #40; MJT's forums 131000, 2026-04-17,
+    // reproduced with Weavero disabled 2026-10-28): scrolled to its bottom, an
+    // item pane keeps going down 1 px per scroll event. Zotero pads the pane
+    // (`--min-scroll-height`, so a pinned or clicked section can sit at the
+    // top) and its scroll handler (itemDetails.js `_handleContainerScroll`)
+    // shrinks that padding to `scrollTop + clientHeight` -- an INTEGER -- while
+    // the scroller can be x.5 px tall (the Bibliography Entry header: 19.5-px
+    // lines, an odd count gives x.5). The padding then ends half a pixel past
+    // the real bottom, the scroll height rounds up, the next event takes that
+    // as the bottom: +1 px each time, forever. After Zotero's handler, a value
+    // it has just written is replaced by the real bottom (`scrollTop + the
+    // box's height`); everything else stays Zotero's. The handler is an
+    // arrow-function field bound as the scroll listener in `init()`, so the
+    // listener is swapped with the property, both ways. Installs nothing once
+    // Zotero's handler no longer adds `clientHeight` (`_wvItemPaneCreepNeeded`).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** Does Zotero's own handler still compute the bottom with `clientHeight`? */
+    _wvItemPaneCreepNeeded(det: any): boolean {
+        try {
+            const e = det && det._wvWraps && det._wvWraps._handleContainerScroll;
+            const src = String((e && e.native) || (det && det._handleContainerScroll) || "");
+            return /scrollTop\s*\+\s*this\._paneParent\.clientHeight/.test(src) && /newMinScrollHeight\s*>\s*this\._paneParent\.scrollHeight/.test(src);
+        } catch (e) { return false; }
+    }
+
+    /** One item-details: its handler wrapped, its scroll listener swapped. */
+    _wvFixItemPaneCreep(det: any) {
+        try {
+            const pp = det && det._paneParent;
+            if (!pp || typeof det._handleContainerScroll !== "function" || !this._wvItemPaneCreepNeeded(det)) return;
+            const before = det._handleContainerScroll;
+            wvWrap(det, "_handleContainerScroll", "creep131000", this._wvWireTag(), (orig: any) => function (this: any, ...args: any[]) {
+                const r = orig.apply(this, args);
+                try {
+                    const p = det._paneParent;
+                    const min = det._minScrollHeight;
+                    const ch = p.clientHeight, real = p.getBoundingClientRect().height;
+                    // Only the value Zotero has just written, only when the
+                    // rounding put it past the real bottom.
+                    if (min && ch - real > 0.01 && Math.abs(min - (p.scrollTop + ch)) < 0.01) det._minScrollHeight = p.scrollTop + real;
+                } catch (e) {}
+                return r;
+            });
+            const after = det._handleContainerScroll;
+            if (after !== before) {
+                pp.removeEventListener("scroll", before);
+                pp.addEventListener("scroll", after);
+            }
+        } catch (e) { Zotero.debug("[Weavero] item pane creep fix err: " + e); }
+    }
+
+    /** Every item-details of `win`: the library pane and each tab's context
+     *  pane (one per reader / note tab, contextPane.js; the pane observer
+     *  takes the ones created later). */
+    _wvWireItemPaneCreepFix(win: any) {
+        try { for (const det of (win && win.document && win.document.querySelectorAll("item-details")) || []) this._wvFixItemPaneCreep(det); } catch (e) {}
+    }
+
+    /** Zotero's own handler back as the listener, in every main window. */
+    _wvTeardownItemPaneCreepFix() {
+        for (const w of wvMainWins()) {
+            try {
+                for (const det of w.document.querySelectorAll("item-details") as any) {
+                    try {
+                        const before = det._handleContainerScroll;
+                        if (!wvUnwrap(det, "_handleContainerScroll", "creep131000")) continue;
+                        const after = det._handleContainerScroll;
+                        const pp = det._paneParent;
+                        if (pp && after !== before) {
+                            pp.removeEventListener("scroll", before);
+                            pp.addEventListener("scroll", after);
+                        }
+                    } catch (e) {}
+                }
+            } catch (e) {}
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // WV-TEMP-REG41 (upstream register #41, verified in Troubleshooting Mode
+    // 2026-10-28; MJT: "Ok for the stale mark fix"): scrolled into view, the
+    // Attachments section shows the PREVIOUS item's preview and rows for a
+    // moment. For a pane out of view itemDetails runs only the sync
+    // `render()`, and attachmentsBox.js `render()` only updates the count:
+    // the rows (`updateRows`) and the preview (`updatePreview`) wait for
+    // `asyncRender()`, run once the section is in view -- until then the
+    // preview keeps the old item's page at status "success" (discarded only
+    // 60 s after the section leaves view). After each `render()` and each
+    // preview status change, the preview is hidden while the page it shows
+    // belongs to another item, and so are that item's rows (`updateRows`
+    // replaces them). The status is left alone on purpose: `_processRender`
+    // skips only at "success", so going back to the old item still shows it
+    // at once ("loading" would reload it). Installs nothing once Zotero's
+    // `render()` touches the preview or the rows (`_wvStalePreviewNeeded`).
+    // Second path (MJT 2026-10-28, "Ok to extend the fix"): back from a note,
+    // itemPane.js `renderItemPane` shows the item view again -- still the
+    // old item's, preview included -- and waits for an idle callback before
+    // rendering the new item, so frames are painted before any `render()`.
+    // The library pane's view switch is watched too, checked against the
+    // item ABOUT to be shown (`itemPane.data[0]`): back to the same item
+    // (A -> note -> A) nothing is hidden and nothing reloads.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** Does Zotero's own sync render() still leave the preview and rows alone? */
+    _wvStalePreviewNeeded(box: any): boolean {
+        try {
+            const e = box && box._wvWraps && box._wvWraps.render;
+            const src = String((e && e.native) || (box && box.render) || "");
+            return /_renderStage\s*=\s*["']initial["']/.test(src) && !/_preview|previewElem|updateRows|attachment-row/.test(src);
+        } catch (e) { return false; }
+    }
+
+    /** Hide, or show again, what `box` holds of another item than its own --
+     *  or than `forID`, the item about to be shown: the preview's page and
+     *  the rows. */
+    _wvSyncStalePreview(box: any, forID?: number) {
+        try {
+            const id = forID || (box && box._item && box._item.id);
+            if (!id) return;
+            const foreign = (att: any) => !!att && att.parentItemID !== id;
+            const mark = (el: any, on: boolean, style: Array<[string, string]>) => {
+                if (el.hasAttribute("wv-stale") === on) return;
+                el.toggleAttribute("wv-stale", on);
+                for (const [k, v] of style) {
+                    if (on) el.style.setProperty(k, v, "important");
+                    else el.style.removeProperty(k);
+                }
+            };
+            const pv = box._preview;
+            if (pv) {
+                // A status change is where the preview's page changes.
+                const self = this;
+                wvWrap(pv, "setPreviewStatus", "stale41", this._wvWireTag(), (orig: any) => function (this: any, ...args: any[]) {
+                    const r = orig.apply(this, args);
+                    self._wvSyncStalePreview(box);
+                    return r;
+                });
+                const shown = pv.dataset.previewStatus === "success" && pv._lastRenderID ? Zotero.Items.get(pv._lastRenderID) : null;
+                // Hidden as Zotero hides a loading preview, with no fade (it
+                // may be on screen) and no clicks (a double-click opens it).
+                mark(pv, foreign(shown), [["opacity", "0"], ["transition", "none"], ["pointer-events", "none"]]);
+            }
+            for (const row of box.querySelectorAll("attachment-row") as any) mark(row, foreign(row.attachment), [["visibility", "hidden"]]);
+        } catch (e) { Zotero.debug("[Weavero] stale preview sync err: " + e); }
+    }
+
+    /** One item-details: its Attachments section's render() wrapped. True
+     *  when the wrap is in place. */
+    _wvFixStalePreview(det: any): boolean {
+        try {
+            const box = det && det.querySelector && det.querySelector("attachments-box");
+            if (!box || typeof box.render !== "function" || !this._wvStalePreviewNeeded(box)) return false;
+            const self = this;
+            wvWrap(box, "render", "stale41", this._wvWireTag(), (orig: any) => function (this: any, ...args: any[]) {
+                const r = orig.apply(this, args);
+                self._wvSyncStalePreview(box);
+                return r;
+            });
+            this._wvSyncStalePreview(box);
+            return true;
+        } catch (e) { Zotero.debug("[Weavero] stale preview fix err: " + e); return false; }
+    }
+
+    /** Does itemPane.js's renderItemPane still paint the old item view
+     *  while it waits for an idle callback after a note? The attachment
+     *  pane's half of the second path installs only while it does. */
+    _wvStalePaneNeeded(win: any): boolean {
+        try {
+            const ip = win && win.document && win.document.getElementById("zotero-item-pane");
+            return /requestIdleCallback/.test(String((ip && ip.renderItemPane) || ""));
+        } catch (e) { return false; }
+    }
+
+    /** The attachment pane's box (`attachment-box`, the Attachment Info
+     *  pane an attachment item is shown in): its preview hidden while the
+     *  page it shows belongs to another attachment than the pane's own, or
+     *  than `forID`, the item about to be shown. Third path of REG41 (MJT
+     *  2026-11-03, "If I go from an image attachment to a note and then a
+     *  PDF attachment, the image preview flickers before showing the PDF
+     *  attachment preview"): the view switch back from a note paints the
+     *  pane's old preview at "success" until Zotero's idle callback
+     *  renders the new attachment. The preview's status setter is wrapped
+     *  (the pane has no render() of its own to wrap on 11: its preview is
+     *  made on the first show and re-rendered by updatePreview), so the
+     *  mark lifts as soon as the new page is in. */
+    _wvSyncStaleAttachmentPane(abox: any, forID?: number) {
+        try {
+            const pv = abox && abox._preview;
+            if (!pv) return;
+            const id = forID || (abox._item && abox._item.id);
+            if (!id) return;
+            const self = this;
+            wvWrap(pv, "setPreviewStatus", "stale41", this._wvWireTag(), (orig: any) => function (this: any, ...args: any[]) {
+                const r = orig.apply(this, args);
+                self._wvSyncStaleAttachmentPane(abox);
+                return r;
+            });
+            const shownID = pv.dataset.previewStatus === "success" ? pv._lastRenderID : null;
+            const on = !!shownID && shownID !== id;
+            if (pv.hasAttribute("wv-stale") === on) return;
+            pv.toggleAttribute("wv-stale", on);
+            for (const [k, v] of [["opacity", "0"], ["transition", "none"], ["pointer-events", "none"]]) {
+                if (on) pv.style.setProperty(k, v, "important");
+                else pv.style.removeProperty(k);
+            }
+        } catch (e) { Zotero.debug("[Weavero] stale attachment pane sync err: " + e); }
+    }
+
+    /** Every item-details of `win` (the library pane, each tab's context
+     *  pane; the pane observer takes the ones created later), and the
+     *  library pane's switch back to the item view -- for the Attachments
+     *  section (with its render() wrap in place: that wrap is what shows
+     *  the preview again) and for the attachment pane. */
+    _wvWireStalePreviewFix(win: any) {
+        try { for (const det of (win && win.document && win.document.querySelectorAll("item-details")) || []) this._wvFixStalePreview(det); } catch (e) {}
+        try {
+            const ip = win.document.getElementById("zotero-item-pane");
+            const det = ip && ip.querySelector("item-details");
+            const box = det && det.querySelector("attachments-box");
+            const abox = det && det.querySelector("attachment-box");
+            if (!ip || WV_STALE_VIEW_MO.has(win)) return;
+            const needSection = !!box && this._wvFixStalePreview(det);
+            const needPane = !!abox && this._wvStalePaneNeeded(win);
+            if (needPane) this._wvSyncStaleAttachmentPane(abox);
+            if (!needSection && !needPane) return;
+            // A microtask after `mode = "item"`: before the next paint.
+            const mo = new win.MutationObserver(() => {
+                try {
+                    if (ip.getAttribute("view-type") !== "item") return;
+                    const next = ip.data && ip.data[0];
+                    if (!next || !next.id) return;
+                    if (needSection) this._wvSyncStalePreview(box, next.id);
+                    if (needPane) this._wvSyncStaleAttachmentPane(abox, next.id);
+                } catch (e) {}
+            });
+            mo.observe(ip, { attributes: true, attributeFilter: ["view-type"] });
+            WV_STALE_VIEW_MO.set(win, mo);
+        } catch (e) { Zotero.debug("[Weavero] stale preview view-switch err: " + e); }
+    }
+
+    /** Zotero's own render() and setPreviewStatus() back, the view-switch
+     *  observer gone, every mark gone. */
+    _wvTeardownStalePreviewFix() {
+        for (const w of wvMainWins()) {
+            try {
+                const mo = WV_STALE_VIEW_MO.get(w);
+                if (mo) { mo.disconnect(); WV_STALE_VIEW_MO.delete(w); }
+            } catch (e) {}
+            try {
+                for (const box of w.document.querySelectorAll("attachments-box, attachment-box") as any) {
+                    try {
+                        wvUnwrap(box, "render", "stale41");
+                        if (box._preview) wvUnwrap(box._preview, "setPreviewStatus", "stale41");
+                        for (const el of [box._preview, ...box.querySelectorAll("attachment-row")]) {
+                            if (!el || !el.hasAttribute("wv-stale")) continue;
+                            el.removeAttribute("wv-stale");
+                            for (const k of ["opacity", "transition", "pointer-events", "visibility"]) el.style.removeProperty(k);
+                        }
+                    } catch (e) {}
+                }
+            } catch (e) {}
+        }
+    }
+
+    _wvTeardownPinDeferFix() {
+        try {
+            for (const w of wvMainWins()) {
+                const det = w && w.document && w.document.querySelector("#zotero-item-pane item-details");
+                try { if (det) wvUnwrap(det, "_savePinnedPane", "pinDefer"); } catch (e) {}
+            }
+        } catch (e) {}
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // WV-TEMP-134569 (upstream register #43 and #44, MJT's forum 134569, and
+    // 113626's resize case; MJT 2026-11-02 "Can you fix these 3 in Weavero?",
+    // plan "One anchoring mechanism" approved): Zotero pins by scrolling ONCE
+    // -- itemDetails.js render(), right after the sections' sync renders,
+    // `scrollToPane(pinned, 'instant')` -- then async-renders only the panes
+    // from the pinned one down and never looks again; the scroller has
+    // `overflow-anchor: none`. A section ABOVE the pinned one that changes
+    // height afterwards moves it by its growth: the retraction banner filled
+    // in a frame late (+503 px), the attachment preview back from a stored
+    // zero width after an empty Attachments section (+452 px), the preview
+    // following the pane's width on a resize (+195 / -97 px). Weavero does
+    // the anchoring Zotero switched off: a ResizeObserver on the sections,
+    // and while the pin is "armed" -- from Zotero's own scroll to the pinned
+    // section until the user scrolls elsewhere -- every height change of a
+    // section above the pinned one is added to scrollTop, instantly, the
+    // spacer widened first when the scroller is too short for it. Armed
+    // BEFORE Zotero's scroll runs: the banner and the preview grow within its
+    // `_waitDOMUpdate` frame. No focus change (a re-pin through scrollToPane
+    // would focus the section mid-edit). Installs nothing once Zotero's
+    // item-details watches its sections' sizes (`_wvPinAnchorNeeded`).
+    //
+    // The preview's growth is a special case (MJT 2026-11-03, "it flickers
+    // quickly before coming back to the correct position. Please fix
+    // properly"): it happens INSIDE Zotero's own ResizeObserver callback
+    // (attachmentPreview.js _handleResize sets --preview-width; the host's
+    // `transition: height` cannot animate an auto height, so the preview
+    // jumps), and a size change made inside a resize callback reaches an
+    // observer of a SHALLOWER target only on the next tick (the observer
+    // loop's undelivered notifications) -- the frame in between painted the
+    // pinned section pushed down. So (1) before Zotero's pin scroll, a
+    // preview above the pinned section whose stored width is stale is sized
+    // then and there (its own _handleResize, a tick early): no growth at
+    // all; (2) a preview's _handleResize is wrapped to settle the anchor in
+    // the same call (`_wvFixPreviewFit`): a resize of the pane is held in
+    // the same frame.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** Does Zotero's item pane still pin with one scroll and no size watch? */
+    _wvPinAnchorNeeded(det: any): boolean {
+        try {
+            const e = det && det._wvWraps && det._wvWraps.scrollToPane;
+            const scroll = String((e && e.native) || (det && det.scrollToPane) || "");
+            const cls = String((det && det.constructor) || "");
+            return /scrollIntoView/.test(scroll) && !/ResizeObserver/.test(cls);
+        } catch (e) { return false; }
+    }
+
+    /** One item-details: its scrollToPane wrapped (the arming), a
+     *  ResizeObserver on its sections, a scroll listener for the user. */
+    _wvFixPinAnchor(det: any) {
+        try {
+            const win = winOf(det);
+            const pp = det && det._paneParent;
+            if (!win || !pp || typeof det.scrollToPane !== "function" || typeof det.getEnabledPanes !== "function" || !this._wvPinAnchorNeeded(det)) return;
+            const tag = this._wvWireTag();
+            const old = det._wvPinAnchor;
+            if (old && old.tag === tag) return;
+            if (old) this._wvUnfixPinAnchor(det);   // a dead instance's: replaced
+            const S: any = { tag, armed: false, busy: false, expected: pp.scrollTop, pinnedId: "", heights: new WeakMap(), ro: null, onScroll: null, moves: 0, settle: null, presize: null };
+            det._wvPinAnchor = S;
+            const panes = (): any[] => { try { return det.getPanes() || []; } catch (e) { return []; } };
+            const observe = () => { for (const p of panes()) { try { S.ro.observe(p); } catch (e) {} } };
+            const seed = () => { for (const p of panes()) { try { S.heights.set(p, p.getBoundingClientRect().height); } catch (e) {} } };
+            /** The pinned section and the sections before it, while armed. */
+            const where = (): { pinned: any; order: any[]; pi: number } => {
+                const live = S.armed && S.pinnedId && det.pinnedPane === S.pinnedId;
+                const pinned = live ? det.getEnabledPane(S.pinnedId) : null;
+                const order: any[] = pinned ? det.getEnabledPanes() : [];
+                return { pinned, order, pi: pinned ? order.indexOf(pinned) : -1 };
+            };
+            /** What changed above the pinned section, added to scrollTop:
+             *  from the observer's entries, or -- `entries` null, a resize
+             *  callback's own call -- measured now, so the observer's later
+             *  notice finds nothing left to add. */
+            S.settle = (entries: any[] | null) => {
+                try {
+                    const { pinned, order, pi } = where();
+                    let total = 0;
+                    const seen: Array<[any, number]> = entries
+                        ? entries.map((en: any) => [en.target, en.borderBoxSize && en.borderBoxSize[0] ? en.borderBoxSize[0].blockSize : en.target.getBoundingClientRect().height])
+                        : panes().map((p: any) => [p, p.getBoundingClientRect().height]);
+                    for (const [pane, h] of seen) {
+                        const was = S.heights.get(pane);
+                        S.heights.set(pane, h);
+                        if (was === undefined || pi < 0) continue;
+                        const i = order.indexOf(pane);
+                        if (i >= 0 && i < pi) total += h - was;
+                    }
+                    if (!pinned || Math.abs(total) < 0.5) return;
+                    if (!pp.clientHeight) { S.armed = false; return; }   // hidden: re-armed by the next render's scroll
+                    // Zotero's spacer rule (_getMinScrollHeightForPane): the
+                    // pane's offset plus the scroller's height.
+                    const need = pinned.getBoundingClientRect().top - pp.getBoundingClientRect().top + pp.scrollTop + pp.getBoundingClientRect().height;
+                    if (det._minScrollHeight < need) det._minScrollHeight = need;
+                    pp.scrollTop += total;
+                    S.expected = pp.scrollTop;
+                    S.moves++;
+                } catch (e) {}
+            };
+            /** Before Zotero's pin scroll: every preview above the pinned
+             *  section sized by its own width rule now (attachmentPreview.js
+             *  _handleResize, a tick early) -- a stored width left stale by
+             *  an empty Attachments section would grow it a tick after the
+             *  scroll, inside its resize callback, a frame before the
+             *  observer could hold the pinned section. */
+            S.presize = (id: string) => {
+                try {
+                    const pinned = id ? det.getEnabledPane(id) : null;
+                    if (!pinned) return;
+                    const order: any[] = det.getEnabledPanes();
+                    const pi = order.indexOf(pinned);
+                    for (let i = 0; i < pi; i++) {
+                        for (const pv of Array.from(order[i].querySelectorAll ? order[i].querySelectorAll("attachment-preview") : []) as any[]) {
+                            try {
+                                if (typeof pv._handleResize !== "function" || pv.disableResize || !pv.clientWidth) continue;
+                                if (pv.style.getPropertyValue("--preview-width") === pv.clientWidth + "px") continue;
+                                pv._handleResize();
+                            } catch (e) {}
+                        }
+                    }
+                } catch (e) {}
+            };
+            S.ro = new win.ResizeObserver((entries: any[]) => S.settle(entries));
+            S.onScroll = () => { try { if (S.busy || !S.armed) return; if (Math.abs(pp.scrollTop - S.expected) > 1) S.armed = false; } catch (e) {} };
+            pp.addEventListener("scroll", S.onScroll, { passive: true });
+            observe();
+            seed();
+            wvWrap(det, "scrollToPane", "pinAnchor", tag, (orig: any) => function (this: any, id: any, ...rest: any[]) {
+                const st = det._wvPinAnchor;
+                if (st) {
+                    try {
+                        observe();   // sections added since (renderCustomSections)
+                        st.busy = true;
+                        st.pinnedId = id ? String(id) : "";
+                        st.armed = false;
+                        if (id && id === det.pinnedPane && !det._collapsed) {
+                            st.presize(String(id));   // disarmed: its growth is not a late one
+                            st.armed = true;
+                            seed();   // after the sync renders: what grows from here is late
+                        }
+                    } catch (e) {}
+                }
+                let r: any;
+                try { r = orig.call(this, id, ...rest); }
+                catch (e) { if (st) st.busy = false; throw e; }
+                const done = () => { try { if (st) { st.busy = false; st.expected = pp.scrollTop; } } catch (e) {} };
+                Promise.resolve(r).then(done, done);
+                return r;
+            });
+        } catch (e) { Zotero.debug("[Weavero] pin anchor fix err: " + e); }
+    }
+
+    /** One item-details back to Zotero's own. */
+    _wvUnfixPinAnchor(det: any) {
+        try { wvUnwrap(det, "scrollToPane", "pinAnchor"); } catch (e) {}
+        const S = det && det._wvPinAnchor;
+        if (!S) return;
+        try { if (S.ro) S.ro.disconnect(); } catch (e) {}
+        try { if (S.onScroll && det._paneParent) det._paneParent.removeEventListener("scroll", S.onScroll); } catch (e) {}
+        try { delete det._wvPinAnchor; } catch (e) {}
+    }
+
+    /** Every item-details of `win`: the library pane and each tab's context
+     *  pane (the pane observer takes the ones created later). */
+    _wvWirePinAnchorFix(win: any) {
+        try { for (const det of (win && win.document && win.document.querySelectorAll("item-details")) || []) this._wvFixPinAnchor(det); } catch (e) {}
+    }
+
+    _wvTeardownPinAnchorFix() {
+        for (const w of wvMainWins()) {
+            try { for (const det of w.document.querySelectorAll("item-details") as any) this._wvUnfixPinAnchor(det); } catch (e) {}
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // WV-TEMP-134490 (upstream register #42, MJT's forum 134490; MJT
+    // 2026-11-02 "Can you fix these 3 in Weavero?"): the attachment preview
+    // sometimes draws the PDF page smaller than its box, the arrows below it.
+    // ReaderPreview._open (xpcom/reader.js) gives pdf.js's firstPagePromise
+    // 100 x 10 ms, then sets 'page-height' -- ignored without a document --
+    // and the box takes the page's ratio -- NaN without a page, so A4. A
+    // page that loads later keeps pdf.js's smaller "auto" scale. Weavero
+    // waits for it: after a preview reports "success" with no page ratio
+    // yet, the first page is polled for (100 ms, at most 15 s, dropped by a
+    // new render or discard), then Zotero's own updatePDFAttr() and
+    // _updateWidthHeightRatio() run. Wrapped on each preview ELEMENT (the
+    // Attachments section's, created lazily, and the Attachment Info pane's;
+    // the pane observer takes the ones created later), as REG41 does -- a
+    // class-level wrap would share its table with the instances' (lib/wrap).
+    // Installs nothing once _open waits for the document
+    // (`_wvPreviewFitNeeded`, checked when a preview reports success).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** Does ReaderPreview._open still cut the wait for the page at 100 x 10 ms? */
+    _wvPreviewFitNeeded(reader: any): boolean {
+        try {
+            if (!reader || typeof reader.updatePDFAttr !== "function" || typeof reader.getPageWidthHeightRatio !== "function") return false;
+            const open = String(Object.getPrototypeOf(reader)._open || "");
+            return /firstPagePromise/.test(open) && /t\s*<\s*100/.test(open);
+        } catch (e) { return false; }
+    }
+
+    /** A preview at "success": its page fitted once pdf.js has it. Returns
+     *  what happened ("fitted" already, "late", "dropped", "timeout", "n/a"). */
+    async _wvPreviewLateFit(pv: any, opts?: { tick?: number; max?: number }): Promise<string> {
+        const tick = (opts && opts.tick) || 100, max = (opts && opts.max) || 150;
+        try {
+            const reader = pv && pv._reader;
+            if (!reader || pv.previewType !== "pdf" || !this._wvPreviewFitNeeded(reader)) return "n/a";
+            if (Number.isFinite(reader.getPageWidthHeightRatio())) return "fitted";
+            const token = (pv._wvFitToken = (pv._wvFitToken || 0) + 1);
+            const win = winOf(pv) || Zotero.getMainWindow();
+            for (let i = 0; i < max; i++) {
+                await new Promise(res => win.setTimeout(res, tick));
+                if (pv._wvFitToken !== token || pv._reader !== reader || (pv.dataset && pv.dataset.previewStatus !== "success")) return "dropped";
+                if (Number.isFinite(reader.getPageWidthHeightRatio())) {
+                    try { reader.updatePDFAttr(); } catch (e) {}
+                    try { pv._updateWidthHeightRatio(); } catch (e) {}
+                    Zotero.debug("[Weavero] preview page fitted late, after " + ((i + 1) * tick) + " ms (WV-TEMP-134490)");
+                    return "late";
+                }
+            }
+            return "timeout";
+        } catch (e) { Zotero.debug("[Weavero] preview late fit err: " + e); return "err"; }
+    }
+
+    /** One preview element: its status setter wrapped; and its resize
+     *  callback, for WV-TEMP-134569's anchor (the same wiring, the two
+     *  previews of a window): the growth it makes is settled in the same
+     *  call, so the pinned section below is held in the same frame. */
+    _wvFixPreviewFit(pv: any) {
+        try {
+            if (!pv || typeof pv.setPreviewStatus !== "function") return;
+            const self = this;
+            const tag = this._wvWireTag();
+            wvWrap(pv, "setPreviewStatus", "fit134490", tag, (orig: any) => function (this: any, ...args: any[]) {
+                const r = orig.apply(this, args);
+                try { if (args[0] === "success") self._wvPreviewLateFit(this); } catch (e) {}
+                return r;
+            });
+            if (typeof pv._handleResize === "function") {
+                wvWrap(pv, "_handleResize", "pinAnchor", tag, (orig: any) => function (this: any, ...args: any[]) {
+                    const r = orig.apply(this, args);
+                    try {
+                        const det = this.closest && this.closest("item-details");
+                        const S = det && det._wvPinAnchor;
+                        if (S && S.armed && typeof S.settle === "function") S.settle(null);
+                    } catch (e) {}
+                    return r;
+                });
+            }
+        } catch (e) { Zotero.debug("[Weavero] preview fit err: " + e); }
+    }
+
+    /** Every preview element of `win` (the pane observer takes the ones
+     *  created later: the Attachments section makes its lazily). */
+    _wvWirePreviewFitFix(win: any) {
+        try { for (const pv of (win && win.document && win.document.querySelectorAll("attachment-preview")) || []) this._wvFixPreviewFit(pv); } catch (e) {}
+    }
+
+    /** Zotero's own setPreviewStatus back on every preview, in every main
+     *  window; a wait still running stops at its next look. */
+    _wvTeardownPreviewFitFix() {
+        for (const w of wvMainWins()) {
+            try {
+                for (const pv of w.document.querySelectorAll("attachment-preview") as any) {
+                    try { wvUnwrap(pv, "setPreviewStatus", "fit134490"); pv._wvFitToken = (pv._wvFitToken || 0) + 1; } catch (e) {}
+                    try { wvUnwrap(pv, "_handleResize", "pinAnchor"); } catch (e) {}
+                }
+            } catch (e) {}
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Pinned section headers in the item pane (MJT 2026-11-03, "When a
+    // section becomes too long, I cannot see the header anymore. Can you pin
+    // it in the same way as in the collections pane?" -> every section's
+    // header, and the part heading under it, stacked as the collections
+    // pane stacks a parent and its child). Each section's head sticks to the
+    // top of its scroller while its section passes, by CSS alone (position:
+    // sticky; the section is its containing block, so the next head pushes
+    // it out), over the pane's own opaque background; inside Item Links,
+    // Backlinks and the widened Tags / Related blocks, a part's heading
+    // sticks under it, at the head's height (`--wv-head-h`, written on the
+    // section by a ResizeObserver on its head: a title may wrap). A hairline
+    // under a head only while rows pass beneath it, Zotero's own items-tree
+    // idiom (the `.stuck` library header, _item-tree.scss): `data-wv-stuck`,
+    // set on scroll. Zotero pins nothing in the item pane itself (its sticky
+    // headers are the items tree's library rows, _virtualized-table.scss);
+    // the pin scroll, the sidenav and the anchor are untouched, a sticky
+    // element keeping its place in the flow. Extras option
+    // `itemPaneStickyHeaders`; per-section state in a WeakMap, off the
+    // window (test/window-wiring.spec.js); library pane and the tabs'
+    // context panes alike (the pane observer takes the ones created later).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    _wvStickyHeadsOn(): boolean {
+        try { return !!(this as any)._wvPref("itemPaneStickyHeaders"); } catch (e) { return false; }
+    }
+
+    /** The style, every section and every scroller of `win`; or all of it
+     *  taken away when the option is off. */
+    _wvApplyItemPaneStickyHeads(win: any) {
+        try {
+            const doc = win && win.document;
+            if (!doc || !doc.documentElement) return;
+            if (!this._wvStickyHeadsOn()) { this._wvUnapplyItemPaneStickyHeads(win); return; }
+            wvInjectStyle(doc, WV_STICKY_HEADS_STYLE_ID, WV_STICKY_HEADS_CSS);
+            for (const sec of Array.from(doc.querySelectorAll(".zotero-view-item collapsible-section")) as any[]) this._wvStickyHeadsWireSection(sec);
+            for (const sc of Array.from(doc.querySelectorAll(".zotero-view-item")) as any[]) this._wvStickyHeadsWireScroller(sc);
+        } catch (e) { Zotero.debug("[Weavero] sticky heads apply err: " + e); }
+    }
+
+    _wvApplyItemPaneStickyHeadsAll() {
+        for (const w of wvMainWins()) { try { this._wvApplyItemPaneStickyHeads(w); } catch (e) {} }
+    }
+
+    /** One section: its head's height kept on it for the part headings. */
+    _wvStickyHeadsWireSection(sec: any) {
+        try {
+            if (!sec || WV_STICKY_RO.has(sec) || !this._wvStickyHeadsOn()) return;
+            const head = sec.querySelector(":scope > .head");
+            const win = winOf(sec);
+            if (!head || !win || !win.ResizeObserver) return;
+            const write = (h: number) => { try { sec.style.setProperty("--wv-head-h", Math.round(h * 10) / 10 + "px"); } catch (e) {} };
+            const ro = new win.ResizeObserver((entries: any[]) => {
+                try {
+                    const en = entries && entries[0];
+                    write(en && en.borderBoxSize && en.borderBoxSize[0] ? en.borderBoxSize[0].blockSize : head.getBoundingClientRect().height);
+                } catch (e) {}
+            });
+            ro.observe(head);
+            WV_STICKY_RO.set(sec, ro);
+            write(head.getBoundingClientRect().height);
+        } catch (e) {}
+    }
+
+    /** One scroller (`.zotero-view-item`): the stuck mark kept on scroll. */
+    _wvStickyHeadsWireScroller(sc: any) {
+        try {
+            if (!sc || !this._wvStickyHeadsOn()) return;
+            const lp = () => { const p: any = wvLivePlugin(); return p && typeof p._wvStickyHeadsMark === "function" ? p : null; };
+            wvListen(sc, "stickyHeads:scroll", "scroll", () => { const p = lp(); if (p) p._wvStickyHeadsMark(sc); }, { passive: true }, (this as any)._wvWireTag());
+            this._wvStickyHeadsMark(sc);
+        } catch (e) {}
+    }
+
+    /** `data-wv-stuck` on each head pinned at the scroller's top with rows
+     *  of its section still passing beneath it. */
+    _wvStickyHeadsMark(sc: any) {
+        try {
+            const top = sc.getBoundingClientRect().top;
+            for (const sec of Array.from(sc.querySelectorAll("collapsible-section")) as any[]) {
+                const head = sec.querySelector(":scope > .head");
+                if (!head) continue;
+                const hr = head.getBoundingClientRect(), r = sec.getBoundingClientRect();
+                const stuck = hr.height > 0 && hr.top <= top + 0.5 && r.bottom > hr.bottom + 1;
+                wvSetBoolAttr(head, "data-wv-stuck", stuck);
+            }
+        } catch (e) {}
+    }
+
+    _wvUnapplyItemPaneStickyHeads(win: any) {
+        try {
+            const doc = win && win.document;
+            if (!doc) return;
+            wvRemoveStyle(doc, WV_STICKY_HEADS_STYLE_ID);
+            for (const sec of Array.from(doc.querySelectorAll("collapsible-section")) as any[]) {
+                const ro = WV_STICKY_RO.get(sec);
+                if (ro) { try { ro.disconnect(); } catch (e) {} WV_STICKY_RO.delete(sec); }
+                try { sec.style.removeProperty("--wv-head-h"); } catch (e) {}
+                const head = sec.querySelector(":scope > .head");
+                if (head) wvSetBoolAttr(head, "data-wv-stuck", false);
+            }
+            for (const sc of Array.from(doc.querySelectorAll(".zotero-view-item")) as any[]) { try { wvUnlisten(sc, "stickyHeads:scroll"); } catch (e) {} }
+        } catch (e) {}
+    }
+
+    _wvTeardownItemPaneStickyHeads() {
+        for (const w of wvMainWins()) { try { this._wvUnapplyItemPaneStickyHeads(w); } catch (e) {} }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // The pinned item-pane section and the open / collapsed state of the item
+    // pane's sections, PER MAIN WINDOW (MJT 2026-10-26: "The pinning should be
+    // window specific", then "... + Open or collapsed item pane sections
+    // window specific"; intake: a new window starts with no pin, each window's
+    // pin comes back after a restart). Zotero keeps ONE of each for every
+    // window: the `pinnedPane` pref (itemDetails.js: the setter saves it, a
+    // pref observer bound at init and every item render re-read it) and a
+    // `panes.<pane>.open` pref per section (collapsibleSection.js: the `open`
+    // setter saves it, a pref observer per section bound at init).
+    //
+    // The FIRST window keeps Zotero's own settings (it works without
+    // Weavero). Every other main window is cut off from them: its item pane's
+    // pin observer goes and its save / restore keep the pin on the window;
+    // the window's CollapsibleSection class (one per window) reads and writes
+    // `win._wvPaneOpen` instead of the prefs, and the sections built before
+    // that lose their pref observers. Saved with the window (`pinnedPane`,
+    // `paneOpen` in wvMainState, sessions.ts). The wraps resolve the live
+    // plugin and the window's map at call time: after a teardown (the map
+    // gone) a section bound to them earlier falls back to Zotero's own.
+    // ─────────────────────────────────────────────────────────────────────────
+    _wvPaneDet(win: any): any {
+        try { return win && win.document && win.document.querySelector("#zotero-item-pane item-details"); } catch (e) { return null; }
+    }
+
+    _wvWireWindowPanePrefs(win: any) {
+        try {
+            if (!win || !win._wvManagedWindow || !win.document) return;   // the first window keeps Zotero's own
+            const tag = this._wvWireTag();
+            const live = () => { const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; return p && !p._wvDestroyed ? p : null; };
+            const det = this._wvPaneDet(win);
+            if (det && typeof det._savePinnedPane === "function" && !det._wvPinOwn) {
+                det._wvPinOwn = true;
+                try { if (det._prefsObserverID != null) Zotero.Prefs.unregisterObserver(det._prefsObserverID); } catch (e) {}
+                wvWrap(det, "_savePinnedPane", "pinWindow", tag, (orig: any) => function (this: any, ...args: any[]) {
+                    const p = live();
+                    if (!p || !this._wvPinOwn) return orig.apply(this, args);
+                    try { p._wvWindowStoreSaveDebounced(); } catch (e) {}   // the window's own, saved with it
+                });
+                wvWrap(det, "_restorePinnedPane", "pinWindow", tag, (orig: any) => function (this: any, ...args: any[]) {
+                    // Every item render re-reads Zotero's one pin: the window's own stands.
+                    if (!live() || !this._wvPinOwn) return orig.apply(this, args);
+                });
+            }
+            const CS: any = win.customElements && win.customElements.get("collapsible-section");
+            const proto = CS && CS.prototype;
+            if (proto && typeof proto._saveOpenState === "function" && !win._wvPaneOpen) {
+                // Seeded from what the window shows now (Zotero restored it from
+                // the shared state at init; a reload keeps the window's own).
+                // The attribute, not `open`: an `empty` section reads closed
+                // (collapsibleSection.js) while keeping its own state.
+                const map: any = {};
+                for (const s of win.document.querySelectorAll("collapsible-section")) {
+                    const pane = s.dataset && s.dataset.pane;
+                    if (pane && !(pane in map)) map[pane] = s.hasAttribute("open");
+                }
+                win._wvPaneOpen = map;
+                wvWrap(proto, "_saveOpenState", "paneOpenWindow", tag, (orig: any) => function (this: any, ...args: any[]) {
+                    const m = win._wvPaneOpen;
+                    if (!m || !live()) return orig.apply(this, args);
+                    if (this._disableSavingOpenState || this._skipSaveOpenState) return;
+                    const pane = this.dataset && this.dataset.pane;
+                    if (!pane || m[pane] === this.open) return;
+                    m[pane] = this.open;
+                    try { live()._wvWindowStoreSaveDebounced(); } catch (e) {}
+                });
+                wvWrap(proto, "_restoreOpenState", "paneOpenWindow", tag, (orig: any) => function (this: any, ...args: any[]) {
+                    const m = win._wvPaneOpen;
+                    if (!m || !live()) return orig.apply(this, args);
+                    if (this._disableSavingOpenState) { this.open = true; return; }
+                    const pane = this.dataset && this.dataset.pane;
+                    if (pane && !(pane in m)) m[pane] = Zotero.Prefs.get(`panes.${pane}.open`) ?? true;   // first sight: the shared state
+                    this._restoringOpenState = true;
+                    this.open = pane ? m[pane] : true;
+                    this._restoringOpenState = false;
+                });
+                // Sections built before the wrap: their observers are bound to
+                // Zotero's own restore -- cut them off.
+                for (const s of win.document.querySelectorAll("collapsible-section")) {
+                    try { if (s._prefsObserverID != null) { Zotero.Prefs.unregisterObserver(s._prefsObserverID); s._prefsObserverID = null; } } catch (e) {}
+                }
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvWireWindowPanePrefs err: " + e); }
+    }
+
+    /** The window's own pin and section states for its saved state; nothing
+     *  for the first window (Zotero's own settings carry them). */
+    _wvPanePrefsCapture(win: any): any {
+        try {
+            if (!win || !win._wvManagedWindow) return null;
+            const out: any = {};
+            const det = this._wvPaneDet(win);
+            const pin = det && (det.pinnedPane || det._pendingPinnedPane);
+            if (pin) out.pinnedPane = pin;
+            if (win._wvPaneOpen && Object.keys(win._wvPaneOpen).length) out.paneOpen = Object.assign({}, win._wvPaneOpen);
+            return out;
+        } catch (e) { return null; }
+    }
+
+    /** Give a window other than the first its saved pin (absent: none) and
+     *  section states (absent: the shared state on first sight). */
+    _wvPanePrefsApply(win: any, entry: any) {
+        try {
+            if (!win || !win._wvManagedWindow) return;
+            this._wvWireWindowPanePrefs(win);
+            const det = this._wvPaneDet(win);
+            if (det) {
+                det._pendingPinnedPane = "";
+                det.pinnedPane = (entry && entry.pinnedPane) || "";   // not enabled yet: Zotero sets it aside until it is
+            }
+            if (entry && entry.paneOpen && typeof entry.paneOpen === "object") {
+                win._wvPaneOpen = Object.assign(win._wvPaneOpen || {}, entry.paneOpen);
+                for (const s of win.document.querySelectorAll("collapsible-section")) {
+                    try { if (s.dataset && s.dataset.pane in entry.paneOpen) s._restoreOpenState(); } catch (e) {}
+                }
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvPanePrefsApply err: " + e); }
+    }
+
+    /** Back to Zotero's shared settings in every window (Weavero's shutdown):
+     *  the item pane's pin observer and every section's come back bound to
+     *  Zotero's own restore. */
+    _wvTeardownWindowPanePrefs() {
+        try {
+            for (const w of wvMainWins()) {
+                try {
+                    const det = this._wvPaneDet(w);
+                    if (det && det._wvPinOwn) {
+                        delete det._wvPinOwn;
+                        wvUnwrap(det, "_savePinnedPane", "pinWindow");
+                        wvUnwrap(det, "_restorePinnedPane", "pinWindow");
+                        try { det._prefsObserverID = Zotero.Prefs.registerObserver("pinnedPane", det._restorePinnedPane.bind(det)); } catch (e) {}
+                    }
+                } catch (e) {}
+                try {
+                    if (!w._wvPaneOpen) continue;
+                    delete w._wvPaneOpen;
+                    const CS: any = w.customElements && w.customElements.get("collapsible-section");
+                    if (CS && CS.prototype) {
+                        wvUnwrap(CS.prototype, "_saveOpenState", "paneOpenWindow");
+                        wvUnwrap(CS.prototype, "_restoreOpenState", "paneOpenWindow");
+                    }
+                    for (const s of w.document.querySelectorAll("collapsible-section")) {
+                        try {
+                            if (s._prefsObserverID != null) Zotero.Prefs.unregisterObserver(s._prefsObserverID);
+                            s._prefsObserverID = Zotero.Prefs.registerObserver(`panes.${s.dataset.pane}.open`, s._restoreOpenState.bind(s));
+                        } catch (e) {}
+                    }
+                } catch (e) {}
             }
         } catch (e) {}
     }
@@ -6486,6 +7687,70 @@ class _PaneMixin {
                 } catch (e) {}
             }
         } catch (e) {}
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // WV-TEMP-134355 (forums.zotero.org/discussion/134355 and the engines.json
+    // thread it links; upstream register #16; MJT 2026-10-26: "Can you fix
+    // the Google Scholar problem in Weavero, keeping in mind to check
+    // regularly if this was fixed in Zotero?"). LocateEngine._updateIcon
+    // (xpcom/locateManager.js) stores a lookup engine's icon as an ABSOLUTE
+    // file: URI in <data dir>/locate/engines.json and nothing checks it
+    // again: once the data directory is renamed, moved or copied, the Locate
+    // menu's icon points nowhere -- blank on Zotero 10, a square on Zotero 11
+    // (weavero-dev: "Zotero weavero-dev\locate\Google Scholar.ico" after the
+    // folder became "Zotero-dev"). At startup each engine whose icon file is
+    // missing points at the file of the same name in the current locate
+    // folder, or, without one, has Zotero download it again from its source
+    // (Zotero's own _updateIcon, as Restore Defaults does -- minus deleting
+    // the custom engines). Setting `icon` makes Zotero rewrite engines.json,
+    // so the repair holds without Weavero. Does nothing while every path
+    // loads.
+    //
+    // RETIRE WHEN Zotero stores the path relative to the data directory or
+    // re-checks it; test/locate-icons.spec.js's tripwire says when.
+    // ─────────────────────────────────────────────────────────────────────────
+    async _wvRepairLocateIcons(): Promise<number> {
+        const LM: any = (Zotero as any).LocateManager;
+        if (!LM || typeof LM.getEngines !== "function") return 0;
+        const engines: any[] = LM.getEngines();   // throws while LocateManager.init is still reading
+        const locateDir = PathUtils.join((Zotero as any).DataDirectory.dir, "locate");
+        let n = 0;
+        for (const e of engines) {
+            try {
+                const icon = String((e && e.icon) || "");
+                if (!icon.startsWith("file:")) continue;
+                let path = "";
+                try { path = Services.io.newURI(icon).QueryInterface(Ci.nsIFileURL).file.path; } catch (er) { continue; }
+                if (await IOUtils.exists(path)) continue;
+                const here = PathUtils.join(locateDir, PathUtils.filename(path));
+                if (here !== path && await IOUtils.exists(here)) {
+                    e.icon = PathUtils.toFileURI(here);
+                    n++;
+                }
+                else if (typeof e._iconSourceURI === "string" && e._iconSourceURI && typeof e._updateIcon === "function") {
+                    await e._updateIcon();
+                    if (e.icon !== icon) n++;
+                }
+            } catch (er) { Zotero.debug("[Weavero] WV-TEMP-134355 engine icon repair err: " + er); }
+        }
+        if (n) Zotero.debug("[Weavero] WV-TEMP-134355: repaired " + n + " lookup engine icon path(s)");
+        return n;
+    }
+
+    /** Startup: Zotero starts LocateManager.init without awaiting it, so the
+     *  engines may not be read yet -- retry, bounded. */
+    _wvRepairLocateIconsAtStartup(tries?: number) {
+        const t = tries || 0;
+        this._wvRepairLocateIcons().catch((e: any) => {
+            if (t < 10) {
+                wvTimeout(() => {
+                    const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (p && !p._wvDestroyed) p._wvRepairLocateIconsAtStartup(t + 1);
+                }, 1000);
+            }
+            else Zotero.debug("[Weavero] WV-TEMP-134355 gave up: " + e);
+        });
     }
 
     _wvTeardownTagSelectorHandle() {
@@ -7515,11 +8780,9 @@ class _PaneMixin {
                 const cl = doc.createXULElement("menuitem");
                 cl.id = id;
                 cl.setAttribute("label", label);
-                const linkIconURL = this._menuItemIconURL;
-                if (linkIconURL) {
-                    cl.classList.add("menuitem-iconic");
-                    cl.setAttribute("image", linkIconURL);
-                }
+                // The links glyph, like every copy-link entry (2026-10-23).
+                cl.classList.add("menuitem-iconic");
+                cl.setAttribute("image", WV_LINK_MENU_ICON);
                 cl.addEventListener("command", () => {
                     try {
                         const obj = resolve();
@@ -7638,6 +8901,8 @@ class _PaneMixin {
                 const doc = docArg || Zotero.getMainWindow().document;
                 this._paintAddedByCells(doc);
                 this._applySelectionTargetVisuals(doc.defaultView);
+                // Column information, not a link feature (2026-10-23).
+                this._decorateAnnotationRowsBacklinks(doc);
             } catch (e) {}
             return;
         }
@@ -7956,6 +9221,9 @@ class _PaneMixin {
                 this._dbg("[Weavero] _markCellLinks: marked "
                     + noteItemMarked + " note-item title cells");
             }
+            // The hover card on the zotero:// spans just drawn (links.ts
+            // _wvTreeLkCardWire; MJT 2026-11-03).
+            (this as any)._wvTreeLkCardWire(doc);
 
             // After layout settles, mark cells whose text-wrap is overflowing
             // so the icon shows as a fallback even when the pref is off.
@@ -7996,6 +9264,8 @@ class _PaneMixin {
                     this._decorateAnnotationRowRelations(titleCell);
                 }
             }
+            // Backlinks icon, last on the row (after the Related icon).
+            this._decorateAnnotationRowsBacklinks(doc);
             // Per-user color tinting on the built-in Added By column.
             // Skip when the colors pref is off (clear any prior tint).
             this._paintAddedByCells(doc);
@@ -8545,9 +9815,90 @@ class _PaneMixin {
                 const col = cols[idx];
                 if (col && String(col.dataKey || "").indexOf("weavero") === 0) {
                     mi.classList.add("wv-colpick-ours");
+                    if (/weaveroTags$/.test(String(col.dataKey))) this._wvColPickTagsSubmenu(win, mi, col);
                 }
             }
         } catch (e) {}
+    }
+
+    /** The Tags line of the header menu as a submenu (MJT 2026-10-26: "I
+     *  would like to get this option also available from the right-click
+     *  menu on the columns header", intake: "From a sub-menu on the tag
+     *  line"): Zotero's own column checkbox moves inside as "Show Column"
+     *  (its command listener comes with it), followed by this window's
+     *  automatic-tag count. A XUL line cannot be a checkbox and a submenu at
+     *  once, so the Tags line draws the column's check itself
+     *  (.wv-colpick-checked, the image Gecko gives a checked item). */
+    _wvColPickTagsSubmenu(win: any, mi: any, col: any) {
+        const doc = win.document;
+        const menu = doc.createXULElement("menu");
+        menu.setAttribute("label", mi.getAttribute("label") || "Tags");
+        // `menu-iconic` only while the column is shown: it opens the icon
+        // slot, and an open slot with no image paints Zotero 11's empty
+        // square (upstream register #16; MJT 2026-10-26: "Empty square when
+        // disabled"). Hidden column = closed slot, as an unchecked line.
+        menu.className = "wv-colpick-ours wv-colpick-tags" + (col.hidden ? "" : " menu-iconic wv-colpick-checked");
+        const sub = doc.createXULElement("menupopup");
+        mi.replaceWith(menu);
+        menu.appendChild(sub);
+        mi.classList.remove("wv-colpick-ours");
+        mi.classList.add("wv-colpick-tags-show");
+        mi.setAttribute("label", "Show Column");
+        sub.appendChild(mi);
+        sub.appendChild(doc.createXULElement("menuseparator"));
+        const auto = doc.createXULElement("menuitem");
+        auto.setAttribute("type", "checkbox");
+        auto.setAttribute("label", "Automatic-Tag Count");
+        auto.className = "wv-colpick-tags-auto";
+        const on = this._wvTagsAutoFor(win);
+        if (on) auto.setAttribute("checked", "true");
+        // With Visual Extras off the count is off everywhere (the Settings
+        // gate): greyed, as the Settings row is.
+        if (!(this as any)._getEnableVisualExtras()) auto.setAttribute("disabled", "true");
+        // Kept on the element too: a synthetic `command` or doCommand() never
+        // reaches a chrome listener (memory reference_zotero_bridge_ui_tools),
+        // so the spec calls the stored handler, as for _wvUndoCmdH.
+        const onCommand = () => {
+            const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+            if (lp && !lp._wvDestroyed) lp._wvTagsAutoSet(win, !on);
+        };
+        auto._wvOnCommand = onCommand;
+        auto.addEventListener("command", onCommand);
+        sub.appendChild(auto);
+    }
+
+    /** The Tags column's automatic-tag count in `win` (MJT 2026-10-26: "The
+     *  settings option is the global default, while each main window has
+     *  its own view setting from the right-click menu"): the window's own
+     *  choice (`win._wvTagsAuto`, from the header menu, saved with the
+     *  window) or, without one, the Settings default. A Settings change
+     *  never overrides a window's choice. With Visual Extras off it is off
+     *  whatever the window chose (the Settings gate). */
+    _wvTagsAutoFor(win: any): boolean {
+        const own = win && typeof win._wvTagsAuto === "boolean" ? win._wvTagsAuto : undefined;
+        if (own === undefined) return !!(this as any)._getEnableTagsCountAuto();
+        return own && !!(this as any)._getEnableVisualExtras();
+    }
+
+    /** Set (true / false) or clear (null: follow Settings) `win`'s own
+     *  choice; redraw that window's items list only and save it with the
+     *  window. The shared column width is left alone (intake 2026-10-26: a
+     *  cut "1…" keeps its tooltip, and the column can be dragged wider). */
+    _wvTagsAutoSet(win: any, value: boolean | null, opts?: { save?: boolean }) {
+        if (!win) return;
+        const before = this._wvTagsAutoFor(win);
+        if (typeof value === "boolean") win._wvTagsAuto = value;
+        else delete win._wvTagsAuto;
+        try {
+            const iv: any = win.ZoteroPane && win.ZoteroPane.itemsView;
+            if (before !== this._wvTagsAutoFor(win) && iv && iv.tree && iv.tree.invalidate) iv.tree.invalidate();
+        } catch (e) {}
+        if (!opts || opts.save !== false) { try { (this as any)._wvWindowStoreSaveDebounced(); } catch (e) {} }
+    }
+
+    /** For the window's saved state: its own choice, or undefined. */
+    _wvTagsAutoCapture(win: any): boolean | undefined {
+        return win && typeof win._wvTagsAuto === "boolean" ? win._wvTagsAuto : undefined;
     }
 
     _wvEnsureColPickStyles(doc: any) {
@@ -8568,16 +9919,35 @@ class _PaneMixin {
             // icons, see index.ts).
             const root = String((this as any)._rootURI || "");
             style.textContent = [
-                "menuitem.wv-colpick-ours::after {",
+                // Weavero's mark right after the line's TEXT (the label's
+                // ::after), not at the end of the line: the end belongs to a
+                // submenu's arrow (MJT 2026-10-26: "Put Weavero icon
+                // consistently next to the text, so that the end of the line
+                // can be used for the arrow"). `.menu-text` on Zotero 10.0.6
+                // and 11 alike (both measured 2026-10-26).
+                ":is(menuitem, menu).wv-colpick-ours > .menu-text::after {",
                 "  content: ''; display: inline-block;",
                 "  width: 12px; height: 12px;",
                 "  margin-inline-start: 7px; vertical-align: -2px;",
                 "  background: url('" + root + "icons/icon-light-16.png') center/contain no-repeat;",
                 "}",
                 "@media (prefers-color-scheme: dark) {",
-                "  menuitem.wv-colpick-ours::after {",
+                "  :is(menuitem, menu).wv-colpick-ours > .menu-text::after {",
                 "    background-image: url('" + root + "icons/icon-dark-16.png');",
                 "  }",
+                "}",
+                // The Tags submenu line (_wvColPickTagsSubmenu): the column's
+                // check drawn as Gecko draws a checked item's (menu.css:
+                // menu-check.svg in the icon slot) -- --menuitem-icon for
+                // Zotero 11, list-style-image for Zotero 10 (rules: menu icons
+                // set both).
+                "menu.wv-colpick-tags.wv-colpick-checked {",
+                "  --menuitem-icon: url('chrome://global/skin/icons/menu-check.svg');",
+                "  list-style-image: url('chrome://global/skin/icons/menu-check.svg');",
+                "}",
+                "menu.wv-colpick-tags.wv-colpick-checked > .menu-icon,",
+                "menu.wv-colpick-tags.wv-colpick-checked .menu-iconic-icon {",
+                "  visibility: visible; fill: currentColor;",
                 "}",
             ].concat(((Zotero as any).isMac || (this as any)._wvForceMacPickerFix) ? [
                 // macOS: the picker is drawn by Gecko since #48 (see
@@ -8615,17 +9985,63 @@ class _PaneMixin {
             // Shared cell renderer: blank when count is 0, count
             // text otherwise. Matches numNotes' display pattern at
             // itemTree.jsx:2299 (`treeRow.numNotes() || \"\"`).
+            // The number sits in its own span: Zotero's hover handler
+            // (virtualized-table _handleMouseOver) sets a `title` only on a
+            // cell whose first child is text, and Gecko's one-shot tooltip
+            // would double Weavero's (count-popups.ts tipRender).
             const renderCount = (_index, data, column, _isFirstColumn, doc) => {
                 const span = doc.createElement("span");
                 span.className = "cell " + (column.className || "");
-                span.textContent = (data && data > 0) ? String(data) : "";
-                return span;
+                if (data && data > 0) {
+                    const n = doc.createElement("span");
+                    n.textContent = String(data);
+                    span.appendChild(n);
+                }
+                return countCell(span);
             };
             // Both columns return numbers (0 when empty) from
             // dataProvider so _compareField skips the
             // empty-string-sorts-last shortcut and 0 collates
             // before 1, mirroring numNotes at itemTree.jsx:550-552.
             this._weaveroColumnKeys = this._weaveroColumnKeys || [];
+
+            // Clickable counts (MJT 2026-10-22; modules/count-popups.ts):
+            // the Tags, Related and Backlinks numbers are `.wv-col-count`
+            // links naming their kind, item and scope. The row is read from
+            // the tree that renders the cell -- its own window's itemsView,
+            // not the focused window's -- and the span is built through the
+            // live plugin (the column's closures outlive a reload).
+            const rowInfo = (index, document) => {
+                const w: any = (document && document.defaultView) || Zotero.getMainWindow();
+                const iv: any = w && w.ZoteroPane && w.ZoteroPane.itemsView;
+                if (!iv) return null;
+                const row: any = iv.getRow(index);
+                const item = row && row.ref;
+                if (!item) return null;
+                const isOpen = !!(iv.isContainer(index) && iv.isContainerOpen(index));
+                return { item, isOpen };
+            };
+            const countLink = (document, n, kind, item, scope) => {
+                const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                const s = (lp && !lp._wvDestroyed && item && typeof lp._wvCountSpan === "function")
+                    ? lp._wvCountSpan(document, n, kind, item.id, scope) : null;
+                if (s) return s;
+                if (!(n > 0)) return null;
+                const t = document.createElement("span");
+                t.textContent = String(n);
+                return t;
+            };
+            // `wv-count-cell`: a cut-off count cell shows its whole text, in
+            // its colours, in Weavero's tooltip (count-popups.ts, wired per
+            // window on the items tree; MJT 2026-10-23 "Hovering on an
+            // ellipsis should show the complete content of that cell in a
+            // tooltip", 2026-10-26 the 500 ms / hide-on-move / show-again rule
+            // of work/tooltip-conventions.md). No `title`: Gecko's one-shot
+            // tooltip would show on top of it.
+            const countCell = (span) => {
+                span.classList.add("wv-count-cell");
+                return span;
+            };
 
             // Register Annotations BEFORE Related so when both are
             // visible the Annotations column appears first by
@@ -8647,10 +10063,12 @@ class _PaneMixin {
                 // annotation-count icon), not the highlight-specific one -- the
                 // column counts ALL annotation types, not just highlights.
                 iconPath: "chrome://zotero/skin/16/universal/annotation.svg",
-                width: "30",
-                minWidth: 26,
+                width: String(WV_COUNT_COL_MIN),
+                minWidth: WV_COUNT_COL_MIN,
                 staticWidth: true,
-                fixedWidth: true,
+                // Resizable like Zotero's Notes count column (staticWidth + minWidth,
+                // no fixedWidth): fixed, 2 digits fit and nothing could widen it (MJT
+                // 2026-10-23, "relax the fix width constrain on count columns").
                 showInColumnPicker: true,
                 zoteroPersist: ["width", "hidden", "sortDirection"],
                 dataProvider: (item) => {
@@ -8763,9 +10181,11 @@ class _PaneMixin {
                 // this on subsequent loads — see the toggle handler in
                 // index.ts which updates the live column + the pref.
                 width: String(this._tagsColumnWidth()),
-                minWidth: this._getEnableTagsCountAuto() ? 30 : 26,
+                minWidth: WV_COUNT_COL_MIN,
                 staticWidth: true,
-                fixedWidth: true,
+                // Resizable like Zotero's Notes count column (staticWidth + minWidth,
+                // no fixedWidth): fixed, 2 digits fit and nothing could widen it (MJT
+                // 2026-10-23, "relax the fix width constrain on count columns").
                 showInColumnPicker: true,
                 zoteroPersist: ["width", "hidden", "sortDirection"],
                 // dataProvider returns the rolled-up TOTAL for sort
@@ -8786,36 +10206,28 @@ class _PaneMixin {
                     const span = document.createElement("span");
                     span.className = "cell " + (column.className || "");
                     let counts = { manual: 0, auto: 0 };
+                    let info: any = null;
                     try {
-                        const win = Zotero.getMainWindow();
-                        const itemsView = win && win.ZoteroPane
-                            && win.ZoteroPane.itemsView;
-                        if (itemsView) {
-                            const row: any = itemsView.getRow(index);
-                            const item = row && row.ref;
-                            if (item) {
-                                const isContainer = itemsView.isContainer(index);
-                                const isOpen = isContainer
-                                    && itemsView.isContainerOpen(index);
-                                counts = isOpen
-                                    ? ownTagCount(item)
-                                    : tagSubtreeCount(item);
-                            }
-                        }
+                        info = rowInfo(index, document);
+                        if (info) counts = info.isOpen ? ownTagCount(info.item) : tagSubtreeCount(info.item);
                     } catch (e) {}
+                    const scope = info && info.isOpen ? "own" : "subtree";
                     // The live plugin's getter: the auto count is an Extras
                     // option and goes with Extras (prefs.4, MJT 2026-10-17;
                     // a raw pref read here ignored it).
                     let showAuto = true;
                     try {
                         const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-                        if (lp && typeof lp._getEnableTagsCountAuto === "function") showAuto = !!lp._getEnableTagsCountAuto();
+                        // The window's own choice first (header menu, MJT
+                        // 2026-10-26), else the Settings default.
+                        if (lp && typeof lp._wvTagsAutoFor === "function") showAuto = !!lp._wvTagsAutoFor(document && document.defaultView);
+                        else if (lp && typeof lp._getEnableTagsCountAuto === "function") showAuto = !!lp._getEnableTagsCountAuto();
                     } catch (e) {}
+                    // Each number lists its own kind when clicked (manual
+                    // tags / automatic tags).
                     if (counts.manual > 0) {
-                        const m = document.createElement("span");
-                        m.className = "wv-tags-count-manual";
-                        m.textContent = String(counts.manual);
-                        span.appendChild(m);
+                        const m = countLink(document, counts.manual, "tags-manual", info && info.item, scope);
+                        if (m) { m.classList.add("wv-tags-count-manual"); span.appendChild(m); }
                     }
                     if (showAuto && counts.auto > 0) {
                         if (counts.manual > 0) {
@@ -8823,13 +10235,14 @@ class _PaneMixin {
                             sep.className = "wv-tags-count-sep";
                             sep.textContent = "|";
                             span.appendChild(sep);
+                            // The two numbers' hit areas meet under the "|"
+                            // (constants.ts .wv-tags-count-pair).
+                            span.classList.add("wv-tags-count-pair");
                         }
-                        const a = document.createElement("span");
-                        a.className = "wv-tags-count-auto";
-                        a.textContent = String(counts.auto);
-                        span.appendChild(a);
+                        const a = countLink(document, counts.auto, "tags-auto", info && info.item, scope);
+                        if (a) { a.classList.add("wv-tags-count-auto"); span.appendChild(a); }
                     }
-                    return span;
+                    return countCell(span);
                 },
             });
             if (tagsKey) this._weaveroColumnKeys.push(tagsKey);
@@ -8885,10 +10298,12 @@ class _PaneMixin {
                 label: "Related",
                 pluginID: "weavero@mjthoraval",
                 iconPath: "chrome://zotero/skin/16/universal/related.svg",
-                width: "30",
-                minWidth: 26,
+                width: String(WV_COUNT_COL_MIN),
+                minWidth: WV_COUNT_COL_MIN,
                 staticWidth: true,
-                fixedWidth: true,
+                // Resizable like Zotero's Notes count column (staticWidth + minWidth,
+                // no fixedWidth): fixed, 2 digits fit and nothing could widen it (MJT
+                // 2026-10-23, "relax the fix width constrain on count columns").
                 showInColumnPicker: true,
                 zoteroPersist: ["width", "hidden", "sortDirection"],
                 // dataProvider returns the rolled-up subtree count so
@@ -8913,28 +10328,165 @@ class _PaneMixin {
                     const span = document.createElement("span");
                     span.className = "cell " + (column.className || "");
                     let display = data || 0;
+                    let info: any = null;
                     try {
-                        const win = Zotero.getMainWindow();
-                        const itemsView = win && win.ZoteroPane
-                            && win.ZoteroPane.itemsView;
-                        if (itemsView) {
-                            const isContainer = itemsView.isContainer(index);
-                            const isOpen = isContainer
-                                && itemsView.isContainerOpen(index);
-                            if (isOpen) {
-                                const row: any = itemsView.getRow(index);
-                                const item = row && row.ref;
-                                display = (item && item.relatedItems
-                                    && item.relatedItems.length) || 0;
-                            }
+                        info = rowInfo(index, document);
+                        if (info && info.isOpen) {
+                            display = (info.item.relatedItems && info.item.relatedItems.length) || 0;
                         }
                     } catch (e) {}
-                    span.textContent = (Number(display) > 0) ? String(display) : "";
-                    return span;
+                    const link = countLink(document, Number(display), "related", info && info.item, info && info.isOpen ? "own" : "subtree");
+                    if (link) span.appendChild(link);
+                    return countCell(span);
                 },
             })
                 : null;
             if (relKey) this._weaveroColumnKeys.push(relKey);
+
+            // Backlinks column (issue #60): the count of the annotation
+            // comments and notes that link to the item -- with its children
+            // and their annotations while the row is collapsed, the item's
+            // own while it is expanded (the item-pane section's number is
+            // always the own one). Reads the derived index
+            // (modules/backlinks.ts); before its first build the cells read
+            // blank and the build's end repaints the tree. Pref-gated by
+            // enableBacklinksColumn (Extras, with the other columns).
+            const blKey = this._getEnableBacklinksColumn()
+                ? (Zotero.ItemTreeManager as any).registerColumn({
+                dataKey: WV_BL_COLUMN_KEY,
+                label: "Backlinks",
+                pluginID: "weavero@mjthoraval",
+                iconPath: WV_BL_ICON_CONTEXT,
+                width: String(WV_COUNT_COL_MIN),
+                minWidth: WV_COUNT_COL_MIN,
+                staticWidth: true,
+                // Resizable like Zotero's Notes count column (staticWidth + minWidth,
+                // no fixedWidth): fixed, 2 digits fit and nothing could widen it (MJT
+                // 2026-10-23, "relax the fix width constrain on count columns").
+                showInColumnPicker: true,
+                zoteroPersist: ["width", "hidden", "sortDirection"],
+                dataProvider: (item) => {
+                    try {
+                        const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        return (lp && !lp._wvDestroyed) ? lp._wvBlCountForColumn(item) : 0;
+                    } catch (e) { return 0; }
+                },
+                // The Tags / Related convention (MJT 2026-10-23): collapsed,
+                // the roll-up over the item, its children and their
+                // annotations; expanded, the item's own links only (the
+                // children's are on their own rows). Sorting keeps the
+                // roll-up (dataProvider).
+                renderCell: (index, data, column, _isFirstColumn, document) => {
+                    const span = document.createElement("span");
+                    span.className = "cell " + (column.className || "");
+                    let info: any = null;
+                    let display = Number(data) || 0;
+                    try {
+                        info = rowInfo(index, document);
+                        if (info && info.isOpen) {
+                            const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            display = (lp && !lp._wvDestroyed && lp._wvBlReady()) ? lp._wvBlDirect(info.item).length : 0;
+                        }
+                    } catch (e) {}
+                    const link = countLink(document, display, "backlinks", info && info.item, info && info.isOpen ? "own" : "subtree");
+                    if (link) span.appendChild(link);
+                    return countCell(span);
+                },
+            })
+                : null;
+            if (blKey) this._weaveroColumnKeys.push(blKey);
+
+            // Links column (slice 2, MJT 2026-10-27: "A Links similar to
+            // Backlinks column should be added"): the count of the resolved
+            // references the row's notes and annotation comments carry --
+            // the subtree while collapsed, the item's own while expanded (a
+            // paper's own is nothing: its notes and annotations carry theirs
+            // on their own rows). A broken reference never counts. The same
+            // index as Backlinks, read the other way (backlinks.ts);
+            // pref-gated by enableLinksColumn (Extras, with the others).
+            // "Item Links" since 2026-10-30, the Has Item Links filter's name
+            // (MJT, "Rename properly the Links column"); its dataKey kept, so
+            // a column the user placed stays where it is.
+            const lkKey = this._getEnableLinksColumn()
+                ? (Zotero.ItemTreeManager as any).registerColumn({
+                dataKey: WV_LK_COLUMN_KEY,
+                label: "Item Links",
+                pluginID: "weavero@mjthoraval",
+                iconPath: WV_LK_ICON_CONTEXT,
+                width: String(WV_COUNT_COL_MIN),
+                minWidth: WV_COUNT_COL_MIN,
+                staticWidth: true,
+                showInColumnPicker: true,
+                zoteroPersist: ["width", "hidden", "sortDirection"],
+                dataProvider: (item) => {
+                    try {
+                        const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        return (lp && !lp._wvDestroyed) ? lp._wvLkCountForColumn(item) : 0;
+                    } catch (e) { return 0; }
+                },
+                renderCell: (index, data, column, _isFirstColumn, document) => {
+                    const span = document.createElement("span");
+                    span.className = "cell " + (column.className || "");
+                    let info: any = null;
+                    let display = Number(data) || 0;
+                    try {
+                        info = rowInfo(index, document);
+                        if (info && info.isOpen) {
+                            const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            display = (lp && !lp._wvDestroyed && lp._wvBlReady()) ? lp._wvLkOwnCount(info.item) : 0;
+                        }
+                    } catch (e) {}
+                    const link = countLink(document, display, "links", info && info.item, info && info.isOpen ? "own" : "subtree");
+                    if (link) span.appendChild(link);
+                    return countCell(span);
+                },
+            })
+                : null;
+            if (lkKey) this._weaveroColumnKeys.push(lkKey);
+
+            // External Links column (MJT 2026-10-30, "Rename properly the
+            // Links column, and add a External Links column" -> "Number +
+            // popup", "Each link written"): the web and app links written in
+            // the row's notes and annotation comments -- Has External Link's
+            // -- each written link once, by Has External Link's icon; the
+            // subtree while collapsed, the row's own while expanded, as Item
+            // Links. The same index (backlinks.ts `extBySource`).
+            const extKey = this._getEnableExtLinksColumn()
+                ? (Zotero.ItemTreeManager as any).registerColumn({
+                dataKey: WV_EXT_COLUMN_KEY,
+                label: "External Links",
+                pluginID: "weavero@mjthoraval",
+                iconPath: WV_EXT_ICON_CONTEXT,
+                width: String(WV_COUNT_COL_MIN),
+                minWidth: WV_COUNT_COL_MIN,
+                staticWidth: true,
+                showInColumnPicker: true,
+                zoteroPersist: ["width", "hidden", "sortDirection"],
+                dataProvider: (item) => {
+                    try {
+                        const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        return (lp && !lp._wvDestroyed) ? lp._wvExtCountForColumn(item) : 0;
+                    } catch (e) { return 0; }
+                },
+                renderCell: (index, data, column, _isFirstColumn, document) => {
+                    const span = document.createElement("span");
+                    span.className = "cell " + (column.className || "");
+                    let info: any = null;
+                    let display = Number(data) || 0;
+                    try {
+                        info = rowInfo(index, document);
+                        if (info && info.isOpen) {
+                            const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            display = (lp && !lp._wvDestroyed && lp._wvBlReady()) ? lp._wvExtOwnCount(info.item) : 0;
+                        }
+                    } catch (e) {}
+                    const link = countLink(document, display, "extlinks", info && info.item, info && info.isOpen ? "own" : "subtree");
+                    if (link) span.appendChild(link);
+                    return countCell(span);
+                },
+            })
+                : null;
+            if (extKey) this._weaveroColumnKeys.push(extKey);
 
             // No Added By column — Zotero already ships an `addedBy`
             // column that's auto-enabled in group libraries (see
@@ -8956,8 +10508,36 @@ class _PaneMixin {
 
             this._dbg("[Weavero] columns registered: "
                 + this._weaveroColumnKeys.join(", "));
+            // Saved widths under the minimum come back up (the trees
+            // re-read their columns after a registration; twice, for a
+            // slow first load).
+            for (const ms of [800, 3000]) wvTimeout(() => { try { this._wvClampCountColumnWidths(); } catch (e) {} }, ms);
         } catch (e) {
             Zotero.debug("[Weavero] _registerItemTreeColumns err: " + e);
+        }
+    }
+
+    /** Raise a count column whose saved width is under its minimum. Zotero
+     *  clamps a DRAG to minWidth (virtualized-table _handleResizerDrag) but
+     *  not a width read back from its saved settings, and the columns could
+     *  be dragged to 26 px before 2026-10-23 -- too narrow for the
+     *  ellipsis of a cut number (WV_COUNT_COL_MIN). Persisted, so every
+     *  window and the next start read the raised width. */
+    _wvClampCountColumnWidths() {
+        for (const w of wvMainWins()) {
+            try {
+                const vt: any = w.ZoteroPane && w.ZoteroPane.itemsView && w.ZoteroPane.itemsView.tree;
+                const mgr: any = vt && vt._columns;
+                const arr: any[] = mgr && (mgr.getAsArray ? mgr.getAsArray() : mgr._columns);
+                if (!arr) continue;
+                const fix: any = {};
+                for (const c of arr) {
+                    if (!c || !/weavero(Annotations|Tags|Related|Backlinks|Links)$/.test(String(c.dataKey))) continue;
+                    const min = Number(c.minWidth) || 0, cur = Number(c.width) || 0;
+                    if (cur && min && cur < min) { c.width = min; fix[c.dataKey] = min; }
+                }
+                if (Object.keys(fix).length && typeof mgr.onResize === "function") mgr.onResize(fix, true);
+            } catch (e) { Zotero.debug("[Weavero] count column clamp err: " + e); }
         }
     }
 
@@ -9058,7 +10638,94 @@ class _PaneMixin {
         // For row-anchored icons, append at the end so it lands AFTER
         // the badge (the badge is also a row sibling, inserted via
         // `title.after(badge)` in `_appendAddedByBadgeAfterTitle`).
-        iconHost.appendChild(icon);
+        // The Links and Backlinks icons stay last:
+        // [link] [related] [links] [backlinks].
+        const bl = iconHost.querySelector(":scope > .wv-tree-lk-icon, :scope > .wv-tree-bl-icon");
+        if (bl) iconHost.insertBefore(icon, bl);
+        else iconHost.appendChild(icon);
+    }
+
+    /** Backlinks on an annotation row (MJT 2026-10-23: "The annotations in
+     *  the items list do not have the column information. So need to add an
+     *  icon at the end of the line"): Zotero draws an annotation row as a
+     *  title cell plus one comment cell -- no column cells -- so the
+     *  Backlinks column cannot show there. The icon follows the column's own
+     *  switch, sits last after the comment-link and Related icons, and
+     *  opens the column's popup (what links here). Not tied to the
+     *  items-list link surface: it is column information. */
+    _decorateAnnotationRowBacklinks(row, columnShown = true) { this._decorateAnnotationRowRef(row, "backlinks", columnShown); }
+
+    /** One of an annotation row's two column icons: Backlinks (above), or
+     *  Links (MJT 2026-10-28, "Same also for links" -> "Add a Links button"):
+     *  the resolved references its comment carries, while the Links column
+     *  is shown, just before the Backlinks icon -- [link] [related] [links]
+     *  [backlinks] -- opening the annotation's Links popup. */
+    _decorateAnnotationRowRef(row, kind: WvRefKind, columnShown = true) {
+        if (!row) return;
+        const cell = row.querySelector(":scope > .cell.annotation-comment")
+            || row.querySelector(":scope > .cell.title");
+        if (!cell) return;
+        // Same host rule as the Related icon: a title cell whose closing
+        // quote is a ::after pseudo-element would put the icon inside the
+        // quote, so such rows host it on the row itself.
+        const hostOnRow = cell.classList.contains("title") && cell.hasAttribute("q-mark-close");
+        const host = hostOnRow ? row : cell;
+        const cls = kind === "links" ? "wv-tree-lk-icon" : "wv-tree-bl-icon";
+        const existing = host.querySelector(":scope > ." + cls);
+        let n = 0;
+        let item: any = null;
+        try {
+            if (columnShown && (kind === "links" ? this._getEnableLinksColumn() : this._getEnableBacklinksColumn())) {
+                item = this._getItemFromTreeRow(row);
+                if (item && item.isAnnotation && item.isAnnotation()) {
+                    // Before the build: nothing yet; the build's end repaints
+                    // the tree (the column's own refresh), which re-runs this.
+                    if (!this._wvBlReady()) this._wvBlEnsure();
+                    else n = kind === "links" ? this._wvLkOwnCount(item) : this._wvBlDirect(item).length;
+                }
+            }
+        } catch (e) { n = 0; }
+        if (!n) { if (existing) existing.remove(); return; }
+        const title = wvRefTitle(n, kind);
+        if (existing) { if (existing.title !== title) existing.title = title; return; }
+        const doc = row.ownerDocument;
+        const icon = doc.createElement("span");
+        icon.className = cls;
+        icon.title = title;
+        icon.appendChild(wvLinkGlyphEl(doc, { cls: kind === "links" ? "wv-tree-lk-svg" : "wv-tree-bl-svg", backlink: kind === "links" ? "out" : true }));
+        const lib = item.libraryID, key = item.key;
+        icon.addEventListener("click", (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            try {
+                const ann = Zotero.Items.getByLibraryAndKey(lib, key);
+                if (ann) this._wvOpenCountPopup(kind, ann.id, { anchorNode: icon, scope: "subtree", win: doc.defaultView });
+            } catch (err) { Zotero.debug("[Weavero] tree-" + kind + " click err: " + err); }
+        });
+        const bl = kind === "links" ? host.querySelector(":scope > .wv-tree-bl-icon") : null;
+        if (bl) host.insertBefore(icon, bl); else host.appendChild(icon);
+    }
+
+    /** The Links and Backlinks icons on every rendered annotation row --
+     *  each while its column is SHOWN in this tree (the columns are hidden
+     *  by default, column picker; the icon stands in for the column's cell). */
+    _decorateAnnotationRowsBacklinks(doc) {
+        try {
+            let shownBl = true, shownLk = true;
+            try {
+                const iv = doc.defaultView && doc.defaultView.ZoteroPane && doc.defaultView.ZoteroPane.itemsView;
+                const cols = iv && typeof iv._getColumns === "function" ? iv._getColumns() : null;
+                if (cols) {
+                    const shown = (k: string) => cols.some((c: any) => c && !c.hidden && String(c.dataKey).indexOf(k) >= 0);
+                    shownBl = shown(WV_BL_COLUMN_KEY);
+                    shownLk = shown(WV_LK_COLUMN_KEY);
+                }
+            } catch (e) {}
+            for (const row of doc.querySelectorAll(".annotation-row") as any) {
+                this._decorateAnnotationRowRef(row, "links", shownLk);
+                this._decorateAnnotationRowRef(row, "backlinks", shownBl);
+            }
+        } catch (e) { Zotero.debug("[Weavero] tree backlinks icons: " + e); }
     }
 
     /** Toggle data-truncated on cells whose text-wrap is overflowing. */
@@ -9097,7 +10764,7 @@ class _PaneMixin {
         win = win || Zotero.getMainWindow();
         if (!win || win.closed || !win.document) return;
         const doc  = win.document;
-        this._teardownTreeClickDelegate(win);
+        this._teardownTreeClickDelegate(win, true);
         const H: any = (win._wvTreeDelegate = { click: null, down: null, up: null, resize: null, resizeTimer: null, mo: null, lastHandled: 0 });
 
         // Initial mark pass
@@ -9186,6 +10853,13 @@ class _PaneMixin {
                 if (!t || !t.closest) return;
                 let target = null, want = null;
                 const url = t.closest(".wv-url-span");
+                // A zotero:// address carries the hover card instead (links.ts
+                // _wvTreeLkCardWire): no tooltip over it, Zotero's own (a
+                // clipped cell's text) taken off too.
+                if (url && url.classList.contains("wv-link-zotero") && (this as any)._wvLkCardOn()) {
+                    win.setTimeout(() => { if (url.hasAttribute("title")) url.removeAttribute("title"); }, 0);
+                    return;
+                }
                 if (url) {
                     target = url;
                     want = url.getAttribute("data-href")
@@ -9474,6 +11148,10 @@ class _PaneMixin {
                 : "null";
             this._dbg("[Weavero] mousedown received: target=" + tgtDesc
                 + " button=" + e.button + " phase=" + e.eventPhase);
+            // A press on a column count (modules/count-popups.ts): recorded
+            // only, NOT stopped -- Zotero selects the row as usual and the
+            // release opens the popup.
+            try { this._wvCountOnPress(e, doc.defaultView); } catch (er) {}
             if (e.button !== 0) return;
             if (!tgt || !tgt.closest) return;
 
@@ -9484,7 +11162,7 @@ class _PaneMixin {
             // selecting the row first. Document-level capture runs
             // before the row's, so stopPropagation here cuts the chain
             // cleanly.
-            if (tgt.closest(".wv-tree-rel-icon")) {
+            if (tgt.closest(".wv-tree-rel-icon, .wv-tree-lk-icon, .wv-tree-bl-icon")) {
                 e.stopPropagation();
                 if (e.stopImmediatePropagation) e.stopImmediatePropagation();
                 return;
@@ -9625,12 +11303,15 @@ class _PaneMixin {
 
         // Also block the corresponding click so it can't re-trigger or focus
         H.up = (e) => {
+            // The release of a press on a column count opens its popup a
+            // tick later (after Zotero's own mouseup); never stopped here.
+            try { this._wvCountOnRelease(e, doc.defaultView); } catch (er) {}
             // Mirror the mousedown short-circuit for .wv-tree-rel-icon
             // — _handleMouseUp finalises selection on left-click, so
             // we have to suppress the mouseup leg too.
             const tgt = e.target;
             if (e.button === 0 && tgt && tgt.closest
-                    && tgt.closest(".wv-tree-rel-icon")) {
+                    && tgt.closest(".wv-tree-rel-icon, .wv-tree-lk-icon, .wv-tree-bl-icon")) {
                 e.stopPropagation();
                 if (e.stopImmediatePropagation) e.stopImmediatePropagation();
                 return;
@@ -9660,14 +11341,21 @@ class _PaneMixin {
         Zotero.debug("[Weavero] tree mousedown/click delegates attached (document capture)");
     }
 
-    /** One window's delegate, or every main window's with no argument. */
-    _teardownTreeClickDelegate(win?: any) {
+    /** One window's delegate, or every main window's with no argument.
+     *  `keepTip`: the setup's own re-wire -- the count tooltip is hidden,
+     *  not removed (removing it made a re-run of the init path change the
+     *  window's marks: window-wiring-table.spec.js, red since the tooltip
+     *  came in on 2026-10-23, found by the 2026-10-26 full run). */
+    _teardownTreeClickDelegate(win?: any, keepTip = false) {
         if (!win) {
             for (const w of (Zotero.getMainWindows() || [])) {
                 try { this._teardownTreeClickDelegate(w); } catch (e) {}
             }
             return;
         }
+        // No count tooltip or rest timer outlives this instance (its
+        // listeners go with destroy()).
+        try { if (keepTip) this._wvCountTipHide(win); else this._wvCountTipTeardown(win); } catch (e) {}
         const H: any = win._wvTreeDelegate;
         if (!H) return;
         try {
@@ -9806,22 +11494,18 @@ class _PaneMixin {
         //                              _makeRelationsSvg (fill=
         //                              currentColor → reads on light AND
         //                              dark menu backgrounds).
-        //   "Copy Select/Open Link"  → the plugin's needle <img>, same
-        //                              icon the items-list / related-
-        //                              item "Copy … Link" entries use.
+        //   "Copy Select/Open Link"  → the links glyph, inline <svg> in
+        //                              currentColor (the logo until
+        //                              2026-10-23), as every copy-link
+        //                              entry's icon.
         const buildIconNode = (text) => {
             if (text.startsWith("Add Related")) {
                 return this._makeRelationsSvg(idoc);
             }
             if (text.startsWith("Copy Select Link") || text.startsWith("Copy Open Link")) {
-                const iconURL = this._menuItemIconURL;
-                if (!iconURL) return null;
-                const img: any = idoc.createElement("img");
-                img.src = iconURL;
-                img.setAttribute("width", "16");
-                img.setAttribute("height", "16");
-                img.style.display = "block";
-                return img;
+                const svg: any = wvLinkGlyphEl(idoc, { size: 16 });
+                svg.style.display = "block";
+                return svg;
             }
             return null;
         };
@@ -9896,6 +11580,10 @@ class _PaneMixin {
         try { this._decoratePaneRowRelations(row); }
         catch (e) {
             Zotero.debug("[Weavero] _decoratePaneRowRelations err: " + e.message);
+        }
+        try { this._decoratePaneRowRefs(row); }
+        catch (e) {
+            Zotero.debug("[Weavero] _decoratePaneRowRefs err: " + e.message);
         }
         const commentEl = this._qsDeep(row, ".body .comment")
                        || this._qsDeep(row, ".comment");
@@ -10014,7 +11702,7 @@ class _PaneMixin {
         // (`.wv-btn-relations` below) is a separate button that LIVES
         // alongside this one, so we exclude it from the selector.
         let existingBtn = this._qsDeep(row,
-            "." + BTN_PANE_CLASS + ":not(.wv-btn-relations)");
+            "." + BTN_PANE_CLASS + ":not(.wv-btn-relations):not(.wv-btn-ref)");
         const actionEl = this._qsDeep(row, ".head .action")
                       || this._qsDeep(row, ".action");
 
@@ -10035,7 +11723,8 @@ class _PaneMixin {
             // Order policy: comment LEFT, relations RIGHT. If a
             // relations button is already present in `.action`,
             // insert comment BEFORE it. Otherwise append to the end.
-            const existingRel = this._qsDeep(row, ".wv-btn-relations");
+            const existingRel = this._qsDeep(row, ".wv-btn-relations")
+                || this._qsDeep(row, ".wv-btn-ref");
             if (existingRel && existingRel.parentNode === actionEl) {
                 actionEl.insertBefore(btn, existingRel);
             } else {
@@ -10083,11 +11772,55 @@ class _PaneMixin {
             this.openRelationsPopup(ann, { anchorNode: relBtn });
         });
         const commentBtnEl = actionEl.querySelector(
-            "." + BTN_PANE_CLASS + ":not(.wv-btn-relations)");
+            "." + BTN_PANE_CLASS + ":not(.wv-btn-relations):not(.wv-btn-ref)");
+        const refBtnEl = actionEl.querySelector(".wv-btn-ref");
         if (commentBtnEl) {
             actionEl.insertBefore(relBtn, commentBtnEl.nextSibling);
+        } else if (refBtnEl) {
+            actionEl.insertBefore(relBtn, refBtnEl);   // [related] [links] [backlinks]
         } else {
             actionEl.appendChild(relBtn);
+        }
+    }
+
+    /** The Links and Backlinks buttons on an item-pane annotation card, last
+     *  after the comment and Related buttons, Links first (MJT 2026-10-23:
+     *  "Same backlink icon in the item pane"; 2026-10-28, "Same also for
+     *  links" -> "Add a Links button"): each shown while it has something
+     *  to count and its switch is on (Links / Backlinks); tooltip "N
+     *  Link(s)" / "N Backlink(s)"; click = that popup. */
+    _decoratePaneRowRefs(row) {
+        const ann = row && row.annotation;
+        if (!ann) return;
+        if (!this._wvBlReady() && (this._getEnableBacklinks() || this._getEnableLinks())) {
+            // Decorate once the index is there (first use of a session).
+            this._wvBlEnsure().then(() => { try { if (row.isConnected) this._decoratePaneRowRefs(row); } catch (e) {} });
+            return;
+        }
+        for (const kind of ["links", "backlinks"] as WvRefKind[]) {
+            const existing = this._qsDeep(row, ".wv-btn-" + kind);
+            const n = this._wvBlReaderCount(ann, kind);
+            if (!n) { existing?.remove(); continue; }
+            const title = wvRefTitle(n, kind);
+            if (existing) { if (existing.title !== title) existing.title = title; continue; }
+            const actionEl = this._qsDeep(row, ".head .action") || this._qsDeep(row, ".action");
+            if (!actionEl) return;
+            const doc = row.ownerDocument;
+            const btn = wvHtmlEl(doc, "button");
+            btn.className = BTN_CLASS + " " + BTN_PANE_CLASS + " wv-btn-ref wv-btn-" + kind;
+            btn.title = title;
+            btn.appendChild(wvLinkGlyphEl(doc, { cls: "wv-bl-btn-svg", backlink: kind === "links" ? "out" : true }));
+            const lib = ann.libraryID, key = ann.key;
+            btn.addEventListener("click", (e) => {
+                e.stopPropagation(); e.preventDefault();
+                try {
+                    const a = Zotero.Items.getByLibraryAndKey(lib, key);
+                    if (a) this._wvOpenCountPopup(kind, a.id, { anchorNode: btn, scope: "own" });
+                } catch (err) { Zotero.debug("[Weavero] pane " + kind + " click err: " + err); }
+            });
+            // [links] [backlinks]: Links goes before a Backlinks button.
+            const bl = kind === "links" ? actionEl.querySelector(".wv-btn-backlinks") : null;
+            if (bl) actionEl.insertBefore(btn, bl); else actionEl.appendChild(btn);
         }
     }
 
@@ -10395,6 +12128,30 @@ class _PaneMixin {
                 }
             }, false, tag);
             if (row.dataset) row.dataset.wvCtxWired = "1";
+            // The Related card on Zotero's row (MJT 2026-10-30, "Please make
+            // an hover popup to show that, similar to the links"): the item
+            // the section is for and the related item, each with its lineage
+            // (backlinks.ts _wvRelCardShow). Zotero focuses and clicks the
+            // row's `.box` (relatedBox.js); the item behind it is matched in
+            // the section item's relations by the box's aria-label, the
+            // display title Zotero froze there.
+            const box = row.querySelector(":scope > .box");
+            if (box) {
+                (this as any)._wvBlCardHover(box, "relCard", (lp: any) => {
+                    const rb: any = row.closest("related-box");
+                    const own = rb && rb.item;
+                    let rel: any = null;
+                    try {
+                        const want = box.getAttribute("aria-label") || "";
+                        for (const k of (own && own.relatedItems) || []) {
+                            const it = Zotero.Items.getByLibraryAndKey(own.libraryID, k);
+                            if (it && it.getDisplayTitle() === want) { rel = it; break; }
+                        }
+                    } catch (e) {}
+                    if (!rel) rel = lp._resolveRelatedRowItem(row);
+                    lp._wvRelCardShow(box, own, rel, "Click: show in library · Right-click for more");
+                });
+            }
         }
     }
 
@@ -10482,13 +12239,49 @@ class _PaneMixin {
 
         P.mo = new win.MutationObserver(mutations => {
             const rowsToRender = new Set();
+            const attRows = new Set<any>();
             let needsScan = false;
             let needsRelatedScan = false;
             let needsNotesScan = false;
+            let needsScopeScan = false;
             for (const m of mutations) {
                 for (const node of m.addedNodes) {
                     if (node.nodeType !== 1) continue;
                     const tag = node.tagName?.toLowerCase();
+                    // Zotero's Tags and Related sections, mounting with an
+                    // item pane (a tab's context pane too): their scope
+                    // button (pane-scope.ts, 2026-10-29).
+                    if (tag === "tags-box" || tag === "related-box"
+                        || (node.querySelector && node.firstElementChild && (node.querySelector("tags-box") || node.querySelector("related-box")))) {
+                        needsScopeScan = true;
+                    }
+                    // The Attachments section's rows (Backlinks part 2,
+                    // 2026-10-28): Zotero builds a fresh <attachment-row>
+                    // for every render (attachmentsBox.js updateRows), so an
+                    // added row is where its backlinks badge goes.
+                    if (tag === "attachment-row") attRows.add(node);
+                    else if (node.querySelectorAll && node.firstElementChild) {
+                        for (const r of node.querySelectorAll("attachment-row")) attRows.add(r);
+                    }
+                    // A tab's context pane is a new item-details (contextPane.js,
+                    // one per reader / note tab): WV-TEMP-131000 there too.
+                    if (tag === "item-details") {
+                        try { this._wvFixItemPaneCreep(node); } catch (e) {}
+                        try { this._wvFixStalePreview(node); } catch (e) {}   // WV-TEMP-REG41
+                        try { this._wvFixPinAnchor(node); } catch (e) {}   // WV-TEMP-134569
+                        // Pinned section headers: its scroller and sections.
+                        try { for (const sc of node.querySelectorAll(".zotero-view-item")) this._wvStickyHeadsWireScroller(sc); } catch (e) {}
+                    }
+                    if (tag === "collapsible-section") { try { this._wvStickyHeadsWireSection(node); } catch (e) {} }
+                    else if (node.querySelectorAll && node.firstElementChild) {
+                        try { for (const sec of node.querySelectorAll("collapsible-section")) this._wvStickyHeadsWireSection(sec); } catch (e) {}
+                    }
+                    // A preview element: the Attachments section creates its
+                    // lazily, the Attachment Info pane mounts with one.
+                    if (tag === "attachment-preview") { try { this._wvFixPreviewFit(node); } catch (e) {} }   // WV-TEMP-134490
+                    else if (node.querySelectorAll && node.firstElementChild) {
+                        for (const pv of node.querySelectorAll("attachment-preview")) { try { this._wvFixPreviewFit(pv); } catch (e) {} }
+                    }
                     if (tag === "annotation-row") {
                         rowsToRender.add(node);
                         needsScan = true;
@@ -10558,10 +12351,18 @@ class _PaneMixin {
                 try { this._injectPaneRowIcon(row); }
                 catch(e) { Zotero.debug("[Weavero] sync pane re-render: " + e); }
             }
+            for (const row of attRows) {
+                try { this._wvBlDecorateAttRow(row); }
+                catch(e) { Zotero.debug("[Weavero] attachment row badge: " + e); }
+            }
             if (needsRelatedScan) {
                 try { this._processRelatedBoxes(doc); }
                 catch(e) { Zotero.debug(
                     "[Weavero] related-box scan err: " + e); }
+            }
+            if (needsScopeScan) {
+                try { (this as any)._wvScopeProcessDoc(doc); }
+                catch(e) { Zotero.debug("[Weavero] pane scope scan err: " + e); }
             }
             // Either the pane toggle or the editor toggle can drive this scan;
             // each _process* self-gates on its own pref.
@@ -11816,28 +13617,73 @@ class _PaneMixin {
                 const w: any = en.getNext();
                 try {
                     this._wvPMTeardownChrome(w);
+                    // Zotero's own manager is a close-only dialog
+                    // (zotero.js openInViewer: dialog=yes); Weavero opened
+                    // this one with minimize / maximize, which an open window
+                    // keeps (MJT 2026-10-26: "the controls do not get back to
+                    // the native state").
+                    if (String(w.viewerOriginalURI || "").includes("extensions/aboutaddons")) this._wvWindowButtons(w, false);
                     const br = w.document && w.document.querySelector("browser");
                     const cd = br && br.contentDocument;
                     if (!cd) continue;
-                    const box = cd.getElementById("wv-pm-searchbox");
-                    if (box) box.remove();
-                    // The rules go with the box: the next build's injection
-                    // must not inherit a stale stylesheet (dev.21, 2026-09-09).
-                    const st = cd.getElementById("wv-pm-search-styles");
-                    if (st) st.remove();
-                    for (const m of cd.querySelectorAll(".wv-pm-meta")) m.remove();
-                    this._wvPMRemoveRecentFrame(cd);   // heading row + dropdown
-                    this._wvPMRemoveSidebar(cd);       // Zotero 11 sidebar -> stock
+                    // What calls into this instance goes now.
                     if (cd._wvPMKeyHandler) {
                         try { cd.removeEventListener("keydown", cd._wvPMKeyHandler, true); } catch (e) {}
                         try { w.document.removeEventListener("keydown", cd._wvPMKeyHandler, true); } catch (e) {}
                         delete cd._wvPMKeyHandler;
                     }
                     if (cd._wvPMMo) { try { cd._wvPMMo.disconnect(); } catch (e) {} delete cd._wvPMMo; }
-                    for (const c of cd.querySelectorAll("addon-card[hidden]")) c.hidden = false;
+                    // The page's look goes once the list is let go of (below).
+                    // The box and its rules are taken by reference and renamed,
+                    // so an instance injecting meanwhile (a reload) builds its
+                    // own; the rules go with the box: the next build's injection
+                    // must not inherit a stale stylesheet (dev.21, 2026-09-09).
+                    const own: any[] = [cd.getElementById("wv-pm-searchbox"), cd.getElementById("wv-pm-search-styles"), ...Array.from(cd.querySelectorAll(".wv-pm-meta"))].filter(Boolean);
+                    for (const el of own) { if (el.id) el.id += "-leaving"; }
+                    this._wvPMWhenListLetGo(cd, () => {
+                        for (const el of own) { try { el.remove(); } catch (e) {} }
+                        if (cd._wvPMMo) return;            // a new instance has the page now
+                        this._wvPMRemoveRecentFrame(cd);   // heading row + dropdown
+                        this._wvPMRemoveSidebar(cd);       // Zotero 11 sidebar -> stock
+                        for (const c of cd.querySelectorAll("addon-card[hidden]")) c.hidden = false;
+                    });
                 } catch (e) {}
             }
         } catch (e) {}
+    }
+
+    /** Run `fn` once the manager's list is no longer under the pointer or
+     *  holding focus -- at once when it is not. about:addons moves a card
+     *  whose section changed only then (addon-list.mjs, read live 2026-10-26:
+     *  updateAddon queues it while `:hover, :focus-within` or a menu is
+     *  open; handleEvent flushes on mouseleave), so a just-disabled plugin
+     *  can be re-enabled where it sits. Weavero's page changes going at once
+     *  took the list from under the pointer on Weavero's own toggle (664 ->
+     *  348 px wide, the toggle at x 1405, the stock list ending at 1199): the
+     *  page saw a mouseleave and Weavero's card jumped to Disabled, where
+     *  every other plugin's waits (MJT 2026-10-26). Same leave rule as the
+     *  page's; a poll covers a view switch, which replaces the list. */
+    _wvPMWhenListLetGo(this: any, cd: any, fn: () => void): void {
+        let list: any = null;
+        try { list = cd.querySelector("addon-list"); } catch (e) {}
+        const held = () => {
+            try { return !!(list && list.isConnected && (list.matches(":hover, :focus-within") || list.hasMenuOpen)); }
+            catch (e) { return false; }
+        };
+        if (!held()) { try { fn(); } catch (e) {} return; }
+        const w = cd.defaultView;
+        let ran = false, timer: any = null;
+        const run = () => {
+            if (ran) return;
+            ran = true;
+            try { list.removeEventListener("mouseleave", onLeave); list.removeEventListener("focusout", onLeave); } catch (e) {}
+            try { if (timer) w.clearInterval(timer); } catch (e) {}
+            try { fn(); } catch (e) {}
+        };
+        const onLeave = (e: any) => { if ((e.type === "mouseleave" && !list.hasMenuOpen) || !held()) run(); };
+        list.addEventListener("mouseleave", onLeave);
+        list.addEventListener("focusout", onLeave);
+        try { timer = w.setInterval(() => { if (!held()) run(); }, 500); } catch (e) {}
     }
 
     /** `win` just loaded — if it's a basicViewer hosting about:addons, inject
@@ -11913,6 +13759,11 @@ class _PaneMixin {
 
     _wvPMInject(this: any, win: any, doc: any) {
         try {
+            // A manager Zotero opened (its close-only dialog, e.g. before
+            // Weavero was enabled) gets the buttons Weavero's opener gives
+            // (MJT 2026-10-26). Here, not at the window's load: the page is
+            // known to be about:addons only once it has loaded.
+            this._wvWindowButtons(win, true);
             if (doc.getElementById("wv-pm-searchbox")) return;
             const main = doc.getElementById("main") || doc.body;
             if (!main) return;

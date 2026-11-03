@@ -395,6 +395,10 @@
             { re: /^Weavero — tab-level undo choice a NEW main window gets the Edit hook/, why: "platform: Windows only, multi-main on" },
             { re: /^Weavero — window identity, lone window/, why: "needs the lone-window case" },
             { re: /^Weavero — View → Layout follows the tab .*note tab/, why: "version: note tabs (note-in-tab) need a Zotero that loads 'note' tabs" },
+            // Unlisted until the 1.0.0-beta.1 CI, the first Ubuntu run of
+            // these specs (2026-11-03).
+            { re: /^Weavero — the background-restore focus guard ends /, why: "platform: the guard is WINNT-gated (bg-restore-guard.spec.js before)" },
+            { re: /^Weavero — disabling Weavero from the Plugins Manager while the list holds focus/, why: "runner: the pointer rests over the manager's list (Ubuntu's xvfb), which holds the page changes by itself" },
         ],
     };
     globalThis.wvT = wvT;

@@ -148,6 +148,12 @@ describe("Weavero — WV-TEMP-134569: the pinned section stays at the top while 
             const widthVar = () => win.getComputedStyle(pv).getPropertyValue("--preview-width").trim();
             const S = det._wvPinAnchor;
             assert.isOk(S && typeof S.settle === "function" && typeof S.presize === "function", "the anchor, with its settle and presize");
+            // How close Tags is held: 1.5 px on Zotero 11; 3 on Zotero 10,
+            // whose preview re-fits its page by 1.7-2.5 px after the
+            // anchor's move (10.0.6 here, 10.0.7 on both CI runners,
+            // 2026-11-03) -- without the anchor the drift is the preview's
+            // whole height, 100+ px.
+            const TOL = parseInt(Zotero.version, 10) >= 11 ? 1.5 : 3;
             pv._resizeOb.disconnect();
             // Part 1: the stored width stale (what an empty Attachments
             // section leaves: 0px), then Zotero's pin scroll to Tags, below
@@ -162,7 +168,7 @@ describe("Weavero — WV-TEMP-134569: the pinned section stays at the top while 
             const hAfter = det.getEnabledPane("attachments").getBoundingClientRect().height;
             assert.isAbove(hAfter - hBefore, 100, "the section grew by the preview's height before the scroll, not after it");
             await settle();
-            assert.approximately(top("tags"), 0, 1.5, "Tags at the top");
+            assert.approximately(top("tags"), 0, TOL, "Tags at the top");
             // (The page may still re-fit by a few pixels after the scroll --
             // the reader's ratio at the new width -- and the observer holds
             // that: `moves` is not asserted here.)
@@ -170,15 +176,15 @@ describe("Weavero — WV-TEMP-134569: the pinned section stays at the top while 
             // its tick; grown back inside the resize callback, the wrap
             // holds Tags in the same call, before any tick.
             pv.style.setProperty("--preview-width", "0px");
-            const held = await wvT.waitFor(() => Math.abs(top("tags")) <= 1.5 && S.moves > moves0 ? true : null, 3000);
+            const held = await wvT.waitFor(() => Math.abs(top("tags")) <= TOL && S.moves > moves0 ? true : null, 3000);
             assert.isOk(held, "the shrink compensated by the observer: " + top("tags"));
             const moves1 = S.moves;
             pv._handleResize();
             assert.strictEqual(widthVar(), pv.clientWidth + "px");
-            assert.approximately(top("tags"), 0, 1.5, "Tags at the top right after the call");
+            assert.approximately(top("tags"), 0, TOL, "Tags at the top right after the call");
             assert.isAtLeast(S.moves, moves1 + 1, "settled by the callback's wrap");
             await settle();
-            assert.approximately(top("tags"), 0, 1.5, "and still");
+            assert.approximately(top("tags"), 0, TOL, "and still");
         }
         finally {
             try { if (pv && pv._resizeOb) pv._resizeOb.observe(pv); } catch (e) {}

@@ -399,6 +399,7 @@
             // these specs (2026-11-03).
             { re: /^Weavero — the background-restore focus guard ends /, why: "platform: the guard is WINNT-gated (bg-restore-guard.spec.js before)" },
             { re: /^Weavero — disabling Weavero from the Plugins Manager while the list holds focus/, why: "runner: the pointer rests over the manager's list (Ubuntu's xvfb), which holds the page changes by itself" },
+            { re: /^Weavero — a drop highlight left by a lost drag clears \(WV-TEMP-133039\) replay of the recorded drags: .* the (drag ring records the session|ring notes Zotero's late dragleave)/, why: "version: Zotero 10.0.6 has no itemsView._setDropRow, nothing to record (local Zotero 10 run, 2026-11-03)" },
         ],
     };
     globalThis.wvT = wvT;

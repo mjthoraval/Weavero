@@ -450,6 +450,15 @@
                 let d = "?";
                 try { d = (w.document.documentElement.getAttribute("windowtype") || "") + " " + String(w.location && w.location.href).slice(0, 60); } catch (e) {}
                 write("CLOSED " + d);
+                // The process's memory then: the CI runners' Zotero ended with
+                // no quit at all, at a window's close (2026-11-03, macOS every
+                // run, Windows twice) -- a crash, or the system killing it.
+                try {
+                    ChromeUtils.requestProcInfo().then((i) => {
+                        const kids = (i.children || []).reduce((n, c) => n + (c.memory || 0), 0);
+                        write("MEM parent " + Math.round((i.memory || 0) / 1048576) + " MB, " + (i.children || []).length + " children " + Math.round(kids / 1048576) + " MB, main windows " + Zotero.getMainWindows().length);
+                    }, () => {});
+                } catch (e) {}
             },
         });
     } catch (e) {}

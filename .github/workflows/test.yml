@@ -200,9 +200,12 @@ jobs:
           # 2026-11-03, at a reader window's close): keep what the system
           # and Gecko wrote about it -- macOS's crash reports, the test
           # profile's minidumps.
+          # Every report from the run, not only Zotero's: a process the system
+          # killed for memory leaves a JetsamEvent report instead.
           if [ "$RUNNER_OS" = "macOS" ]; then
-            find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 1 -iname '*zotero*' -newer "$RUNNER_TEMP/wv-test.log" -exec cp {} "$out/" \; 2>/dev/null || true
-            find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 1 -iname '*zotero*' -mmin -60 -exec cp {} "$out/" \; 2>/dev/null || true
+            for d in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
+              find "$d" -maxdepth 2 -type f -mmin -45 -exec cp {} "$out/" \; 2>/dev/null || true
+            done
           fi
           if [ -d .scaffold/test/profile/minidumps ]; then cp -R .scaffold/test/profile/minidumps "$out/" 2>/dev/null || true; fi
           ls -la "$out"

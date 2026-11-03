@@ -77,7 +77,10 @@ describe("Weavero — WV-TEMP-134490: a preview page that loads after the cutoff
         // CI beta jobs the same day).
         const fit = await wvT.waitFor(() => Number.isFinite(reader.getPageWidthHeightRatio()) || null, 5000);
         assert.isOk(fit, "the first page's ratio: " + reader.getPageWidthHeightRatio());
+        // The scale is set once the ratio is in (the suite's second half,
+        // run alone, read "auto" a moment before, 2026-11-03).
         const viewer = reader._internalReader._primaryView._iframeWindow.PDFViewerApplication.pdfViewer;
+        await wvT.waitFor(() => viewer.currentScaleValue === "page-height" || null, 5000);
         assert.strictEqual(viewer.currentScaleValue, "page-height");
     });
 

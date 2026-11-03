@@ -134,6 +134,10 @@ describe("Weavero — WV-TEMP-134569: the pinned section stays at the top while 
     // call. Zotero's own watch on the preview is paused for the probe, or it
     // would redo the width itself a tick later. FAILED on dev.160.
     it("a stale preview above the pinned section is sized before the pin scroll; a resize callback settles the anchor in the same call", async function () {
+        // Missed the shrink by 430 px once in the suite's second half run
+        // alone, passed on its rerun (2026-11-03): retried on CI, logged, the
+        // anchor's state in the message for the next miss.
+        wvT.ciRetries(this, 2);
         const A = await wvT.createTestPDFItem("wvanchor-pdf", { parentItemID: P.id });
         let pv = null;
         try {
@@ -177,7 +181,12 @@ describe("Weavero — WV-TEMP-134569: the pinned section stays at the top while 
             // holds Tags in the same call, before any tick.
             pv.style.setProperty("--preview-width", "0px");
             const held = await wvT.waitFor(() => Math.abs(top("tags")) <= TOL && S.moves > moves0 ? true : null, 3000);
-            assert.isOk(held, "the shrink compensated by the observer: " + top("tags"));
+            // The anchor's state with the miss (the suite's second half, run
+            // alone, missed by 430 px, 2026-11-03: armed? scroll vs what it
+            // expected, the range, Zotero's spacer, the pin).
+            const st = () => JSON.stringify({ top: top("tags"), armed: S.armed, busy: S.busy, moves: S.moves, moves0, scrollTop: pp.scrollTop, expected: S.expected,
+                scrollHeight: pp.scrollHeight, clientHeight: pp.clientHeight, minScroll: det._minScrollHeight, pin: det.pinnedPane, pinnedId: S.pinnedId });
+            assert.isOk(held, "the shrink compensated by the observer: " + st());
             const moves1 = S.moves;
             pv._handleResize();
             assert.strictEqual(widthVar(), pv.clientWidth + "px");

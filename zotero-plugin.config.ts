@@ -1,11 +1,39 @@
 import { defineConfig } from "zotero-plugin-scaffold";
-import { copyFileSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 
+/** WV_TEST_SHARD=k/n: the k-th of n contiguous, size-balanced slices of the
+ *  suite's spec files in name order (Zotero's runner shards the same way,
+ *  test/content/runtests.js; the 2026-11-03 CI study, recommendation 7), so a
+ *  slow CI job runs as two side by side and a shard is reproducible
+ *  locally. The 000- files are added to every shard below. */
+function wvTestShard(spec: string): string[] {
+  const m = /^(\d+)\/(\d+)$/.exec(spec);
+  if (!m) throw new Error("WV_TEST_SHARD must read k/n, got " + spec);
+  const k = Number(m[1]), n = Number(m[2]);
+  if (!(n >= 1 && k >= 1 && k <= n)) throw new Error("WV_TEST_SHARD out of range: " + spec);
+  const files = readdirSync("test").filter(f => f.endsWith(".spec.js") && !f.startsWith("000-")).sort();
+  const sizes = files.map(f => statSync(join("test", f)).size);
+  const total = sizes.reduce((a, b) => a + b, 0);
+  let acc = 0;
+  const mine = files.filter((f, i) => {
+    // A file goes to the slice its middle byte falls in.
+    const slice = Math.min(n - 1, Math.floor((acc + sizes[i] / 2) / (total / n)));
+    acc += sizes[i];
+    return slice === k - 1;
+  });
+  return mine.map(f => "test/" + f);
+}
+
 /** `test` (the whole suite), or a scratch directory holding only the specs
- *  named in WV_TEST_ENTRIES -- see the `test.entries` note below. */
+ *  named in WV_TEST_ENTRIES, or the shard WV_TEST_SHARD names -- see the
+ *  `test.entries` note below. */
 function wvTestEntries(): string[] {
-  const listed = (process.env.WV_TEST_ENTRIES || "").split(",").map(s => s.trim()).filter(Boolean);
+  let listed = (process.env.WV_TEST_ENTRIES || "").split(",").map(s => s.trim()).filter(Boolean);
+  if (!listed.length && process.env.WV_TEST_SHARD) {
+    listed = wvTestShard(process.env.WV_TEST_SHARD);
+    console.log("[weavero] shard " + process.env.WV_TEST_SHARD + ": " + listed.length + " spec files");
+  }
   if (!listed.length) return ["test"];
   // The 000- files (failure recorder, shared helpers + readiness + pending
   // allowlist) are part of every run: a targeted spec may call `wvT.*`.

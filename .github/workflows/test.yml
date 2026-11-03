@@ -46,27 +46,37 @@ env:
 
 jobs:
   test:
-    name: Mocha + Chai (${{ matrix.label }}, Zotero ${{ matrix.channel }})
+    name: Mocha + Chai (${{ matrix.label }}, Zotero ${{ matrix.channel }}${{ matrix.shard && format(', {0}', matrix.shard) || '' }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     # The macOS jobs report but do not decide the run (MJT 2026-11-03,
     # "Ok to fix"): Zotero crashes there at a reader window's close, the
     # cause not yet known; until it is, a red macOS job leaves the run --
     # and release.yml's gate on it -- green. Drop `experimental` from the
-    # two macOS rows once they pass.
+    # macOS rows once they pass.
     continue-on-error: ${{ matrix.experimental == true }}
     strategy:
       # One red job never cancels the others: each system and channel
       # reports on its own.
       fail-fast: false
+      # Windows (~15 min) and macOS (17-22 min) run in two shards each
+      # (WV_TEST_SHARD, zotero-plugin.config.ts: contiguous, size-balanced
+      # slices of the spec files, the 000- helpers in each); Ubuntu (~8 min)
+      # runs whole. Ten jobs, four on macOS (GitHub's free plan: 20, of which
+      # 5 macOS; the 2026-11-03 study, recommendation 7). `part` names the
+      # shard where a "/" cannot go (the logs' artifact).
       matrix:
         include:
-          - { os: ubuntu-latest, label: Ubuntu, channel: release, experimental: false }
-          - { os: ubuntu-latest, label: Ubuntu, channel: beta, experimental: false }
-          - { os: windows-latest, label: Windows, channel: release, experimental: false }
-          - { os: windows-latest, label: Windows, channel: beta, experimental: false }
-          - { os: macos-latest, label: macOS, channel: release, experimental: true }
-          - { os: macos-latest, label: macOS, channel: beta, experimental: true }
+          - { os: ubuntu-latest, label: Ubuntu, channel: release, experimental: false, shard: "", part: "" }
+          - { os: ubuntu-latest, label: Ubuntu, channel: beta, experimental: false, shard: "", part: "" }
+          - { os: windows-latest, label: Windows, channel: release, experimental: false, shard: "1/2", part: "-1of2" }
+          - { os: windows-latest, label: Windows, channel: release, experimental: false, shard: "2/2", part: "-2of2" }
+          - { os: windows-latest, label: Windows, channel: beta, experimental: false, shard: "1/2", part: "-1of2" }
+          - { os: windows-latest, label: Windows, channel: beta, experimental: false, shard: "2/2", part: "-2of2" }
+          - { os: macos-latest, label: macOS, channel: release, experimental: true, shard: "1/2", part: "-1of2" }
+          - { os: macos-latest, label: macOS, channel: release, experimental: true, shard: "2/2", part: "-2of2" }
+          - { os: macos-latest, label: macOS, channel: beta, experimental: true, shard: "1/2", part: "-1of2" }
+          - { os: macos-latest, label: macOS, channel: beta, experimental: true, shard: "2/2", part: "-2of2" }
 
     steps:
       - uses: actions/checkout@v7
@@ -158,6 +168,8 @@ jobs:
       # test/runtests.sh). The summary line is required, without failures.
       - name: Run tests
         shell: bash
+        env:
+          WV_TEST_SHARD: ${{ matrix.shard }}
         run: |
           set -o pipefail
           npm test 2>&1 | tee "$RUNNER_TEMP/wv-test.log"
@@ -199,7 +211,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-logs-${{ matrix.label }}-${{ matrix.channel }}
+          name: test-logs-${{ matrix.label }}-${{ matrix.channel }}${{ matrix.part }}
           path: ${{ runner.temp }}/wv-artifacts
           if-no-files-found: warn
           retention-days: 14

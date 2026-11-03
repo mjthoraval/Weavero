@@ -73,23 +73,31 @@ is allowed; plain `--force` and `reset --hard` are not.
 ## 5. Publish
 
 ```bash
-git push origin main                      # test.yml runs the Mocha suite on Ubuntu
-gh run watch <that test.yml run id> --exit-status
-git push origin vX.Y.Z
-gh workflow run release.yml -f tag=vX.Y.Z
+git push origin main      # test.yml: Ubuntu, Windows, macOS x Zotero stable, beta
+gh run watch <that test.yml run id> --exit-status    # in the BACKGROUND
+git push origin vX.Y.Z    # starts no workflow
+gh workflow run release.yml -f tag=vX.Y.Z   # checks test.yml green on the tag's commit, builds, publishes
 ```
 
-Main goes up FIRST and the tag only once test.yml is green: the suite on
-Ubuntu is the first CI run of every spec recorded or timed on the
-maintainer's machine since the last push, and in the release run itself a
-red gate means a moved tag (v0.22.2, 2026-10-22: two such specs, a `test:`
-commit on top of the bump, the tag re-pointed with `--force-with-lease`;
-same shape as v0.22.0). A red test.yml is fixed that way too -- the `test:`
-commit after the bump, the tag set on it -- never by a new version.
+Main goes up FIRST and the tag only once test.yml is green: test.yml is
+the first CI run of every spec recorded or timed on the maintainer's
+machine since the last push. A red test.yml is fixed by a `test:` commit
+after the bump, the tag set on it -- never by a new version (v0.22.2 and
+v0.22.0 re-pointed a pushed tag with `--force-with-lease`; v1.0.0-beta.1
+kept the tag local until green, four Test runs, 2026-11-03). A job that
+failed before any test ran (a rate-limited download, "error code: 1015")
+is rerun alone: `gh run rerun <id> --failed`. release.yml runs no suite
+since 2026-11-03: it refuses unless test.yml passed on that commit (any
+attempt). Every wait on CI runs in the background, with a short status to
+the maintainer at each step -- never chained 10-minute foreground waits
+(1.0.0-beta.1: "You should be replying to me faster").
 
-Monitor the run to conclusion (typecheck + tests + build + publish). Then
-verify: release exists with `weavero.xpi` attached, and the rolling
-`release` tag's `update.json` serves the new version.
+Monitor the run to conclusion (typecheck + the test.yml check + build +
+publish). Then verify: release exists with `weavero.xpi` attached, and the
+rolling `release` tag serves the new version -- `update.json` for a
+release; for a pre-release (a version with "-": the scaffold writes only
+`update-beta.json`, and the XPI's update_url points there), `update-beta.json`
+carries it and `update.json` still the last release.
 
 ## 6. Hand-edit the release notes
 

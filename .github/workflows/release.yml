@@ -5,14 +5,17 @@ name: Release
 # (build.ps1 + manual installs) without anything being uploaded
 # to GitHub until you explicitly ask.
 #
-# To cut a public release:
-#   1. Bump locally: `npm run release` (or just edit
-#      package.json + src/manifest.json and `git tag` the version).
-#   2. Push the tag: `git push origin v0.X.Y`
-#      → tests run via test.yml but nothing is published.
-#   3. Go to https://github.com/mjthoraval/Weavero/actions
-#      → pick "Release" → "Run workflow" → enter the tag name.
-#      → that triggers build → test → publish.
+# To cut a public release (the maintainer's /release skill, step 5):
+#   1. Push main: test.yml runs the suite on Ubuntu, Windows and macOS,
+#      each on Zotero stable and beta, for that commit.
+#   2. Once it is green, push the tag: `git push origin vX.Y.Z`
+#      (a tag push starts no workflow).
+#   3. Run this workflow on the tag (Actions → "Release" → "Run workflow",
+#      or `gh workflow run release.yml -f tag=vX.Y.Z`): it checks that
+#      test.yml passed on the tag's commit, then builds and publishes.
+#      It does not run the suite again (MJT 2026-11-03: the release run's
+#      single Ubuntu pass repeated what test.yml had just checked on six
+#      jobs, and cost ~10 minutes).
 
 on:
   workflow_dispatch:
@@ -25,6 +28,7 @@ permissions:
   contents: write     # create the release + upload assets
   issues: write       # for release-comment notifications
   pull-requests: write
+  actions: read       # read test.yml's result for the tag's commit
 
 # Same Node 24 opt-in as test.yml — see comment there.
 env:
@@ -57,11 +61,21 @@ jobs:
       - name: Type-check (regression gate)
         run: npm run typecheck
 
-      - name: Run unit tests (Node tier)
-        run: npm run test:unit
-
-      - name: Run tests (regression gate)
-        run: npm test
+      # The gate: test.yml green on this exact commit (its push run, any
+      # attempt -- a rerun of a flaky job counts). No suite run here.
+      - name: Require a green Test run on this commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha="$(git rev-parse HEAD)"
+          result="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow test.yml --commit "$sha" --limit 20 \
+            --json conclusion,status --jq '[.[] | select(.status == "completed") | .conclusion] | if index("success") then "success" else (.[0] // "none") end')"
+          echo "test.yml on $sha: $result"
+          if [ "$result" != "success" ]; then
+            echo "::error::test.yml has no green run on $sha (got: $result). Push main, wait for Test to pass, then run this workflow."
+            exit 1
+          fi
 
       - name: Build XPI
         run: npm run build

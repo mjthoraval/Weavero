@@ -12,9 +12,10 @@ name: Test
 # slowest one's.
 
 on:
+  # Main only: a release tag sits on a commit this has already passed, and
+  # release.yml checks that run instead of starting another (2026-11-03).
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
     branches: [main]
   # Manual trigger from the Actions tab — handy when you want to

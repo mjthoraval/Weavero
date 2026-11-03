@@ -203,8 +203,11 @@ const BL_CSS = [
     ".wv-bl-end-file { max-width: 6em; }",
     ".wv-bl-end-file + .wv-bl-end-place { flex-shrink: 0; }",
     // The arrow's cell; a Zotero link's arrow in the Zotero links' colour,
-    // a note citation's in the grey (blArrow; 2026-11-03).
-    ".wv-bl-arrow { flex: none; width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; color: var(--fill-tertiary, #8c8c8c); }",
+    // a note citation's in Zotero's primary text colour (blArrow; MJT
+    // 2026-11-03, "keeping white for the Note Citations", then "The white
+    // and colored links seem to be gray and full color": --fill-tertiary,
+    // white at 30%, read as grey beside the opaque Zotero-link colour).
+    ".wv-bl-arrow { flex: none; width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; color: var(--fill-primary, #222); }",
     ".wv-bl-arrow[data-mark='zotero'] { color: var(--wv-link-zotero, #8b4513); }",
     ".wv-bl-arrow svg { display: block; }",
     // A row whose first line is the one above it (`cont`): its own line only,

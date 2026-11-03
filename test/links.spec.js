@@ -637,20 +637,23 @@ describe("Weavero — Links (outgoing references)", function () {
         assert.deepEqual([...arrow.querySelectorAll("svg > path")].map((p) => p.getAttribute("d")), ["M7.5 1V9.5H12", "M15 9.5L12 7V12Z"], "the full arrow, stem and head");
         assert.closeTo(arrow.getBoundingClientRect().width, 16, 0.5, "its 16-px cell");
         // The colours, against probes: the Zotero links' (the colour the
-        // address is written in, `.wv-url-span.wv-link-zotero`) and the
-        // arrow's grey.
+        // address is written in, `.wv-url-span.wv-link-zotero`) and Zotero's
+        // primary text colour for a note citation's -- the "white" MJT asked
+        // for, full strength (MJT 2026-11-03, "The white and colored links
+        // seem to be gray and full color" -> "Ok for your suggestion": until
+        // 1.0.0-beta.2-dev.1 --fill-tertiary, white at 30%, read as grey).
         const probe = doc.createElementNS(XHTML, "span");
         probe.className = "wv-url-span wv-link-zotero";
         doc.documentElement.appendChild(probe);
         made.push(probe);
         const grey = doc.createElementNS(XHTML, "span");
-        grey.style.color = "var(--fill-tertiary, #8c8c8c)";
+        grey.style.color = "var(--fill-primary, #222)";
         doc.documentElement.appendChild(grey);
         made.push(grey);
         const colour = (el) => win.getComputedStyle(el).color;
         assert.notStrictEqual(colour(probe), colour(grey), "the two probes differ");
         assert.strictEqual(colour(arrow), colour(probe), "a Zotero link's arrow in the Zotero links' colour");
-        assert.strictEqual(colour(nRows[1].querySelector(".wv-bl-arrow")), colour(grey), "a citation's arrow in the grey");
+        assert.strictEqual(colour(nRows[1].querySelector(".wv-bl-arrow")), colour(grey), "a citation's arrow in the primary text colour");
         assert.strictEqual(colour(nRows[2].querySelector(".wv-bl-arrow")), colour(grey), "a quote's too");
         const icon = nHead.querySelector(".wv-count-group-head").firstElementChild;
         assert.closeTo(arrow.getBoundingClientRect().left, icon.getBoundingClientRect().left, 1, "the arrow starts under the heading's icon");

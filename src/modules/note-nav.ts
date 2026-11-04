@@ -602,13 +602,19 @@ class _NoteNavMixin {
         let panel: any = ne.querySelector(".wv-note-outline");
         // A panel built by a previous instance carries its listeners: rebuild.
         if (panel && panel.getAttribute("data-wv-tag") !== this._wvWireTag()) { panel.remove(); panel = null; }
-        const heads = this._wvNoteOutlineOn() ? this._wvNnHeadings(iframe) : [];
-        if (!heads.length) {
+        // A note with no headings keeps its panel and its toggle, the list
+        // saying so (MJT 2026-11-04, "I still want to be able to toggle the
+        // outline pane, even if the outline is empty"): the pane does not come
+        // and go from one note to the next. Off, or before the page's code is
+        // there (an empty <note-editor> never gets it), there is neither.
+        const wj = this._wvNnPage(iframe);
+        if (!this._wvNoteOutlineOn() || !wj || typeof wj.__wvNoteHeadings !== "function") {
             if (panel) panel.remove();
             this._wvNnEnsureToggle(ne, iframe, false);
             this._wvNnPageInset(iframe, 0);
             return;
         }
+        const heads = this._wvNnHeadings(iframe);
         const host = ne.querySelector("#note-editor");
         if (!host || iframe.parentElement !== host) return;
         if (!panel) panel = this._wvNoteOutlineBuild(ne, iframe);
@@ -632,6 +638,11 @@ class _NoteNavMixin {
         // the list: note whether a row had focus, give it back after.
         const hadFocus = !!(doc.activeElement && list.contains(doc.activeElement));
         list.replaceChildren();
+        if (!rows.length) {
+            wvHtmlEl(doc, "div", "wv-note-outline-empty", "No headings in this note.", list);
+            st.current = -2;
+            return;
+        }
         // Depth from the heading levels: a heading's parent is the nearest
         // earlier heading of a lower level (h1 > h3 is one step, not two).
         const stack: any[] = [];
@@ -823,7 +834,7 @@ class _NoteNavMixin {
      *  its own Toggle Context Pane when it draws one (note-editor
      *  toolbar.js; Zotero 11's note tabs leave that to the item pane's side
      *  bar). MJT 2026-11-04: "should follow the design of other panes".
-     *  There only while the note has an outline. A foreign node in React's
+     *  There for every note while the outline is on. A foreign node in React's
      *  `.start` container survives its reconciliation; it is re-ensured on
      *  every sync, and rebuilt when another instance made it (its listener
      *  belongs to that instance). */

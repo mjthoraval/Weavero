@@ -294,7 +294,10 @@ describe("Weavero — note outline", function () {
             "the new heading listed").to.be.ok;
     });
 
-    it("no panel without headings; the item pane starts with it folded away", async function () {
+    // MJT 2026-11-04 (screenshot of a note of bullet lists, no toggle): "I still
+    // want to be able to toggle the outline pane, even if the outline is
+    // empty." FAILED on 1.0.0-beta.2.
+    it("a note without headings keeps its toggle and its panel says so; the item pane starts with it folded away", async function () {
         win.Zotero_Tabs.select("zotero-pane");
         await ZP.selectItem(bare.id);
         const b = await wvT.waitFor(() => {
@@ -304,16 +307,33 @@ describe("Weavero — note outline", function () {
         }, 30000, 400);
         expect(b, "item-pane editor on the bare note").to.be.ok;
         // The sweep re-renders a note loaded into the same iframe.
-        expect(await wvT.waitFor(() => {
+        const empty = await wvT.waitFor(() => {
             try { wv._processNoteEditors(); } catch (e) {}
-            return b.ne.querySelector(".wv-note-outline") ? null : true;
-        }, 5000, 200), "no headings, no panel").to.equal(true);
-        expect(b.d.querySelector(".wv-nn-outline-toggle"), "...and no toggle in its toolbar").to.equal(null);
+            return b.ne.querySelector(".wv-note-outline .wv-note-outline-empty");
+        }, 5000, 200);
+        expect(empty && empty.textContent, "the panel says the note has none").to.equal("No headings in this note.");
+        expect(b.ne.querySelectorAll(".wv-note-outline-row").length, "no rows left from the note before").to.equal(0);
+        const bareBtn = b.d.querySelector(".toolbar .start > .wv-nn-outline-toggle");
+        expect(bareBtn, "Toggle Outline with no headings too").to.be.ok;
+        const bareHad = wv._wvNv.outline.open ? Object.assign({}, wv._wvNv.outline.open) : undefined;
+        try {
+            const barePanel = b.ne.querySelector(".wv-note-outline");
+            expect(barePanel.hasAttribute("data-wv-closed"), "folded away in the item pane").to.equal(true);
+            bareBtn.click();
+            expect(win.getComputedStyle(barePanel).display, "it opens the empty panel").to.not.equal("none");
+            expect(bareBtn.getAttribute("aria-pressed")).to.equal("true");
+            bareBtn.click();
+            expect(win.getComputedStyle(barePanel).display, "and closes it").to.equal("none");
+        }
+        finally {
+            wv._wvNv.outline.open = bareHad;
+            wv._wvNvSave();
+        }
         await ZP.selectItem(note.id);
         const p = await wvT.waitFor(() => {
             try { wv._processNoteEditors(); } catch (e) {}
             const e = editorFor(note, (ne) => !ne.classList.contains("note-tab"));
-            return e && e.ne.querySelector(".wv-note-outline") ? e : null;
+            return e && e.ne.querySelector(".wv-note-outline-row") ? e : null;
         }, 30000, 400);
         expect(p, "item-pane outline").to.be.ok;
         const panel = p.ne.querySelector(".wv-note-outline");

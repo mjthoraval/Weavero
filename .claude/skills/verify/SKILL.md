@@ -74,6 +74,14 @@ manifest changed, their rules files carry the extra checks.
   with `--profile …/.scaffold/test/profile`) — never the user's instance.
 - Frequency: popups specs after touching popup code; targeted specs for
   suite-covered machinery; the FULL suite only pre-release or on request.
+- A symptom seen ONLY in the runner is the runner's until a normal Zotero
+  shows it too (bridge-driven in the dev profile, and by hand). 2026-11-04:
+  "Zotero retains ~85 MB per reader opened and closed" was the scaffold's
+  Browser Toolbox (`--jsdebugger`, its `server.devtools` default) attached
+  to the runner's Zotero; an upstream report was drafted before the
+  hands-on check disproved it. `server.devtools` is now false in
+  zotero-plugin.config.ts; the full suite peaks near 2 GB. The quit
+  trace's MEM/MEMGROW lines (000-helpers) name the heavy specs.
 - SEQUENCE: hand the build over for the user's own validation FIRST, and
   run the suite after they confirm the feature works — not between the
   install and the handover. The runner launches its OWN Zotero, which

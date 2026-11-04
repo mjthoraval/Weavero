@@ -132,6 +132,17 @@ export default defineConfig({
     fluent: { prefixFluentMessages: false, prefixLocaleFiles: false, ignore: [], dts: false },
   },
 
+  server: {
+    // No Browser Toolbox on the runner's Zotero. The scaffold's default
+    // (devtools: true) launches the TEST Zotero with --jsdebugger too (its
+    // Tester passes ctx.server.devtools to the runner), and a toolbox
+    // attached to the process keeps every closed reader document alive:
+    // ~90 MB per reader tab opened and closed, 3.2 GB after thirty, 60 ghost
+    // windows -- the memory the CI suites died of (macOS's 7 GB runner,
+    // 2026-11-03). A normal Zotero releases them (2026-11-04 probes).
+    devtools: false,
+  },
+
   test: {
     // Targeted run: `WV_TEST_ENTRIES=test/foo.spec.js[,test/bar.spec.js] npm
     // test` runs only those specs in the temp-profile runner -- the way a

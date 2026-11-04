@@ -16,7 +16,7 @@
 // `<span class="wv-note-linkified wv-link-*" data-wv-href="…">`; note-editor.ts
 // colours `.wv-note-linkified` via CSS and launches `[data-wv-href]` on click.
 import { Decoration, DecorationSet } from "prosemirror-view";
-import { Plugin, PluginKey } from "prosemirror-state";
+import { Plugin, PluginKey, TextSelection } from "prosemirror-state";
 import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
 
 (function () {
@@ -24,10 +24,17 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
     // Bumped when this script gains behaviour chrome depends on; chrome
     // re-evals the bundle into an already-injected page when the page's
     // __wvNoteInjectV is older (re-eval is safe: install() dedups via the
-    // __wvLinkify spec marker and REPLACES a plugin from an older bundle).
-    // Chrome reads this number out of the bundle text -- keep the
+    // __wvLinkify / __wvFold spec markers and REPLACES plugins from an older
+    // bundle). Chrome reads this number out of the bundle text -- keep the
     // `INJECT_V = <n>` literal greppable.
-    const INJECT_V = 5;
+    // 6: heading folding + the heading API the note outline and heading
+    // links use (2026-11-03). 7: caret-to-heading / editor focus for the
+    // outline's Enter and Escape keys (2026-11-04). 8: briefly the note's
+    // undo / redo for the outline; dropped the same day (the outline does
+    // not edit), the number kept so no page runs an older bundle as newer.
+    // 9: the heading flash (outline click, heading link) as a decoration.
+    // 10: the fold arrow is Zotero's chevron-8 twisty.
+    const INJECT_V = 10;
 
     /** CROSS-BUNDLE DecorationSet interop (issue #37 -- "Search in notes
      *  does not find anything", root-caused 2026-08-27).
@@ -290,6 +297,351 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
         return new Plugin(spec);
     }
 
+    // ---- Heading folding (display only, 2026-11-03).
+    //
+    // A folded heading hides every top-level block after it, down to the
+    // next heading of the same or a higher level. The fold set lives in
+    // THIS plugin's state, as the positions of the folded headings, mapped
+    // through every edit -- nothing is written into the note: a fold
+    // transaction carries no steps, and Zotero saves only on `docChanged`
+    // (note-editor editor-core.js dispatchTransaction). Hiding is a
+    // `wv-fold-hidden` class that only Weavero's injected stylesheet styles,
+    // so when Weavero is disabled (the sheet removed) every folded block is
+    // back on screen even though this plugin stays in the page.
+    const FKEY = new PluginKey("wvNoteFold");
+
+    function viewOf(): any {
+        const ci: any = (window as any)._currentEditorInstance;
+        return ci && ci._editorCore && ci._editorCore.view;
+    }
+
+    function foldOn(): boolean {
+        return (window as any).__wvFoldEnabled === true;
+    }
+
+    /** Top-level blocks; which headings can fold (something under them
+     *  before the next heading of the same or a higher level); which blocks
+     *  the given folds hide; and, per hidden block, the folds hiding it. */
+    function foldLayout(doc: any, folded: number[]) {
+        const tops: any[] = [];
+        doc.forEach((node: any, offset: number) => { tops.push({ node, pos: offset }); });
+        const isHeading = (i: number) => tops[i] && tops[i].node.type.name === "heading";
+        const level = (i: number) => tops[i].node.attrs.level;
+        const foldable = new Set<number>();
+        for (let i = 0; i < tops.length; i++) {
+            if (!isHeading(i)) continue;
+            if (i + 1 < tops.length && !(isHeading(i + 1) && level(i + 1) <= level(i))) foldable.add(i);
+        }
+        const fset = new Set(folded);
+        const owners = new Map<number, number[]>();
+        for (let i = 0; i < tops.length; i++) {
+            if (!foldable.has(i) || !fset.has(tops[i].pos)) continue;
+            for (let j = i + 1; j < tops.length; j++) {
+                if (isHeading(j) && level(j) <= level(i)) break;
+                const o = owners.get(j);
+                if (o) o.push(tops[i].pos);
+                else owners.set(j, [tops[i].pos]);
+            }
+        }
+        return { tops, foldable, owners };
+    }
+
+    /** Keep only folds that still sit on a foldable top-level heading. */
+    function validFolds(doc: any, folded: number[]): number[] {
+        if (!folded.length) return folded;
+        const { tops, foldable } = foldLayout(doc, []);
+        const ok = new Set<number>();
+        for (const i of foldable) ok.add(tops[i].pos);
+        return folded.filter((p) => ok.has(p));
+    }
+
+    /** Every heading in document order (headings nested in a list or a
+     *  quote included); `ord` is the index in this list, the same order
+     *  as the editor DOM's `h1..h6`, which is how chrome addresses them. */
+    function headingsOf(doc: any): any[] {
+        const out: any[] = [];
+        doc.descendants((node: any, pos: number, parent: any) => {
+            if (node.type.name !== "heading") return true;
+            out.push({ ord: out.length, pos, node, top: parent === doc });
+            return false;
+        });
+        return out;
+    }
+
+    function arrowDOM(): any {
+        const s = document.createElement("span");
+        s.className = "wv-fold-toggle";
+        s.setAttribute("contenteditable", "false");
+        s.setAttribute("aria-hidden", "true");
+        // Zotero's chevron-8.svg, the twisty of its trees and of the reader
+        // outline; the note CSS turns it for a folded heading.
+        const NS = "http://www.w3.org/2000/svg";
+        const svg = document.createElementNS(NS, "svg");
+        svg.setAttribute("viewBox", "0 0 8 8");
+        const path = document.createElementNS(NS, "path");
+        path.setAttribute("d", "M0 2.70711L4 6.70711L8 2.70711L7.29289 2L4 5.29289L0.707107 2L0 2.70711Z");
+        svg.appendChild(path);
+        s.appendChild(svg);
+        return s;
+    }
+
+    function foldDecos(state: any): any {
+        const st: any = FKEY.getState(state);
+        const decos: any[] = [];
+        // The heading flash (outline click, heading link): the reader
+        // outline's text highlight, over the heading's TEXT only -- an inline
+        // decoration, so it scrolls with the note and edits nothing.
+        if (st && st.flash != null) {
+            const node = state.doc.nodeAt(st.flash);
+            if (node && node.type.name === "heading" && node.content.size) {
+                decos.push(Decoration.inline(st.flash + 1, st.flash + node.nodeSize - 1, { class: "wv-nn-flash" }));
+            }
+        }
+        if (!foldOn()) return decos.length ? DecorationSet.create(state.doc, decos) : null;
+        const { tops, foldable, owners } = foldLayout(state.doc, st ? st.folded : []);
+        const fset = new Set(st ? st.folded : []);
+        for (let i = 0; i < tops.length; i++) {
+            const t = tops[i];
+            const end = t.pos + t.node.nodeSize;
+            if (owners.has(i)) {
+                decos.push(Decoration.node(t.pos, end, { class: "wv-fold-hidden" }));
+                continue;
+            }
+            if (!foldable.has(i)) continue;
+            const folded = fset.has(t.pos);
+            decos.push(Decoration.node(t.pos, end, { class: folded ? "wv-fold-h wv-fold-folded" : "wv-fold-h" }));
+            decos.push(Decoration.widget(t.pos + 1, arrowDOM, {
+                side: -1, key: "wv-fold", ignoreSelection: true, stopEvent: () => true,
+            }));
+        }
+        // null, never our bundle's empty set (issue #37, see buildDecos).
+        return decos.length ? DecorationSet.create(state.doc, decos) : null;
+    }
+
+    function makeFoldPlugin(): any {
+        const spec: any = {
+            key: FKEY,
+            state: {
+                init: () => ({ folded: [], flash: null }),
+                apply(tr: any, prev: any, _old: any, next: any) {
+                    let folded: number[] = prev.folded;
+                    if (tr.docChanged && folded.length) {
+                        folded = folded.map((p) => {
+                            const r = tr.mapping.mapResult(p, 1);
+                            return r.deleted ? -1 : r.pos;
+                        }).filter((p) => p >= 0);
+                    }
+                    const m = tr.getMeta(FKEY);
+                    if (m) {
+                        if (Array.isArray(m.set)) folded = m.set.slice();
+                        if (typeof m.toggle === "number") {
+                            folded = folded.indexOf(m.toggle) >= 0
+                                ? folded.filter((p) => p !== m.toggle)
+                                : folded.concat([m.toggle]);
+                        }
+                        if (Array.isArray(m.unfold)) folded = folded.filter((p) => m.unfold.indexOf(p) < 0);
+                    }
+                    let flash: any = prev.flash;
+                    if (flash != null && tr.docChanged) {
+                        const r = tr.mapping.mapResult(flash, 1);
+                        flash = r.deleted ? null : r.pos;
+                    }
+                    if (m && Object.prototype.hasOwnProperty.call(m, "flash")) flash = m.flash;
+                    if (folded === prev.folded && flash === prev.flash) return prev;
+                    return {
+                        folded: folded === prev.folded ? prev.folded : validFolds(next.doc, folded),
+                        flash,
+                    };
+                },
+            },
+            props: {
+                decorations: foldDecos,
+            },
+            // The caret (an arrow key, a search hit, a click in a link
+            // target) landing inside a folded section opens it: text the
+            // user is typing into is never hidden.
+            appendTransaction(trs: any[], _old: any, next: any) {
+                try {
+                    if (!foldOn()) return null;
+                    const st: any = FKEY.getState(next);
+                    if (!st || !st.folded.length) return null;
+                    if (trs.some((t) => t.getMeta(FKEY))) return null;
+                    if (!trs.some((t) => t.selectionSet || t.docChanged)) return null;
+                    const idx = next.doc.resolve(next.selection.head).index(0);
+                    const own = foldLayout(next.doc, st.folded).owners.get(idx);
+                    if (!own) return null;
+                    return next.tr.setMeta(FKEY, { unfold: own }).setMeta("addToHistory", false);
+                } catch (e) { return null; }
+            },
+            // Tells chrome that the text or the folds changed (the outline
+            // and the fold store follow): a DOM event on the editor's
+            // document, which chrome hears through a keyed listener.
+            view() {
+                return {
+                    update(view: any, prev: any) {
+                        try {
+                            const doc = view.state.doc !== prev.doc;
+                            const a: any = FKEY.getState(view.state), b: any = FKEY.getState(prev);
+                            const fold = !!a && !!b && a.folded !== b.folded;
+                            if (!doc && !fold) return;
+                            const d: any = view.dom.ownerDocument;
+                            d.dispatchEvent(new (d.defaultView as any).CustomEvent("wvnotechange", {
+                                detail: (doc ? "doc" : "") + (fold ? " fold" : ""),
+                            }));
+                        } catch (e) {}
+                    },
+                    destroy() {},
+                };
+            },
+        };
+        spec.__wvFold = true;
+        spec.__wvFoldV = INJECT_V;
+        return new Plugin(spec);
+    }
+
+    /** Headings for chrome, as JSON: level, text, id, whether a fold can
+     *  start there, whether it is folded, whether a fold hides it. */
+    function headingsJSON(): string {
+        const view = viewOf();
+        if (!view) return "[]";
+        const st: any = FKEY.getState(view.state);
+        const folded: number[] = st ? st.folded : [];
+        const { tops, foldable, owners } = foldLayout(view.state.doc, folded);
+        const topIdx = new Map<number, number>();
+        tops.forEach((t: any, i: number) => topIdx.set(t.pos, i));
+        return JSON.stringify(headingsOf(view.state.doc).map((h: any) => {
+            const ti = h.top ? topIdx.get(h.pos) : view.state.doc.resolve(h.pos).index(0);
+            return {
+                ord: h.ord,
+                level: h.node.attrs.level,
+                text: h.node.textContent,
+                id: h.node.attrs.id || "",
+                top: h.top,
+                foldable: h.top && foldable.has(ti as number),
+                folded: h.top && folded.indexOf(h.pos) >= 0,
+                hidden: owners.has(ti as number),
+            };
+        }));
+    }
+
+    function foldToggle(ord: number): string {
+        const view = viewOf();
+        if (!view) return "no-view";
+        const h = headingsOf(view.state.doc)[ord];
+        if (!h || !h.top) return "no-heading";
+        const st: any = FKEY.getState(view.state);
+        const was = !!st && st.folded.indexOf(h.pos) >= 0;
+        let tr = view.state.tr.setMeta(FKEY, { toggle: h.pos }).setMeta("addToHistory", false);
+        if (!was) {
+            // A caret inside the section being hidden moves to the end of
+            // its heading, so the next keystroke never lands out of sight.
+            const lay = foldLayout(view.state.doc, (st ? st.folded : []).concat([h.pos]));
+            const idx = view.state.doc.resolve(view.state.selection.head).index(0);
+            const own = lay.owners.get(idx);
+            if (own && own.indexOf(h.pos) >= 0) {
+                tr = tr.setSelection(TextSelection.create(tr.doc, h.pos + h.node.nodeSize - 1));
+            }
+        }
+        view.dispatch(tr);
+        return was ? "unfolded" : "folded";
+    }
+
+    /** Fold exactly the headings at these ordinals (chrome's restore). */
+    function foldSet(ordsJSON: string): number {
+        const view = viewOf();
+        if (!view) return -1;
+        let ords: number[] = [];
+        try { ords = JSON.parse(String(ordsJSON)) || []; } catch (e) {}
+        const hs = headingsOf(view.state.doc);
+        const set = ords.map((o) => hs[o]).filter((h) => h && h.top).map((h) => h.pos);
+        view.dispatch(view.state.tr.setMeta(FKEY, { set }).setMeta("addToHistory", false));
+        const st: any = FKEY.getState(view.state);
+        return st ? st.folded.length : 0;
+    }
+
+    /** Open whatever folds hide the heading at `ord`; the number opened. */
+    function foldReveal(ord: number): number {
+        const view = viewOf();
+        if (!view) return 0;
+        const h = headingsOf(view.state.doc)[ord];
+        const st: any = FKEY.getState(view.state);
+        if (!h || !st || !st.folded.length) return 0;
+        const idx = view.state.doc.resolve(h.pos).index(0);
+        const own = foldLayout(view.state.doc, st.folded).owners.get(idx);
+        if (!own) return 0;
+        view.dispatch(view.state.tr.setMeta(FKEY, { unfold: own }).setMeta("addToHistory", false));
+        return own.length;
+    }
+
+    /** One tag per editor view: chrome restores a note's folds once per
+     *  view, and a note loaded into the same iframe gets a new view. */
+    function viewTag(): string {
+        const view: any = viewOf();
+        if (!view) return "";
+        if (!view.__wvFoldTag) view.__wvFoldTag = Math.random().toString(36).slice(2, 10);
+        return view.__wvFoldTag;
+    }
+
+    /** The heading's `id`, written once when it has none or shares it with
+     *  another heading (splitting a heading copies its attrs). This IS an
+     *  edit to the note -- the anchor a heading link needs -- so a read-only
+     *  editor refuses it (editor-core throws on a doc change there). */
+    function headingEnsureId(ord: number): string {
+        const view: any = viewOf();
+        if (!view) return JSON.stringify({ error: "no-view" });
+        const hs = headingsOf(view.state.doc);
+        const h = hs[ord];
+        if (!h) return JSON.stringify({ error: "no-heading" });
+        const cur = h.node.attrs.id || "";
+        if (cur && !hs.some((o: any) => o !== h && o.node.attrs.id === cur)) {
+            return JSON.stringify({ id: cur, written: false });
+        }
+        const ci: any = (window as any)._currentEditorInstance;
+        const ro = !view.editable || !!(ci && ci._editorCore && ci._editorCore.readOnly);
+        if (ro) return JSON.stringify({ error: "read-only" });
+        let id = "";
+        do { id = "wv-" + Math.random().toString(36).slice(2, 10); }
+        while (hs.some((o: any) => o.node.attrs.id === id));
+        view.dispatch(view.state.tr.setNodeMarkup(h.pos, null,
+            Object.assign({}, h.node.attrs, { id })).setMeta("addToHistory", false));
+        return JSON.stringify({ id, written: true });
+    }
+
+    /** The outline's Enter: open the folds over the heading, put the caret
+     *  at its end, focus the editor. No doc change (nothing saved). */
+    function headingFocus(ord: number): boolean {
+        const view: any = viewOf();
+        if (!view) return false;
+        foldReveal(ord);
+        const h = headingsOf(view.state.doc)[ord];
+        if (!h) return false;
+        view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, h.pos + h.node.nodeSize - 1)));
+        view.focus();
+        return true;
+    }
+
+    /** Flash the heading at `ord` (-1: take the flash down). No doc change. */
+    function headingFlash(ord: number): boolean {
+        const view: any = viewOf();
+        if (!view) return false;
+        let pos: any = null;
+        if (ord >= 0) {
+            const h = headingsOf(view.state.doc)[ord];
+            if (!h) return false;
+            pos = h.pos;
+        }
+        view.dispatch(view.state.tr.setMeta(FKEY, { flash: pos }).setMeta("addToHistory", false));
+        return true;
+    }
+
+    /** The outline's Escape: back to the editor, caret where it was. */
+    function editorFocus(): boolean {
+        const view: any = viewOf();
+        if (!view) return false;
+        view.focus();
+        return true;
+    }
+
     function install(): string {
         const ci: any = (window as any)._currentEditorInstance;
         const view: any = ci && ci._editorCore && ci._editorCore.view;
@@ -302,17 +654,22 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
         hardenPluginViewDestroys(view);
         wrapUpdateStateForHardening(view);
         const has = () => view.state.plugins.some((p: any) => p.spec && p.spec.__wvLinkify
-            && Number(p.spec.__wvLinkifyV || 0) >= INJECT_V);
+            && Number(p.spec.__wvLinkifyV || 0) >= INJECT_V)
+            && view.state.plugins.some((p: any) => p.spec && p.spec.__wvFold
+            && Number(p.spec.__wvFoldV || 0) >= INJECT_V);
         if (has()) return "already";
-        // A plugin from an OLDER bundle (missing/lower __wvLinkifyV) is
-        // dropped in the same reconfigure that adds the fresh one -- its
-        // decorations() closure is the code being fixed (issue #37: the
-        // v4 closure returned cross-bundle empties and unstamped sets).
+        // Plugins from an OLDER bundle (missing/lower version) are dropped
+        // in the same reconfigure that adds the fresh ones -- their
+        // closures are the code being replaced (issue #37: the v4 closure
+        // returned cross-bundle empties and unstamped sets). Linkify and
+        // folding go in TOGETHER: every reconfigure tears down and rebuilds
+        // every plugin view, the step that broke editors when two plugins
+        // inject (see shimPluginStateDestroys), so never one per feature.
         try {
             view.updateState(view.state.reconfigure({
                 plugins: view.state.plugins
-                    .filter((p: any) => !(p.spec && p.spec.__wvLinkify))
-                    .concat(makePlugin()),
+                    .filter((p: any) => !(p.spec && (p.spec.__wvLinkify || p.spec.__wvFold)))
+                    .concat([makePlugin(), makeFoldPlugin()]),
             }));
             return "installed";
         } catch (e: any) {
@@ -329,6 +686,18 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
     (window as any).__wvInstallNoteLinkify = install;
     (window as any).__wvHealNotePluginViews = healPluginViews;
     (window as any).__wvNoteInjectV = INJECT_V;
+    // Heading API (folding, the note outline, heading links). Chrome calls
+    // these through the iframe's wrappedJSObject and passes only strings
+    // and numbers; answers are strings (JSON) for the same reason.
+    (window as any).__wvNoteHeadings = headingsJSON;
+    (window as any).__wvFoldToggle = foldToggle;
+    (window as any).__wvFoldSet = foldSet;
+    (window as any).__wvFoldReveal = foldReveal;
+    (window as any).__wvFoldViewTag = viewTag;
+    (window as any).__wvHeadingEnsureId = headingEnsureId;
+    (window as any).__wvHeadingFocus = headingFocus;
+    (window as any).__wvEditorFocus = editorFocus;
+    (window as any).__wvHeadingFlash = headingFlash;
     // Force a re-scan: `decorations` reads __wvLinkifyRegexSrc fresh each call,
     // so dispatching an empty transaction re-runs it under the current toggle
     // state (chrome calls this after a "Show:" toggle changes, and once after

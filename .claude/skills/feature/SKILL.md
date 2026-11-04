@@ -45,6 +45,14 @@ issues and `docs/`) for prior decisions touching the same surface.
 Never assert how Zotero/Firefox behaves from memory — verify in the mirror or
 live via `zotero_execute_js`, or label it a guess.
 
+Grep ALL of `src/` for the feature's own name (`_wv<Feature>`, `wv-<feature>`)
+before writing a method, not just the bundle it "should" live in: every
+module lands on ONE prototype, so a later `defineProperties` silently wins.
+2026-11-03: a new `_wvNoteOutlineRender` in note-nav.ts was overridden by
+reader.ts's reader-window-only note outline (same name, never found because
+only note-editor.ts had been grepped) and the panel never rendered; the
+plan had also claimed "nothing exists" for an outline Weavero already had.
+
 Then check the capability isn't already done or under way: open upstream
 issues and PRs on zotero/zotero and zotero/reader (an open upstream PR for the
 same thing changes the plan — the undo work had to account for PR #6021), and

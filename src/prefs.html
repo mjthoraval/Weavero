@@ -972,7 +972,7 @@
   <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-in="extras outline">
     <checkbox label="Highlight the heading text when clicking an outline entry" native="true"
       preference="extensions.zotero.weavero.enableOutlineTextHighlight"/>
-    <html:p class="wv-desc">Flashes the actual heading text on click, in PDFs, EPUBs and snapshots; for embedded PDF outlines Weavero finds the heading on the page. Best-effort matching — scanned pages or unusual fonts may just jump without a highlight.</html:p>
+    <html:p class="wv-desc">Flashes the actual heading text on click, in PDFs, EPUBs and snapshots, and in a note from its outline; for embedded PDF outlines Weavero finds the heading on the page. Best-effort matching — scanned pages or unusual fonts may just jump without a highlight.</html:p>
   </vbox>
   <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-in="extras outline">
     <checkbox label="Show page numbers next to outline entries" native="true"
@@ -1015,6 +1015,21 @@
       <html:div class="wv-okey-row" data-wv-okey="anchorTop"><html:span class="wv-okey-label">Top of page (PDF)</html:span><html:input type="text" class="wv-okey-input" readonly="readonly"/><html:button class="wv-okey-clear" type="button">Remove</html:button><html:span class="wv-okey-msg"/></html:div>
       <html:div class="wv-okey-row" data-wv-okey="anchorBottom"><html:span class="wv-okey-label">Bottom of page (PDF)</html:span><html:input type="text" class="wv-okey-input" readonly="readonly"/><html:button class="wv-okey-clear" type="button">Remove</html:button><html:span class="wv-okey-msg"/></html:div>
     </html:div>
+  </vbox>
+
+  <!-- ============================ Notes -->
+  <groupbox class="wv-subsec wv-head" data-gated-by="enableVisualExtras" data-wv-head="notenav" data-wv-in="extras">
+    <label><html:h2>Notes</html:h2></label>
+  </groupbox>
+  <vbox class="wv-block" data-gated-by="enableVisualExtras enableLinksAndRelations enableNotes" data-wv-in="extras notenav">
+    <checkbox label="Outline beside notes" native="true"
+      preference="extensions.zotero.weavero.noteOutline"/>
+    <html:p class="wv-desc">A panel listing the note&#8217;s headings to the left of the note, with the section you are reading marked. Click a heading to go there; right-click it to copy a link to it. Open by default in note tabs and windows, folded away in the item pane and beside a reader &#8212; the sidebar button at the left end of the note&#8217;s toolbar shows or hides it. With Better Notes installed, this outline replaces its left pane in note tabs; untick this to get that pane back, with its mind and bubble maps.</html:p>
+  </vbox>
+  <vbox class="wv-block wv-block-end" data-gated-by="enableVisualExtras enableLinksAndRelations enableNotes" data-wv-in="extras notenav">
+    <checkbox label="Fold arrows on note headings" native="true"
+      preference="extensions.zotero.weavero.noteFolding"/>
+    <html:p class="wv-desc">An arrow in the margin before each heading hides everything under it, down to the next heading of the same or a higher level. Only the view changes &#8212; the note itself is untouched, and anyone without Weavero sees the whole note. Folds are remembered per note on this computer. Both options need <html:em>Links &amp; Relations &#8594; Notes: Editor</html:em>.</html:p>
   </vbox>
 
   <!-- ============================ Reader annotations pane -->

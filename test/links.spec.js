@@ -672,7 +672,10 @@ describe("Weavero — Links (outgoing references)", function () {
         assert.isAbove(arrows.length, 0, "Backlinks rows with an arrow");
         assert.deepEqual(arrows.map((a) => a.dataset.dir), arrows.map(() => "up"), "...all up");
         assert.isTrue(arrows.every((a) => a.dataset.mark === "zotero" || a.dataset.mark === "cite"), "...a Zotero link or a note citation each");
-        assert.deepEqual([...arrows[0].querySelectorAll("svg > path")].map((p) => p.getAttribute("d")), ["M13.5 9.5H7.5V4", "M7.5 1L5 4H10Z"], "the full up arrow");
+        // The Links arrow traced backwards, the head on top of the stem, on
+        // the target's side (MJT 2026-11-04; backlinks.spec.js holds the
+        // red-on-dev.4 check).
+        assert.deepEqual([...arrows[0].querySelectorAll("svg > path")].map((p) => p.getAttribute("d")), ["M15 9.5H7.5V4", "M7.5 1L5 4H10Z"], "the full up arrow: the Links line backwards, the head on top");
         for (const a of arrows) assert.strictEqual(colour(a), colour(a.dataset.mark === "zotero" ? probe : grey), "a Backlinks arrow coloured by its kind: " + a.dataset.mark);
     });
 

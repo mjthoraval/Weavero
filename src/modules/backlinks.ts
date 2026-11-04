@@ -1195,8 +1195,18 @@ function blAttOf(ann: any): string {
 /** The arrow at the start of an item-pane row's second line, in the 16-px
  *  column under the first line's icon: "down" from the line above to this
  *  one (Links: the source to its target), "up" from this one to the line
- *  above (Backlinks: the source to this item). One drawing, its head at
- *  either end. SVG by createElementNS: chrome documents sanitize markup.
+ *  above (Backlinks: the source to this item). ONE drawing -- the stem
+ *  from the line above, the corner, the run towards this line, traced
+ *  either way -- with the same head on the TARGET's side: at the run's end
+ *  pointing at this line (down), on top of the stem pointing at the line
+ *  above (up). MJT
+ *  2026-11-03 ("I would expect the design of the link and backlink arrows
+ *  in the item pane to be exactly the same, except the direction of the
+ *  arrow. They feel different now") and 2026-11-04 ("The arrow should
+ *  still be on the target side", after dev.5 put the up arrow's head at
+ *  the corner's end pointing back): until dev.4 the up arrow had its own
+ *  stem, from the right and only up to the head. SVG by createElementNS:
+ *  chrome documents sanitize markup.
  *  `mark`: the reference's kind, which colours the arrow -- a Zotero
  *  link's in the Zotero links' colour (`--wv-link-zotero`, the colour its
  *  address is written in everywhere), a note citation's in the arrow's
@@ -1218,7 +1228,9 @@ function blArrow(doc: any, dir: "down" | "up", mark?: WvRefMark | null): any {
     svg.setAttribute("width", "16");
     svg.setAttribute("height", "16");
     const line = doc.createElementNS(NS, "path");
-    line.setAttribute("d", dir === "down" ? "M7.5 1V9.5H12" : "M13.5 9.5H7.5V4");
+    // The same polyline both ways, (7.5,1) - (7.5,9.5) - (15,9.5), the head
+    // filling its last 3 px at the target's end.
+    line.setAttribute("d", dir === "down" ? "M7.5 1V9.5H12" : "M15 9.5H7.5V4");
     line.setAttribute("fill", "none");
     line.setAttribute("stroke", "currentColor");
     const head = doc.createElementNS(NS, "path");

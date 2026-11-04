@@ -490,7 +490,15 @@ export const PLUGIN_CSS = [
     ".wv-scope-own .wv-count-group-head { gap: 4px; padding: 2px 4px; border-radius: 5px; }",
     "collapsible-section[data-wv-scope-wide] > .body { margin-inline-start: 16px; position: relative; }",
     "collapsible-section[data-wv-scope-wide] > .body::before { content: ''; position: absolute; inset-inline-start: 7px; top: -1px; bottom: 0; width: 1px; background: " + WV_GUIDE_COLOR + "; }",
-    ".wv-count-popup .wv-bl-body { min-width: 260px; max-width: 460px; }",
+    // The Backlinks and Links popups take the width of their longest line,
+    // as the Tags, Related and External Links popups do, between the popup
+    // box's 300- and 520-px limits, each line still cut there (MJT
+    // 2026-11-04: "The counts popup do not have the same width. Why?" ->
+    // "Let Backlinks and Links grow like the others"). Their lines carry the
+    // item pane's `contain: inline-size` (backlinks.ts BL_CSS, dev.52), which
+    // gave the box no width: both opened at 300 px whatever they listed.
+    // Lifted here, in the popup only; the pane keeps it.
+    ".wv-count-popup :is(.wv-bl-owner, .wv-bl-end, .wv-bl-head, .wv-bl-target-hl, .wv-bl-hgroup > .wv-count-group-head) { contain: none; }",
     // Link colours via CSS custom properties — `:root.wv-ui-dark`
     // swaps the values, so `var(--wv-link-*)` references everywhere
     // (class rules + inline styles set via JS) react to theme
@@ -2662,6 +2670,28 @@ export const PLUGIN_CSS = [
     "#zotero-collections-splitter[state=\"collapsed\"][wv-thin][data-wv-collapse] {",
     "  pointer-events: none !important;",
     "}",
+    // The OPEN splitter with "stops at minimum width" on: Zotero's
+    // `splitter-invisible-size` (_splitter.scss), which it keys on
+    // `[collapse="before"]` -- the attribute the setting takes away. It
+    // overlaps the items pane and takes no room; its 1-px border is the
+    // edge between the panes. Without it the splitter took its 5 px (8 in
+    // the comfortable density) and showed the window background: the
+    // pane's own colour on Windows, a dark strip on Linux, where Zotero
+    // leaves #main-window to the system's background (issue #63,
+    // 2026-11-04). Mirrored from Zotero, the RTL case too.
+    "#zotero-collections-splitter[data-wv-collapse=\"before\"]:not([orient=\"vertical\"]):not([state=\"collapsed\"]) {",
+    "  border-right: 0; border-left: var(--material-border-quarternary);",
+    "  margin-right: calc(1px - var(--draggable-size)); margin-left: -1px;",
+    "}",
+    "#zotero-collections-splitter[data-wv-collapse=\"before\"]:not([orient=\"vertical\"]):not([state=\"collapsed\"]):-moz-locale-dir(rtl) {",
+    "  border-left: 0; border-right: var(--material-border-quarternary);",
+    "  margin-left: calc(1px - var(--draggable-size)); margin-right: -1px;",
+    "}",
+    // The note outline in the place of Better Notes' left pane while it is on
+    // (note-nav.ts _wvNnMarkDoc; MJT 2026-11-04): BN's outline pane and its
+    // splitter in a note tab (3.3.3 patches/noteEditor.ts). Off, or without
+    // Weavero, nothing here applies and the pane is as BN left it.
+    ":root[data-wv-note-outline] #bn-outline-container, :root[data-wv-note-outline] #bn-outline-splitter { display: none !important; }",
     // Issue #58: the Tag Selector's handle -- a pill just under Zotero's
     // tags splitter (pane.ts _wvApplyTagSelectorHandle). A XUL <splitter>
     // paints neither children nor generated content (verified 2026-10-14: a

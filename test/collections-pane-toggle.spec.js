@@ -137,6 +137,41 @@ describe("Weavero — collections-pane toggle button", () => {
         finally { Zotero.Prefs.set("weavero.paneDragNoCollapse", saved === undefined ? true : !!saved); }
     });
 
+    // Issue #63 (2026-11-04, GNOME, Zotero 11.0-beta.3): "After enabling
+    // Weavero, a gap appears between Collections Pane and top bar of middle
+    // pane." Zotero's _splitter.scss makes the open collections splitter
+    // take no room (`splitter-invisible-size`: negative margins, a 1-px
+    // border as the pane edge) only through `[collapse="before"]`, the
+    // attribute "stops at the minimum width" takes away: the splitter then
+    // took its 5 px and showed the window background -- the pane's own
+    // colour on Windows, Linux's darker one (#main-window background-color:
+    // initial). With the setting on, the open splitter keeps Zotero's
+    // geometry. FAILED on 1.0.0-beta.2-dev.7 (a 5-px gap, margins 0).
+    it("the open collections splitter takes no room with the setting on, as with Zotero's snap (issue #63)", async () => {
+        if (pane.hasAttribute("collapsed")) wv._wvCollectionsPaneToggle(win);
+        const ls = doc.getElementById("zotero-layout-switcher");
+        const geo = () => {
+            const c = win.getComputedStyle(splitter);
+            return {
+                gap: Math.round(ls.getBoundingClientRect().left - pane.getBoundingClientRect().right),
+                margins: c.marginLeft + " " + c.marginRight,
+                borders: c.borderLeftWidth + " " + c.borderLeftStyle + " " + c.borderRightWidth + " " + c.borderRightStyle,
+                edge: c.borderLeftColor,
+            };
+        };
+        const saved = Zotero.Prefs.get("weavero.paneDragNoCollapse");
+        try {
+            Zotero.Prefs.set("weavero.paneDragNoCollapse", false);
+            await waitFor(() => splitter.getAttribute("collapse") === "before", 3000, "Zotero's snap");
+            const zotero = geo();
+            assert.strictEqual(zotero.gap, 0, "Zotero: the items pane meets the collections pane");
+            Zotero.Prefs.set("weavero.paneDragNoCollapse", true);
+            await waitFor(() => splitter.getAttribute("data-wv-collapse") === "before" && !splitter.hasAttribute("collapse"), 3000, "the snap taken away");
+            assert.deepEqual(geo(), zotero, "the same splitter geometry with the setting on");
+        }
+        finally { Zotero.Prefs.set("weavero.paneDragNoCollapse", saved === undefined ? true : !!saved); }
+    });
+
     it("collapsed splitters with no way to drag back open take no pointer (no dead resize cursor; MJT 2026-10-05)", async () => {
         const pe = (el) => win.getComputedStyle(el).pointerEvents;
         const is = doc.getElementById("zotero-items-splitter");

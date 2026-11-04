@@ -421,8 +421,7 @@ const WIRING2_EXPECTED = {
         ],
         classes: [
             "wv-active", "wv-bl-body", "wv-hamburger-btn", "wv-layout-item x4", "wv-layout-menu",
-            "wv-layout-sep", "wv-lk-body", "wv-note-outline-editorbox", "wv-note-outline-empty", "wv-note-outline-hbox",
-            "wv-note-outline-header", "wv-note-outline-pane", "wv-note-outline-splitter", "wv-reader-menu x6",
+            "wv-layout-sep", "wv-lk-body", "wv-reader-menu x6",
             "wv-reader-menubar-icon", "wv-reader-pane-splitter", "wv-window-close", "wv-window-control x3",
             "wv-window-controls", "wv-window-drag-spacer", "wv-window-max", "wv-window-min",
             "wv-window-newtab-btn", "wv-window-tab", "wv-window-tab-close", "wv-window-tab-icon",
@@ -549,8 +548,7 @@ const WIRING2_EXPECTED = {
         ],
         classes: [
             "wv-active", "wv-bl-body", "wv-hamburger-btn", "wv-layout-item x4", "wv-layout-menu",
-            "wv-layout-sep", "wv-lk-body", "wv-note-outline-editorbox", "wv-note-outline-empty", "wv-note-outline-hbox",
-            "wv-note-outline-header", "wv-note-outline-pane", "wv-note-outline-splitter", "wv-reader-menu x6",
+            "wv-layout-sep", "wv-lk-body", "wv-reader-menu x6",
             "wv-reader-menubar-icon", "wv-reader-pane-splitter", "wv-window-close", "wv-window-control x3",
             "wv-window-controls", "wv-window-drag-spacer", "wv-window-max", "wv-window-min",
             "wv-window-newtab-btn", "wv-window-tab", "wv-window-tab-close", "wv-window-tab-icon",

@@ -1016,4 +1016,16 @@ export const WV_PREF_OBSERVERS: WvPrefObserver[] = [
             }
         },
     },
+    // Note outline + heading folding (note-nav.ts, 2026-11-03): every wired
+    // note editor re-reads both switches live.
+    {
+        keys: ["extensions.zotero.weavero.noteOutline", "extensions.zotero.weavero.noteFolding", "extensions.zotero.weavero.enableVisualExtras"],
+        run(p: any, data: string) {
+            if (data === "extensions.zotero.weavero.noteOutline"
+                || data === "extensions.zotero.weavero.noteFolding"
+                || data === "extensions.zotero.weavero.enableVisualExtras") {
+                try { p._wvNoteNavRefreshAll(); } catch (e) {}
+            }
+        },
+    },
 ];

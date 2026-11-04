@@ -591,6 +591,17 @@ describe("Weavero — backlinks index, section, column and chip", function () {
         assert.notInclude(rows.map((r) => [end(r, "from"), end(r, "to")]).flat(), p1, "the item not named on a row");
         assert.isNull(host.querySelector(".wv-bl-owner"), "no source headings: the first line names the source");
         assert.isTrue(rows.every((r) => r.querySelector(".wv-bl-arrow[data-dir='up']")), "an arrow up on each row");
+        // One drawing for both sections, the head on the target's side (MJT
+        // 2026-11-03, "I would expect the design of the link and backlink
+        // arrows in the item pane to be exactly the same, except the
+        // direction of the arrow"; 2026-11-04, "The arrow should still be on
+        // the target side"): the Links arrow's polyline (links.spec.js,
+        // "M7.5 1V9.5H12" + its head to x=15) traced backwards, from x=15
+        // to the top, the head on top of the stem pointing at the line
+        // above. Red on dev.4: a tail from x=13.5, not the Links run's
+        // x=15; red on dev.5: the head at the run's end pointing back.
+        assert.deepEqual([...rows[0].querySelector(".wv-bl-arrow[data-dir='up'] svg").querySelectorAll("path")].map((p) => p.getAttribute("d")),
+            ["M15 9.5H7.5V4", "M7.5 1L5 4H10Z"], "the Links arrow traced backwards, the head on top");
         assert.isOk(rows.find((r) => r._wvBlSrcID === N2.id).querySelector(".wv-bl-from > .wv-bl-kind.annotation-icon"), "the source's line, the source's icon");
     });
 

@@ -550,6 +550,20 @@ name to a Zotero object, window, or document.
   `rowProvider.getRow(i)` (memory `reference_weavero_filter_rowprovider_count`;
   the Has Backlinks check read 441 raw rows for a 29-row view on
   2026-10-22 and chased a bug that was not there).
+- Before removing or renaming a Zotero attribute to change a BEHAVIOUR,
+  grep Zotero's scss for selectors on it and keep what they draw. The
+  "stops at minimum width" setting removes the collections splitter's
+  `collapse="before"`, and _splitter.scss keys the open splitter's
+  zero-room geometry on exactly that attribute: a 5-px strip of window
+  background, invisible on Windows (the same colour), dark on Linux
+  (issue #63, 2026-11-04). Guard: collections-pane-toggle.spec.js "the
+  open collections splitter takes no room".
+- A Zotero pane Weavero builds outside `#zotero-pane` (the reader-window
+  item pane, any pane in a window Zotero did not lay out) is passed to
+  `Zotero.UIProperties.registerRoot`, as zoteroPane.js does for
+  `#zotero-context-pane`: View -> Font Size and the density setting reach
+  only registered roots (issue #63, 2026-11-04). Guard:
+  reader-window-pane-ui.spec.js.
 
 ## fix: commits name their guard
 

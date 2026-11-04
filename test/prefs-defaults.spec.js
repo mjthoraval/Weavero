@@ -49,7 +49,9 @@ describe("Weavero — Settings prefs have registered defaults", () => {
         // Pinned section headers in the item pane (2026-11-03).
         "itemPaneStickyHeaders",
         // The Tags and Related sections' counts and lists (2026-11-03).
-        "enableTagsRelatedScope"];
+        "enableTagsRelatedScope",
+        // Notes: the outline beside the editor and the heading folds (2026-11-03).
+        "noteOutline", "noteFolding"];
         // The item pane sections' paneScope.* prefs (levels, kinds, "always
         // shown" pins) had their grid here from dev.114 to dev.161 and are
         // off the pane since (MJT 2026-11-03); registered still
@@ -73,6 +75,7 @@ describe("Weavero — Settings prefs have registered defaults", () => {
         "enableTagsCountAuto", "enableUriUtilities", "enableVisualExtras", "enableZoteroLinks", "inlineLinks",
         "outlinePageNumbers", "readerItemPane", "readerOutlineTakeover", "recolorAmLinks",
         "showLibraryBookmarksInReader", "windowIcons", "itemPaneStickyHeaders", "enableTagsRelatedScope",
+        "noteOutline", "noteFolding",
         "paneScope.tags.own", "paneScope.related.own", "paneScope.links.note", "paneScope.links.ann", "paneScope.links.loop", "paneScope.links.broken",
         "paneScope.backlinks.own", "paneScope.backlinks.loop",
         "paneScope.links.zlinks", "paneScope.links.citations", "paneScope.backlinks.zlinks", "paneScope.backlinks.citations"];

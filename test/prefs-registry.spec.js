@@ -156,7 +156,10 @@ describe("Weavero — default-branch registrations (characterization)", () => {
         // Pinned section headers in the item pane (2026-11-03).
         "itemPaneStickyHeaders": true,
         "newMainWindow": true,
+        // Notes: the heading folds and the outline (2026-11-03).
+        "noteFolding": true,
         "noteOpenInDeckWindow": true,
+        "noteOutline": true,
         "outlineKey.anchorBottom": "s:",
         "outlineKey.anchorTop": "s:",
         "outlineKey.pin": "s:",

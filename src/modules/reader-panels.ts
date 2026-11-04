@@ -702,8 +702,11 @@ function wvEditUndoMenuRestore(popup: any) {
         }
     } catch (_) {}
 }
-// Down-chevron twisty (rotated -90deg when collapsed via CSS).
-const RP_OUTLINE_CHEVRON = '<svg viewBox="0 0 10 10" fill="currentColor"><path d="M1 3.5L5 7.5L9 3.5Z"/></svg>';
+// Down-chevron twisty (rotated -90deg when collapsed via CSS) and the source /
+// sort carets: the reader's own chevron-8.svg, the glyph of its outline
+// toggle and its dropdowns (outline-view.js, custom-select.js) -- not a
+// drawn triangle (MJT 2026-11-04).
+const RP_OUTLINE_CHEVRON = '<svg viewBox="0 0 8 8" fill="currentColor"><path d="M0 2.70711L4 6.70711L8 2.70711L7.29289 2L4 5.29289L0.707107 2L0 2.70711Z"/></svg>';
 // Revert (curved arrow) + small ✕ (delete a row / menu item).
 const RP_OUTLINE_REVERT = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 8a5 5 0 1 1 1.6 3.7"/><path d="M3 4.5V8h3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const RP_OUTLINE_X = '<svg viewBox="0 0 12 12" fill="currentColor"><path d="M2.4 1.4L6 5l3.6-3.6 1 1L7 6l3.6 3.6-1 1L6 7l-3.6 3.6-1-1L5 6 1.4 2.4z"/></svg>';
@@ -24903,6 +24906,28 @@ class _ReaderPanelsMixin {
                 if (!pv._wvOutlineOrigNavigate) pv._wvOutlineOrigNavigate = pv.navigate.bind(pv);
                 const origNavigate = pv._wvOutlineOrigNavigate;
                 pv.navigate = function (location: any, options: any) {
+                    // An annotation the view does not hold: the native
+                    // navigate looks it up in the VIEW's list and does nothing
+                    // when it is not there, while the reader has already
+                    // selected it in the sidebar, so a link "selected the
+                    // right annotation but the PDF stayed on its page" (issue
+                    // #60, qrkks 2026-11-04). Hide Annotations in the Reader
+                    // empties that list (_wvReaderSetViewAnnotationsBlocked),
+                    // a filter leaves out what it hides. Go to its position
+                    // instead: the view flashes it, which is what shows where
+                    // an annotation that is not drawn landed. The position is
+                    // the page's own copy: the view paints nothing from a
+                    // chrome-built one.
+                    try {
+                        const id = location && location.annotationID;
+                        if (id && !(pv._annotations || []).some((a: any) => a.id === id)) {
+                            const st = reader._internalReader && reader._internalReader._state;
+                            const a = st && (st.annotations || []).find((x: any) => x.id === id);
+                            if (a && a.position && reader._iframeWindow) {
+                                return origNavigate(wvCloneFor({ position: JSON.parse(JSON.stringify(a.position)) }, reader._iframeWindow), options);
+                            }
+                        }
+                    } catch (e) { Zotero.debug("[Weavero] navigate to an annotation the view lacks: " + e); }
                     // DOM views (EPUB / snapshot): the native navigate owns the
                     // scroll untouched; the flash rides after it, gated at
                     // click time like the PDF arm.

@@ -210,6 +210,13 @@ export const WV_PREFS: Record<string, WvPrefRow> = {
     readerOutlineTakeover: { def: true },
     recolorAmLinks: { def: true },
 
+    // ---- Notes (2026-11-03): the outline beside every note editor and
+    // the heading fold arrows. Settings -> Extras greys them; they live in
+    // the editors Weavero wires only under Links & Relations -> Notes:
+    // Editor, so that switch gates them too.
+    noteOutline: { def: true, masters: [VE], gate: ["enableNotes"] },
+    noteFolding: { def: true, masters: [VE], gate: ["enableNotes"] },
+
     // ---- Tabs & Windows
     compactTitleBar: { def: true, masters: [TW], strings: true },
     compactTitleBarMain: { def: true, masters: ["_getCompactTitleBar"], strings: true },

@@ -128,6 +128,45 @@ class _NoteEditorMixin {
             ".wv-note-linkified.wv-link-zotero { color: var(--wv-link-zotero) !important; }",
             ".wv-note-linkified.wv-link-http { color: var(--wv-link-http) !important; }",
             ".wv-note-linkified.wv-link-app { color: var(--wv-link-app) !important; }",
+            // Heading folding (note-nav.ts; the decorations come from the
+            // injected bundle). Hiding lives ONLY here, so removing this
+            // sheet (disable, Editor switch off) brings every folded block
+            // back. Zotero's drag handle fills the 30px gutter (drag.js:
+            // padding - 22), so folding widens it by 16px for the arrow.
+            "body.wv-fold-on .primary-editor { padding-inline-start: calc(var(--editor-padding-inline, 30px) + 16px) !important; }",
+            ".wv-fold-hidden { display: none !important; }",
+            ".wv-fold-toggle { position: absolute; inset-inline-start: calc(-1 * var(--editor-padding-inline, 30px) - 14px);"
+                + " top: 0; width: 14px; height: 1.25em; display: flex; align-items: center; justify-content: center;"
+                + " cursor: pointer; opacity: 0; color: var(--fill-secondary, #888); -moz-user-select: none; user-select: none; }",
+            // Zotero's tree twisty (_virtualized-table.scss .twisty): the
+            // chevron points down when open, turned -90deg when folded.
+            ".wv-fold-toggle svg { width: 8px; height: 8px; fill: currentColor; transition: transform .125s ease; }",
+            ".wv-fold-folded .wv-fold-toggle svg { transform: rotate(-90deg); }",
+            ".wv-fold-folded:dir(rtl) .wv-fold-toggle svg { transform: rotate(90deg); }",
+            ".wv-fold-h:hover .wv-fold-toggle, .wv-fold-folded .wv-fold-toggle { opacity: 1; }",
+            ".wv-fold-toggle:hover { color: var(--fill-primary, #333); }",
+            ".wv-fold-folded::after { content: ' …'; opacity: .45; }",
+            // The note outline lies over the page's left edge, below the
+            // toolbar (note-nav.ts OUTLINE_CSS): what sits under the toolbar
+            // (find bar, notice, the editor) moves right by its width.
+            "body.wv-nn-outline-open .editor > :not(.toolbar) { margin-inline-start: var(--wv-nn-outline-w, 200px) !important; }",
+            // The outline replaces Better Notes' left pane (note-nav.ts
+            // _wvNnMarkDoc), so its toggle goes too, past the inline display
+            // it sets; and Toggle Outline stays at the toolbar's left end
+            // whatever lands in `.start` after it: Better Notes prepends its
+            // buttons (MJT 2026-11-04), and moving ours back would fight it.
+            "body.wv-nn-outline-on .toolbar .bn-toggle-left-pane { display: none !important; }",
+            ".toolbar .start .wv-nn-outline-toggle { order: -1; }",
+            // A heading reached from the outline or a heading link (note-nav.ts;
+            // the injected bundle's inline decoration over the heading TEXT):
+            // the reader outline's flash -- selection blue multiplied onto the
+            // text (reader-panels.ts _wvDomHighlightRange, #B9DBFF), held 2 s,
+            // faded in .3 s. On a dark note, multiply would vanish: the
+            // annotation selection colour #71ADFD at 45%, plain.
+            "@keyframes wv-nn-flash-light { 0%, 87% { background-color: #B9DBFF; } 100% { background-color: transparent; } }",
+            "@keyframes wv-nn-flash-dark { 0%, 87% { background-color: rgba(113, 173, 253, .45); } 100% { background-color: transparent; } }",
+            ".wv-nn-flash { animation: wv-nn-flash-light 2.3s ease-out forwards; mix-blend-mode: multiply; border-radius: 2px; }",
+            "@media (prefers-color-scheme: dark) { .wv-nn-flash { animation-name: wv-nn-flash-dark; mix-blend-mode: normal; } }",
         ];
         const prefOn = (name) => {
             try { const v = Zotero.Prefs.get("weavero." + name); return v === undefined ? true : !!v; }
@@ -275,6 +314,7 @@ class _NoteEditorMixin {
                             wj.__wvLinkifyEnabled = !!this._getEnableNotes();
                         }
                     } catch (e) {}
+                    try { this._wvNnSetFlags(iframe); } catch (e) {}
                     // Re-eval the bundle when the page carries an OLDER inject
                     // script (plugin was updated while the editor stayed open)
                     // -- the page-side installer dedups, so re-eval is safe.
@@ -304,9 +344,33 @@ class _NoteEditorMixin {
                     return String(pageWin.eval((this as any)._wvNoteInjectCode));
                 } catch (e: any) { return "chrome-err: " + (e && e.message); }
             };
+            // The outline and the folds read the page's heading code, which
+            // this install brings, and the page speaks only of edits and
+            // folds: a first render ahead of the install stayed empty until
+            // the note was edited. The bundle's first fetch makes that the
+            // first note after every start (a reader window's note tab,
+            // test/note-reader-window-wire.spec.js, 2026-11-04). Render again
+            // when the code lands, on "already" too (a first install often
+            // lands on a transient "err", the next call saying "already"),
+            // and once per editor view, not on every sweep: a note loaded
+            // into the same iframe gets a new view, and the panel of the note
+            // before it would stay (note-outline.spec.js, a bare note in the
+            // item pane). The page's fold tag names the view.
+            const landed = (r: string) => {
+                if (r !== "installed" && r !== "already") return;
+                try {
+                    const idoc: any = iframe.contentDocument;
+                    const wj: any = iframe.contentWindow && iframe.contentWindow.wrappedJSObject;
+                    const tag = wj && typeof wj.__wvFoldViewTag === "function" ? String(wj.__wvFoldViewTag() || "") : "";
+                    if (!idoc || !tag || idoc._wvNnCodeLanded === tag) return;
+                    idoc._wvNnCodeLanded = tag;
+                    const ne = iframe.closest("note-editor");
+                    if (ne) (this as any)._wvNnSync(ne, iframe, "init");
+                } catch (_) {}
+            };
             const first = attempt();
             this._dbg("[Weavero] note linkify inject: " + first);
-            if (first === "installed" || first === "already") return;
+            if (first === "installed" || first === "already") { landed(first); return; }
             // The editor's view is created asynchronously WHEN A NOTE LOADS
             // into this editor -- possibly long after the iframe doc loaded
             // (wireUp time). Timers inside the page compartment never fire
@@ -341,6 +405,7 @@ class _NoteEditorMixin {
                 const r = attempt();
                 if (r === "installed" || r === "already") {
                     this._dbg("[Weavero] note linkify installed (attempt " + (i + 2) + "): " + r);
+                    landed(r);
                     return;
                 }
                 if (r.indexOf("chrome-err") === 0) return;   // window gone
@@ -378,6 +443,7 @@ class _NoteEditorMixin {
                     const wj = iwin && (iwin as any).wrappedJSObject;
                     if (!wj) continue;
                     try { wj.__wvLinkifyRegexSrc = src; wj.__wvLinkifyEnabled = enabled; } catch (e) {}
+                    try { this._wvNnSetFlags(fr); } catch (e) {}
                     try { if (typeof wj.__wvRedecorateNotes === "function") wj.__wvRedecorateNotes(); } catch (e) {}
                 }
             } catch (e) {}
@@ -725,6 +791,11 @@ class _NoteEditorMixin {
                 // across the Xray boundary), so we inject a bundled script into
                 // the iframe -- see `_wvInstallNoteLinkify`. Gated on the same
                 // "Editor" toggle as the rest of the editor link handling.
+                // Folding, the outline and heading links (note-nav.ts):
+                // wired before the install so the page's first change
+                // event already finds its listener.
+                try { this._wvNoteNavWire(noteEditorEl, iframe, idoc); }
+                catch (e) { this._dbg("[Weavero] note nav wire: " + e); }
                 if (this._getEnableNotes()) {
                     try { this._wvInstallNoteLinkify(iframe); }
                     catch (e) { this._dbg("[Weavero] note linkify install: " + e); }
@@ -1506,6 +1577,7 @@ class _NoteEditorMixin {
         }
         let mainCount = 0;
         for (const md of mainDocs) {
+            try { (this as any)._wvNnMarkDoc(md); } catch (e) {}
             for (const ne of md.querySelectorAll("note-editor")) {
                 this._setupNoteEditorObserver(ne);
                 mainCount++;
@@ -1721,7 +1793,9 @@ class _NoteEditorMixin {
                 // Plus detach the capture-phase listeners we wired
                 // on `idoc` so plugin-disable / strip-on-toggle-off
                 // doesn't leave stale handlers intercepting clicks.
+                try { this._wvNoteNavStripDoc(doc); } catch (e) {}
                 for (const ne of doc.querySelectorAll("note-editor") as any) {
+                    try { this._wvNoteNavStrip(ne); } catch (e) {}
                     try {
                         const iframe = ne.querySelector("iframe#editor-view")
                             || ne.querySelector("iframe");

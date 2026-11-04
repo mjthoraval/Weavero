@@ -755,6 +755,111 @@ describe("Weavero — plugin compat: Better Notes (real XPI)", function () {
         assert.notInclude(stored, "<a ", "no injected anchors");
     });
 
+    // BN #1579 (brunocurjuric, 2026-08-24/26; reproduced 2026-11-03 on BN
+    // 3.3.3): with BN's to-do lists ("[ ]" / "[x]" list items) in a note,
+    // Weavero <= 0.19.1 made every edit throw ("this.members[r] is
+    // undefined") -- nothing saved, BN's magic key dead -- EVEN WITHOUT a
+    // URL: BN's task decorations plus any Weavero set take
+    // DecorationGroup.from's mixing branch. Fixed by the issue-#37 `members`
+    // shim (v0.19.2). The fold arrows (note-nav.ts) make Weavero decorate
+    // nearly every note with a heading, so this mix is now the normal case.
+    // Fails on the pre-fix code: the edit never reaches the saved note.
+    for (const withUrl of [true, false]) {
+        it("an edit saves in a note with BN to-do items " + (withUrl ? "and a URL" : "and no URL") + ", fold arrows included", async function () {
+            const tag = NEEDLE + (withUrl ? "-todo-url" : "-todo");
+            const n = new Zotero.Item("note");
+            n.libraryID = Zotero.Libraries.userLibraryID;
+            n.setNote('<div data-schema-version="9"><h1>' + tag + "</h1>"
+                + "<ul><li><p>[ ] task one</p></li><li><p>[x] task two</p></li></ul>"
+                + "<h2>Sub</h2><p>" + (withUrl ? "see https://example.com/bn1579" : "no link here") + "</p></div>");
+            await n.saveTx();
+            const errs0 = (Zotero.getErrors(true) || []).length;
+            try {
+                await wvT.withPref("Knowledge4Zotero.editor.useTaskList", true, async () => {
+                    await win.ZoteroPane.selectItem(n.id);
+                    const ed = await waitFor(() => {
+                        try { wv._processNoteEditors(); } catch (e) {}
+                        for (const ne of doc.querySelectorAll("note-editor")) {
+                            const f = ne.querySelector("iframe");
+                            const d = f && f.contentDocument;
+                            if (!d || !ne.item || ne.item.id !== n.id || !d.querySelector(".ProseMirror")) continue;
+                            if (!d.querySelector(".wv-fold-toggle")) continue;
+                            if (withUrl && !d.querySelector(".wv-note-linkified")) continue;
+                            if (!d.querySelector(".bn-task-item, input[type=checkbox]")) continue;
+                            return { ne, f, d };
+                        }
+                        return null;
+                    }, 60000, "BN to-do items + Weavero decorations in one editor");
+                    const view = ed.f.contentWindow.wrappedJSObject._currentEditorInstance._editorCore.view;
+                    view.dispatch(view.state.tr.insertText("Z", view.state.doc.content.size - 2));
+                    const saved = await waitFor(() => /** @type {any} */ (Zotero.Items.get(n.id)).getNote().includes("Z"), 15000, "the edit saved");
+                    assert.isOk(saved);
+                    // Folding works in the same editor.
+                    const h = ed.d.querySelector(".ProseMirror h1");
+                    h.querySelector(".wv-fold-toggle").dispatchEvent(new ed.d.defaultView.MouseEvent("mousedown",
+                        Components.utils.cloneInto({ bubbles: true, cancelable: true, button: 0 }, ed.d.defaultView)));
+                    await waitFor(() => ed.d.querySelector(".wv-fold-hidden"), 5000, "the fold");
+                });
+                const errs = (Zotero.getErrors(true) || []).slice(errs0).map(String);
+                assert.deepEqual(errs.filter(e => /members|eq\b|localsInner/.test(e)), [], "no DecorationGroup errors");
+            }
+            finally { try { await n.eraseTx(); } catch (e) {} }
+        });
+    }
+
+    // MJT 2026-11-04: "Replace the left pane of BN completely when the Weavero
+    // note outline is active." The real pane, in a real note tab; the setting
+    // gives it back. Hidden, never removed: Better Notes keeps its state.
+    // Opening a BN note tab logs its own "note2.isNote is not a function" and
+    // a Security Error on treeView.html in this runner, with the pane never
+    // hidden too (a run with the setting off from the start, dev.14): the
+    // error-console check below names them, and they are not this feature's.
+    it("Weavero's outline replaces BN's left pane in a note tab; the setting gives it back", async function () {
+        const n = new Zotero.Item("note");
+        n.libraryID = Zotero.Libraries.userLibraryID;
+        n.setNote('<div data-schema-version="9"><h1>' + NEEDLE + " pane</h1><p>a</p><h2>Second</h2><p>b</p></div>");
+        await n.saveTx({ skipSelect: true });
+        const Z = win.Zotero_Tabs;
+        let tabID = null;
+        try {
+            await win.ZoteroPane.openNote(n.id, { openInWindow: false });
+            tabID = Z.selectedID;
+            const el = doc.getElementById(tabID);
+            const pane = await waitFor(() => el.querySelector("#bn-outline-container"), 30000, "BN's pane in the note tab");
+            const split = el.querySelector("#bn-outline-splitter");
+            assert.isOk(split, "and its splitter");
+            const f = await waitFor(() => {
+                try { wv._processNoteEditors(); } catch (e) {}
+                const x = el.querySelector("iframe#editor-view"), d = x && x.contentDocument;
+                return d && d.querySelector(".wv-nn-outline-toggle") && d.querySelector(".bn-link-creator") ? x : null;
+            }, 30000, "both plugins' toolbar buttons");
+            const d = f.contentDocument, w = d.defaultView;
+            const shown = (v, e) => v.getComputedStyle(e).display !== "none";
+            assert.isFalse(shown(win, pane), "BN's pane replaced");
+            assert.isFalse(shown(win, split), "its splitter too");
+            assert.isOk(el.querySelector(".wv-note-outline-row"), "Weavero's outline in its place");
+            const bnToggle = d.querySelector(".bn-toggle-left-pane");
+            if (bnToggle) assert.isFalse(shown(w, bnToggle), "BN's toggle gone with its pane");
+            assert.isBelow(d.querySelector(".wv-nn-outline-toggle").getBoundingClientRect().left,
+                d.querySelector(".bn-link-creator").getBoundingClientRect().left, "Toggle Outline first in the toolbar");
+            await wvT.withPref("weavero.noteOutline", false, async () => {
+                await waitFor(() => shown(win, pane), 5000, "BN's pane back with the setting off");
+                assert.isTrue(shown(win, split), "and its splitter");
+                // Not just its box: the way back is a working outline, loaded
+                // though the pane was hidden from the tab's first moment.
+                await waitFor(() => {
+                    const fr = pane.querySelector("iframe"), cd = fr && fr.contentDocument;
+                    return cd && cd.readyState === "complete" && /treeView\.html$/.test(String(cd.location.href)) && cd.body.childElementCount > 0;
+                }, 15000, "BN's own outline loaded in its pane");
+            });
+            await waitFor(() => !shown(win, pane), 5000, "replaced again with the setting on");
+        }
+        finally {
+            try { if (tabID) Z.close(tabID); } catch (e) {}
+            await n.eraseTx();
+        }
+    });
+
     it("no error-console entries mention Better Notes", function () {
         const errs = (Zotero.getErrors(true) || []).map(String);
         assert.deepEqual(

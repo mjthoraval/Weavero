@@ -44,6 +44,7 @@ import { URL_SCHEMES, urlMethods } from "./modules/url";
 import { annotationMethods } from "./modules/annotation";
 import { tabsMethods } from "./modules/tabs";
 import { noteEditorMethods } from "./modules/note-editor";
+import { noteNavMethods } from "./modules/note-nav";
 import { readerMethods } from "./modules/reader";
 import { paneMethods } from "./modules/pane";
 import { filterMethods } from "./modules/filter";
@@ -592,6 +593,12 @@ class WeaveroPlugin {
                 } else if (ids.length >= 1 && typeof pane.selectItem === "function") {
                     await pane.selectItem(ids[0]);
                     win.focus();
+                }
+                // A link to a heading in a note (`?wvheading=<id>`,
+                // note-nav.ts): Zotero itself stops at selecting the note.
+                const wvHeading = u.searchParams.get("wvheading");
+                if (wvHeading && ids.length === 1) {
+                    try { this._wvNoteRevealHeading(win, ids[0], wvHeading); } catch (e) {}
                 }
                 if (warnings.length) this._showLinkWarning(warnings);
                 return;
@@ -4752,6 +4759,10 @@ Object.defineProperties(
 Object.defineProperties(
     WeaveroPlugin.prototype,
     noteEditorMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    noteNavMethods,
 );
 Object.defineProperties(
     WeaveroPlugin.prototype,

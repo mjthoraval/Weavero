@@ -533,6 +533,42 @@ describe("Weavero — clickable column counts open a popup of what was counted",
         closePanel();
     });
 
+    // MJT 2026-11-04: "The counts popup do not have the same width. Why?" ->
+    // "Let Backlinks and Links grow like the others." The popup box takes the
+    // width of its longest line between its 300- and 520-px limits, as the
+    // Tags, Related and External Links popups do; the Backlinks and Links
+    // lines kept the item pane's `contain: inline-size` (dev.52) and gave the
+    // box no width, so those two popups always opened at the 300-px floor.
+    // A line longer than the box is still cut, never scrolled sideways.
+    // FAILED on 1.0.0-beta.2-dev.6 (302 px for both).
+    it("the Backlinks and Links popups grow with their longest line, as the other count popups do", async function () {
+        const long = "WVCNT wide " + "a rather long title word ".repeat(8);
+        const Q = await wvT.createItem("book", { title: long });
+        const L = new Zotero.Item("note"); L.libraryID = lib;
+        L.setNote("<p>" + long + " zotero://select/library/items/" + Q.key + "</p>");
+        await L.saveTx();
+        try {
+            await wv._wvBlEnsure();
+            for (const [kind, id, scope] of [["backlinks", Q.id, "subtree"], ["links", L.id, "own"]]) {
+                closePanel();
+                wv._wvOpenCountPopup(kind, id, { anchorNode: doc.documentElement, scope, win });
+                const p = panel();
+                assert.strictEqual(p.querySelectorAll(".wv-bl-row").length, 1, kind + ": the one row");
+                const cs = win.getComputedStyle(p);
+                const widest = parseFloat(cs.maxWidth) + parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth);
+                assert.closeTo(p.getBoundingClientRect().width, widest, 1, kind + ": the box at its widest for a long line");
+                assert.isAtMost(p.scrollWidth, p.clientWidth, kind + ": no sideways scroll");
+                const cut = [...p.querySelectorAll(".wv-bl-row .wv-bl-end-main, .wv-bl-row .wv-bl-head")].some((e) => e.scrollWidth > e.clientWidth);
+                assert.isTrue(cut, kind + ": the long line cut to the box");
+            }
+            closePanel();
+        }
+        finally {
+            closePanel();
+            await wvT.erase(L, Q);
+        }
+    });
+
     // MJT 2026-10-29 (screenshot of a Related popup, the rows under "This
     // item" bracketed: "I would like to make the structure more clear: can
     // you add a vertical line like in the collections pane?"): a heading's

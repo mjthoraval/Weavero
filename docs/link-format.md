@@ -89,6 +89,34 @@ key", 2026-08-04). Links into one file keep the file's key and work
 everywhere: a page (`?page=`), a position (`wvpos`), an annotation
 (`?annotation=`), and links copied from an attachment or a reader tab.
 
+## Links to a heading in a note (Weavero-only jump)
+
+"Copy Link to Heading" -- in a note's right-click menu when the click is in a
+heading, and on a heading in the note outline -- writes a select link to the
+note with one extra parameter:
+
+```
+zotero://select/library/items/9KX2QF7B?wvheading=wv-k3n8x1qa
+```
+
+- **The anchor is the heading's own `id`.** Zotero's note format keeps an `id`
+  on headings, and its editor already follows `#id` links inside a note to
+  them. Zotero never assigns one, so the first copy gives the heading a random
+  `wv-…` id. That is a real edit to the note (it saves and syncs). Later
+  copies reuse it. A heading that shares its id with another one (splitting a
+  heading copies it) gets a new one. A read-only note cannot take an id: the
+  entry is greyed out there unless the heading already has one.
+- **The id survives renaming the heading** and edits elsewhere in the note,
+  unlike a line number or the heading's text.
+- **Without Weavero** the link selects the note, as any select link does, and
+  shows it from the top. With Weavero the note is also scrolled so the heading
+  sits a quarter of the way down, any folded section hiding it is opened, and
+  the heading flashes.
+
+The jump is the second exception to Weavero's rule that the links it writes
+work fully without it (decided 2026-11-03). The degraded result is still the
+right note.
+
 ## Versioning policy
 
 - The decoder stays tolerant of every shape it has ever accepted (including

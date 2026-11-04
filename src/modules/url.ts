@@ -66,7 +66,7 @@ export const URL_SCHEMES = [
 // BibLaTeX" submenu entries, which are only shown when BBT is active.
 // Wire version for the ZoteroPane.loadURI hook. BUMP on any change to the
 // wrapped closure -- a reload must unhook the stale copy and re-hook.
-export const WV_LOADURI_WIRE_V = 2;   // 2: also the paper-key open links (0.22.3-dev.49)
+export const WV_LOADURI_WIRE_V = 3;   // 2: also the paper-key open links (0.22.3-dev.49); 3: note-heading select links
 
 // Wire version for the Zotero.CommandLineIngester.ingest wrap (stolen-focus
 // fix). Same bump discipline as WV_LOADURI_WIRE_V.
@@ -476,8 +476,9 @@ export const urlMethods = {
      *  they never reached here -- which is why a link clicked in another app
      *  only ever landed on the page (trace ring stayed empty, 2026-07-31).
      *
-     *  Only wvpos links and paper-key open links (Zotero ignores a regular
-     *  item's key, 0.22.3-dev.49) are diverted; everything else calls
+     *  Only wvpos links, paper-key open links (Zotero ignores a regular
+     *  item's key, 0.22.3-dev.49) and note-heading select links (`?wvheading=`,
+     *  Zotero selects the note and drops the heading) are diverted; everything else calls
      *  straight through, so no existing behaviour changes. Versioned re-wiring (not a boolean):
      *  a reload must be able to unhook the STALE closure and re-hook, or the
      *  dead copy keeps running -- the trap `Notes.open` / `Reader.open` hit. */
@@ -506,6 +507,12 @@ export const urlMethods = {
                         // wvpos: a position Zotero's handler drops; a paper's
                         // key: a link Zotero's handler ignores (_buildOpenLink).
                         plugin._wvLinkRing("loadURI: intercepted " + (/[?&]wvpos=/i.test(uri) ? "wvpos" : "paper-key open") + " link");
+                        Promise.resolve(plugin.handleZoteroURI(uri)).catch(() => {});
+                        return;
+                    }
+                    if (plugin && typeof uri === "string"
+                        && /^zotero:\/\/select\//i.test(uri) && /[?&]wvheading=/i.test(uri)) {
+                        plugin._wvLinkRing("loadURI: intercepted note-heading link");
                         Promise.resolve(plugin.handleZoteroURI(uri)).catch(() => {});
                         return;
                     }

@@ -120,6 +120,10 @@ describe("Weavero — popup infrastructure", () => {
         });
 
         it("uses light or dark theme based on prefers-color-scheme", () => {
+            // From a cold cache: a cached icon comes back as its data: URL
+            // (the next test), and any spec that drew this icon first warms
+            // it -- the compat tier's plugin specs do, 2026-11-04.
+            for (const k of Object.keys(wv._iconDataUriCache || {})) { if (/\/document\.svg$/.test(k)) delete wv._iconDataUriCache[k]; }
             const img = wv._makeItemTypeIcon(doc, main, "document");
             const src = img.getAttribute("src");
             // Must contain either 'light' or 'dark' folder segment.

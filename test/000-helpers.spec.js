@@ -512,6 +512,22 @@
         memLast = now;
     });
 
+    // Zotero.crash() stays set for the session, and from then on every main
+    // window opened stops at a startup-error dialog: a failed note save erased
+    // from under a spec's editor read as 13 failures 60 tests later, from the
+    // first second-window test on (2026-11-04). Say when it happened, once:
+    // the suspect is this test, or the spec teardown just before it.
+    let crashSeen = false;
+    afterEach(function () {
+        if (crashSeen || !Zotero.crashed) return;
+        crashSeen = true;
+        const t = this.currentTest;
+        const line = "ZOTERO CRASHED, first seen after: " + (t ? t.fullTitle() : "?");
+        traceWrite(line);
+        try { Zotero.debug("[wv-test] " + line); } catch (e) {}
+        try { if (typeof globalThis.debug === "function") globalThis.debug("[wv-test] " + line); } catch (e) {}
+    });
+
     // A retried attempt (wvT.ciRetries), logged as it ends: which test, which
     // attempt, how it went -- Zotero's runner prints "(passed on retry N)".
     afterEach(function () {

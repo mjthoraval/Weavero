@@ -1063,7 +1063,10 @@ describe("Weavero — hidden collections (per window)", () => {
             assert.isTrue(await wvT.waitFor(() => L.getRowIndexByID("U" + LIB()) !== false, 5000), "Unfiled Items on the left after the reloads");
             const iU = L.getRowIndexByID("U" + LIB());
             const pop7 = await ctx("left", iU);
-            assert.isTrue(L.selection.isSelected(iU), "the Unfiled row is the selection the menu is for");
+            // The index read again at the check: a late reload moved the row
+            // under the one read above (Windows, Zotero beta, the 1.0.0-beta.2
+            // test run; the same reloads as the wait above).
+            assert.isTrue(await wvT.waitFor(() => L.selection.isSelected(L.getRowIndexByID("U" + LIB())), 3000), "the Unfiled row is the selection the menu is for");
             assert.deepEqual([...pop7.querySelectorAll(":scope > menuitem, :scope > menu")].map(e => e.className), ["wv-hid-mgr-hideshow"], "Unfiled Items: Hide alone");
             await close(pop7);
         } finally {

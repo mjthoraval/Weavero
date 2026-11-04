@@ -8,8 +8,8 @@ name: Test
 # On Ubuntu the scaffold's own headless setup still runs (xvfb and the
 # Ubuntu 24 libraries; it skips its beta download when a binary is given);
 # on Windows and macOS it is Linux-only and is skipped
-# (ZOTERO_SETUP_COMPLETE). The six jobs run side by side: the wait is the
-# slowest one's.
+# (ZOTERO_SETUP_COMPLETE). The twelve jobs run side by side: the wait is
+# the slowest one's.
 
 on:
   # Main only: a release tag sits on a commit this has already passed, and
@@ -61,16 +61,15 @@ jobs:
       fail-fast: false
       # Shards (WV_TEST_SHARD, zotero-plugin.config.ts: contiguous,
       # size-balanced slices of the spec files, the 000- helpers in each;
-      # the 2026-11-03 study, recommendation 7) -- for time, and since
-      # 2026-11-04 for MEMORY: Zotero's reader keeps ~90 MB per reader tab
-      # or window opened and closed (Zotero's, measured with Weavero
-      # disabled), so a run's Zotero grows by gigabytes -- 10.7 GB on a
-      # whole Ubuntu run, 7.9 GB on a Windows half, and a macOS half was
-      # killed at 6 GB (macos-latest has 7 GB of RAM, the others 16). Two
-      # shards per Ubuntu and Windows job, four per macOS job: ~3 GB at
-      # worst. Sixteen jobs, eight on macOS (GitHub's free plan runs 20 at
-      # once, 5 of them macOS: the rest queue, ~5 min each). `part` names
-      # the shard where a "/" cannot go (the logs' artifact).
+      # the 2026-11-03 study, recommendation 7): two per job, for time
+      # (MJT 2026-11-04, "2 shards"). Twelve jobs, four on macOS (GitHub's
+      # free plan runs 20 at once, 5 of them macOS). The memory that once
+      # argued for more -- a run's Zotero at 5-11 GB, a macOS half killed
+      # at 6 GB on the 7 GB runner -- was the scaffold's Browser Toolbox
+      # attached to the runner's Zotero (zotero-plugin.config.ts,
+      # server.devtools), not Zotero's reader: without it the whole suite
+      # peaks near 2 GB. `part` names the shard where a "/" cannot go (the
+      # logs' artifact).
       matrix:
         include:
           - { os: ubuntu-latest, label: Ubuntu, channel: release, experimental: false, shard: "1/2", part: "-1of2" }
@@ -81,14 +80,10 @@ jobs:
           - { os: windows-latest, label: Windows, channel: release, experimental: false, shard: "2/2", part: "-2of2" }
           - { os: windows-latest, label: Windows, channel: beta, experimental: false, shard: "1/2", part: "-1of2" }
           - { os: windows-latest, label: Windows, channel: beta, experimental: false, shard: "2/2", part: "-2of2" }
-          - { os: macos-latest, label: macOS, channel: release, experimental: true, shard: "1/4", part: "-1of4" }
-          - { os: macos-latest, label: macOS, channel: release, experimental: true, shard: "2/4", part: "-2of4" }
-          - { os: macos-latest, label: macOS, channel: release, experimental: true, shard: "3/4", part: "-3of4" }
-          - { os: macos-latest, label: macOS, channel: release, experimental: true, shard: "4/4", part: "-4of4" }
-          - { os: macos-latest, label: macOS, channel: beta, experimental: true, shard: "1/4", part: "-1of4" }
-          - { os: macos-latest, label: macOS, channel: beta, experimental: true, shard: "2/4", part: "-2of4" }
-          - { os: macos-latest, label: macOS, channel: beta, experimental: true, shard: "3/4", part: "-3of4" }
-          - { os: macos-latest, label: macOS, channel: beta, experimental: true, shard: "4/4", part: "-4of4" }
+          - { os: macos-latest, label: macOS, channel: release, experimental: true, shard: "1/2", part: "-1of2" }
+          - { os: macos-latest, label: macOS, channel: release, experimental: true, shard: "2/2", part: "-2of2" }
+          - { os: macos-latest, label: macOS, channel: beta, experimental: true, shard: "1/2", part: "-1of2" }
+          - { os: macos-latest, label: macOS, channel: beta, experimental: true, shard: "2/2", part: "-2of2" }
 
     steps:
       - uses: actions/checkout@v7

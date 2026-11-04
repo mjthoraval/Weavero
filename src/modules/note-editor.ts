@@ -1581,15 +1581,7 @@ class _NoteEditorMixin {
             for (const ne of md.querySelectorAll("note-editor")) {
                 this._setupNoteEditorObserver(ne);
                 mainCount++;
-                // Re-attempt the bare-URL linkify install on every sweep: the
-                // editor VIEW is created when a note loads into the editor,
-                // which can be long after wireUp's retry window (editors are
-                // pre-created by the pane). Cheap when already installed
-                // ("already" via the plugin-spec marker, no re-eval).
-                try {
-                    const fr = ne.querySelector("iframe#editor-view") || ne.querySelector("iframe");
-                    if (fr) this._wvInstallNoteLinkify(fr);
-                } catch (e) {}
+                this._wvNoteInstallIn(ne);
             }
             // The reader CONTEXT PANE builds its <note-editor> elements
             // lazily on first render — often after every post-restore sweep
@@ -1607,6 +1599,7 @@ class _NoteEditorMixin {
                 for (const ne of wd.querySelectorAll("note-editor")) {
                     this._setupNoteEditorObserver(ne);
                     popoutCount++;
+                    this._wvNoteInstallIn(ne);
                 }
             }
         } catch (e) {
@@ -1625,6 +1618,7 @@ class _NoteEditorMixin {
                 for (const ne of wd.querySelectorAll("note-editor")) {
                     this._setupNoteEditorObserver(ne);
                     readerCount++;
+                    this._wvNoteInstallIn(ne);
                 }
             }
         } catch (e) {
@@ -1632,6 +1626,22 @@ class _NoteEditorMixin {
         }
         this._dbg("[Weavero] _processNoteEditors: main=" + mainCount
             + " popout=" + popoutCount + " readerWin=" + readerCount);
+    }
+
+    /** Re-attempt the page-side install on every sweep, in every window: the
+     *  editor VIEW is created when a note loads into the editor, which can be
+     *  long after wireUp's retry window (editors are pre-created by the pane),
+     *  and a note window's iframe loads before its editor holds the note, so
+     *  wireUp's own attempt finds none. Note windows and reader windows were
+     *  left out until 2026-11-04: no outline or fold arrows there until a
+     *  plugin reload. Cheap when already installed ("already" via the
+     *  plugin-spec marker, no re-eval), and it returns at once on an editor
+     *  with no note. */
+    _wvNoteInstallIn(ne: any) {
+        try {
+            const fr = ne.querySelector("iframe#editor-view") || ne.querySelector("iframe");
+            if (fr) this._wvInstallNoteLinkify(fr);
+        } catch (e) {}
     }
 
     /** Watch a main window's context pane for LAZILY-CREATED note editors:
@@ -1694,6 +1704,9 @@ class _NoteEditorMixin {
                 let count = 0;
                 for (const ne of w.document.querySelectorAll("note-editor")) {
                     this._setupNoteEditorObserver(ne);
+                    // Its content comes later still (reader.ts _wvNoteTabWire):
+                    // the sweep there brings the outline and the fold arrows.
+                    try { (this as any)._wvNoteTabWire(w, { type: "note", noteEditor: ne }); } catch (e) {}
                     count++;
                 }
                 this._dbg("[Weavero] tryWire pop-out note: count="

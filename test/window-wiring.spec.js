@@ -339,7 +339,7 @@ const WIRING_EXPECTED = {
         rootClasses: [
             "wv-ui-dark",
         ],
-        rootAttrs: [],
+        rootAttrs: ["data-wv-note-outline"],
     },
     loaded: {
         window: [
@@ -448,7 +448,7 @@ const WIRING_EXPECTED = {
         rootClasses: [
             "wv-ui-dark",
         ],
-        rootAttrs: [],
+        rootAttrs: ["data-wv-note-outline"],
     },
     mainWhileOpen: {
         rootClasses: {

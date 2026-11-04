@@ -378,7 +378,7 @@ const WIRING2_EXPECTED = {
             "wv-reader-tools-menu-popup", "wv-window-tabstrip-styles",
         ],
         classes: [
-            "wv-active", "wv-hamburger-btn", "wv-menubar-zicon", "wv-reader-menu x6", "wv-window-close",
+            "wv-active", "wv-hamburger-btn", "wv-menubar-zicon", "wv-note-outline", "wv-note-outline-bar", "wv-note-outline-empty", "wv-note-outline-grip", "wv-note-outline-list", "wv-note-outline-search", "wv-note-outline-search-btn", "wv-note-outline-search-input", "wv-note-outline-title", "wv-reader-menu x6", "wv-window-close",
             "wv-window-control x3", "wv-window-controls", "wv-window-max", "wv-window-min",
             "wv-window-strip-fill", "wv-window-tab", "wv-window-tab-close", "wv-window-tab-icon",
             "wv-window-tab-title", "wv-window-tabstrip",
@@ -421,7 +421,7 @@ const WIRING2_EXPECTED = {
         ],
         classes: [
             "wv-active", "wv-bl-body", "wv-hamburger-btn", "wv-layout-item x4", "wv-layout-menu",
-            "wv-layout-sep", "wv-lk-body", "wv-reader-menu x6",
+            "wv-layout-sep", "wv-lk-body", "wv-note-outline", "wv-note-outline-bar", "wv-note-outline-empty", "wv-note-outline-grip", "wv-note-outline-list", "wv-note-outline-search", "wv-note-outline-search-btn", "wv-note-outline-search-input", "wv-note-outline-title", "wv-reader-menu x6",
             "wv-reader-menubar-icon", "wv-reader-pane-splitter", "wv-window-close", "wv-window-control x3",
             "wv-window-controls", "wv-window-drag-spacer", "wv-window-max", "wv-window-min",
             "wv-window-newtab-btn", "wv-window-tab", "wv-window-tab-close", "wv-window-tab-icon",
@@ -505,7 +505,7 @@ const WIRING2_EXPECTED = {
             "wv-reader-tools-menu-popup", "wv-window-tabstrip-styles",
         ],
         classes: [
-            "wv-active", "wv-hamburger-btn", "wv-menubar-zicon", "wv-reader-menu x6", "wv-window-close",
+            "wv-active", "wv-hamburger-btn", "wv-menubar-zicon", "wv-note-outline", "wv-note-outline-bar", "wv-note-outline-empty", "wv-note-outline-grip", "wv-note-outline-list", "wv-note-outline-search", "wv-note-outline-search-btn", "wv-note-outline-search-input", "wv-note-outline-title", "wv-reader-menu x6", "wv-window-close",
             "wv-window-control x3", "wv-window-controls", "wv-window-max", "wv-window-min",
             "wv-window-strip-fill", "wv-window-tab", "wv-window-tab-close", "wv-window-tab-icon",
             "wv-window-tab-title", "wv-window-tabstrip",
@@ -548,7 +548,7 @@ const WIRING2_EXPECTED = {
         ],
         classes: [
             "wv-active", "wv-bl-body", "wv-hamburger-btn", "wv-layout-item x4", "wv-layout-menu",
-            "wv-layout-sep", "wv-lk-body", "wv-reader-menu x6",
+            "wv-layout-sep", "wv-lk-body", "wv-note-outline", "wv-note-outline-bar", "wv-note-outline-empty", "wv-note-outline-grip", "wv-note-outline-list", "wv-note-outline-search", "wv-note-outline-search-btn", "wv-note-outline-search-input", "wv-note-outline-title", "wv-reader-menu x6",
             "wv-reader-menubar-icon", "wv-reader-pane-splitter", "wv-window-close", "wv-window-control x3",
             "wv-window-controls", "wv-window-drag-spacer", "wv-window-max", "wv-window-min",
             "wv-window-newtab-btn", "wv-window-tab", "wv-window-tab-close", "wv-window-tab-icon",
@@ -614,7 +614,7 @@ const WIRING2_EXPECTED = {
         ids: [
             "wv-note-window-tab-context-menu", "wv-window-tabstrip-styles",
         ],
-        classes: [],
+        classes: ["wv-note-outline", "wv-note-outline-bar", "wv-note-outline-empty", "wv-note-outline-grip", "wv-note-outline-list", "wv-note-outline-search", "wv-note-outline-search-btn", "wv-note-outline-search-input", "wv-note-outline-title"],
         rootClasses: [],
         rootAttrs: [],
         titlebar: [
@@ -663,7 +663,7 @@ const WIRING2_EXPECTED = {
             "listen newWindowKey", "listen reopenClosedKey",
         ],
         ids: [],
-        classes: [],
+        classes: ["wv-note-outline", "wv-note-outline-bar", "wv-note-outline-empty", "wv-note-outline-grip", "wv-note-outline-list", "wv-note-outline-search", "wv-note-outline-search-btn", "wv-note-outline-search-input", "wv-note-outline-title"],
         rootClasses: [],
         rootAttrs: [],
         titlebar: [
@@ -722,7 +722,7 @@ const WIRING2_EXPECTED = {
         ids: [
             "wv-note-window-tab-context-menu", "wv-window-tabstrip-styles",
         ],
-        classes: [],
+        classes: ["wv-note-outline", "wv-note-outline-bar", "wv-note-outline-empty", "wv-note-outline-grip", "wv-note-outline-list", "wv-note-outline-search", "wv-note-outline-search-btn", "wv-note-outline-search-input", "wv-note-outline-title"],
         rootClasses: [],
         rootAttrs: [],
         titlebar: [
@@ -773,7 +773,7 @@ const WIRING2_EXPECTED = {
             "listen newWindowKey", "listen reopenClosedKey",
         ],
         ids: [],
-        classes: [],
+        classes: ["wv-note-outline", "wv-note-outline-bar", "wv-note-outline-empty", "wv-note-outline-grip", "wv-note-outline-list", "wv-note-outline-search", "wv-note-outline-search-btn", "wv-note-outline-search-input", "wv-note-outline-title"],
         rootClasses: [],
         rootAttrs: [],
         titlebar: [
@@ -851,7 +851,7 @@ const WIRING2_EXPECTED = {
             "wv-reader-tools-menu-popup", "wv-window-tabstrip-styles",
         ],
         classes: [
-            "wv-active", "wv-hamburger-btn", "wv-menubar-zicon", "wv-reader-menu x6", "wv-window-close",
+            "wv-active", "wv-hamburger-btn", "wv-menubar-zicon", "wv-note-outline", "wv-note-outline-bar", "wv-note-outline-empty", "wv-note-outline-grip", "wv-note-outline-list", "wv-note-outline-search", "wv-note-outline-search-btn", "wv-note-outline-search-input", "wv-note-outline-title", "wv-reader-menu x6", "wv-window-close",
             "wv-window-control x3", "wv-window-controls", "wv-window-max", "wv-window-min",
             "wv-window-strip-fill", "wv-window-tab", "wv-window-tab-close", "wv-window-tab-icon",
             "wv-window-tab-title", "wv-window-tabstrip",
@@ -933,7 +933,7 @@ const WIRING2_EXPECTED = {
             "wv-reader-tools-menu-popup", "wv-window-tabstrip-styles",
         ],
         classes: [
-            "wv-active", "wv-hamburger-btn", "wv-menubar-zicon", "wv-reader-menu x6", "wv-window-close",
+            "wv-active", "wv-hamburger-btn", "wv-menubar-zicon", "wv-note-outline", "wv-note-outline-bar", "wv-note-outline-empty", "wv-note-outline-grip", "wv-note-outline-list", "wv-note-outline-search", "wv-note-outline-search-btn", "wv-note-outline-search-input", "wv-note-outline-title", "wv-reader-menu x6", "wv-window-close",
             "wv-window-control x3", "wv-window-controls", "wv-window-max", "wv-window-min",
             "wv-window-strip-fill", "wv-window-tab", "wv-window-tab-close", "wv-window-tab-icon",
             "wv-window-tab-title", "wv-window-tabstrip",

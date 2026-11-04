@@ -592,8 +592,15 @@ describe("Weavero — Links (outgoing references)", function () {
             await A2.saveTx();
             const lw = host();
             lw.style.width = "700px";
-            wv._wvLkRenderBody(lw, P, doc);
-            const f = zHead(lw).querySelector(".wv-count-group-file");
+            // Rendered until the rename has reached it: the save's notifier
+            // comes a moment later (Ubuntu, Zotero beta, the 1.0.0-beta.2 run).
+            const f = await wvT.waitFor(() => {
+                lw.replaceChildren();
+                wv._wvLkRenderBody(lw, P, doc);
+                const zh = zHead(lw);
+                return zh ? zh.querySelector(".wv-count-group-file") : null;
+            }, 5000);
+            assert.isOk(f, "the renamed file in Z's heading");
             const em = parseFloat(win.getComputedStyle(f).fontSize);
             assert.isAtMost(f.getBoundingClientRect().width, 6 * em + 0.5, "a heading's file: at most ~6 em");
             assert.isAbove(f.scrollWidth, f.clientWidth, "...cut");

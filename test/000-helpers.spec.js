@@ -346,6 +346,10 @@
             // Taskbar-overlay residency (one window per monitor issues
             // the badge; which one depends on focus history).
             "_wvOvFirstSetDone", "_wvOvFocusSeq", "_wvOvResidMon", "_wvOverlayName", "_wvOvPoison",
+            // The overlay's settling check: a timer until the window's place
+            // is stable, then a flag. Which one a snapshot sees is timing: a
+            // slow runner was still on the timer (Windows, Zotero release).
+            "_wvOvSettled", "_wvOvSettleTimer",
             // The window's last real geometry, cached at each store save
             // (`_wvWindowGeom`): present once a save ran, whatever the wiring.
             "_wvLastGeom",
@@ -371,7 +375,7 @@
             // header filter. Wired on the 1.0.0-beta.1 CI's Windows runner,
             // not yet on the machine that recorded (2026-11-03); pane-scope.
             // spec.js holds both.
-            const lazyPane = /^(wv-scope-menu-(reset|sep)( x\d+)?|_wvScopeFilters:object)$/;
+            const lazyPane = /^(wv-scope-menu-(reset|sep)( x\d+)?|_wvScopeFilters:object|_wvOvSettled:boolean)$/;
             const fixStr = (s) => typeof s === "string" ? s.replace(/menu_fileQuitItem(Win|Unix)/g, "menu_fileQuitItem") : s;
             const keep = (s) => typeof s !== "string"
                 || !(/^wv-ui-dark( x\d+)?$/.test(s) || lazyPane.test(s) || (!Zotero.isWin && winOnly.test(s)));

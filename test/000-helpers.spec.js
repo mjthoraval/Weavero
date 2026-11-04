@@ -522,7 +522,10 @@
         if (crashSeen || !Zotero.crashed) return;
         crashSeen = true;
         const t = this.currentTest;
-        const line = "ZOTERO CRASHED, first seen after: " + (t ? t.fullTitle() : "?");
+        // Zotero.crash() logs what led to it and its own stack: the last entries.
+        let why = "";
+        try { why = (Zotero.getErrors(true) || []).slice(-6).map((e) => String(e).slice(0, 700)).join(" || "); } catch (e) {}
+        const line = "ZOTERO CRASHED, first seen after: " + (t ? t.fullTitle() : "?") + " :: " + why;
         traceWrite(line);
         try { Zotero.debug("[wv-test] " + line); } catch (e) {}
         try { if (typeof globalThis.debug === "function") globalThis.debug("[wv-test] " + line); } catch (e) {}

@@ -20,11 +20,6 @@ describe("Weavero — a note in a reader window is wired once its editor is read
         note = new Zotero.Item("note");
         note.libraryID = Zotero.Libraries.userLibraryID;
         note.parentID = parent.id;
-        // In the editor's schema, as the other note specs: without it the
-        // editor saves the note it just opened, and a save landing after the
-        // note is erased is Zotero.crash(), which turns every main window
-        // opened later into a startup-error dialog (CI, 2026-11-04: 13 failures
-        // from the first second-window test on; the note-editor `_save` catch).
         note.setNote('<div data-schema-version="9"><h1>WV-TEST heading one</h1><p>text</p><h2>WV-TEST heading two</h2><p>more</p></div>');
         await note.saveTx({ skipSelect: true });
     });
@@ -32,7 +27,8 @@ describe("Weavero — a note in a reader window is wired once its editor is read
     after(async function () {
         try { if (deckWin && !deckWin.closed) deckWin.close(); } catch (e) {}
         for (let i = 0; i < 50 && deckWin && !deckWin.closed; i++) await wvT.sleep(100);
-        // Past any save the closing editor still has to land.
+        // Closing an editor saves it: let that land before the erase
+        // (note-outline.spec.js says what a late one does).
         await wvT.sleep(1500);
         wvT.purgeDeadReaders();
         await wvT.erase(note, anchor, parent);

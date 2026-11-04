@@ -70,6 +70,13 @@ describe("Weavero — note outline", function () {
     after(async function () {
         try { if (tabID) win.Zotero_Tabs.close(tabID); } catch (e) {}
         try { win.Zotero_Tabs.select("zotero-pane"); } catch (e) {}
+        // Closing an editor saves it (editorInstance.js uninit), and these
+        // tests edit the note: a save landing after the erase fails on its
+        // FOREIGN KEY, the editor calls Zotero.crash(), and every main window
+        // opened for the rest of the run stops at a startup-error dialog. CI,
+        // 2026-11-04: 13 to 24 failures in the second-window specs far later.
+        try { ZP.itemsView.selection.clearSelection(); } catch (e) {}
+        await wvT.sleep(1500);
         for (const it of [note, bare]) { if (it) { try { await it.eraseTx(); } catch (e) {} } }
     });
 

@@ -343,6 +343,9 @@
             // opened while it is alive (a short targeted run: yes; deep
             // in the full suite: no) and records the user's claim.
             "_wvBgUserClaimed", "_wvBgClaimWired", "_wvBgArmed", "_wvBgHooked", "_wvBgOpenGrace",
+            // Its self-raise mark: there only on a window whose reader opened
+            // while the guard ran (_wvBgMarkReaderLoad), so timing too.
+            "_wvBgExpectStealUntil",
             // Taskbar-overlay residency (one window per monitor issues
             // the badge; which one depends on focus history).
             "_wvOvFirstSetDone", "_wvOvFocusSeq", "_wvOvResidMon", "_wvOverlayName", "_wvOvPoison",

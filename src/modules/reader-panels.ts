@@ -2065,6 +2065,7 @@ class _ReaderPanelsMixin {
             // carries its own instance tag and is re-laid by every new
             // instance; the buttons gate themselves on their own pref.
             try { this._wvReaderWrapUndo(reader); } catch (_) {}
+            try { this._wvReaderWrapAnnDelete(reader); } catch (_) {}
             try { this._wvReaderStampHistory(reader); } catch (_) {}
             try { this._wvReaderEnsureUndoButtons(reader, idoc); } catch (_) {}
             this._wvEnsureSpringDragEnd(reader, idoc);
@@ -3237,6 +3238,7 @@ class _ReaderPanelsMixin {
             // The reader instance's undo / redo wrappers (most-recent-wins)
             // and the history-point stamping callback.
             try { this._wvReaderUnwrapUndo(reader); } catch (_) {}
+            try { this._wvReaderUnwrapAnnDelete(reader); } catch (_) {}
             try { this._wvReaderUnstampHistory(reader); } catch (_) {}
             try { const d0 = reader._iframeWindow && reader._iframeWindow.document; if (d0) this._wvReaderRemoveUndoButtons(d0); } catch (_) {}
             // Selection capture on the PDF-view doc.
@@ -7491,6 +7493,138 @@ class _ReaderPanelsMixin {
             delete ir._wvUndoOrig;
             delete ir._wvUndoWrapTag;
         } catch (_) {}
+    }
+
+    /** The reader never changes an annotation's type: Convert to Underline /
+     *  Highlight deletes the annotation and creates another under a NEW key,
+     *  and Undo does the same, because the server refuses a type change on an
+     *  existing item ("Cannot change existing annotationType"), so an in-place
+     *  conversion would not sync. Whatever named the key lost it (issue #64,
+     *  forum 134637). The manager calls onDelete before the old item is erased,
+     *  its replacement already in its list: the last moment to read what it
+     *  held. Links written in notes and comments are not rewritten: the new
+     *  annotation records the old key, and Weavero follows that. */
+    _wvReaderWrapAnnDelete(reader: any) {
+        try {
+            const ir = reader && reader._internalReader;
+            const am = ir && ir._annotationManager;
+            if (!am || typeof am._onDelete !== "function") return;
+            const tag = this._wvWireTag();
+            if (am._wvDeleteWrapTag === tag) return;
+            this._wvReaderUnwrapAnnDelete(reader);
+            const orig = am._onDelete;
+            // Called from the reader's compartment: `ids` goes back to it as
+            // it came (see _wvReaderWrapUndo, issue #53).
+            am._onDelete = function (this: any, ids: any) {
+                try {
+                    const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (P && !P._wvDestroyed && ids && ids.length) P._wvAnnKeepRelated(reader, am, ids);
+                } catch (e) { Zotero.debug("[Weavero] keep related err: " + e); }
+                return orig.call(this, ids);
+            };
+            am._wvDeleteOrig = orig;
+            am._wvDeleteWrapTag = tag;
+        } catch (e) { Zotero.debug("[Weavero] _wvReaderWrapAnnDelete err: " + e); }
+    }
+
+    _wvReaderUnwrapAnnDelete(reader: any) {
+        try {
+            const ir = reader && reader._internalReader;
+            const am = ir && ir._annotationManager;
+            if (!am || !am._wvDeleteWrapTag) return;
+            am._onDelete = am._wvDeleteOrig;
+            delete am._wvDeleteOrig;
+            delete am._wvDeleteWrapTag;
+        } catch (_) {}
+    }
+
+    /** Annotations being deleted that have a replacement in the same save --
+     *  the other type, same place and text, a key Zotero has not saved yet --
+     *  hand over what names them: related items, the manual order, and a
+     *  `dc:replaces` of the old key. A plain delete has no replacement and
+     *  stays Zotero's own. */
+    _wvAnnKeepRelated(reader: any, am: any, ids: any) {
+        const att = reader._item;
+        if (!att) return;
+        const lib = att.libraryID;
+        const list = am._annotations || [];
+        const predicate = (Zotero as any).Relations.replacedItemPredicate;
+        for (let i = 0; i < ids.length; i++) {
+            const key = String(ids[i]);
+            const old: any = Zotero.Items.getByLibraryAndKey(lib, key);
+            if (!old || !old.isAnnotation() || old.parentID !== att.id) continue;
+            const type = old.annotationType;
+            if (type !== "highlight" && type !== "underline") continue;
+            const sort = old.annotationSortIndex, text = old.annotationText || "";
+            let newKey: string | null = null;
+            for (let j = 0; j < list.length; j++) {
+                const a = list[j];
+                if (a.id !== key && a.sortIndex === sort && (a.text || "") === text
+                    && (a.type === "highlight" || a.type === "underline") && a.type !== type
+                    && !Zotero.Items.getByLibraryAndKey(lib, a.id)) { newKey = String(a.id); break; }
+            }
+            if (!newKey) continue;
+            // The old item's own forwards go with it: copied, so a link from
+            // before any earlier conversion still resolves in one step.
+            const replaces = [(Zotero as any).URI.getItemURI(old)].concat(old.getRelationsByPredicate(predicate));
+            this._wvAnnOrderRekey(att, key, newKey);
+            this._wvAnnMoveRelated(reader, lib, newKey, (old.relatedItems || []).slice(), replaces);
+        }
+    }
+
+    /** A converted annotation keeps its place in a manual order, which
+     *  ann-order.json stores by key. */
+    _wvAnnOrderRekey(att: any, oldKey: string, newKey: string) {
+        const e = this._wvAnnOrderEntry(att.libraryID, att.key);
+        if (!e || e.keys.indexOf(oldKey) < 0) return;
+        const keys = e.keys.map((k: string) => (k === oldKey ? newKey : k));
+        this._wvAnnOrderWrite(att.libraryID, att.key, { mode: e.mode, dir: e.dir, keys }).catch(() => {});
+    }
+
+    /** Once the reader has saved the new annotation: its relations, both ways
+     *  as Zotero's Related does (Zotero drops the other side's relation to the
+     *  erased key itself), and `dc:replaces`, what Zotero's merges leave and
+     *  its citations already follow; the server accepts it for an item that is
+     *  gone, and Relations.purge() skips it. The save names the reader as its
+     *  own source: an outside change to an annotation makes the reader clear
+     *  its undo history for it, and Undo of the conversion would silently do
+     *  nothing. */
+    async _wvAnnMoveRelated(reader: any, lib: number, newKey: string, related: string[], replaces: string[]) {
+        try {
+            let fresh: any = null;
+            for (let i = 0; i < 100 && !fresh; i++) {
+                fresh = Zotero.Items.getByLibraryAndKey(lib, newKey) || null;
+                if (!fresh) await new Promise(r => wvTimeout(r, 100));
+            }
+            if (!fresh || !fresh.isEditable()) return;
+            const predicate = (Zotero as any).Relations.replacedItemPredicate;
+            const own = (Zotero as any).URI.getItemURI(fresh);
+            await Zotero.DB.executeTransaction(async () => {
+                for (const key of related) {
+                    const other: any = Zotero.Items.getByLibraryAndKey(lib, key);
+                    if (!other || !other.isEditable()) continue;
+                    if (other.addRelatedItem(fresh)) await other.save({ skipDateModifiedUpdate: true });
+                    fresh.addRelatedItem(other);
+                }
+                for (const uri of replaces) if (uri !== own) fresh.addRelation(predicate, uri);
+                await fresh.save({ skipDateModifiedUpdate: true, notifierData: { instanceID: reader._instanceID } });
+            });
+            const idoc = reader._iframeWindow && reader._iframeWindow.document;
+            if (idoc) this._wvAnnSortEnsure(reader, idoc);
+        } catch (e) { Zotero.debug("[Weavero] move related err: " + e); }
+    }
+
+    /** The annotation that replaced `key`, or null. Every way into a reader
+     *  passes here through the Reader.open wrapper, a link clicked in another
+     *  application included. */
+    async _wvAnnForwardKey(lib: number, key: string): Promise<string | null> {
+        try {
+            const R = (Zotero as any).Relations;
+            const uri = (Zotero as any).URI.getLibraryURI(lib) + "/items/" + key;
+            const items = await R.getByPredicateAndObject("item", R.replacedItemPredicate, uri);
+            for (const it of items || []) if (it.isAnnotation() && !it.deleted) return it.key;
+        } catch (e) { Zotero.debug("[Weavero] annotation forward err: " + e); }
+        return null;
     }
 
     /** The plain word ("Undo" / "Annuler"...) for an item with nothing to
@@ -24906,6 +25040,20 @@ class _ReaderPanelsMixin {
                 if (!pv._wvOutlineOrigNavigate) pv._wvOutlineOrigNavigate = pv.navigate.bind(pv);
                 const origNavigate = pv._wvOutlineOrigNavigate;
                 pv.navigate = function (location: any, options: any) {
+                    // Reader.open navigates right after selecting the tab,
+                    // with the reader's document still hidden, and a target
+                    // within a page of the view scrolls smoothly. A smooth
+                    // scroll asked of a hidden document can be lost: the
+                    // sidebar moves, the page stays (issue #60, qrkks's traces
+                    // 2026-11-05; only with Windows' animation effects on,
+                    // else Gecko never scrolls smoothly). PDF view only: a far
+                    // target scrolls instantly anyway.
+                    try {
+                        const idoc0 = reader._iframeWindow && reader._iframeWindow.document;
+                        if (idoc0 && idoc0.hidden && !(options && options.behavior) && typeof (pv as any).toSelector !== "function") {
+                            options = wvCloneFor({ ...(options || {}), behavior: "instant" }, reader._iframeWindow);
+                        }
+                    } catch (e) { Zotero.debug("[Weavero] instant navigate: " + e); }
                     // An annotation the view does not hold: the native
                     // navigate looks it up in the VIEW's list and does nothing
                     // when it is not there, while the reader has already

@@ -59,4 +59,31 @@ describe("Weavero — Settings window buttons follow Weavero", function () {
         assert.strictEqual(wv._wvWindowStyle(win), base, "only the two boxes change");
         assert.isTrue(wv._wvWindowButtons(win, true));
     });
+
+    // The 32-bit user32.dll exports no GetWindowLongPtrW / SetWindowLongPtrW
+    // (SysWOW64's has neither, 2026-11-05) and declaring a missing symbol
+    // throws, so a 32-bit Zotero could not read or write a style at all. This
+    // stand-in fails the same way on a 64-bit Windows.
+    const user32Without64bitNames = (ctypes) => {
+        const lib = ctypes.open("user32.dll");
+        return {
+            declare(name, ...rest) {
+                if (/WindowLongPtrW$/.test(name)) throw new Error("couldn't find function symbol in library");
+                return lib.declare(name, ...rest);
+            },
+            close() { lib.close(); },
+        };
+    };
+
+    it("reads and writes the style on a user32 without the *WindowLongPtrW names, as on 32-bit Windows (Windows)", async function () {
+        if (!Zotero.isWin) this.skip();
+        if (!win || win.closed) this.skip();
+        const real = wv._wvWindowStyle(win);
+        assert.isNumber(real);
+        assert.strictEqual(wv._wvWindowStyle(win, undefined, user32Without64bitNames), real, "the same style read");
+        assert.strictEqual(wv._wvWindowStyle(win, (s) => s & ~BOXES, user32Without64bitNames), real & ~BOXES, "written, and read back");
+        assert.strictEqual(wv._wvWindowStyle(win), real & ~BOXES, "the window really changed");
+        assert.strictEqual(wv._wvWindowStyle(win, (s) => s | BOXES, user32Without64bitNames), real | BOXES);
+        assert.strictEqual(wv._wvWindowStyle(win), real | BOXES, "and back");
+    });
 });

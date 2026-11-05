@@ -5914,8 +5914,14 @@ class _ReaderMixin {
                 if (t) win.document.title = (Zotero as any).Utilities.Internal.renderItemTitle(t);
             } catch (e) {}
             try {
-                if (tab.reader && typeof tab.reader.focus === "function") { tab.reader.focus(); this._wvWTDbg("focus() ok tab=" + tabId); }
-                else if (tab.noteEditor && typeof tab.noteEditor.focus === "function") tab.noteEditor.focus();
+                // Both wait for their content, then raise the window: during a
+                // restore that raise is this window's own, however long the
+                // wait (the 10-window restart's last false claims, a note's,
+                // 2026-11-05). A tab mounted here never passes Reader.open.
+                const focused = tab.reader && typeof tab.reader.focus === "function" ? tab.reader.focus()
+                    : tab.noteEditor && typeof tab.noteEditor.focus === "function" ? tab.noteEditor.focus() : null;
+                if (focused) (this as any)._wvBgMarkReaderLoad({ _window: win, _initPromise: focused });
+                if (tab.reader) this._wvWTDbg("focus() ok tab=" + tabId);
             } catch (e) { this._wvWTDbg("focus() ERR tab=" + tabId + " " + e); }
             // Re-bind the reader-window item pane to the now-active tab. This is
             // the single chokepoint for activeId changes, so syncing here keeps

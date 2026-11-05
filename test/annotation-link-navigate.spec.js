@@ -1,4 +1,4 @@
-/* global describe, it, before, after, assert, Zotero, Components, PathUtils, IOUtils */
+/* global describe, it, before, after, assert, Zotero, Components, PathUtils, IOUtils, Services */
 // Issue #60, qrkks's beta.1 report (2026-11-04, Windows 10, Zotero 10.0.7):
 // "when the source PDF was already open, clicking a backlink selected the
 // correct annotation in the sidebar, but the PDF sometimes stayed on the
@@ -121,6 +121,52 @@ describe("Weavero — a link to an annotation reaches its page in an open PDF (#
         assert.strictEqual(selected(), A10.key, "still selected");
         await wv.handleZoteroURI(linkTo(A10));
         assert.strictEqual(await landed(10), 10, "a selected annotation's link still moves the page");
+    });
+
+    // qrkks 2026-11-05, with Weavero alone: a Backlinks row in the library tab,
+    // the source one page away in an open reader tab. Reader.open selects the
+    // tab and navigates at once, while the reader's document is still hidden,
+    // and a target within a page of the view scrolls smoothly (pdf-view.js
+    // navigateToPosition); a smooth scroll in a hidden document never runs.
+    // Every test above jumps further than a page, so it scrolled instantly.
+    // With Windows' animation effects off, as on the maintainer's machine,
+    // Gecko reports prefers-reduced-motion and defaults general.smoothScroll to
+    // false: "smooth" silently means instant and this could not fail.
+    it("from the library tab, a link to an annotation one page away moves the PDF", async function () {
+        const Z = win.Zotero_Tabs;
+        const SMOOTH = "general.smoothScroll", REDUCED = "ui.prefersReducedMotion";
+        const had = Services.prefs.prefHasUserValue(SMOOTH) ? Services.prefs.getBoolPref(SMOOTH) : null;
+        Services.prefs.setBoolPref(SMOOTH, true);
+        Services.prefs.setIntPref(REDUCED, 0);
+        try {
+            const motion = () => win.matchMedia("(prefers-reduced-motion: reduce)").matches;
+            await wvT.waitFor(() => !motion(), 4000);   // the system setting's override lands asynchronously
+            assert.isFalse(motion(), "smooth scrolling really on");
+            await wv.handleZoteroURI(linkTo(A1));
+            assert.strictEqual(await landed(1), 1);
+            await wvT.sleep(1000);   // a smooth scroll still running would undo the next line
+            viewer().container.scrollTop = viewer()._pages[2].div.offsetTop;
+            await wvT.sleep(500);
+            assert.strictEqual(pageNow(), 2, "the view one page past the annotation");
+            Z.select("zotero-pane");
+            await wvT.sleep(600);
+            // Measured when the click returns, not when the view settles: an
+            // instant scroll has landed by then, a smooth one is only asked for.
+            // Whether that one is then lost depends on how fast the tab comes up:
+            // here it usually lands, qrkks's stayed on page 2 in 4 runs of 4. A
+            // wrapper around the container's scrollTo cannot record this: a call
+            // through it does not scroll at all.
+            const cont = viewer().container, from = Math.round(cont.scrollTop);
+            await wv._wvBlOpenSource(A1, null);
+            assert.notStrictEqual(Math.round(cont.scrollTop), from, "the view moved at once, hidden or not");
+            assert.strictEqual(Z.selectedID, reader.tabID, "the reader came forward");
+            assert.strictEqual(await landed(1), 1, "the PDF on the annotation's page");
+            assert.strictEqual(selected(), A1.key, "selected in the sidebar");
+        }
+        finally {
+            if (had === null) Services.prefs.clearUserPref(SMOOTH); else Services.prefs.setBoolPref(SMOOTH, had);
+            Services.prefs.clearUserPref(REDUCED);
+        }
     });
 
     // FAILED on 1.0.0-beta.2-dev.10: selected, the page unmoved.

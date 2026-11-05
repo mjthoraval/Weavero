@@ -85,6 +85,91 @@ describe("Weavero — the background-restore focus guard ends", function () {
         finally { wv._wvBgRestoreStop(); await closeOpened(); }
     });
 
+    // Measured 2026-11-05 on a real 2 main + 2 reader workspace, the Windows
+    // foreground window sampled every 25 ms: the target window was kept 5 times
+    // in 15. Zotero's Reader.open calls reader.focus() without waiting, and that
+    // raises the window once the reader has loaded, however long that takes; a
+    // raise after the fixed open grace was taken for the user switching. All 10
+    // lost restarts carry that claim, none of the 5 good ones does.
+    it("a reader opening under the guard marks its window as raising itself", async function () {
+        const att = await wvT.createTestPDFItem("wv-bg-load");
+        wv._wvBgRestoreStart({ holdMs: 20000, targetWin: win });
+        let w = null;
+        try {
+            const r = /** @type {any} */ (await Zotero.Reader.open(att.id, null, { openInWindow: true, allowDuplicate: true }));
+            w = r._window;
+            assert.isAbove(w._wvBgExpectStealUntil || 0, Date.now(), "marked while its reader loads");
+            await wvT.waitFor(() => w.document.readyState === "complete", 10000);   // never close a loading window
+            await r._initPromise;
+        }
+        finally {
+            wv._wvBgRestoreStop();
+            try { if (w && !w.closed) w.close(); } catch (e) {}
+            await wvT.waitFor(() => !w || w.closed, 8000);
+            wvT.purgeDeadReaders();
+            await wvT.erase(att);
+        }
+    });
+
+    // The last false claim on 10 windows, 2026-11-05: all four lost restarts ended
+    // on a note. A note tab comes up through _wvWTSwitch, not Reader.open, and
+    // note-editor's focus() also waits for the editor, then raises the window.
+    it("a note tab coming up under the guard marks its window as raising itself", async function () {
+        const att = await wvT.createTestPDFItem("wv-bg-note");
+        const note = /** @type {any} */ (new Zotero.Item("note"));
+        note.setNote("<p>wv-bg-note</p>");
+        await note.saveTx();
+        let w = null;
+        try {
+            const r = /** @type {any} */ (await Zotero.Reader.open(att.id, null, { openInWindow: true, allowDuplicate: true }));
+            w = r._window;
+            await wvT.waitFor(() => w.document.readyState === "complete", 10000);
+            await r._initPromise;
+            wv._wvBgRestoreStart({ holdMs: 20000, targetWin: win });
+            w._wvBgExpectStealUntil = 0;
+            await wv._wvWTMountTab(w, note.id, { select: true });
+            assert.isAbove(w._wvBgExpectStealUntil || 0, Date.now(), "marked while the editor loads");
+        }
+        finally {
+            wv._wvBgRestoreStop();
+            await wvT.sleep(800);
+            try { if (w && !w.closed) w.close(); } catch (e) {}
+            await wvT.waitFor(() => !w || w.closed, 8000);
+            await wvT.sleep(1500);   // the closing editor saves: never erase under it
+            wvT.purgeDeadReaders();
+            await wvT.erase(note, att);
+        }
+    });
+
+    it("a raise is the window's own while its reader loads, whatever the wait; once loaded an activation is the user's again", async function () {
+        wv._wvBgRestoreStart({ holdMs: 20000, targetWin: win });
+        try {
+            const s = wv._wvSpawnMainWindowStart(undefined, { restore: true });
+            const w = await wv._wvSpawnMainWindowWait(s, { wait: "init", timeoutMs: 25000, timerWin: win, dropOnTimeout: true });
+            assert.isOk(w, "a restore window");
+            opened.push(w);
+            w._wvBgOpenGrace = 0;   // the fixed grace has run out
+            let loaded = /** @type {(v?: any) => void} */ (() => {});
+            wv._wvBgMarkReaderLoad({ _window: w, _initPromise: new Promise((r) => { loaded = r; }) });
+            const raise = () => w.dispatchEvent(new w.Event("activate"));
+            // A label, not the window: chai cannot print a window object.
+            const chosen = () => { const c = wv._wvBgUserChosenWin; return !c ? "nobody" : c === w ? "this window" : c === win ? "the target" : "another window"; };
+            raise();
+            assert.strictEqual(chosen(), "nobody", "still loading: its own raise");
+            await new Promise((r) => win.setTimeout(r, 300));
+            raise();
+            assert.strictEqual(chosen(), "nobody", "still loading, later: still its own");
+            loaded();
+            await new Promise((r) => win.setTimeout(r, 50));
+            raise();
+            assert.strictEqual(chosen(), "nobody", "just loaded: the focus call lands now");
+            await new Promise((r) => win.setTimeout(r, 1700));
+            raise();
+            assert.strictEqual(chosen(), "this window", "past the tail, an unmarked activation is the user's");
+        }
+        finally { wv._wvBgRestoreStop(); await closeOpened(); }
+    });
+
     it("stopping the guard (Weavero's shutdown) leaves the next window alone", async function () {
         assert.isFunction(wv._wvBgRestoreStop, "a stop the shutdown can call");
         wv._wvBgRestoreStart({ holdMs: 20000 });

@@ -449,6 +449,10 @@ interface WvBlIndex {
      *  (`<libraryID>/<key>`; a group not here as `g<gid>/<key>`): an item
      *  landing under that key re-indexes them. */
     brokenByKey: Map<string, Set<number>>;
+    /** Annotations a conversion replaced (`<libraryID>/<old key>` -> the
+     *  current key, the `dc:replaces` of reader-panels' _wvAnnMoveRelated): a
+     *  reference to the old key is a reference to the annotation. */
+    fwd: Map<string, string>;
     /** The web and app links per source, in text order (the External
      *  Links column, MJT 2026-10-30): every scheme but zotero://, whichever
      *  the user has on -- the counts keep the enabled ones at read time. */
@@ -1363,7 +1367,7 @@ class _BacklinksMixin {
     _wvBl(): WvBlIndex {
         const self: any = this;
         if (!self._wvBlIndex) {
-            self._wvBlIndex = { byTarget: new Map(), bySource: new Map(), outBySource: new Map(), brokenByKey: new Map(), extBySource: new Map(), seq: 0, built: false, building: null } as WvBlIndex;
+            self._wvBlIndex = { byTarget: new Map(), bySource: new Map(), outBySource: new Map(), brokenByKey: new Map(), fwd: new Map(), extBySource: new Map(), seq: 0, built: false, building: null } as WvBlIndex;
         }
         return self._wvBlIndex;
     }
@@ -1410,6 +1414,12 @@ class _BacklinksMixin {
                     + " FROM itemAnnotations a JOIN items i USING (itemID)"
                     + " WHERE " + like("a.comment", linkPats) + " AND a.itemID NOT IN (SELECT itemID FROM deletedItems)", linkPats);
                 if (self._wvDestroyed) return;
+                const fwd: any[] = await Zotero.DB.queryAsync(
+                    "SELECT i.libraryID AS libraryID, i.key AS key, r.object AS object"
+                    + " FROM itemRelations r JOIN relationPredicates p USING (predicateID)"
+                    + " JOIN items i USING (itemID) JOIN itemAnnotations a USING (itemID) WHERE p.predicate=?",
+                    [(Zotero as any).Relations.replacedItemPredicate]);
+                for (const r of fwd) ix.fwd.set(this._wvBlKey(r.libraryID, blUriKey(String(r.object))), r.key);
                 for (const r of notes) this._wvBlIndexText(r.itemID, r.libraryID, r.parentItemID, r.parentItemID ? "itemNote" : "standaloneNote", blNoteText(String(r.text || "")));
                 for (const r of anns) this._wvBlIndexText(r.itemID, r.libraryID, r.parentItemID, "annotation", String(r.text || ""));
                 ix.built = true;
@@ -1427,6 +1437,40 @@ class _BacklinksMixin {
             }
         })();
         return ix.building;
+    }
+
+    /** The annotation that replaced `key`, or null. */
+    _wvBlForwarded(lib: number, key: string): any {
+        const k = this._wvBl().fwd.get(this._wvBlKey(lib, key));
+        const it: any = k ? Zotero.Items.getByLibraryAndKey(lib, k) : null;
+        return it && it.isAnnotation() ? it : null;
+    }
+
+    /** An annotation arriving with keys it replaces, from this reader or by
+     *  sync: the sources naming them move onto it. */
+    _wvBlFwdLearn(item: any): boolean {
+        const ix = this._wvBl();
+        const lib = item.libraryID, keys: string[] = [];
+        for (const uri of item.getRelationsByPredicate((Zotero as any).Relations.replacedItemPredicate)) {
+            const key = blUriKey(String(uri)), k = this._wvBlKey(lib, key);
+            if (ix.fwd.get(k) !== item.key) { ix.fwd.set(k, item.key); keys.push(key); }
+        }
+        if (!keys.length) return false;
+        const todo = new Set<number>();
+        // Aimed at the erased annotation, at its file (what a link to a
+        // missing annotation falls back on), or broken.
+        for (const key of keys) {
+            const k = this._wvBlKey(lib, key);
+            for (const s of ix.byTarget.get(k) || []) todo.add(s.srcID);
+            for (const id of ix.brokenByKey.get(k) || []) todo.add(id);
+        }
+        let file: any = null;
+        try { file = item.parentItem; } catch (e) { file = null; }
+        for (const s of (file && ix.byTarget.get(this._wvBlKey(lib, file.key))) || []) {
+            if (keys.some(key => String(s.url || "").indexOf(key) >= 0)) todo.add(s.srcID);
+        }
+        for (const id of todo) { try { const it = Zotero.Items.get(id); if (it) this._wvBlIndexSource(it); } catch (e) {} }
+        return true;
     }
 
     /** Forget a source's entries: its targets' lists and its outgoing
@@ -1539,12 +1583,12 @@ class _BacklinksMixin {
             }
             for (const rawKey of parsed.keys) {
                 let item: any = null;
-                try { item = self._wvResolveItemByKey(lib, rawKey); } catch (e) { item = null; }
+                try { item = self._wvResolveItemByKey(lib, rawKey) || this._wvBlForwarded(lib, rawKey); } catch (e) { item = null; }
                 if (!item) { broken(entryFor(), "missing", lib, null, rawKey); continue; }
                 let target: any = item;
                 if (parsed.annotationKey) {
                     let ann: any = null;
-                    try { ann = Zotero.Items.getByLibraryAndKey(item.libraryID, parsed.annotationKey); } catch (e) { ann = null; }
+                    try { ann = Zotero.Items.getByLibraryAndKey(item.libraryID, parsed.annotationKey) || this._wvBlForwarded(item.libraryID, parsed.annotationKey); } catch (e) { ann = null; }
                     if (ann && ann.isAnnotation && ann.isAnnotation()) target = ann;
                 }
                 add(target, entryFor());
@@ -1557,7 +1601,7 @@ class _BacklinksMixin {
             try {
                 const o = Zotero.URI.getURIItemLibraryKey(uri);
                 if (!o || !o.key) return { item: null, lib: null, key: blUriKey(uri) };
-                return { item: Zotero.Items.getByLibraryAndKey(o.libraryID, o.key) || null, lib: o.libraryID, key: o.key };
+                return { item: Zotero.Items.getByLibraryAndKey(o.libraryID, o.key) || this._wvBlForwarded(o.libraryID, o.key) || null, lib: o.libraryID, key: o.key };
             } catch (e) { return { item: null, lib: null, key: blUriKey(uri) }; }
         };
         const brokenURI = (entry: WvBacklinkSource, uri: string, got: { lib: number | null; key: string }) => {
@@ -1577,7 +1621,7 @@ class _BacklinksMixin {
             }
             const got = byURI(r.attachmentURI || "");
             let ann: any = null;
-            try { ann = got.item && r.annotationKey ? Zotero.Items.getByLibraryAndKey(got.item.libraryID, r.annotationKey) : null; } catch (e) { ann = null; }
+            try { ann = got.item && r.annotationKey ? (Zotero.Items.getByLibraryAndKey(got.item.libraryID, r.annotationKey) || this._wvBlForwarded(got.item.libraryID, r.annotationKey)) : null; } catch (e) { ann = null; }
             if (!(ann && ann.isAnnotation && ann.isAnnotation())) ann = null;
             // A quote with Zotero's citation of its paper right after it --
             // what "Add Note from Annotations" and a highlight dragged into a
@@ -2060,6 +2104,7 @@ class _BacklinksMixin {
             try { item = Zotero.Items.get(n); } catch (e) { item = null; }
             if (!item) { if (this._wvBlDropSource(n)) changed = true; continue; }
             if (event === "add" && this._wvLkHeal(item)) changed = true;
+            try { if (item.isAnnotation() && this._wvBlFwdLearn(item)) changed = true; } catch (e) {}
             // A source holding anything a section lists -- a resolved or a
             // broken reference -- before or after the edit.
             const holds = () => ix.bySource.has(n) || ix.outBySource.has(n) || ix.extBySource.has(n);

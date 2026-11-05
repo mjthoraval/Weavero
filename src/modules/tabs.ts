@@ -10386,8 +10386,6 @@ class _TabsMixin {
                 return self._wvRestoreFindTargetWin();
             };
             let ctypesRef: any = null, user32: any = null, SetWindowPos: any = null,
-                GetWindowLongPtr: any = null, SetWindowLongPtr: any = null,
-                dwmapi: any = null, DwmSetWindowAttribute: any = null, ShowWindowFn: any = null,
                 GetAsyncKeyState: any = null, GetCursorPos: any = null,
                 GetSystemMetrics: any = null, POINTStruct: any = null;
             try {
@@ -10396,19 +10394,10 @@ class _TabsMixin {
                 user32 = ctypes.open("user32.dll");
                 SetWindowPos = user32.declare("SetWindowPos", ctypes.winapi_abi, ctypes.bool,
                     ctypes.voidptr_t, ctypes.voidptr_t, ctypes.int, ctypes.int, ctypes.int, ctypes.int, ctypes.uint32_t);
-                GetWindowLongPtr = user32.declare("GetWindowLongPtrW", ctypes.winapi_abi, ctypes.intptr_t,
-                    ctypes.voidptr_t, ctypes.int);
-                SetWindowLongPtr = user32.declare("SetWindowLongPtrW", ctypes.winapi_abi, ctypes.intptr_t,
-                    ctypes.voidptr_t, ctypes.int, ctypes.intptr_t);
-                ShowWindowFn = user32.declare("ShowWindow", ctypes.winapi_abi, ctypes.bool,
-                    ctypes.voidptr_t, ctypes.int);
                 GetAsyncKeyState = user32.declare("GetAsyncKeyState", ctypes.winapi_abi, ctypes.short, ctypes.int);
                 POINTStruct = new ctypes.StructType("WVPOINT", [{ x: ctypes.int32_t }, { y: ctypes.int32_t }]);
                 GetCursorPos = user32.declare("GetCursorPos", ctypes.winapi_abi, ctypes.bool, POINTStruct.ptr);
                 GetSystemMetrics = user32.declare("GetSystemMetrics", ctypes.winapi_abi, ctypes.int, ctypes.int);
-                dwmapi = ctypes.open("dwmapi.dll");
-                DwmSetWindowAttribute = dwmapi.declare("DwmSetWindowAttribute", ctypes.winapi_abi, ctypes.long,
-                    ctypes.voidptr_t, ctypes.uint32_t, ctypes.voidptr_t, ctypes.uint32_t);
             } catch (e) {}
             const hwndOf = (w: any) => {
                 const base = w.docShell.treeOwner
@@ -10431,75 +10420,6 @@ class _TabsMixin {
                     SetWindowPos(hwndOf(w), after, 0, 0, 0, 0, 0x1 | 0x2 | 0x10);
                 } catch (e) {}
             };
-            // WS_EX_NOACTIVATE: a JS-side refocus reacts AFTER the OS already
-            // raised + painted the new window for a frame (the residual short
-            // jump survived even open-time activate hooks). This style bit
-            // bars the window from ACTIVATING at all at the OS level: it
-            // shows, loads and paints, but never comes to the front. Cleared
-            // at teardown, when a window becomes the refocus target, and
-            // instantly on a user mousedown (their click = their intent).
-            // WS_EX_APPWINDOW rides along: a window whose FIRST show happens
-            // cloaked + non-activatable never gets a taskbar button, and
-            // clearing the bits later does not re-register it with the shell
-            // ("still only one window", 2026-07-04). APPWINDOW forces the
-            // button; refreshTaskbar() (invisible hide/show while cloaked)
-            // re-registers before every reveal as the belt.
-            const WS_EX_NOACTIVATE = 0x08000000, WS_EX_APPWINDOW = 0x40000, GWL_EXSTYLE = -20;
-            const noActivated = new Set();
-            const setNoActivate = (w: any) => {
-                try {
-                    if (!SetWindowLongPtr || !w || w.closed || noActivated.has(w)) return;
-                    const h = hwndOf(w);
-                    const cur = Number(GetWindowLongPtr(h, GWL_EXSTYLE));
-                    SetWindowLongPtr(h, GWL_EXSTYLE, ctypesRef.intptr_t(cur | WS_EX_NOACTIVATE | WS_EX_APPWINDOW));
-                    noActivated.add(w);
-                } catch (e) {}
-            };
-            const clearNoActivate = (w: any) => {
-                try {
-                    if (!SetWindowLongPtr || !w || !noActivated.has(w)) return;
-                    noActivated.delete(w);
-                    if (w.closed) return;
-                    const h = hwndOf(w);
-                    const cur = Number(GetWindowLongPtr(h, GWL_EXSTYLE));
-                    SetWindowLongPtr(h, GWL_EXSTYLE, ctypesRef.intptr_t(cur & ~WS_EX_NOACTIVATE));
-                } catch (e) {}
-            };
-            // DWM CLOAKING - the definitive fix for the blink. Style bits
-            // and refocus handlers cannot beat explicit programmatic focus
-            // (the reader calls _iframeWindow.focus() during init, which
-            // activates the top-level window regardless of WS_EX_NOACTIVATE).
-            // A cloaked window (DWMWA_CLOAK, what Windows uses for suspended
-            // UWP apps) shows, loads, lays out and MEASURES normally - it
-            // just composites to nothing, so even a stolen activation has
-            // nothing to paint. Uncloaked at teardown (the workspace appears
-            // at once, at the BACK), on becoming the refocus target, and on
-            // a user mousedown.
-            const DWMWA_CLOAK = 13;
-            const cloaked = new Set();
-            const setCloak = (w: any, on: boolean) => {
-                try {
-                    if (!DwmSetWindowAttribute || !w || w.closed) { cloaked.delete(w); return; }
-                    if (on && cloaked.has(w)) return;
-                    if (!on && !cloaked.has(w)) return;
-                    const val = ctypesRef.int32_t(on ? 1 : 0);
-                    DwmSetWindowAttribute(hwndOf(w), DWMWA_CLOAK, val.address(), 4);
-                    if (on) cloaked.add(w); else cloaked.delete(w);
-                } catch (e) {}
-            };
-            const refreshTaskbar = (w: any) => {
-                try {
-                    if (!ShowWindowFn || !w || w.closed) return;
-                    const h = hwndOf(w);
-                    ShowWindowFn(h, 0);   // SW_HIDE
-                    ShowWindowFn(h, 4);   // SW_SHOWNOACTIVATE
-                } catch (e) {}
-            };
-            const reveal = (w: any) => {
-                clearNoActivate(w);
-                setCloak(w, false);   // no-op unless a legacy cloak is present
-            };
-            (this as any)._wvBgClearNoActivate = reveal;
             // "Is this one of ours?" — with a pre-parse grace: at
             // `domwindowopened` (and often at the FIRST activate) the XUL
             // document hasn't parsed yet, so windowtype is empty. During the
@@ -10525,20 +10445,12 @@ class _TabsMixin {
                     // this grace are ours to fight, without needing the
                     // whole-startup guard that blocked user switches.
                     (w as any)._wvBgOpenGrace = Date.now() + 4000;
-                    // OS-level: never activatable AND cloaked (invisible) while
-                    // the restore holds. The native handle is often NOT ready
-                    // at domwindowopened, and a single silent retry left the
-                    // window uncloaked -> the blink survived (2026-07-04).
-                    // Arm relentlessly (open / timer x10 / DOMContentLoaded /
-                    // load) until the cloak verifiably sticks, and TRACE the
-                    // stage so the next run tells us where it landed.
-                    // CLOAKING RETIRED (kept dormant): Gecko pauses the
+                    // CLOAKING RETIRED: Gecko pauses the
                     // compositor for cloaked windows, so reveals could show a
                     // blank white surface; combined with the taskbar-button
                     // and z-order fallout it cost more than the blink it hid —
                     // which the user traced to in-window tab-group churn
-                    // anyway (2026-07-04). NOACTIVATE + APPWINDOW + instant
-                    // refocus + beneath-target stacking remain.
+                    // anyway (2026-07-04).
                     // NOACTIVATE RETIRED: it also blocked USER clicks — and a
                     // click on the reader's PDF lands inside its iframe, which
                     // the chrome mousedown claim never sees, so the reader
@@ -10637,7 +10549,7 @@ class _TabsMixin {
                                 lp._wvBgUserChosenWin = w;
                                 try { lp._wvTrace("bg-restore: user claimed '" + String(w.document.title || "").slice(0, 30) + "' (mousedown) — redirect target"); } catch (e3) {}
                             }
-                            reveal(w); w.focus();
+                            w.focus();
                         } catch (e2) {}
                     }, { capture: true }, tag);
                     wvListen(w, "boot:bgClaim:activate", "activate", () => {
@@ -10664,7 +10576,8 @@ class _TabsMixin {
                             // Fight ONLY activations we can attribute to our
                             // own raises — each marked on the specific window:
                             // open grace (a restoring window's first
-                            // activations) and the warm-load mark. Everything
+                            // activations) and the load mark (the warm loader,
+                            // _wvBgMarkReaderLoad). Everything
                             // else is the user: Alt+Tab commits on RELEASING
                             // Alt and a taskbar click's button is long up by
                             // activation time, so requiring positive user
@@ -10681,7 +10594,6 @@ class _TabsMixin {
                             const t2 = resolveTarget();
                             if (t2 && t2 !== w) {
                                 pushToBottom(w);
-                                reveal(t2);
                                 t2.focus();
                                 try {
                                     (self as any)._wvTrace("bg-restore: "
@@ -10702,9 +10614,9 @@ class _TabsMixin {
                     // self-raise grace briefly.
                     try { (w as any)._wvBgOpenGrace = Math.max((w as any)._wvBgOpenGrace || 0, Date.now() + 2500); } catch (e2) {}
                     const target = resolveTarget();
-                    if (target === w) { reveal(w); return; }   // the target itself may restore late
+                    if (target === w) return;   // the target itself may restore late
                     pushToBottom(w);
-                    if (target && Services.focus.activeWindow === w) { try { reveal(target); target.focus(); } catch (e) {} }
+                    if (target && Services.focus.activeWindow === w) { try { target.focus(); } catch (e) {} }
                     hook(w);   // no-op if the open-time hook already landed
                 } catch (e) {}
             };
@@ -10774,16 +10686,12 @@ class _TabsMixin {
                 (this as any)._wvBgRestoreOn = false;
                 (this as any)._wvBgRestoreHoldUntil = 0;
                 (this as any)._wvBgRestoreTargetWin = null;
-                try { for (const w of [...cloaked]) { pushToBottom(w); reveal(w); } } catch (e) {}
-                try { for (const w of [...noActivated]) clearNoActivate(w); } catch (e) {}
-                (this as any)._wvBgClearNoActivate = null;
                 try { Services.ww.unregisterNotification(obs); } catch (e) {}
                 for (const w of claimWins) {
                     wvUnlisten(w, "boot:bgClaim:mousedown");
                     wvUnlisten(w, "boot:bgClaim:activate");
                 }
                 claimWins.clear();
-                try { if (dwmapi) dwmapi.close(); } catch (e) {}
                 try { if (user32) user32.close(); } catch (e) {}
             };
             (this as any)._wvBgRestoreStopFn = stop;
@@ -10797,6 +10705,37 @@ class _TabsMixin {
     _wvBgRestoreStop() {
         try { const f = (this as any)._wvBgRestoreStopFn; if (typeof f === "function") f(); } catch (e) {}
         (this as any)._wvBgRestoreOn = false;
+    }
+
+    /** A reader opening while the guard runs raises its own window once it has
+     *  loaded, however long that takes: Zotero's Reader.open calls
+     *  reader.focus() unawaited, and focus() waits for the reader. A fixed
+     *  grace races that (measured 2026-11-05, 2 main + 2 reader windows: a raise
+     *  at +6.9 s was fought, one at +7.4 s was taken for the user, and the
+     *  target window was kept 5 times in 15). So the window's self-raise mark
+     *  lasts as long as the load: capped for a reader that never finishes, then
+     *  a tail for the focus call itself. Per window, as the guard's contract
+     *  wants; a held button or a real click still claims at once. */
+    _wvBgMarkReaderLoad(reader: any) {
+        try {
+            if (!(this as any)._wvBgRestoreOn) return;
+            const w = reader && reader._window;
+            if (!w) return;
+            const loads: WeakMap<any, { n: number; prior: number }> = (this as any)._wvBgReaderLoads
+                || ((this as any)._wvBgReaderLoads = new WeakMap());
+            const st = loads.get(w) || { n: 0, prior: w._wvBgExpectStealUntil || 0 };
+            st.n++;
+            loads.set(w, st);
+            w._wvBgExpectStealUntil = Math.max(st.prior, Date.now() + 15000);
+            const done = () => {
+                try {
+                    if (--st.n > 0) return;
+                    loads.delete(w);
+                    if (!w.closed) w._wvBgExpectStealUntil = Math.max(st.prior, Date.now() + 1500);
+                } catch (e) {}
+            };
+            Promise.resolve(reader._initPromise).then(done, done);
+        } catch (e) {}
     }
 
     _wvFocusShepherdStart() {
@@ -10874,7 +10813,6 @@ class _TabsMixin {
             try {
                 const chosen = (this as any)._wvBgUserChosenWin;
                 if (chosen && !chosen.closed) {
-                    try { if ((this as any)._wvBgClearNoActivate) (this as any)._wvBgClearNoActivate(chosen); } catch (e) {}
                     chosen.focus();
                     (this as any)._wvTrace("restore: focused the user-chosen window '"
                         + String(chosen.document && chosen.document.title || "").slice(0, 30) + "'");
@@ -10917,7 +10855,6 @@ class _TabsMixin {
                 }
             }
             if (target) {
-                try { if ((this as any)._wvBgClearNoActivate) (this as any)._wvBgClearNoActivate(target); } catch (e) {}
                 target.focus();
                 (this as any)._wvTrace("restore: focused " + f.kind + " window");
             }

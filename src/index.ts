@@ -547,7 +547,11 @@ class WeaveroPlugin {
                 const missingKeys: string[] = [];
                 const trashedKeys: string[] = [];
                 for (const k of itemKeys) {
-                    const it = this._wvResolveItemByKey(lib, k);
+                    let it = this._wvResolveItemByKey(lib, k);
+                    if (!it) {
+                        const fk = await (this as any)._wvAnnForwardKey(lib, k);
+                        it = fk ? Zotero.Items.getByLibraryAndKey(lib, fk) : null;
+                    }
                     if (!it) { missingKeys.push(k); continue; }
                     let trashed = false;
                     try { trashed = !!(it as any).deleted; } catch (e) {}
@@ -1284,9 +1288,9 @@ class WeaveroPlugin {
     }
 
     /** The native style (GWL_STYLE) of a window; null off Windows. */
-    _wvWindowStyle(win: any): number | null {
+    _wvWindowStyle(win: any, next?: (style: number) => number, open?: (ctypes: any) => any): number | null {
         if (!Zotero.isWin) return null;
-        return wvWin32Style(win);
+        return wvWin32Style(win, next, open);
     }
 
     /** Every open Settings window (windowtype "zotero:pref"). */
@@ -2583,7 +2587,7 @@ class WeaveroPlugin {
                 Reader._wvOrigOpen = Reader.open;
                 Reader._wvOpenWired = tagR;
                 const self = this;
-                Reader.open = function (itemID: any, location: any, opts: any = {}) {
+                const open = function (itemID: any, location: any, opts: any) {
                     purgeDeadReaders();
                     try {
                         if (opts && !opts.allowDuplicate && !opts.openInWindow && (self as any)._wvWTFindTabForItem) {
@@ -2612,7 +2616,24 @@ class WeaveroPlugin {
                     // every 10.0.x release (checked 2026-10-07 against the 10.0.0 tag).
                     // Delete the guard with Zotero 9 support (see note above).
                     if (Services.vc.compare(Zotero.version, "10.0.0") < 0) dropGhostTabsForItem(itemID);
-                    return Reader._wvOrigOpen.call(Reader, itemID, location, opts);
+                    const opened = Reader._wvOrigOpen.call(Reader, itemID, location, opts);
+                    // Its focus call comes once it has loaded: the restore
+                    // guard's to fight, never the user's choice.
+                    if ((self as any)._wvBgRestoreOn) Promise.resolve(opened).then((r: any) => (self as any)._wvBgMarkReaderLoad(r), () => {});
+                    return opened;
+                };
+                Reader.open = function (itemID: any, location: any, opts: any = {}) {
+                    // A link can name an annotation a conversion replaced
+                    // (issue #64): the new one records the old key.
+                    try {
+                        const key = location && location.annotationID;
+                        const lib = key ? (Zotero.Items as any).getLibraryAndKeyFromID(itemID).libraryID : null;
+                        if (lib && !Zotero.Items.getByLibraryAndKey(lib, key)) {
+                            return (self as any)._wvAnnForwardKey(lib, String(key)).then(
+                                (k: any) => open(itemID, k ? { ...location, annotationID: k } : location, opts));
+                        }
+                    } catch (e) { Zotero.debug("[Weavero] reader-open forward err: " + e); }
+                    return open(itemID, location, opts);
                 };
             }
         } catch (e) {

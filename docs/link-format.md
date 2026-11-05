@@ -132,14 +132,16 @@ zotero://note/u/9KX2QF7B/?wvheading=wv-k3n8x1qa  (a heading)
 ```
 
 Zotero's own `zotero://open` ignores a note, so an open link there would need
-Weavero. This form opens the note with **either** plugin running, Better Notes
-keeps seeing the link, and it is what notes already contain.
+Weavero. This form opens the note with **either** plugin running, and it is what
+notes already contain. Better Notes counts it among a note's links when it is a
+real link in the note; a link pasted as plain text is shown as a link by Weavero
+only.
 
 | | Plain note link | With `wvheading` |
 |---|---|---|
 | Weavero | opens the note in a tab, or goes to its tab | the same, then goes to the heading and flashes it |
-| Better Notes alone | opens the note | opens the note at the top: it ignores the id |
-| Both | Better Notes takes it | Weavero takes it |
+| Better Notes alone | opens the note: a tab, or its preview split when a note tab is active | the same, at the top: it ignores the id |
+| Both | Better Notes takes it, as above | Weavero takes it: a tab, at the heading |
 | Neither | does nothing | does nothing |
 
 Weavero also takes these links when they arrive from another application and

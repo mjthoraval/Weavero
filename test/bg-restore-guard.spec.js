@@ -1,4 +1,4 @@
-/* global describe, it, before, after, assert, Zotero, Services, wvT */
+/* global describe, it, before, after, beforeEach, afterEach, assert, Zotero, Services, wvT */
 
 // The background-restore focus guard (tabs.ts _wvBgRestoreStart) pushes a
 // window opening during a restart's restore beneath the user's window, and
@@ -168,6 +168,81 @@ describe("Weavero — the background-restore focus guard ends", function () {
             assert.strictEqual(chosen(), "this window", "past the tail, an unmarked activation is the user's");
         }
         finally { wv._wvBgRestoreStop(); await closeOpened(); }
+    });
+
+    // The 10-window restart, clean legs 2026-11-05. Both lost clicks read
+    //   user claimed 'LoC Class PR...' (mousedown)
+    //   user claimed '' (mouse-button-held idle=16ms)    about 20 ms later
+    // a loading window activated under the button of a click in another window
+    // and took the claim. The stand-in holds the button: a spec cannot press one.
+    describe("a click in progress", function () {
+        let clicked, loading, held;
+        const restoreWindow = async () => {
+            const s = wv._wvSpawnMainWindowStart(undefined, { restore: true });
+            const w = await wv._wvSpawnMainWindowWait(s, { wait: "init", timeoutMs: 25000, timerWin: win, dropOnTimeout: true });
+            assert.isOk(w, "a restore window");
+            opened.push(w);
+            return w;
+        };
+        const mouse = (w, type) => w.dispatchEvent(new w.MouseEvent(type, { bubbles: true }));
+        const raise = (w) => w.dispatchEvent(new w.Event("activate"));
+        // A label, not the window: chai cannot print a window object.
+        const chosen = () => { const c = wv._wvBgUserChosenWin; return !c ? "nobody" : c === clicked ? "clicked" : c === loading ? "loading" : "another window"; };
+        const hold = () => { wv._wvBgSwitchEvidence = () => "mouse-button-held"; };
+
+        beforeEach(async function () {
+            wv._wvBgRestoreStart({ holdMs: 20000, targetWin: win });
+            held = wv._wvBgSwitchEvidence;
+            clicked = await restoreWindow();
+            loading = await restoreWindow();
+        });
+
+        afterEach(async function () {
+            wv._wvBgSwitchEvidence = held;
+            wv._wvBgRestoreStop();
+            await closeOpened();
+        });
+
+        it("keeps the claim while its button is down: a window activating under it is not the user's", async function () {
+            hold();
+            mouse(clicked, "mousedown");
+            assert.strictEqual(chosen(), "clicked", "the click claims");
+            raise(loading);
+            assert.strictEqual(chosen(), "clicked", "still the clicked window");
+        });
+
+        it("holds for an unmarked window too: no mark, but the press is elsewhere", async function () {
+            hold();
+            mouse(clicked, "mousedown");
+            loading._wvBgOpenGrace = 0;
+            loading._wvBgExpectStealUntil = 0;
+            raise(loading);
+            assert.strictEqual(chosen(), "clicked");
+        });
+
+        it("a press on a title bar reaches no mousedown: its held-button claim is kept the same way", async function () {
+            hold();
+            raise(clicked);
+            assert.strictEqual(chosen(), "clicked", "the window under the press claims");
+            raise(loading);
+            assert.strictEqual(chosen(), "clicked", "and keeps it");
+        });
+
+        it("ends with the release: a later press outside Zotero, the taskbar's, still claims", async function () {
+            hold();
+            mouse(clicked, "mousedown");
+            mouse(clicked, "mouseup");
+            raise(loading);
+            assert.strictEqual(chosen(), "loading", "held evidence with no press in a Zotero window");
+        });
+
+        it("ends on its own when the release never arrives", async function () {
+            hold();
+            mouse(clicked, "mousedown");
+            await new Promise((r) => win.setTimeout(r, 1200));
+            raise(loading);
+            assert.strictEqual(chosen(), "loading", "a lost release does not hold the claim");
+        });
     });
 
     it("stopping the guard (Weavero's shutdown) leaves the next window alone", async function () {

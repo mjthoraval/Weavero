@@ -10374,6 +10374,7 @@ class _TabsMixin {
             const self = this;
             // Fresh restore cycle → no user claim yet.
             (this as any)._wvBgUserChosenWin = null;
+            (this as any)._wvBgPress = null;
             const resolveTarget = () => {
                 try {
                     const chosen = (self as any)._wvBgUserChosenWin;
@@ -10513,6 +10514,19 @@ class _TabsMixin {
                 } catch (e) {}
                 return null;
             };
+            // A property so a spec can stand in for a held button.
+            (self as any)._wvBgSwitchEvidence = userSwitchEvidence;
+            // The click in progress: while its button is down, another window
+            // activating cannot be the user's, whatever that window's marks.
+            // Both lost clicks on the 10-window restart, 2026-11-05: the click
+            // claimed by mousedown, then ~20 ms later a loading window took the
+            // claim as mouse-button-held. Ended by the release; capped, because
+            // the window that activated can swallow it.
+            const BG_PRESS_MS = 1000;
+            const pressElsewhere = (w: any) => {
+                const press = (self as any)._wvBgPress;
+                return !!press && press.win !== w && !press.win.closed && Date.now() < press.until;
+            };
             const claim = (w: any, how: string) => {
                 (w as any)._wvBgUserClaimed = true;
                 (self as any)._wvBgUserChosenWin = w;
@@ -10547,9 +10561,16 @@ class _TabsMixin {
                             if (lp && lp._wvBgRestoreOn) {
                                 (w as any)._wvBgUserClaimed = true;
                                 lp._wvBgUserChosenWin = w;
+                                lp._wvBgPress = { win: w, until: Date.now() + BG_PRESS_MS };
                                 try { lp._wvTrace("bg-restore: user claimed '" + String(w.document.title || "").slice(0, 30) + "' (mousedown) — redirect target"); } catch (e3) {}
                             }
                             w.focus();
+                        } catch (e2) {}
+                    }, { capture: true }, tag);
+                    wvListen(w, "boot:bgClaim:mouseup", "mouseup", () => {
+                        try {
+                            const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            if (lp && lp._wvBgPress && lp._wvBgPress.win === w) lp._wvBgPress = null;
                         } catch (e2) {}
                     }, { capture: true }, tag);
                     wvListen(w, "boot:bgClaim:activate", "activate", () => {
@@ -10570,9 +10591,16 @@ class _TabsMixin {
                                 try { (self as any)._wvTrace("bg-restore: target '" + title + "' activated (ok)"); } catch (e3) {}
                                 return;
                             }
-                            const evidence = userSwitchEvidence();
+                            const pressed = pressElsewhere(w);
+                            const evidence = pressed ? null : (self as any)._wvBgSwitchEvidence();
                             const idle = Math.round(self._wvUserIdleMs());
-                            if (evidence) { claim(w, evidence + " idle=" + idle + "ms"); return; }
+                            if (evidence) {
+                                // A press on a title bar reaches no mousedown:
+                                // this activation is where it shows.
+                                if (evidence === "mouse-button-held") (self as any)._wvBgPress = { win: w, until: Date.now() + BG_PRESS_MS };
+                                claim(w, evidence + " idle=" + idle + "ms");
+                                return;
+                            }
                             // Fight ONLY activations we can attribute to our
                             // own raises — each marked on the specific window:
                             // open grace (a restoring window's first
@@ -10586,7 +10614,7 @@ class _TabsMixin {
                             const now = Date.now();
                             const openGrace = now < ((w as any)._wvBgOpenGrace || 0);
                             const loadMark = now < ((w as any)._wvBgExpectStealUntil || 0);
-                            if (!openGrace && !loadMark) {
+                            if (!openGrace && !loadMark && !pressed) {
                                 claim(w, "unmarked activation, idle=" + idle + "ms");
                                 return;
                             }
@@ -10600,7 +10628,7 @@ class _TabsMixin {
                                         + (wvWinType(w) || "pre-parse")
                                         + " '" + title + "' stole activation (idle=" + idle
                                         + "ms openGrace=" + openGrace + " loadMark=" + loadMark
-                                        + ") — refocused the target");
+                                        + " press=" + pressed + ") — refocused the target");
                                 } catch (e2) {}
                             }
                         } catch (e) {}
@@ -10686,9 +10714,12 @@ class _TabsMixin {
                 (this as any)._wvBgRestoreOn = false;
                 (this as any)._wvBgRestoreHoldUntil = 0;
                 (this as any)._wvBgRestoreTargetWin = null;
+                (this as any)._wvBgPress = null;
+                (this as any)._wvBgSwitchEvidence = null;
                 try { Services.ww.unregisterNotification(obs); } catch (e) {}
                 for (const w of claimWins) {
                     wvUnlisten(w, "boot:bgClaim:mousedown");
+                    wvUnlisten(w, "boot:bgClaim:mouseup");
                     wvUnlisten(w, "boot:bgClaim:activate");
                 }
                 claimWins.clear();

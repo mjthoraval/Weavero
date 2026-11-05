@@ -20,7 +20,8 @@
     "release": "zotero-plugin release",
     "test:unit": "mocha --node-option import=tsx \"test/unit/**/*.unit.ts\"",
     "test:compat": "node test/compat-plugins/run.js",
-    "test:compat:check": "node test/compat-plugins/run.js --check"
+    "test:compat:check": "node test/compat-plugins/run.js --check",
+    "test:compat:bump": "node test/compat-plugins/bump-pins.mjs"
   },
   "config": {
     "addonName": "Weavero",

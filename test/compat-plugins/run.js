@@ -41,9 +41,8 @@ for (const [name, pin] of Object.entries(pins)) {
 // is only meaningful for the version actually tested, and the run must not
 // change meaning because a companion shipped overnight. But a stale pin is a
 // stale claim, so the launcher SAYS so: best-effort GitHub query, skipped
-// silently offline. Bumping a pin = download, update PINS.json (file,
-// version, sha256), re-run, and only then commit — the new version becomes
-// the tested truth.
+// silently offline. Bumping pins = `npm run test:compat:bump` (bump-pins.mjs),
+// re-run, and only then commit — the new version becomes the tested truth.
 async function checkFreshness() {
     for (const [name, pin] of Object.entries(pins)) {
         if (!pin.repo) continue;

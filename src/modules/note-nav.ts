@@ -1251,7 +1251,11 @@ class _NoteNavMixin {
                     if (!heads.length) continue;
                     sawEditor = true;
                     const h = heads.find((x: any) => x.id === headingId);
-                    if (h && this._wvNoteOutlineGo(ne, iframe, h.ord, { flash: true })) return true;
+                    if (!h) continue;
+                    // The flash is the page plugin's, and a view just made may
+                    // not have it yet: the scroll alone would look like success.
+                    await this._wvInstallNoteLinkify(iframe);
+                    if (this._wvNoteOutlineGo(ne, iframe, h.ord, { flash: true })) return true;
                 }
                 catch (e) {}
             }

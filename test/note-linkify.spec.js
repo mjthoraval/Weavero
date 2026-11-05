@@ -209,4 +209,44 @@ describe("Weavero — note-editor bare-URL decoration", () => {
         expect([...cellText.querySelectorAll(".wv-url-span")]
             .map((s) => s.className).join(" ")).to.match(/wv-link-/);
     });
+
+    // MJT 2026-11-05: URLs in a note stayed plain after switching notes. The
+    // item pane keeps its editor: the next note gets a new view in the SAME
+    // iframe, with no `load`, and the main window's observer cannot see in. The
+    // plugin stayed away until some unrelated sweep. `before` above drives that
+    // sweep, which is how this went unseen, and in the runner one also comes on
+    // its own a little later (not on a real profile: 4 of 4 stayed plain live),
+    // so sweeps are off here: the editor must get its plugin without one.
+    it("a note selected into the item pane's open editor is decorated with no sweep to help it", async function () {
+        this.timeout(30000);
+        const other = new Zotero.Item("note");
+        other.libraryID = Zotero.Libraries.userLibraryID;
+        other.setNote('<div data-schema-version="9"><p>WV-DECO-OTHER https://example.org/y</p></div>');
+        await other.saveTx({ skipSelect: true });
+        const sweep = wv._processNoteEditors;
+        try {
+            await ZP.selectItem(note.id);
+            await sleep(800);
+            wv._processNoteEditors = () => {};
+            await ZP.selectItem(other.id);
+            const got = await waitFor(() => {
+                for (const ne of doc.querySelectorAll("note-editor")) {
+                    const f = ne.querySelector("iframe");
+                    const d = f && f.contentDocument;
+                    // Its own URL: the view before it stays up for a moment,
+                    // with the previous note's decorations.
+                    if (d && ne.item && ne.item.id === other.id
+                        && [...d.querySelectorAll(".wv-note-linkified")].some((s) => s.textContent.includes("example.org/y"))) return true;
+                }
+                return null;
+            }, 6000, 50);
+            expect(got, "the URL is decorated").to.equal(true);
+        }
+        finally {
+            wv._processNoteEditors = sweep;
+            await ZP.selectItem(note.id);
+            await sleep(400);
+            await other.eraseTx();
+        }
+    });
 });

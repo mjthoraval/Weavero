@@ -746,7 +746,27 @@ class _NoteEditorMixin {
                 // The popup is hidden by our CSS in either mode,
                 // but we still need to detect it to know when the
                 // user wants to edit/create a link.
+                // The same observer watches for a new editor VIEW. A note loaded
+                // into this editor gets one in the SAME iframe: no `load` fires,
+                // and the main window's observer cannot see in here, so the
+                // page's plugins stayed off it until some unrelated sweep. URLs
+                // stayed plain, fold arrows were gone and a heading link never
+                // lit up (MJT 2026-11-05, 4 of 4 note switches in the item
+                // pane). One compare per batch; the install only on a new view.
+                // Only once that view is IN the page: the instance has it
+                // earlier, and an install then lands on the old toolbar, so the
+                // outline toggle went with it (note-outline.spec.js).
+                let viewInst: any = null;
                 const popupMo = new iwin.MutationObserver((mutations) => {
+                    try {
+                        const ci = (iwin as any).wrappedJSObject._currentEditorInstance;
+                        const view = ci && ci._editorCore && ci._editorCore.view;
+                        const id = view && view.dom && view.dom.isConnected ? ci.instanceID : null;
+                        if (id && id !== viewInst) {
+                            viewInst = id;
+                            if (this._getEnableNotes()) this._wvInstallNoteLinkify(iframe);
+                        }
+                    } catch (e) {}
                     for (const m of mutations) {
                         if (m.type !== "childList") continue;
                         for (const n of m.addedNodes) {

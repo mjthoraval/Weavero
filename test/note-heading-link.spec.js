@@ -142,6 +142,28 @@ describe("Weavero — links to a note heading", function () {
         expect(ZP.getSelectedItems().map((i) => i.id)).to.deep.equal([note.id]);
     });
 
+    // MJT 2026-11-05: the link scrolled to the heading but never lit it up in
+    // the My Library tab. The flash is drawn by the page plugin, and a note
+    // loaded into the item pane's open editor gets a new view without it.
+    // Not through openInPane: its loop drives the sweep that hid this.
+    it("the link lights the heading up in the item pane, with no sweep to help it", async function () {
+        await ZP.selectItem(dup.id);
+        await wvT.sleep(800);
+        await wv.handleZoteroURI(link);
+        const lit = await wvT.waitFor(() => {
+            for (const ne of doc.querySelectorAll("note-editor")) {
+                const f = ne.querySelector("iframe");
+                const d = f && f.contentDocument;
+                if (!d || !ne.item || ne.item.id !== note.id || ne.classList.contains("note-tab")) continue;
+                const el = d.querySelector(".ProseMirror .wv-nn-flash");
+                if (el) return (el.textContent || "").trim();
+            }
+            return null;
+        }, 6000, 30);
+        expect(lit, "the heading's text flashes").to.equal("Deep");
+        ed = await openInPane(note);
+    });
+
     it("the loadURI hook routes a heading link to Weavero", async function () {
         const top = heads().findIndex((h) => h.text.endsWith("Top"));
         const topLink = wv._wvNoteCopyHeadingLink(ed.ne, top);

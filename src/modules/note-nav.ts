@@ -1244,14 +1244,19 @@ class _NoteNavMixin {
     /** After a heading link selected its note: wait for that note's editor
      *  in the window, open the folds over the heading, bring it to the
      *  reading line and flash it. */
-    async _wvNoteRevealHeading(win: any, itemID: number, headingId: string): Promise<boolean> {
+    async _wvNoteRevealHeading(win: any, itemID: number, headingId: string, viewMode: string): Promise<boolean> {
         const t0 = Date.now();
         let sawEditor = false;
         while (Date.now() - t0 < 8000) {
             if (this._wvDestroyed) return false;
             for (const ne of win.document.querySelectorAll("note-editor")) {
                 try {
-                    if (!ne.item || ne.item.id !== itemID || !ne.getClientRects().length) continue;
+                    // A note selected in My Library and open in a tab is in two
+                    // editors, and the one behind the other tab still has a
+                    // layout: only the editor the link means, "library" for a
+                    // select link, "tab" for an open link (2026-11-05: an open
+                    // link lit up the item pane, out of sight).
+                    if (!ne.item || ne.item.id !== itemID || ne.viewMode !== viewMode || !ne.getClientRects().length) continue;
                     const iframe = this._wvNnIframe(ne);
                     const heads = this._wvNnHeadings(iframe);
                     if (!heads.length) continue;

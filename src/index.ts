@@ -602,7 +602,7 @@ class WeaveroPlugin {
                 // note-nav.ts): Zotero itself stops at selecting the note.
                 const wvHeading = u.searchParams.get("wvheading");
                 if (wvHeading && ids.length === 1) {
-                    try { this._wvNoteRevealHeading(win, ids[0], wvHeading); } catch (e) {}
+                    try { this._wvNoteRevealHeading(win, ids[0], wvHeading, "library"); } catch (e) {}
                 }
                 if (warnings.length) this._showLinkWarning(warnings);
                 return;
@@ -801,7 +801,7 @@ class WeaveroPlugin {
                     win.focus();
                 } catch { await pane.selectItem(note.id); win.focus(); }
                 if (noteHeading) {
-                    try { (this as any)._wvNoteRevealHeading(win, note.id, noteHeading); } catch (e) {}
+                    try { (this as any)._wvNoteRevealHeading(win, note.id, noteHeading, "tab"); } catch (e) {}
                 }
                 if (noteTrashed) {
                     this._showLinkWarning("The linked note is in the Trash (key " + key + ") — opened anyway.");

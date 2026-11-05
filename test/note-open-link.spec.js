@@ -108,6 +108,41 @@ describe("Weavero — open links to a note", function () {
         assert.strictEqual(lit, "Deep");
     });
 
+    // Live, 2026-11-05: a note selected in My Library AND open in a tab is in two
+    // editors, and an editor behind another tab still has a layout, so the first
+    // one found took the flash: an open link lit up the item pane, unseen.
+    const litIn = () => wvT.waitFor(() => {
+        for (const ne of win.document.querySelectorAll("note-editor")) {
+            const f = ne.querySelector("iframe");
+            const d = f && f.contentDocument;
+            if (d && ne.item && ne.item.id === note.id && d.querySelector(".ProseMirror .wv-nn-flash")) return ne.viewMode;
+        }
+        return null;
+    }, 8000, 30);
+
+    it("with the note in two editors, an open link lights the heading up in the tab", async function () {
+        await closeTab(note);
+        await toLibrary();
+        await ZP.selectItem(note.id);
+        await wvT.sleep(1200);
+        await wv.handleZoteroURI(wv._buildOpenLink(note));
+        assert.isOk(await opened(note), "the note's tab");
+        await wvT.sleep(1200);
+        await toLibrary();
+        await wv.handleZoteroURI(wv._wvNoteHeadingLink(note, HID, "open"));
+        assert.isOk(await opened(note), "back in the tab");
+        assert.strictEqual(await litIn(), "tab");
+        await wvT.sleep(2800);   // that flash is down
+    });
+
+    it("and a select link lights it up in the item pane, the note's tab still open", async function () {
+        assert.isOk(tabOf(note), "the tab from the test before");
+        await wv.handleZoteroURI(wv._wvNoteHeadingLink(note, HID));
+        assert.strictEqual(win.Zotero_Tabs.selectedType, "library", "My Library, as on a plain Zotero");
+        assert.strictEqual(await litIn(), "library");
+        await wvT.sleep(2800);
+    });
+
     it("Better Notes keeps a plain note link; a link with a heading id stays Weavero's", async function () {
         const h = handler(), had = h._extensions["zotero://note"];
         let calls = 0;

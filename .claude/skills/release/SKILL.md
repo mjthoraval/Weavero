@@ -32,6 +32,11 @@ only. The number may be higher than the dev line predicted — that's expected.
 ## 3. Gates (all must pass before touching versions)
 
 - `npm test -- --exit-on-finish` → full suite green, no orphaned test Zotero.
+- **Companions**: `npm run test:compat:bump`, then `npm run test:compat`, so the
+  run tests what users install. Check each moved XPI's add-on ID and version
+  against its pin, read the run, then commit the XPIs and PINS.json as
+  `test(compat):`. A failure on a new version is a coexistence finding to
+  diagnose, not a reason to hold the pin back quietly.
 - prefs.html well-formedness (XUL-fragment wrap parse; see its rules file).
 - `manifest.json` / `package.json` / `package-lock.json` parse + versions match.
 - Live suites (`test/live/*.js`) if filter/search machinery changed since they

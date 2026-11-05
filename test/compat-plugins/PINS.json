@@ -1,30 +1,30 @@
 {
   "default-attachment": {
-    "file": "default-attachment-1.0.0.xpi",
-    "version": "1.0.0",
+    "file": "default-attachment-1.1.0.xpi",
+    "version": "1.1.0",
     "addonID": "default-attachment@zotero-plugin",
-    "sha256": "e9ed74af462b9d0740e67552a70305491d99e0eb4681d6942f45365ab469341d",
-    "source": "https://github.com/PikaPei/zotero-default-attachment/releases/tag/v1.0.0",
-    "note": "strict_max_version 9.* — beta builds ignore max-version, stable enforces; the spec skips with a clear message if the install is version-blocked",
+    "sha256": "83c4755050a3b40380af4c9fe68d1c19edc9573f8ff4130f9e9f1b769b3dd983",
+    "source": "https://github.com/PikaPei/zotero-default-attachment/releases/tag/v1.1.0",
+    "note": "1.1.0 declares strict_max_version 10.*: beta builds ignore max-version, stable enforces; the spec skips with a clear message if the install is version-blocked",
     "repo": "PikaPei/zotero-default-attachment"
   },
   "zotero-reading-list": {
-    "file": "zotero-reading-list-1.7.0.xpi",
-    "version": "1.7.0",
+    "file": "zotero-reading-list-1.7.1.xpi",
+    "version": "1.7.1",
     "addonID": "reading-list@hotmail.com",
-    "sha256": "15ebdaf441e620168458d84c1b29e9b72a291debdea0f59d8d21052f62839670",
-    "source": "https://github.com/Dominic-DallOsto/zotero-reading-list/releases/tag/v1.7.0",
+    "sha256": "e49424154b808bd75aa1a978dcc65bc3b0bcaad36a4ef3cfe9cfda0400ac1995",
+    "source": "https://github.com/Dominic-DallOsto/zotero-reading-list/releases/tag/v1.7.1",
     "repo": "Dominic-DallOsto/zotero-reading-list",
     "note": "1.6/1.7 added optional read-status<->tag synchronisation and configurable shortcuts; the Read_Status Extra line and the statuses pref are unchanged (checked in the 1.7.0 bundle, 2026-09-17)"
   },
   "zotero-annotation-markdown": {
-    "file": "zotero-annotation-markdown-0.10.0.xpi",
-    "version": "0.10.0",
+    "file": "zotero-annotation-markdown-0.16.4.xpi",
+    "version": "0.16.4",
     "addonID": "zotero-annotation-markdown@34028312.qq.com",
-    "sha256": "3f50f16dcee07d71fecaaa53d5420bcf2843016f5afbed9317a6131a3c27d1de",
-    "source": "https://github.com/qrkks/zotero-annotation-markdown/releases/tag/v0.10.0",
+    "sha256": "39b5557a0b5854584d2535b1362d1703422138e8a713a8ea2673a828ce78f16c",
+    "source": "https://github.com/qrkks/zotero-annotation-markdown/releases/tag/v0.16.4",
     "repo": "qrkks/zotero-annotation-markdown",
-    "note": "0.9.0 added opt-in (default off) Markdown rendering in the reader's in-page annotation popup, where Weavero renders its own comment preview; 0.10.0 adds a floating outline there. Bumped from 0.7.1 on 2026-09-25."
+    "note": "0.9.0 added opt-in (default off) Markdown rendering in the reader's in-page annotation popup, where Weavero renders its own comment preview; 0.10.0 adds a floating outline there. Bumped from 0.7.1 on 2026-09-25. Bumped from 0.10.0 on 2026-11-05 (npm run test:compat:bump)."
   },
   "better-notes": {
     "file": "better-notes-3.3.3.xpi",

@@ -330,7 +330,9 @@ In rough priority order:
 6. **Automated plugin-compatibility tier** — PHASE 1 SHIPPED 2026-09-02:
    `npm run test:compat` (test/compat-plugins/run.js) verifies vendored
    sha256-pinned companion XPIs, then runs the FULL suite with them
-   installed; test/plugin-compat.spec.js (env-gated, self-skips in plain
+   installed; `npm run test:compat:bump` first moves every pin to its
+   repo's latest release, and the release gates run it, so the tier tests
+   what users install; test/plugin-compat.spec.js (env-gated, self-skips in plain
    `npm test` — the core run stays hermetic; the scaffold discards the
    temp profile per run, so nothing leaks between modes) covers Default
    Attachment: real-XPI install, the mappings pref-shape tripwire,

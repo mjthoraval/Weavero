@@ -95,7 +95,8 @@ AM's side as well (its architecture notes document a "Weavero bridge"):
 AM keeps `zotero://` links live and routes their clicks to Weavero, and
 adopts Weavero's link colours. Verified against **AM v0.7.1 + Weavero
 v0.19.10-dev.1** on Zotero 10.0.3-beta.2 (2026-09-17); the automated
-plugin-compat tier pins AM 0.7.1 (`npm run test:compat`).
+plugin-compat tier follows AM's latest release, 0.16.4 as of 2026-11-05
+(`npm run test:compat`).
 
 ### Where each plugin renders (both enabled)
 

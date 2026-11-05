@@ -3285,8 +3285,9 @@ class _BacklinksMixin {
         return src.excerpt.segs;
     }
 
-    /** The hover card for a Backlinks `row`: the source's lineage and the
-     *  reference on the left, the target's lineage on the right. */
+    /** The hover card for a Backlinks `row`: mirrored, the target's lineage on
+     *  the left, the source's on the right (_wvBlCardLineage). An Item Links
+     *  row and a reference hovered where it is written use _wvLkCardShow. */
     _wvBlCardShow(row: any) {
         const src: WvBacklinkSource = row._wvBlSrc, srcItem = row._wvBlSrcItem;
         if (!src || !srcItem) return;

@@ -242,10 +242,11 @@ class _LinksMixin {
             if (!this._wvLkCardOn()) return false;
             const row = this._wvLkHoverRow(node, srcItem, scope);
             if (!row) return false;
-            node._wvBlSrc = row.entry;
-            node._wvBlSrcItem = srcItem;
-            node._wvBlTarget = row.target;
-            (this as any)._wvBlCardShow(node);
+            // The Item Links card, source on the left: a reference read where
+            // it is written goes out from here. Only a Backlinks card is
+            // mirrored (from dev.169 to 1.0.0-beta.4-dev.4 this opened that one).
+            node._wvLkRow = row;
+            (this as any)._wvLkCardShow(node);
             return true;
         } catch (e) { Zotero.debug("[Weavero] link hover card err: " + e); return false; }
     }

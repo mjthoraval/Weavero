@@ -96,6 +96,12 @@ describe("Weavero — the hover card on links in notes and annotation comments",
         assert.isOk(rq && rq.entry.ref === "quote" && rq.target && rq.target.id === Y.id, "the quote's row: the annotation Y");
     });
 
+    // MJT 2026-11-05, "Why does the link puts the source on the right side?": a
+    // reference hovered where it is written goes OUT, so its card is the Item
+    // Links card, source on the left. Only a Backlinks card is mirrored (MJT
+    // 2026-10-27). These called the Backlinks card from dev.169 on.
+    const sides = (cd) => [...cd.querySelector(".wv-bl-card-cols").children].map((e) => e.dataset.side);
+
     it("a note's editor: the card for each of the three, from the node, in the main window; hidden again", async function () {
         const edoc = editorDoc();
         assert.isOk(edoc, "the editor still up");
@@ -105,6 +111,7 @@ describe("Weavero — the hover card on links in notes and annotation comments",
         assert.isOk(cd, "shown, in the main window's document");
         assert.match(kindOf(cd), /^Zotero link/, "its kind: " + kindOf(cd));
         assert.include(cd.textContent, P2.getDisplayTitle(), "its target");
+        assert.deepEqual(sides(cd), ["source", "target"], "source on the left");
         assert.isTrue(wv._wvLkHoverCardHide(a), "hidden");
         assert.isNull(shown());
         assert.isTrue(wv._wvLkHoverCardShow(c, N), "the citation's card");
@@ -112,11 +119,13 @@ describe("Weavero — the hover card on links in notes and annotation comments",
         assert.match(kindOf(cd), /^Note citation/, "its kind: " + kindOf(cd));
         assert.include(kindOf(cd), "p. 7", "its page");
         assert.include(cd.textContent, P3.getDisplayTitle(), "its target");
+        assert.deepEqual(sides(cd), ["source", "target"], "a citation too");
         wv._wvLkHoverCardHide(c);
         assert.isTrue(wv._wvLkHoverCardShow(q, N), "the quote's card");
         cd = shown();
         assert.match(kindOf(cd), /^Note citation/, "a quote is a note citation too: " + kindOf(cd));
         assert.include(cd.textContent, P3.getDisplayTitle(), "the annotation's paper in its lineage");
+        assert.deepEqual(sides(cd), ["source", "target"], "a quote too");
         wv._wvLkHoverCardHide(q);
         assert.isNull(shown());
     });
@@ -152,6 +161,7 @@ describe("Weavero — the hover card on links in notes and annotation comments",
             assert.match(kindOf(cd), /^Zotero link/);
             assert.include(cd.textContent, P2.getDisplayTitle(), "its target");
             assert.include(cd.textContent, "linking words", "the annotation, its source");
+            assert.deepEqual(sides(cd), ["source", "target"], "the reader's sidebar too");
             wv._wvLkHoverCardHide(span);
             assert.isNull(shown());
         }
@@ -188,6 +198,7 @@ describe("Weavero — the hover card on links in notes and annotation comments",
         assert.match(kindOf(cd), /^Zotero link/);
         assert.include(cd.textContent, P2.getDisplayTitle(), "its target");
         assert.include(cd.textContent, "linking words", "the row's annotation, its source");
+        assert.deepEqual(sides(cd), ["source", "target"], "the items list too");
         wv._wvLkHoverCardHide(span);
         assert.isNull(shown());
         // The tooltips, after the tree's own mouseover and Weavero's restore.

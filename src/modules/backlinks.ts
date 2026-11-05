@@ -1060,15 +1060,16 @@ function blNotePos(url: string): string {
     try {
         const m = /^zotero:\/\/note\/[^?#]*\?([^#]*)/.exec(unescapeEntities(String(url || "")));
         if (!m) return "";
-        let line = "", section = "";
+        let line = "", section = "", heading = false;
         for (const kv of m[1].split("&")) {
             const i = kv.indexOf("=");
             if (i <= 0) continue;
             const k = decodeURIComponent(kv.slice(0, i)), v = decodeURIComponent(kv.slice(i + 1).replace(/\+/g, " "));
             if (k === "section" && v) section = v;
             else if (k === "line" && /^\d+$/.test(v)) line = v;
+            else if (k === "wvheading" && v) heading = true;
         }
-        return section ? "#" + section : line ? "line " + line : "";
+        return section ? "#" + section : line ? "line " + line : heading ? "heading" : "";
     }
     catch (e) { return ""; }
 }
@@ -2802,7 +2803,7 @@ class _BacklinksMixin {
             if (host === "note") {
                 const pos = blNotePos(url);
                 const at = pos ? " at " + (pos.charAt(0) === "#" ? "section " + pos.slice(1) : pos) : "";
-                return { mark: "zotero", kind: "Zotero link", action: "Open note" + at + " (Better Notes)" };
+                return { mark: "zotero", kind: "Zotero link", action: "Open note" + at + (pos === "heading" ? "" : " (Better Notes)") };
             }
             if (host === "select") return { mark: "zotero", kind: "Zotero link", action: "Show in library" };
             const p = wvBlParseLink(url);

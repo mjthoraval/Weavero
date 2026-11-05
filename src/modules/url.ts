@@ -66,7 +66,7 @@ export const URL_SCHEMES = [
 // BibLaTeX" submenu entries, which are only shown when BBT is active.
 // Wire version for the ZoteroPane.loadURI hook. BUMP on any change to the
 // wrapped closure -- a reload must unhook the stale copy and re-hook.
-export const WV_LOADURI_WIRE_V = 3;   // 2: also the paper-key open links (0.22.3-dev.49); 3: note-heading select links
+export const WV_LOADURI_WIRE_V = 4;   // 2: also the paper-key open links (0.22.3-dev.49); 3: note-heading select links; 4: note links (1.0.0-beta.4)
 
 // Wire version for the Zotero.CommandLineIngester.ingest wrap (stolen-focus
 // fix). Same bump discipline as WV_LOADURI_WIRE_V.
@@ -215,11 +215,13 @@ export const urlMethods = {
     //     snapshot files open in Zotero's reader (or the user's
     //     configured external reader), every other file type opens with
     //     the OS default app — same as double-clicking the attachment.
-    //     Returns null for notes, linked-URL attachments (no file), and
-    //     items with no attachment. A `zotero://note/…` link is
-    //     Better-Notes-specific; see TODO. Zotero registers both
-    //     `zotero://open` and `zotero://open-pdf` for this; we emit the
-    //     shorter modern `zotero://open` form.
+    //     Returns null for linked-URL attachments (no file) and items with
+    //     no attachment. A NOTE's open link is Better Notes' form,
+    //     `zotero://note/<u | groupID>/<key>/`, not `zotero://open`: Zotero's
+    //     handler ignores a note, and this form opens the note with EITHER
+    //     plugin running (MJT 2026-11-05, see _buildNoteLink). Zotero
+    //     registers both `zotero://open` and `zotero://open-pdf`; we emit
+    //     the shorter modern `zotero://open` form.
 
     /** "library" for the user library, "groups/<gid>" for a group. */
     _zoteroLibPrefix(libraryID) {
@@ -477,8 +479,9 @@ export const urlMethods = {
      *  only ever landed on the page (trace ring stayed empty, 2026-07-31).
      *
      *  Only wvpos links, paper-key open links (Zotero ignores a regular
-     *  item's key, 0.22.3-dev.49) and note-heading select links (`?wvheading=`,
-     *  Zotero selects the note and drops the heading) are diverted; everything else calls
+     *  item's key, 0.22.3-dev.49), note-heading links (`?wvheading=`, Zotero
+     *  selects the note and drops the heading) and note links Better Notes is
+     *  not there to take are diverted; everything else calls
      *  straight through, so no existing behaviour changes. Versioned re-wiring (not a boolean):
      *  a reload must be able to unhook the STALE closure and re-hook, or the
      *  dead copy keeps running -- the trap `Notes.open` / `Reader.open` hit. */
@@ -513,6 +516,15 @@ export const urlMethods = {
                     if (plugin && typeof uri === "string"
                         && /^zotero:\/\/select\//i.test(uri) && /[?&]wvheading=/i.test(uri)) {
                         plugin._wvLinkRing("loadURI: intercepted note-heading link");
+                        Promise.resolve(plugin.handleZoteroURI(uri)).catch(() => {});
+                        return;
+                    }
+                    // A note link: Better Notes' own, unless it names a heading
+                    // (the id is Weavero's) or that plugin is not there to
+                    // take it, when Zotero has no handler for the link at all.
+                    if (plugin && typeof uri === "string" && /^zotero:\/\/note\//i.test(uri)
+                        && (/[?&]wvheading=/i.test(uri) || !plugin._wvNoteExtension(uri))) {
+                        plugin._wvLinkRing("loadURI: intercepted note link");
                         Promise.resolve(plugin.handleZoteroURI(uri)).catch(() => {});
                         return;
                     }
@@ -1033,7 +1045,8 @@ export const urlMethods = {
      *    stored file attachment → …/items/<key>
      *    annotation             → …/items/<parentAttachmentKey>?annotation=<key>
      *    regular item           → …/items/<itemKey>  (the PAPER's key)
-     *    note / linked-URL / no-attachment / other → null
+     *    note                   → zotero://note/… (_buildNoteLink)
+     *    linked-URL / no-attachment / other → null
      *  A paper's link carries its own key, not its best attachment's (MJT
      *  2026-10-26: "Copying the open link from an item should just use the
      *  item key of the parent item"): it survives a replaced PDF and is
@@ -1053,6 +1066,7 @@ export const urlMethods = {
                 return "zotero://open/" + this._zoteroLibPrefix(parent.libraryID)
                     + "/items/" + parent.key + "?annotation=" + item.key;
             }
+            if (item.isNote && item.isNote()) return this._buildNoteLink(item);
             if (item.isAttachment && item.isAttachment()) {
                 if (!this._isOpenableFileAttachment(item)) return null;
                 return "zotero://open/" + this._zoteroLibPrefix(item.libraryID)
@@ -1065,6 +1079,30 @@ export const urlMethods = {
             }
         } catch (e) {}
         return null;
+    },
+
+    /** A note's open link, in Better Notes' form ("u" for My Library, else
+     *  the group's id). `zotero://open` was weighed and declined (MJT
+     *  2026-11-05): Zotero's handler ignores a note, so such a link would need
+     *  Weavero, while this one opens with either plugin, Better Notes keeps
+     *  seeing it, and the links already written use it. Neither works with
+     *  no plugin at all; a select link does. */
+    _buildNoteLink(item) {
+        try {
+            if (item.libraryID === Zotero.Libraries.userLibraryID) return "zotero://note/u/" + item.key + "/";
+            const gid = Zotero.Groups.getGroupIDFromLibraryID(item.libraryID);
+            return gid ? "zotero://note/" + gid + "/" + item.key + "/" : null;
+        } catch (e) { return null; }
+    },
+
+    /** The `zotero://note` extension Better Notes registers, or null. */
+    _wvNoteExtension(url: string): any {
+        try {
+            const handler: any = Services.io.getProtocolHandler("zotero").wrappedJSObject;
+            const ext = handler && typeof handler.getExtension === "function"
+                ? handler.getExtension(Services.io.newURI(url, null, null)) : null;
+            return ext && ext.noContent && typeof ext.doAction === "function" ? ext : null;
+        } catch (e) { return null; }
     },
 
     /** Whether `url` is a `zotero://open` link whose key names a REGULAR

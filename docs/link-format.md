@@ -91,9 +91,9 @@ everywhere: a page (`?page=`), a position (`wvpos`), an annotation
 
 ## Links to a heading in a note (Weavero-only jump)
 
-"Copy Link to Heading" -- in a note's right-click menu when the click is in a
-heading, and on a heading in the note outline -- writes a select link to the
-note with one extra parameter:
+"Copy Select Link to Heading" -- in a note's right-click menu when the click is
+in a heading, and on a heading in the note outline -- writes a select link to
+the note with one extra parameter:
 
 ```
 zotero://select/library/items/9KX2QF7B?wvheading=wv-k3n8x1qa
@@ -116,6 +116,35 @@ zotero://select/library/items/9KX2QF7B?wvheading=wv-k3n8x1qa
 The jump is the second exception to Weavero's rule that the links it writes
 work fully without it (decided 2026-11-03). The degraded result is still the
 right note.
+
+A select link always goes to My Library, even when the note is open in a tab,
+as it does on a plain Zotero.
+
+## Open links to a note
+
+"Copy Open Link" on a note, and "Copy Open Link to Heading" beside the entry
+above, write Better Notes' link form, the second with the same `wvheading`:
+
+```
+zotero://note/u/9KX2QF7B/                        (My Library)
+zotero://note/5499703/9KX2QF7B/                  (a group, by its id)
+zotero://note/u/9KX2QF7B/?wvheading=wv-k3n8x1qa  (a heading)
+```
+
+Zotero's own `zotero://open` ignores a note, so an open link there would need
+Weavero. This form opens the note with **either** plugin running, Better Notes
+keeps seeing the link, and it is what notes already contain.
+
+| | Plain note link | With `wvheading` |
+|---|---|---|
+| Weavero | opens the note in a tab, or goes to its tab | the same, then goes to the heading and flashes it |
+| Better Notes alone | opens the note | opens the note at the top: it ignores the id |
+| Both | Better Notes takes it | Weavero takes it |
+| Neither | does nothing | does nothing |
+
+Weavero also takes these links when they arrive from another application and
+Better Notes is not installed. With no plugin at all only a select link does
+anything, which is why both stay on the menus.
 
 ## Versioning policy
 

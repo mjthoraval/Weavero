@@ -589,6 +589,7 @@ describe("Weavero — Backlinks with their context", function () {
         assert.deepEqual(K(L("zotero://note/u/" + key + "/?line=3")), ["zotero", "Zotero link", "Open note at line 3 (Better Notes)"]);
         assert.deepEqual(K(L("zotero://note/u/" + key + "/?section=Methods%20A")), ["zotero", "Zotero link", "Open note at section Methods A (Better Notes)"]);
         assert.deepEqual(K(L("zotero://note/u/" + key + "/")), ["zotero", "Zotero link", "Open note (Better Notes)"]);
+        assert.deepEqual(K(L("zotero://note/u/" + key + "/?wvheading=wv-x")), ["zotero", "Zotero link", "Open note at heading"], "Weavero's heading id, not Better Notes'");
         assert.deepEqual(K({ ref: "citation", url: "", locator: "7" }), ["cite", "Note citation", "p. 7"]);
         assert.deepEqual(K({ ref: "citation", url: "", locator: null }), ["cite", "Note citation", ""], "no page: the kind alone");
         assert.deepEqual(K({ ref: "quote", url: "annotation:" + X.key, locator: "12" }, X), ["cite", "Note citation", "annotation p. 12"], "an annotation added to a note, cited at its own page");

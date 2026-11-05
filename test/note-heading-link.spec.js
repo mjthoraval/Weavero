@@ -220,9 +220,12 @@ describe("Weavero — links to a note heading", function () {
         try {
             menu.dispatchEvent(new win.Event("popupshowing"));
             expect(menu.firstElementChild && menu.firstElementChild.id).to.equal("wv-note-heading-link");
-            expect(menu.firstElementChild.getAttribute("label")).to.equal("Copy Link to Heading");
+            expect(menu.firstElementChild.getAttribute("label")).to.equal("Copy Select Link to Heading");
+            expect(menu.firstElementChild.nextElementSibling.id, "the open link under it").to.equal("wv-note-heading-link-open");
+            expect(menu.firstElementChild.nextElementSibling.getAttribute("label")).to.equal("Copy Open Link to Heading");
             menu.dispatchEvent(new win.Event("popuphidden"));
             expect(menu.querySelector("#wv-note-heading-link"), "removed on close").to.equal(null);
+            expect(menu.querySelector("#wv-note-heading-link-open"), "both").to.equal(null);
             // A right-click outside a heading adds nothing.
             wv._wvNnOnContext({ target: ed.d.querySelector(".ProseMirror p") }, ed.ne, ed.f);
             menu.dispatchEvent(new win.Event("popupshowing"));

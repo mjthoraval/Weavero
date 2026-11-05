@@ -13,11 +13,15 @@
 //    start holds the Toggle Outline button), the reader outline's look and
 //    its current-section rule (the last heading the reading line, a quarter
 //    of the way down the view, has passed);
-//  - heading links: "Copy Link to Heading" gives the heading an `id` once
-//    (a real, synced edit) and copies
+//  - heading links: "Copy Select Link to Heading" gives the heading an `id`
+//    once (a real, synced edit) and copies
 //    zotero://select/<lib>/items/<noteKey>?wvheading=<id>. Without Weavero,
 //    Zotero selects the note; with it the note also scrolls to the heading
-//    -- the second Weavero-only link exception (MJT, 2026-11-03).
+//    -- the second Weavero-only link exception (MJT, 2026-11-03). "Copy Open
+//    Link to Heading" puts the same id on the note's open link,
+//    zotero://note/<u | gid>/<noteKey>/?wvheading=<id>: a note tab at the
+//    heading with Weavero, the note from its top with Better Notes alone,
+//    which ignores the id (MJT, 2026-11-05).
 
 import { wvListen, wvUnlisten } from "../lib/listen";
 import { wvHtmlEl, winOf, wvPopupHost, wvIsTextEntry } from "../lib/dom";
@@ -458,8 +462,8 @@ class _NoteNavMixin {
         catch (er) {}
     }
 
-    /** "Copy Link to Heading" at the top of the note's own menu when the
-     *  right-click was in a heading. */
+    /** The heading's two copy entries at the top of the note's own menu when
+     *  the right-click was in a heading. */
     _wvNnOnMenuShowing(e: any, ne: any, iframe: any, menu: any) {
         try {
             if (e.target !== menu) return;   // a submenu opening bubbles here
@@ -475,7 +479,7 @@ class _NoteNavMixin {
             const sep = wvMenuSeparator(doc);
             sep.id = "wv-note-heading-link-sep";
             menu.insertBefore(sep, menu.firstChild);
-            menu.insertBefore(this._wvNnLinkMenuItem(doc, ne, heads, h), sep);
+            for (const kind of ["select", "open"]) menu.insertBefore(this._wvNnLinkMenuItem(doc, ne, heads, h, kind), sep);
         }
         catch (er) { Zotero.debug("[Weavero] heading-link menu err: " + er); }
     }
@@ -493,18 +497,18 @@ class _NoteNavMixin {
         catch (e) { return false; }
     }
 
-    _wvNnLinkMenuItem(doc: any, ne: any, heads: any[], h: any): any {
+    _wvNnLinkMenuItem(doc: any, ne: any, heads: any[], h: any, kind = "select"): any {
         // A read-only note cannot take an id; a heading that already has a
         // unique one still links.
         const unique = !!h.id && heads.filter((x: any) => x.id === h.id).length === 1;
         const ro = ne.mode !== "edit";
         const mi = wvMenuItem(doc, {
-            label: "Copy Link to Heading",
-            attrs: { id: "wv-note-heading-link" },
+            label: kind === "open" ? "Copy Open Link to Heading" : "Copy Select Link to Heading",
+            attrs: { id: kind === "open" ? "wv-note-heading-link-open" : "wv-note-heading-link" },
             disabled: ro && !unique,
             onCommand: () => {
                 const p = wvLivePlugin();
-                if (p) p._wvNoteCopyHeadingLink(ne, h.ord);
+                if (p) p._wvNoteCopyHeadingLink(ne, h.ord, kind);
             },
         });
         if (ro && !unique) mi.setAttribute("tooltiptext", "This note is read-only, and the heading has no link anchor yet.");
@@ -1059,7 +1063,9 @@ class _NoteNavMixin {
             if (old) old.remove();
             const menu = doc.createXULElement("menupopup");
             menu.id = "wv-note-outline-menu";
-            if (this._wvNoteHeadingLinksOn()) menu.appendChild(this._wvNnLinkMenuItem(doc, ne, heads, h));
+            if (this._wvNoteHeadingLinksOn()) {
+                for (const kind of ["select", "open"]) menu.appendChild(this._wvNnLinkMenuItem(doc, ne, heads, h, kind));
+            }
             if (h.foldable && this._wvNoteFoldOn()) {
                 if (menu.firstChild) wvMenuSeparator(doc, menu);
                 wvMenuItem(doc, {
@@ -1195,7 +1201,7 @@ class _NoteNavMixin {
 
     /** Give the heading an id when it needs one, copy its link; the link
      *  or null. */
-    _wvNoteCopyHeadingLink(ne: any, ord: number): string | null {
+    _wvNoteCopyHeadingLink(ne: any, ord: number, kind = "select"): string | null {
         try {
             const iframe = this._wvNnIframe(ne);
             const wj = this._wvNnPage(iframe);
@@ -1222,7 +1228,7 @@ class _NoteNavMixin {
                 }
                 return null;
             }
-            const link = this._wvNoteHeadingLink(ne.item, res.id);
+            const link = this._wvNoteHeadingLink(ne.item, res.id, kind);
             if (!link) return null;
             Zotero.Utilities.Internal.copyTextToClipboard(link);
             return link;
@@ -1230,8 +1236,8 @@ class _NoteNavMixin {
         catch (e) { Zotero.debug("[Weavero] copy heading link err: " + e); return null; }
     }
 
-    _wvNoteHeadingLink(item: any, id: string): string | null {
-        const base = this._buildSelectLink(item);
+    _wvNoteHeadingLink(item: any, id: string, kind = "select"): string | null {
+        const base = kind === "open" ? this._buildNoteLink(item) : this._buildSelectLink(item);
         return base ? base + "?wvheading=" + encodeURIComponent(id) : null;
     }
 

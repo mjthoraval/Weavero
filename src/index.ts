@@ -744,16 +744,18 @@ class WeaveroPlugin {
                 // ZoteroPane.loadURI dispatches no-content zotero: URLs. (Before notes
                 // defaulted ON in v0.14.2, Weavero never intercepted these links, so BN
                 // handled them itself; the launchURL path was what broke them.)
-                try {
-                    const handler: any = Services.io.getProtocolHandler("zotero").wrappedJSObject;
-                    const nsIURI = Services.io.newURI(url, null, null);
-                    const ext = (handler && typeof handler.getExtension === "function")
-                        ? handler.getExtension(nsIURI) : null;
-                    if (ext && ext.noContent && typeof ext.doAction === "function") {
-                        ext.doAction(nsIURI);
-                        return;
-                    }
-                } catch (e) {}
+                // A link with Weavero's heading id stays here: Better Notes does
+                // not know the id and would open the note at the top.
+                const noteHeading = u.searchParams.get("wvheading");
+                if (!noteHeading) {
+                    try {
+                        const ext = (this as any)._wvNoteExtension(url);
+                        if (ext) {
+                            ext.doAction(Services.io.newURI(url, null, null));
+                            return;
+                        }
+                    } catch (e) {}
+                }
                 // No external `zotero://note` extension registered — handle
                 // the basic note-open ourselves. URL format (matches the
                 // shape Better Notes emits, so legacy links keep working):
@@ -793,11 +795,14 @@ class WeaveroPlugin {
                 const win  = Zotero.getMainWindow();
                 const pane = win.ZoteroPane;
                 try {
-                    if (typeof pane.openNote === "function") await pane.openNote(note.id);
+                    if (typeof pane.openNote === "function") await pane.openNote(note.id, { openInWindow: false });
                     else if (typeof pane.openNoteWindow === "function") await pane.openNoteWindow(note.id);
                     else await pane.selectItem(note.id);
                     win.focus();
                 } catch { await pane.selectItem(note.id); win.focus(); }
+                if (noteHeading) {
+                    try { (this as any)._wvNoteRevealHeading(win, note.id, noteHeading); } catch (e) {}
+                }
                 if (noteTrashed) {
                     this._showLinkWarning("The linked note is in the Trash (key " + key + ") — opened anyway.");
                 }

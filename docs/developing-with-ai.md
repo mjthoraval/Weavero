@@ -80,7 +80,8 @@ alongside your daily Zotero; give each instance its own bridge port
 Weavero catches upstream collisions (row-model changes, search reworks,
 docShell behavior changes) this way, on the day they land — and the
 one-way schema rule above is exactly why this sandbox, too, gets its
-own data directory.
+own data directory. To test on a second released version the same way,
+see [Two Zotero versions side by side](#two-zotero-versions-side-by-side).
 
 **Two low-friction on-ramps before you build anything.** You can learn
 most of what matters about Zotero's API without a plugin skeleton:
@@ -337,6 +338,71 @@ own bridge port and register one MCP server per instance. The port pref
 the bridge plugin reads is `extensions.zotero.extensions.mcp-rdp.port`
 (per **profile**, not per binary). A brand-new MCP server needs a full
 agent restart to appear — a mid-session reconnect is not enough.
+
+### Two Zotero versions side by side
+
+A plugin that supports two major versions has to be tested on both, and
+an installed Zotero is only ever one version. Zotero's Windows ZIP needs
+no installer, so a second version can live in its own folder and
+[run at the same time](https://www.zotero.org/support/kb/multiple_instances)
+as the installed one, as long as each has its own profile and data
+directory. Weavero is tested this way on Zotero 10 and 11 on one Windows
+PC (November 2026). These steps were run from scratch next to a running
+Zotero before being written down:
+
+1. **Download and unpack the ZIP** into a new folder, here
+   `C:\zotero-test\z10\`:
+   [latest release](https://www.zotero.org/download/client/dl?channel=release&platform=win-x64-zip)
+   or [current beta](https://www.zotero.org/download/client/dl?channel=beta&platform=win-x64-zip).
+   For one specific release, add `&version=10.0.7` to the release link.
+   The ZIP holds a `Zotero_win-x64` folder.
+2. **Create two empty folders beside it**, `profile` and `data`. The
+   data folder has to exist: without it, Zotero stops at an error dialog
+   on its first start.
+3. **Create `profile\user.js` before the first start.** It is read at
+   every start, so this copy keeps to its own library. That matters
+   because a newer Zotero upgrades a data directory one way, as in
+   [Step 1](#step-1--isolate-a-dedicated-profile-and-data-directory).
+
+   ```js
+   user_pref("extensions.zotero.dataDir", "C:\\zotero-test\\z10\\data");
+   user_pref("extensions.zotero.useDataDir", true);
+   user_pref("extensions.zotero.sync.autoSync", false);
+   user_pref("extensions.zotero.httpServer.port", 23129);
+   ```
+
+   The last line gives this copy its own HTTP port and leaves the
+   default 23119, which the Zotero Connector uses, to the installed
+   Zotero. If you use the bridge, add its port pref here too (see
+   above).
+4. **Start it** with its own profile:
+
+   ```
+   C:\zotero-test\z10\Zotero_win-x64\zotero.exe -profile C:\zotero-test\z10\profile -no-remote
+   ```
+
+   `-no-remote` keeps it a separate instance instead of handing over to
+   the Zotero that is already running.
+5. **Check before doing anything else:** Settings → Advanced → Files and
+   Folders must show the `data` folder, and the library must be empty.
+
+**Running the test suite on it.** `zotero-plugin-scaffold` takes the
+Zotero to launch from `ZOTERO_PLUGIN_ZOTERO_BIN_PATH`, in the environment
+or in `.env`. Point it at this copy's `zotero.exe` and the test run uses
+that version, in a throwaway profile, so `profile` and `data` stay out
+of it. Weavero's CI selects its Zotero the same way.
+
+Three things to know:
+
+- `-profile` with a path, rather than `-P` with a name, keeps this
+  profile out of the list the profile manager shows, so the installed
+  Zotero cannot be pointed at it by a wrong click.
+- This copy updates itself like any Zotero: the one used here went from
+  10.0.6 to 10.0.7 during a test. If you need an exact version, check
+  Help → About Zotero.
+- Plugins are recorded in the profile by absolute path. Do not move the
+  folder after installing any: they would still show as enabled but
+  would not load.
 
 ### Teach the project to the agent: instruction files
 

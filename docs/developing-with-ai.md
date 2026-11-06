@@ -373,8 +373,7 @@ Zotero before being written down:
 
    The last line gives this copy its own HTTP port and leaves the
    default 23119, which the Zotero Connector uses, to the installed
-   Zotero. If you use the bridge, add its port pref here too (see
-   above).
+   Zotero.
 4. **Start it** with its own profile:
 
    ```
@@ -391,6 +390,19 @@ Zotero to launch from `ZOTERO_PLUGIN_ZOTERO_BIN_PATH`, in the environment
 or in `.env`. Point it at this copy's `zotero.exe` and the test run uses
 that version, in a throwaway profile, so `profile` and `data` stay out
 of it. Weavero's CI selects its Zotero the same way.
+
+**Connecting the agent to it.** Install the bridge plugin in this copy
+too, from its own Tools → Plugins, and give it a port of its own by
+adding a line to `profile\user.js`:
+
+```js
+user_pref("extensions.zotero.extensions.mcp-rdp.port", 6104);
+```
+
+Then register a second MCP server for that port, with the `-e
+ZOTERO_RDP_PORT=` form shown
+[above](#the-bridge-let-the-agent-drive-a-live-zotero), and restart the
+agent. It then has one set of tools for each Zotero.
 
 Three things to know:
 

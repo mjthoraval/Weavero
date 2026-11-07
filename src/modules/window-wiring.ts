@@ -39,7 +39,7 @@
 
 import { PANEL_ID } from "./constants";
 import { wvUnlisten } from "../lib/listen";
-import { wvWinType } from "../lib/windows";
+import { wvNativeWindows, wvWinType } from "../lib/windows";
 
 declare const Zotero: any;
 
@@ -51,6 +51,13 @@ export interface WvMainWire {
     on: "both" | "load";
     /** Needs both pane views (itemsView, collectionsView). */
     views?: boolean;
+    /** Acts on a library view without needing it at wiring time: run again, with
+     *  the `views` entries, for each further library tab (_wvLibraryViewActivated). */
+    perView?: boolean;
+    /** Skipped on a Zotero with its own windows (wvNativeWindows): Zotero does
+     *  this itself. Only with a twin read in zotero#6035; guard
+     *  test/native-windows.spec.js lists them. */
+    nativeOff?: boolean;
     wire(p: any, win: any): void;
 }
 
@@ -90,7 +97,7 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     { id: "tabs-getstate", on: "both", wire: (p, win) => p._wvPatchTabsGetState(win) },
     // Multi-main-window fix: ignore other windows' tab-select notifier events
     // in this window's <item-details> (they froze the pane).
-    { id: "itemdetails-tabselect", on: "both", wire: (p, win) => p._wvPatchItemDetailsTabSelect(win) },
+    { id: "itemdetails-tabselect", on: "both", nativeOff: true, wire: (p, win) => p._wvPatchItemDetailsTabSelect(win) },
     // Window-type glyph in the OS title (opt-in) + per-window taskbar icon
     // (Windows; Chrome-profile-style badge). Init: _wvRefreshTitleGlyphs /
     // _wvRefreshWindowIcons over every window.
@@ -98,17 +105,19 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     { id: "window-icon", on: "load", wire: (p, win) => p._wvApplyWindowIcon(win) },
     // Ctrl+T -> "open a library item" picker (reader windows wire theirs at
     // strip build).
-    { id: "new-tab-shortcut", on: "both", wire: (p, win) => p._wvWireMainNewTabShortcut(win) },
-    { id: "new-window-shortcut", on: "both", wire: (p, win) => p._wvWireNewWindowShortcut(win) },
-    { id: "advsearch-new-window", on: "both", wire: (p, win) => p._wvWireAdvSearchNewWindow(win) },
+    { id: "new-tab-shortcut", on: "both", nativeOff: true, wire: (p, win) => p._wvWireMainNewTabShortcut(win) },
+    { id: "new-window-shortcut", on: "both", nativeOff: true, wire: (p, win) => p._wvWireNewWindowShortcut(win) },
+    { id: "advsearch-new-window", on: "both", nativeOff: true, wire: (p, win) => p._wvWireAdvSearchNewWindow(win) },
     { id: "collections-pane-toggle", on: "both", wire: (p, win) => p._wvApplyCollectionsPaneToggle(win) },
+    // Multi-line titles: each window's items tree, hence `views`.
+    { id: "title-lines", on: "both", views: true, wire: (p, win) => p._wvApplyTitleLines(win) },
     // The Tag Selector's handle (issue #58): its filter mark follows the
     // items view's refresh signal, hence `views`.
     { id: "tag-selector-handle", on: "both", views: true, wire: (p, win) => p._wvApplyTagSelectorHandle(win) },
     // Each window's own Tag Selector class, handed back to the shared
     // `Zotero.TagSelector` when the window that owns it closes (onMainWindowUnload;
     // a Zotero bug with more than one main window, 2026-10-17).
-    { id: "tag-selector-class", on: "both", wire: (p, win) => p._wvTagSelectorClassKeep(win) },
+    { id: "tag-selector-class", on: "both", nativeOff: true, wire: (p, win) => p._wvTagSelectorClassKeep(win) },
     // WV-TEMP-134330: the Tag Selector scoped to the rows the items view
     // shows, until Zotero's setTagScope does it itself (then it installs nothing).
     { id: "tag-scope-rows", on: "both", wire: (p, win) => p._wvWireTagScopeRowsFix(win) },
@@ -155,7 +164,7 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     // The pinned section and open sections per main window (the first keeps
     // Zotero's own settings; pane.ts _wvWireWindowPanePrefs). The managed
     // init wires a new window itself; this entry covers a reload.
-    { id: "window-pane-prefs", on: "both", views: true, wire: (p, win) => p._wvWireWindowPanePrefs(win) },
+    { id: "window-pane-prefs", on: "both", views: true, nativeOff: true, wire: (p, win) => p._wvWireWindowPanePrefs(win) },
     // WV-TEMP-133039: Zotero 896a3f829's stuck drop-row clear, backported
     // until a Zotero carries it (then it installs nothing).
     { id: "stuck-drop-row", on: "both", views: true, wire: (p, win) => p._wvWireStuckDropRowFix(win) },
@@ -164,7 +173,7 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     // Hidden collections: per window (the store loads once, then refreshes
     // every window that has something hidden). Retries on its own until the
     // collections tree exists.
-    { id: "hidden-collections", on: "both", wire: (p, win) => { p._wvHidApply(win); p._wvHidLoad(); } },
+    { id: "hidden-collections", on: "both", perView: true, wire: (p, win) => { p._wvHidApply(win); p._wvHidLoad(); } },
     // The open Collections and Libraries Managers name their window once
     // there are several: a window opening changes the count (the title is
     // re-read). Load-only: init's window was open already. (Lived in
@@ -185,7 +194,7 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     { id: "reader-find-key", on: "both", wire: (p, win) => p._wvWireReaderFindKey(win) },
     { id: "column-picker-mark", on: "both", wire: (p, win) => p._wvWireColumnPickerMark(win) },
     { id: "column-picker-native-fix", on: "both", wire: (p, win) => p._wvWireColumnPickerNativeFix(win) },
-    { id: "items-cross-window-drop", on: "both", wire: (p, win) => p._wvWireItemsCrossWindowDrop(win) },
+    { id: "items-cross-window-drop", on: "both", nativeOff: true, wire: (p, win) => p._wvWireItemsCrossWindowDrop(win) },
     // Edit > Undo hook + the reader's Ctrl+Y (until 0.21.7 only the init loop
     // wired them: a window opened later had neither).
     { id: "edit-undo-menu", on: "both", wire: (p, win) => p._wvWireEditUndoMenu(win) },
@@ -205,11 +214,11 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     // BEFORE managed-window (see ORDER MATTERS above).
     { id: "restore-trace-mark", on: "load", wire: (p, win) => p._wvTrace("onMainWindowLoad: " + (p._wvWindowName ? p._wvWindowName(win) : "?")) },
     { id: "restore-tracing", on: "both", wire: (p, win) => p._wvWireRestoreTracing(win) },
-    { id: "managed-window", on: "load", wire: (p, win) => p._wvAdoptPendingDevWindow(win) },
+    { id: "managed-window", on: "load", nativeOff: true, wire: (p, win) => p._wvAdoptPendingDevWindow(win) },
     // Scope this window's context pane to its OWN tabs, so a reader-tab select
     // in another window can't show its item pane here (applies to every main
     // window -- the anchor leaks too; no-op single-window).
-    { id: "context-pane-guard", on: "both", wire: (p, win) => p._wvGuardContextPaneCrossWindow(win) },
+    { id: "context-pane-guard", on: "both", nativeOff: true, wire: (p, win) => p._wvGuardContextPaneCrossWindow(win) },
     // Stop a new collection from stealing the selection in every window (only
     // the acting window should follow it).
     { id: "collection-select-guard", on: "both", views: true, wire: (p, win) => p._wvGuardCollectionSelectCrossWindow(win) },
@@ -415,18 +424,25 @@ class _WindowWiringMixin {
         // Link menu -- stayed for the session (live audit, 2026-10-13).
         if (p._wvDestroyed) return;
         const ZP: any = win.ZoteroPane;
-        const viewsNow = !!(ZP && ZP.itemsView && ZP.collectionsView
-            && win.document.getElementById("collection-tree"));
+        const viewsNow = !!(ZP && ZP.itemsView && ZP.collectionsView && this._wvCollectionTreeShown(win));
         const later: WvMainWire[] = [];
+        const native = wvNativeWindows();
+        // This pass wires the view on screen: _wvLibraryViewActivated is for the others.
+        const stampView = () => { try { if (ZP && ZP.libraryView) ZP.libraryView._wvViewWireTag = p._wvWireTag(); } catch (e) {} };
+        if (viewsNow) stampView();
         for (const e of WV_MAIN_WIRES) {
             if (p._wvDestroyed) return;
             if (path === "init" && e.on !== "both") continue;
+            if (native && e.nativeOff) continue;
             if (e.views && !viewsNow) { later.push(e); continue; }
             try { e.wire(p, win); }
             catch (err) { Zotero.debug("[Weavero] wire " + e.id + " err: " + err); }
         }
-        if (later.length) {
+        // No library view: nothing to wait for. Zotero runs onMainWindowLoad, and
+        // with it this table, when one loads (_wvWinStateOpened).
+        if (later.length && !(native && ZP && !ZP.libraryView)) {
             p._wvWhenPaneViewsReady(win, (lp: any) => {
+                stampView();
                 for (const e of later) {
                     try { e.wire(lp, win); }
                     catch (err) { Zotero.debug("[Weavero] wire " + e.id + " (views) err: " + err); }
@@ -581,6 +597,55 @@ class _WindowWiringMixin {
         } catch (e) {}
     }
 
+    /** The collections tree is in the document. Its id carries the tab's suffix in
+     *  any library view but the first (libraryView.js). */
+    _wvCollectionTreeShown(win: any): boolean {
+        try {
+            const view = win.ZoteroPane && win.ZoteroPane.libraryView;
+            if (view) return !!view.querySelector("[id^='collection-tree']");
+        } catch (e) {}
+        return !!win.document.getElementById("collection-tree");
+    }
+
+    /** A library tab came on screen. Zotero makes its view the first time, and tells
+     *  plugins only about a window's first view, so the wiring the views need runs
+     *  here, once a view, and the filter moves to it. */
+    _wvLibraryViewSync(win: any) {
+        if (!wvNativeWindows() || !win || win.closed) return;
+        const Z = win.Zotero_Tabs, ZP = win.ZoteroPane;
+        if (!Z || !ZP || typeof Z.isLibraryTab !== "function" || !Z.isLibraryTab(Z.selectedID)) return;
+        let n = 0;
+        const tick = () => {
+            try {
+                const lp = live();
+                if (!lp || win.closed || !Z.isLibraryTab(Z.selectedID)) return;
+                const view = ZP.getLibraryView(Z.selectedID);
+                if (view && view.loaded && view.itemsView && view.collectionsView && ZP.libraryView === view) {
+                    lp._wvLibraryViewActivated(win, view);
+                    return;
+                }
+                if (++n < 100) win.setTimeout(tick, 100);
+            }
+            catch (e) { Zotero.debug("[Weavero] _wvLibraryViewSync err: " + e); }
+        };
+        tick();
+    }
+
+    _wvLibraryViewActivated(win: any, view: any) {
+        const p: any = this;
+        const tag = p._wvWireTag();
+        if (view._wvViewWireTag !== tag) {
+            view._wvViewWireTag = tag;
+            for (const e of WV_MAIN_WIRES) {
+                if (!(e.views || e.perView) || e.nativeOff) continue;
+                try { e.wire(p, win); }
+                catch (err) { Zotero.debug("[Weavero] wire " + e.id + " (view) err: " + err); }
+            }
+            try { p._wvInstallCollapseToQuickSearch(win); } catch (e) {}
+        }
+        p._wvFilterViewShown(win, view);
+    }
+
     /** Run `fn(livePlugin)` once main window `win` has BOTH pane views.
      *  Zotero calls onMainWindowLoad at the window's `load` event
      *  (xpcom/plugins.js), while ZoteroPane.init awaits initItemsTree and
@@ -600,8 +665,7 @@ class _WindowWiringMixin {
                 const lp = live();
                 if (!lp) return;
                 const ZP: any = win.ZoteroPane;
-                if (ZP && ZP.itemsView && ZP.collectionsView
-                    && win.document.getElementById("collection-tree")) {
+                if (ZP && ZP.itemsView && ZP.collectionsView && lp._wvCollectionTreeShown(win)) {
                     fn(lp);
                     return;
                 }

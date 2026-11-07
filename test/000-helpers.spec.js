@@ -32,6 +32,55 @@
         },
         /** Titles of the tests that needed a retry in this run. */
         retried: [],
+        /** A Zotero with its own windows (zotero#6035, lib/windows.ts). */
+        nativeWindows() { return typeof /** @type {any} */ (Zotero).Prefs.setForWindow === "function"; },
+        /** A further main window, ready for use: Zotero's own where it has
+         *  them, else Weavero's spawn. Null on timeout. */
+        async openMainWindow(timeoutMs) {
+            const win = Zotero.getMainWindow(), ms = timeoutMs || 25000;
+            if (wvT.nativeWindows()) {
+                const before = Zotero.getMainWindows();
+                win.ZoteroPane.newWindow();
+                return wvT.waitFor(() => {
+                    const w = Zotero.getMainWindows().find(x => !before.includes(x));
+                    return (w && w.ZoteroPane && w.ZoteroPane.itemsView) ? w : null;
+                }, ms);
+            }
+            const wv = wvT.plugin();
+            const s = wv._wvSpawnMainWindowStart();
+            return wv._wvSpawnMainWindowWait(s, { wait: "init", timeoutMs: ms, timerWin: win, dropOnTimeout: true });
+        },
+        /** What stands down on a Zotero with its own windows (zotero#6035):
+         *  the specs of Weavero's extra windows, reader windows and window
+         *  store, by full title. Marked pending there, before their hooks can
+         *  run; everywhere else they run as ever. Bring an entry back with its
+         *  feature. */
+        NATIVE_RETIRED: [
+            /^Weavero — the main window reopens on its own collection/,
+            /^Weavero — the background-restore focus guard ends/,
+            /^Weavero — cross-window multi-tab moves keep the selection/,
+            /^Weavero — a library-only main window comes back after a restart/,
+            /^Weavero — a note in a reader window is wired once its editor is ready/,
+            /^Weavero — a note's deck anchor is never/,
+            /^Weavero — a reader window's item pane follows/,
+            /^Weavero — reader tear-off \/ merge-back lifecycle/,
+            /^Weavero — pinned section and open sections per main window/,
+            /^Weavero — per-main-window wiring, characterized/,
+            /^Weavero — cross-window drop records its effect/,
+            /^Weavero — reader and note window wiring, characterized/,
+            /^Weavero — item drags onto notes in reader and note windows/,
+            /^Weavero — the Tag Selector survives a second main window closing/,
+            /^Weavero — File \/ Edit menubar entries for the window commands/,
+            /^Weavero — new main window: one spawn sequence/,
+            /^Weavero — the anchor mark follows the window count when a window closes a reader window/,
+            /^Weavero — hidden collections \(per window\) (Manage Hidden|a NEW main window gets its own set)/,
+            /^Weavero — hidden collections \(per window\) the window store carries/,
+            /^Weavero — open a collection in a new window; right-click keeps the selection (middle-click on a row|middle-click on the Advanced Search funnel|the context menu carries Open in New Window|the new window lands)/,
+            /^Weavero — View → Layout follows the tab \(zotero#2814\) a separate reader window/,
+            /^Weavero — pref getters \(characterization\) every getter answers/,
+            /^Weavero — custom window titles live in the window's state the window store carries/,
+            /^Weavero — wire stamps are build-keyed \(hot-upgrade rewiring\) Reader\.getWindowStates/,
+        ],
         /** The shared helpers the plugin publishes (src/lib), or null. */
         lib() { return (Zotero.Weavero && Zotero.Weavero.lib) || null; },
         win() { return Zotero.getMainWindow(); },
@@ -405,6 +454,11 @@
         /** Pending tests this run may legitimately have, by full title. */
         PENDING_ALLOWLIST: [
             { re: /^Weavero — plugin compat: /, why: "companion plugin not installed in this run (npm run test:compat installs it)" },
+            { re: /^Weavero — native windows \(zotero#6035\) on a real native build/, why: "version: needs a Zotero with its own windows" },
+            { re: /^Weavero — the saved windows move to Zotero's own \(zotero#6035\) on a real native build/, why: "version: needs a Zotero with its own windows" },
+            { re: /^Weavero — saved windows and group moves on Zotero's windows \(zotero#6035\) on a real native build/, why: "version: needs a Zotero with its own windows" },
+            { re: /^Weavero — named sessions on Zotero's windows \(zotero#6035\)/, why: "version: needs a Zotero with its own windows" },
+            { re: /^Weavero — the filter in every library tab \(zotero#6035\)/, why: "version: needs a Zotero with its own windows" },
             // Nested suites: a full title starts with the OUTER describe's.
             { re: /^Weavero — context-menu handlers ignore bubbled submenu events /, why: "popups do not open in this runner window, or no bookmarkable row is selected" },
             { re: /^Weavero — items-list header contributes no intrinsic width its max-content width/, why: "the desktop keeps the runner's window hidden (measured on CI)" },
@@ -480,6 +534,20 @@
         // `saveTx` waited 20 s on the DB lock once the fixed 8 s startup
         // delay became a readiness wait (2026-10-08). Wait for all three.
         this.timeout(90000);
+        // On a Zotero with its own windows: `this.skip()` in a spec's `before`
+        // would come after its hooks had started, so the list is applied here.
+        if (wvT.nativeWindows()) {
+            const retired = (x) => wvT.NATIVE_RETIRED.some(re => re.test(x.fullTitle()));
+            const walk = (s) => {
+                if (retired(s)) {
+                    s.pending = true;
+                    for (const h of ["_beforeAll", "_afterAll", "_beforeEach", "_afterEach"]) { if (Array.isArray(s[h])) s[h].length = 0; }
+                }
+                for (const t of s.tests || []) { if (retired(t)) t.pending = true; }
+                for (const c of s.suites || []) walk(c);
+            };
+            if (this.test && this.test.parent) walk(this.test.parent);
+        }
         const Z = /** @type {any} */ (Zotero);
         try { await Z.Schema.schemaUpdatePromise; } catch (e) {}
         try { await Z.uiReadyPromise; } catch (e) {}
@@ -568,7 +636,8 @@
             for (const c of s.suites || []) walk(c);
         };
         walk(root);
-        const unlisted = pending.filter(title => !wvT.PENDING_ALLOWLIST.some(a => a.re.test(title)));
+        const nativeRetired = wvT.nativeWindows() ? wvT.NATIVE_RETIRED : [];
+        const unlisted = pending.filter(title => !wvT.PENDING_ALLOWLIST.some(a => a.re.test(title)) && !nativeRetired.some(re => re.test(title)));
         // Into the scaffold's log (its `debug` channel), so a run's pending
         // tally is visible next to the pass/fail count.
         const line = "[wv-test] pending: " + pending.length + ", allowlisted: " + (pending.length - unlisted.length) + ", unlisted: " + unlisted.length

@@ -25,7 +25,7 @@ import { wvListen, wvListener, wvUnlisten } from "../lib/listen";
 import { wvStoreWrite, wvStoreRead, wvStoreRemove } from "../lib/store";
 import { wvTimeout } from "../lib/timers";
 import { wvMenuItem } from "../lib/menu";
-import { wvMainWins, wvWinType } from "../lib/windows";
+import { wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvSelectLibraryTab, wvStoredFromSaved, wvWinType } from "../lib/windows";
 import { wvAccel } from "../lib/keys";
 import { wvSvgEl } from "../lib/svg";
 import { WV_FUNNEL_DATA_URI } from "./constants";
@@ -471,7 +471,7 @@ class _TabsMixin {
         let libraryPaneRow = null;
         const dataRows = [];
         for (const row of allRows) {
-            if (row.dataset.tabId === "zotero-pane") libraryPaneRow = row;
+            if (wvIsLibraryTabID(row.dataset.tabId)) libraryPaneRow = row;
             else dataRows.push(row);
         }
 
@@ -858,7 +858,7 @@ class _TabsMixin {
                 if (r.classList.contains("wv-tabsmenu-ghost")) return false;
                 if (r.classList.contains("wv-tabs-menu-row-hidden")) return false;
                 const tid = tidOf(r);
-                if (!tid || tid === "zotero-pane") return false;
+                if (!tid || wvIsLibraryTabID(tid)) return false;
                 if (exclTab != null && tid === exclTab) return false;
                 if (exclGrp && win) {
                     try { const t = this._wvTabObjInWin(win, tid, isReader); if (t && (this as any)._wvTabGroupStamp(t) === exclGrp) return false; } catch (e) {}
@@ -1012,7 +1012,7 @@ class _TabsMixin {
                                 let v: any = placedBefore.previousElementSibling;
                                 while (v && v.classList && (v.classList.contains("wv-tgrow-hidden") || v.classList.contains("wv-tabsmenu-ghost") || v.classList.contains("wv-tgrow-header"))) v = v.previousElementSibling;
                                 anchorTabId = (v && ((v as any)._wvSrcTabId || (v.dataset && v.dataset.tabId))) || null;
-                                if (anchorTabId === "zotero-pane") anchorTabId = null;
+                                if (wvIsLibraryTabID(anchorTabId)) anchorTabId = null;
                             }
                         } else {
                             // Below every collapsed header → after the LAST group.
@@ -1157,7 +1157,7 @@ class _TabsMixin {
                 try { for (const r of list.querySelectorAll(".wv-tabsmenu-row-dragging")) r.classList.remove("wv-tabsmenu-row-dragging"); } catch (er) {}
             };
 
-            on(list, "tabsmenu-rowdnd:dragstart", "dragstart", (e: any) => {
+            on(list, "lazy:tabsmenu-rowdnd:dragstart", "dragstart", (e: any) => {
                 try {
                     if (isStale()) return;
                     // Group source first — the bottom "Tab Groups" row or an inline
@@ -1192,7 +1192,7 @@ class _TabsMixin {
                     let nativeRow = false;
                     if (!srcWin) {
                         const tid = row.dataset && row.dataset.tabId;
-                        if (!tid || tid === "zotero-pane") return;
+                        if (!tid || wvIsLibraryTabID(tid)) return;
                         srcWin = panelWin; tabId = tid; isReader = false;
                         nativeRow = true;
                     }
@@ -1235,7 +1235,7 @@ class _TabsMixin {
             const shouldIntercept = (res: any, _drag: any) =>
                 !!(res && res.target);
 
-            on(list, "tabsmenu-rowdnd:dragover", "dragover", (e: any) => {
+            on(list, "lazy:tabsmenu-rowdnd:dragover", "dragover", (e: any) => {
                 try {
                     if (isStale()) return;
                     // Group drag → drop onto ANY window's scope to move/reorder the
@@ -1368,7 +1368,7 @@ class _TabsMixin {
                 } catch (er) {}
             }, true);
 
-            on(list, "tabsmenu-rowdnd:drop", "drop", (e: any) => {
+            on(list, "lazy:tabsmenu-rowdnd:drop", "drop", (e: any) => {
                 try {
                     if (isStale()) return;
                     const lp = livePlugin();
@@ -1465,10 +1465,10 @@ class _TabsMixin {
                 } catch (er) {}
             }, true);
 
-            on(list, "tabsmenu-rowdnd:dragend", "dragend", () => {
+            on(list, "lazy:tabsmenu-rowdnd:dragend", "dragend", () => {
                 try { if (isStale()) return; const lp = livePlugin(); lp._wvPopupRowDrag = null; lp._wvPopupGroupDrag = null; clearHighlight(); clearDragging(); } catch (er) {}
             }, true);
-            on(list, "tabsmenu-rowdnd:dragleave", "dragleave", (e: any) => {
+            on(list, "lazy:tabsmenu-rowdnd:dragleave", "dragleave", (e: any) => {
                 try { if (isStale()) return; if (!list.contains(e.relatedTarget)) clearHighlight(); } catch (er) {}
             }, true);
         } catch (e) { Zotero.debug("[Weavero] _wvWireTabsMenuRowDnD err: " + e); }
@@ -1504,7 +1504,7 @@ class _TabsMixin {
                 if (!Z || !Array.isArray(Z._tabs)) continue;
                 const tabs: any[] = [];
                 for (const t of Z._tabs) {
-                    if (!t || t.id === "zotero-pane" || t.type === "library") continue;
+                    if (!t || wvIsLibraryTabID(t.id) || t.type === "library") continue;
                     const base = t.type.replace(/-(unloaded|reloaded|loading)$/, "");
                     if (base !== "reader" && base !== "note") continue;
                     const item = t.data && Zotero.Items.get(t.data.itemID);
@@ -1521,13 +1521,13 @@ class _TabsMixin {
                 // window's native list (was previously skipped for other windows).
                 let libraryTab: any = null;
                 try {
-                    const lt = Z._tabs.find((t: any) => t && (t.id === "zotero-pane" || t.type === "library"));
+                    const lt = Z._tabs.find((t: any) => t && (wvIsLibraryTabID(t.id) || t.type === "library"));
                     if (lt) {
                         const tw = w, tZ = Z;
                         libraryTab = {
                             title: lt.title || "My Library",
                             iconFullClass: ((this._wvAnchorLibIconClass(w) || "icon icon-css icon-library") + " tab-icon").replace(/\s+/g, " ").trim(),
-                            onClick: () => { try { tw.focus(); tZ.select("zotero-pane"); } catch (e) {} },
+                            onClick: () => { try { tw.focus(); wvSelectLibraryTab(tw); } catch (e) {} },
                         };
                     }
                 } catch (e) {}
@@ -1694,7 +1694,7 @@ class _TabsMixin {
             if (prev) prev.remove();
             if (this._tabsMenuGroupByLibrary !== false) return;   // only when sort is OFF
             const tabId = row.dataset && row.dataset.tabId;
-            if (!tabId || tabId === "zotero-pane") return;
+            if (!tabId || wvIsLibraryTabID(tabId)) return;
             const Zotero_Tabs = win && win.Zotero_Tabs;
             const tab = Zotero_Tabs && Zotero_Tabs._tabs.find((t: any) => t.id === tabId);
             const itemID = tab && tab.data && tab.data.itemID;
@@ -2117,7 +2117,7 @@ class _TabsMixin {
 
             if (!lastMain) {
                 mkSep();
-                mkItem(isReader ? "Convert to Main Window" : "Convert to Reader Window", (p: any) => {
+                if (!wvNativeWindows()) mkItem(isReader ? "Convert to Main Window" : "Convert to Reader Window", (p: any) => {
                     if (isReader) p._wvConvertReaderWindowToMain(targetWin);
                     else p._wvConvertMainWindowToReader(targetWin);
                 });
@@ -2378,7 +2378,7 @@ class _TabsMixin {
             mk("Rename Window…", (p: any) => p._wvWindowPromptRename(menuWin, targetWin, panel));
             if (!lastMain) {
                 pop.appendChild(doc.createXULElement("menuseparator"));
-                mk(isReader ? "Convert to Main Window" : "Convert to Reader Window", (p: any) => {
+                if (!wvNativeWindows()) mk(isReader ? "Convert to Main Window" : "Convert to Reader Window", (p: any) => {
                     if (isReader) p._wvConvertReaderWindowToMain(targetWin);
                     else p._wvConvertMainWindowToReader(targetWin);
                 });
@@ -4028,7 +4028,7 @@ class _TabsMixin {
             // structural — leave it out). Idempotent, so safe on an existing scope.
             try {
                 for (const r of wrap.querySelectorAll(".row[data-tab-id]")) {
-                    if ((r as any).dataset && (r as any).dataset.tabId === "zotero-pane") continue;
+                    if ((r as any).dataset && wvIsLibraryTabID((r as any).dataset.tabId)) continue;
                     (r as any).setAttribute("draggable", "true");
                 }
             } catch (e) {}
@@ -4039,7 +4039,7 @@ class _TabsMixin {
             // was counted here, so the current window read one higher than the
             // same window seen from another one (survey 2026-10-06).
             const count = [...wrap.querySelectorAll(".row[data-tab-id]")]
-                .filter((r: any) => !(r.dataset && r.dataset.tabId === "zotero-pane")).length;
+                .filter((r: any) => !(r.dataset && wvIsLibraryTabID(r.dataset.tabId))).length;
             const w: any = doc.defaultView;
             // Anchor mark under the same rule as the taskbar / title and the
             // all-windows list (reader windows count too) -- one main window
@@ -4102,7 +4102,7 @@ class _TabsMixin {
 
         const hiddenIds = [];
         for (const tab of Zotero_Tabs._tabs) {
-            if (!tab || tab.id === "zotero-pane") continue;
+            if (!tab || wvIsLibraryTabID(tab.id)) continue;
             let libID = libraryForTab(tab.id);
             if (libID == null) libID = "__unknown__";
             const passesLib = isLibVisible(libID);
@@ -4387,7 +4387,7 @@ class _TabsMixin {
                 const s = (this as any)._wvTabGroupStamp(tab);
                 return s && liveGroupIds ? (liveGroupIds.has(s) ? s : null) : s;
             };
-            for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+            for (let i = wvFirstDocTab(Z_Tabs._tabs); i < Z_Tabs._tabs.length; i++) {
                 const tab = Z_Tabs._tabs[i];
                 if (!tab) continue;
                 const k = this._tabPinKey(tab);
@@ -4460,7 +4460,7 @@ class _TabsMixin {
                 for (const w2 of allWins) {
                     const tabs2 = (w2 as any).Zotero_Tabs && (w2 as any).Zotero_Tabs._tabs;
                     if (!tabs2) continue;
-                    for (let i = 1; i < tabs2.length; i++) {
+                    for (let i = wvFirstDocTab(tabs2); i < tabs2.length; i++) {
                         const iid = tabs2[i] && tabs2[i].data && tabs2[i].data.itemID;
                         if (iid != null) openTabItemIDs.add(iid);
                     }
@@ -5206,6 +5206,7 @@ class _TabsMixin {
      *  Built on the docshell-swap mechanism Firefox uses for cross-window tab
      *  moves (browser/components/tabbrowser/content/tabbrowser.js, AGPL-3.0). */
     async _wvSwapTearOffToWindow(srcWin: any, S: any, itemID: any, opts?: any) {
+        if (wvNativeWindows()) return false;
         const Reader: any = Zotero.Reader;
         if (!S || !S._iframe || typeof S._iframe.swapDocShells !== "function" || !S._internalReader) return false;
         if (itemID == null) return false;
@@ -5657,6 +5658,10 @@ class _TabsMixin {
      *  across hot-reloads; idempotent per window's hook table. */
     _wvWrapMoveToNewWindowHook(win: any) {
         try {
+            // Zotero moves the live reader itself there, and this route closed
+            // the tab for a reader window that no longer exists: the document
+            // was lost, no window, no error (zotero#6035, 2026-11-06).
+            if (wvNativeWindows()) return;
             const ZT: any = win && (win as any).Zotero_Tabs;
             const hooks: any = ZT && ZT.tabHooks && ZT.tabHooks.moveToNewWindow;
             if (!hooks || hooks._wvWrapped) return;
@@ -5715,7 +5720,7 @@ class _TabsMixin {
                         const m = e.target && e.target.closest && e.target.closest(".wv-pinned-mirror[data-tab-id]");
                         if (m) tabID = m.getAttribute("data-tab-id");
                     }
-                    if (!tabID || tabID === "zotero-pane") return;
+                    if (!tabID || wvIsLibraryTabID(tabID)) return;
                     // The arrow for the whole tab drag, as Firefox sets it
                     // (drag-and-drop.js: `dt.mozCursor = "default"`). Windows
                     // otherwise draws its no-entry sign over the page, where a
@@ -5758,7 +5763,9 @@ class _TabsMixin {
                     try {
                         const isNote = String(zotTab.type || "").indexOf("note") === 0;
                         const mergeRt = isNote ? "note" : (self._wvTabDrag.readerType || "");
-                        if (e.dataTransfer) {
+                        // Zotero's tab bars take a tab from another window
+                        // themselves ("zotero/tab", zotero#6035).
+                        if (e.dataTransfer && !wvNativeWindows()) {
                             e.dataTransfer.setData("application/x-weavero-tab-move", JSON.stringify({
                                 itemID: self._wvTabDrag.itemID,
                                 readerType: mergeRt,
@@ -5775,7 +5782,7 @@ class _TabsMixin {
                         // instance's fields are read by nobody).
                         const lp: any = wvLivePlugin();
                         if (lp) {
-                            lp._wvMainTabDragSourceWin = win;
+                            if (!wvNativeWindows()) lp._wvMainTabDragSourceWin = win;
                             // Mirror _wvTabDrag onto the LIVE plugin too: a reader
                             // window's drop reads `Zotero.Weavero.plugin._wvTabDrag`
                             // (mainTabDrag()), but after a hot-reload this dragstart's
@@ -5784,7 +5791,7 @@ class _TabsMixin {
                             // misrouted to the reader↔reader path (Base mount, source
                             // not closed → tear-off into a new window).
                             lp._wvTabDrag = self._wvTabDrag;
-                            lp._wvMergeDragInfo = {
+                            if (!wvNativeWindows()) lp._wvMergeDragInfo = {
                                 itemID: self._wvTabDrag.itemID,
                                 title: self._wvTabDrag.title || "",
                                 readerType: mergeRt,
@@ -5869,7 +5876,7 @@ class _TabsMixin {
                 const Z_Tabs: any = (win as any).Zotero_Tabs;
                 let maxOtherPinned = 0;
                 try {
-                    for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+                    for (let i = wvFirstDocTab(Z_Tabs._tabs); i < Z_Tabs._tabs.length; i++) {
                         const t = Z_Tabs._tabs[i];
                         const k = self._tabPinKey(t);
                         if (!k) continue;
@@ -5986,7 +5993,7 @@ class _TabsMixin {
                             const Z_Tabs: any = (win as any).Zotero_Tabs;
                             let maxPinnedIdx = 0;
                             try {
-                                for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+                                for (let i = wvFirstDocTab(Z_Tabs._tabs); i < Z_Tabs._tabs.length; i++) {
                                     const t = Z_Tabs._tabs[i];
                                     const k = self._tabPinKey(t);
                                     if (k && ((win as any)._wvPinnedTabIDs instanceof Set ? (win as any)._wvPinnedTabIDs.has(t.id) : self._pinnedTabsHas(k.libraryID, k.itemKey))) maxPinnedIdx = i;
@@ -6169,7 +6176,7 @@ class _TabsMixin {
                     } catch (er) {}
                     let maxOtherPinned = 0;
                     try {
-                        for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+                        for (let i = wvFirstDocTab(Z_Tabs._tabs); i < Z_Tabs._tabs.length; i++) {
                             const t = Z_Tabs._tabs[i];
                             const k = self._tabPinKey(t);
                             if (!k) continue;
@@ -6340,7 +6347,9 @@ class _TabsMixin {
                                 }
                             } catch (er) {}
                         }
-                        if (offWindow || outsideStrip) {
+                        // On a Zotero with its own windows its tab bar's own
+                        // dragend tears the tab off (tabBar.jsx handleDragEnd).
+                        if ((offWindow || outsideStrip) && !wvNativeWindows()) {
                             // Multi-select tear-out: if several tabs are selected
                             // (and the dragged one is part of the set), tear them ALL
                             // out into one new reader window (Firefox-style). Else
@@ -6676,7 +6685,7 @@ class _TabsMixin {
             // OTHER than the one we just added — that's where we want to
             // land just after.
             let lastOtherPinnedIdx = 0;   // library
-            for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+            for (let i = wvFirstDocTab(Z_Tabs._tabs); i < Z_Tabs._tabs.length; i++) {
                 const t = Z_Tabs._tabs[i];
                 if (!t || t.id === tab.id) continue;
                 const k = this._tabPinKey(t);
@@ -6875,14 +6884,14 @@ class _TabsMixin {
         const out: any[] = [];
         try {
             const Z: any = win && win.Zotero_Tabs;
-            if (!Z || !tabID || tabID === "zotero-pane") return out;
+            if (!Z || !tabID || wvIsLibraryTabID(tabID)) return out;
             let ids: any[] = [tabID];
             try {
                 const tg = this._wvTabMultiSelTargets && this._wvTabMultiSelTargets(win, tabID);
                 if (tg && tg.length) ids = tg;
             } catch (e) {}
             for (const id of ids) {
-                if (!id || id === "zotero-pane") continue;
+                if (!id || wvIsLibraryTabID(id)) continue;
                 const tab = Z._tabs.find((x: any) => x && x.id === id);
                 const k = tab ? this._tabPinKey(tab) : null;
                 if (!k) continue;
@@ -6918,7 +6927,7 @@ class _TabsMixin {
                     onShowing: (_ev, ctx) => {
                         try {
                             // Library tab can't be pinned/unpinned.
-                            if (ctx.tabID === "zotero-pane") { ctx.setVisible(false); return; }
+                            if (wvIsLibraryTabID(ctx.tabID)) { ctx.setVisible(false); return; }
                             const item = ctx.items && ctx.items[0];
                             if (!item || !item.libraryID || !item.key) { ctx.setVisible(false); return; }
                             ctx.setVisible(true);
@@ -6960,7 +6969,7 @@ class _TabsMixin {
                                 try {
                                     const win2: any = ctx.menuElem.ownerDocument && ctx.menuElem.ownerDocument.defaultView;
                                     const tabID2 = ctx.tabID;
-                                    if (win2 && tabID2 && tabID2 !== "zotero-pane" && self._wvTabMultiSelTargets) {
+                                    if (win2 && tabID2 && !wvIsLibraryTabID(tabID2) && self._wvTabMultiSelTargets) {
                                         const tg = self._wvTabMultiSelTargets(win2, tabID2);
                                         // "Group Tabs" -- for ANY selection, single tab
                                         // included, so it is injected outside the
@@ -7197,7 +7206,7 @@ class _TabsMixin {
                             const popup = ctx.menuElem && ctx.menuElem.parentNode;
                             const win: any = ctx.menuElem && ctx.menuElem.ownerDocument && ctx.menuElem.ownerDocument.defaultView;
                             const tabID = ctx.tabID;
-                            if (!popup || !win || !tabID || tabID === "zotero-pane") return;
+                            if (!popup || !win || !tabID || wvIsLibraryTabID(tabID)) return;
                             const targets = self._wvTabMultiSelTargets ? self._wvTabMultiSelTargets(win, tabID) : [tabID];
                             if (!targets || targets.length <= 1) return;   // single → leave native
                             self._wvMakeMoveTabMenuMulti(win, popup, targets);
@@ -7270,7 +7279,7 @@ class _TabsMixin {
             if (this._getEnableTabGroups && !this._getEnableTabGroups()) return;
             const doc = popup.ownerDocument;
             for (const el of Array.from(popup.querySelectorAll(".wv-grouptabs")) as any[]) el.remove();
-            const ids = (targets || []).filter((t: any) => t && t !== "zotero-pane");
+            const ids = (targets || []).filter((t: any) => t && !wvIsLibraryTabID(t));
             if (!ids.length) return;
             // A tab already in a group has nothing to gain here: this entry
             // only ever makes a NEW group, so offering it for grouped tabs
@@ -7363,7 +7372,8 @@ class _TabsMixin {
             // Window" (the `before` item) — hide the native one to avoid duplication.
             // Hide only (no wv-mv-extra tag: that class is removed by the cleanup
             // pass above, which would delete the native item permanently).
-            try { if (before && before.parentNode === submenu && before.tagName === "menuitem") before.hidden = true; } catch (e) {}
+            // Not on a Zotero with its own windows: it is the only route there.
+            try { if (!wvNativeWindows() && before && before.parentNode === submenu && before.tagName === "menuitem") before.hidden = true; } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvInjectMoveTargetsIntoNativeMoveMenu err: " + e); }
     }
 
@@ -7427,7 +7437,7 @@ class _TabsMixin {
      *  `duplicate` hook (reader / note tabs do; the library tab does not). */
     _wvTabIsDuplicatable(ZT: any, id: any): boolean {
         try {
-            if (!ZT || !id || id === "zotero-pane") return false;
+            if (!ZT || !id || wvIsLibraryTabID(id)) return false;
             const got = ZT._getTab(id);
             const tab = got && got.tab;
             if (!tab) return false;
@@ -7477,7 +7487,7 @@ class _TabsMixin {
                     const got = ZT._getTab(id);
                     const tab = got && got.tab;
                     const tabIndex = got && got.tabIndex;
-                    if (!tab || tab.id === "zotero-pane") continue;
+                    if (!tab || wvIsLibraryTabID(tab.id)) continue;
                     const { tabContentType } = ZT.parseTabType(tab.type);
                     if (typeof ZT._hasHook !== "function" || !ZT._hasHook(tabContentType, "duplicate")) continue;
                     const hook = ZT._getHook(tabContentType, "duplicate");
@@ -7541,7 +7551,7 @@ class _TabsMixin {
                             // item in a reader/note tab — so only offer it on the
                             // library tab. Offered from EVERY main window (primary
                             // or Weavero-spawned secondary alike).
-                            if (!on || ctx.tabID !== "zotero-pane") {
+                            if (!on || !wvIsLibraryTabID(ctx.tabID)) {
                                 ctx.setVisible(false); return;
                             }
                             ctx.setVisible(true);
@@ -8253,6 +8263,10 @@ class _TabsMixin {
     }
 
     _wvWindowStoreSaveSync() {
+        // windows.json stays as it is on a Zotero with its own windows: it is
+        // the way back for what those windows do not do yet (wvNativeWindows).
+        // What a change saved there goes with Zotero's saved window instead.
+        if (wvNativeWindows()) { (this as any)._wvWinStateSaveAll(); return; }
         // Once quitting, ONLY the quit flush writes (teardown-triggered saves
         // would capture a half-closed world and clobber the final state —
         // Firefox: SessionSaver ignores saves while RunState.isQuitting).
@@ -8388,7 +8402,8 @@ class _TabsMixin {
             // it then reopened at boot as a live DUPLICATE of its own
             // parked entry (reported 2026-07-27).
             try { (win as any)._wvSavedParkClose = true; } catch (e) {}
-            try { win.close(); } catch (e) {}
+            if (wvNativeWindows()) await (this as any)._wvCloseQuietly([win]);
+            else { try { win.close(); } catch (e) {} }
             // Show the result immediately — an open List-all-tabs panel
             // otherwise sits stale and the save looks like a no-op (user
             // report 2026-07-16). Deferred a beat so the closed window
@@ -8424,6 +8439,21 @@ class _TabsMixin {
                 this._wvSavedWindowsPersist();
             };
             const sleep = (ms: number) => (Zotero as any).Promise.delay(ms);
+            if (wvNativeWindows()) {
+                const w: any = await (this as any)._wvOpenStoredWindow(wvStoredFromSaved(entry));
+                if (!w) {
+                    Services.prompt.alert(Zotero.getMainWindow() as any, "Weavero",
+                        "None of the documents of this saved window exist any more.");
+                    return;
+                }
+                forget();
+                if (entry.glyph != null) {
+                    this._wvStampGlyphIdx(w, entry.glyph);   // skip on colour collision
+                    await sleep(600);
+                    try { (this as any)._wvCarryGlyphRefresh(w, false); } catch (e) {}
+                }
+                return;
+            }
             if (entry.kind === "main") {
                 const s = this._wvSpawnMainWindowStart({ tabs: entry.tabs, geom: entry.geom, wvMainState: entry.wvMainState, wvWinId: null });
                 if (!s) return;
@@ -8573,13 +8603,14 @@ class _TabsMixin {
                 }
                 let geom: any = null;
                 try { geom = (this as any)._wvWindowGeom(win); } catch (e) {}
-                entry = { kind: "main", tabs, geom, ...((this as any)._wvTabSessionCaptureMainState(win) || {}) };
+                entry = { kind: "main", tabs, geom, ...((this as any)._wvTabSessionCaptureMainState(win) || {}), ...(this as any)._wvTabSessionLibraryFields(win) };
             }
             sess.windows = Array.isArray(sess.windows) ? sess.windows : [];
             sess.windows.push(entry);
             sess.modified = Date.now();
             await (this as any)._wvTabSessionPersist();
-            try { win.close(); } catch (e) {}
+            if (wvNativeWindows()) await (this as any)._wvCloseQuietly([win]);
+            else { try { win.close(); } catch (e) {} }
             this._wvTabsMenuRefreshOpenPanel();
         } catch (e) { Zotero.debug("[Weavero] _wvMoveWindowToSession err: " + e); }
     }
@@ -8683,7 +8714,7 @@ class _TabsMixin {
                         onClick: () => {
                             try {
                                 const mw: any = Zotero.getMainWindows()[0];
-                                if (mw) { mw.focus(); mw.Zotero_Tabs.select("zotero-pane"); }
+                                if (mw) { mw.focus(); wvSelectLibraryTab(mw); }
                             } catch (er) {}
                         },
                     };
@@ -9073,6 +9104,10 @@ class _TabsMixin {
      *  lowered and the state unqueued again. Synchronous up to the open, so
      *  a caller can read the flag right after. */
     _wvSpawnMainWindowStart(state?: any, opts?: { restore?: boolean }): { before: Set<any>; queued: any } | null {
+        // Never on a Zotero with its own windows: the adoption below waits for
+        // a window Zotero then gives no tab of its own, and it stays on
+        // "Loading" for good (measured on zotero#6035, 2026-11-06).
+        if (wvNativeWindows()) return null;
         const p: any = this;
         const before = new Set<any>(Zotero.getMainWindows() || []);
         let queued: any = null;
@@ -9235,7 +9270,7 @@ class _TabsMixin {
             if (!Z) return;
             let wantID: any = null;
             const sBase = String(selSt.type || "").replace(/-(unloaded|loading)$/, "");
-            if (sBase === "library" || selSt.id === "zotero-pane") wantID = "zotero-pane";
+            if (sBase === "library" || wvIsLibraryTabID(selSt.id)) wantID = "zotero-pane";
             else {
                 const iid = selSt.data && selSt.data.itemID;
                 // By POSITION first (2026-09-16, duplicates matrix): with the same
@@ -9249,7 +9284,7 @@ class _TabsMixin {
             if (wantID && Z.selectedID !== wantID) {
                 Z.select(wantID);
                 (this as any)._wvTrace("anchor selection enforced from the quit capture ("
-                    + tag + ", " + (wantID === "zotero-pane" ? "library" : wantID) + ")");
+                    + tag + ", " + (wvIsLibraryTabID(wantID) ? "library" : wantID) + ")");
             }
         } catch (e) {}
     }
@@ -9377,6 +9412,7 @@ class _TabsMixin {
      *  anything that was dropped, at its saved position, as an unloaded tab. */
     async _wvReconcileAnchorSessionTabs() {
         try {
+            if (wvNativeWindows()) return;
             if (this._wvAnchorReconciled) return;
             this._wvAnchorReconciled = true;
             const paneLists: any[] = await this._wvStashBootSession();
@@ -9496,7 +9532,7 @@ class _TabsMixin {
                         const curSel = Z._tabs.find((x: any) => x.id === Z.selectedID);
                         const curIID = curSel && curSel.data && curSel.data.itemID;
                         if (wantIID == null) {
-                            if (Z.selectedID !== "zotero-pane") {
+                            if (!wvIsLibraryTabID(Z.selectedID)) {
                                 Z.select("zotero-pane");
                                 (this as any)._wvTrace("reconcile: " + entry.kind + " selection enforced (library)");
                             }
@@ -9510,7 +9546,7 @@ class _TabsMixin {
                                 Z.select(t2.id);
                                 (this as any)._wvTrace("reconcile: " + entry.kind + " selection enforced (item " + wantIID + ")");
                             } else {
-                                if (Z.selectedID !== "zotero-pane") Z.select("zotero-pane");
+                                if (!wvIsLibraryTabID(Z.selectedID)) Z.select("zotero-pane");
                                 (this as any)._wvDeferSelect(win, wantIID);
                                 (this as any)._wvTrace("reconcile: " + entry.kind + " selection re-deferred to item " + wantIID);
                             }
@@ -9530,6 +9566,9 @@ class _TabsMixin {
      *  else it defers to first activate like any background window. */
     async _wvRestoreAnchorTabs() {
         try {
+            // Zotero restored these tabs itself: a second restore opened each
+            // document twice (zotero#6035, measured 2026-11-06).
+            if (wvNativeWindows()) return;
             if (this._wvAnchorTabsRestored) return;
             this._wvAnchorTabsRestored = true;
             const doc = (this as any)._wvBootWindowStoreDoc;
@@ -9679,6 +9718,7 @@ class _TabsMixin {
             const tag = (self as any)._wvWireTag();
             const wireWhenReady = (w: any) => {
                 try { self._wvEarlyHideTitleBar(w); } catch (e) {}
+                try { self._wvWinStateOpened(w); } catch (e) {}
                 if (tryWire(w)) return;
                 // Loaded already (and not the initial about:blank a new window
                 // arrives holding on FF153): nothing left to wait for.
@@ -9689,6 +9729,7 @@ class _TabsMixin {
                 const onDCL = () => {
                     wvUnlisten(w, "earlyRestore:DOMContentLoaded");
                     try { self._wvEarlyHideTitleBar(w); } catch (e) {}
+                    try { self._wvWinStateOpened(w); } catch (e) {}
                     try {
                         if (String(w.location && w.location.href).indexOf("zoteroPane.xhtml") !== -1) tryWire(w);
                     } catch (e) {}
@@ -9908,13 +9949,15 @@ class _TabsMixin {
                             // otherwise show the library tab and re-defer the load
                             // to the window's next activate.
                             const front = (() => { try { return Services.wm.getMostRecentWindow("navigator:browser") === win; } catch (e) { return true; } })();
+                            // Not every window has one (a torn-off reader): select throws then.
+                            const home = (Z._tabs.find((x: any) => wvIsLibraryTabID(x.id)) || {}).id;
                             if (front) {
                                 trace("watchdog[" + name() + "]: tab " + id + " stuck — retrying load");
-                                origSelect("zotero-pane");
+                                if (home) origSelect(home);
                                 win.setTimeout(() => { try { origSelect(id); } catch (e) {} }, 80);
                             } else {
                                 trace("watchdog[" + name() + "]: tab " + id + " stuck in a background window — re-deferring to activate");
-                                origSelect("zotero-pane");
+                                if (home) origSelect(home);
                                 try { p._wvDeferSelect(win, t.data && t.data.itemID); } catch (e) {}
                             }
                         } catch (e) {}
@@ -9965,8 +10008,15 @@ class _TabsMixin {
         const token = { owner };
         stack.push(token);
         // The most recently entered owner answers; when it leaves, the one
-        // still loading underneath takes over again.
-        Z.getMainWindow = () => (stack.length ? stack[stack.length - 1].owner : Z._wvGMWOrig.call(Z));
+        // still loading underneath takes over again. A closed owner never does:
+        // a load whose window closes under it may never end, and until it did
+        // every caller in the session was handed that dead window (2026-11-07).
+        Z.getMainWindow = () => {
+            for (let i = stack.length - 1; i >= 0; i--) {
+                try { if (!stack[i].owner.closed) return stack[i].owner; } catch (e) {}
+            }
+            return Z._wvGMWOrig.call(Z);
+        };
         try { return await fn(); }
         finally {
             const i = stack.indexOf(token);
@@ -10077,6 +10127,8 @@ class _TabsMixin {
                 } catch (e) {}
                 const zAny: any = Zotero;
                 if (!owner || owner === zAny.getMainWindow()) return orig.apply(this, arguments);
+                // Zotero's open takes the window itself there (zotero#6035).
+                if (wvNativeWindows()) return orig.call(this, _itemID, _location, Object.assign({}, opts, { window: owner }));
                 // Temporary, restored when the outermost overlapping load ends
                 // (_wvWithMainWindow); other getMainWindow callers in this
                 // narrow window get the owning window — harmless for the rare
@@ -10112,6 +10164,7 @@ class _TabsMixin {
                 } catch (e) {}
                 const zAny: any = Zotero;
                 if (!owner || owner === zAny.getMainWindow()) return origR.apply(this, arguments);
+                if (wvNativeWindows()) return origR.call(this, _itemID, _location, Object.assign({}, opts, { window: owner }));
                 const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                 const args = arguments;
                 if (!lp || !lp._wvWithMainWindow) return origR.apply(this, args);
@@ -10348,6 +10401,7 @@ class _TabsMixin {
      *  mechanism, and the instant-refocus half still comes from the shepherd. */
     _wvBgRestoreStart(opts?: any) {
         try {
+            if (wvNativeWindows()) return;
             // Enable-path reuse: a mid-session plugin enable restores the
             // disable-closed windows with NO startup restore guard held, so
             // the lifetime falls back to a fixed hold; the refocus target is
@@ -10771,6 +10825,7 @@ class _TabsMixin {
 
     _wvFocusShepherdStart() {
         try {
+            if (wvNativeWindows()) return;
             if (this._wvFocusShepherdOn) return;
             this._wvFocusShepherdOn = true;
             const self = this;
@@ -10941,6 +10996,7 @@ class _TabsMixin {
      *  teardown-triggered save can clobber the result. */
     _wvWindowStoreQuitFlush() {
         try {
+            if (wvNativeWindows()) { (this as any)._wvWinStateSaveAll(); return; }
             (this as any)._wvQuitting = true;
             // Namespace flag too: unload closures wired before a plugin reload
             // hold the OLD instance, whose field this observer can't reach.
@@ -11558,6 +11614,7 @@ class _TabsMixin {
     // single-window (every tab is local), so the anchor is unaffected with
     // Weavero off. Applied to ALL main windows (the anchor leaks too).
     _wvGuardContextPaneCrossWindow(win) {
+        if (wvNativeWindows()) return;   // contextPane.js isOwnTabEvent
         try {
             if (!win || !win.document) return;
             const cp: any = win.document.getElementById("zotero-context-pane-inner");
@@ -12074,7 +12131,7 @@ class _TabsMixin {
             && Zotero.Libraries.userLibraryID);
         const groupTabs = [];
         for (const tab of Zotero_Tabs._tabs) {
-            if (!tab || tab.id === "zotero-pane") continue;
+            if (!tab || wvIsLibraryTabID(tab.id)) continue;
             let libID = null;
             try {
                 const item = Zotero.Items.get(
@@ -12182,7 +12239,7 @@ class _TabsMixin {
             (win.CSS && win.CSS.escape) ? win.CSS.escape(s) : s;
 
         for (const tab of Zotero_Tabs._tabs) {
-            if (!tab || tab.id === "zotero-pane") continue;
+            if (!tab || wvIsLibraryTabID(tab.id)) continue;
             const tabEl = doc.querySelector(
                 `.tab[data-id="${escape(tab.id)}"]`);
             if (!tabEl) continue;
@@ -12312,7 +12369,7 @@ class _TabsMixin {
                 try { pLib = Zotero.Libraries.get(Number(wvLib)); } catch (e) {}
             } else {
                 const tid = popRow.getAttribute("data-tab-id");
-                if (tid && tid !== "zotero-pane") {
+                if (tid && !wvIsLibraryTabID(tid)) {
                     try {
                         const zt: any = win.Zotero_Tabs;
                         const t = zt && zt._tabs.find((x: any) => x.id === tid);
@@ -12340,7 +12397,7 @@ class _TabsMixin {
         // Non-tab hover or Library tab: fall back to plain-title
         // behavior so we don't suppress the standard tooltips for
         // window-control / non-tab descendants of #zotero-title-bar.
-        if (!tab || tab.dataset.id === "zotero-pane") {
+        if (!tab || wvIsLibraryTabID(tab.dataset.id)) {
             const t = findTitle();
             if (t) {
                 renderPlainLabel(t);
@@ -12925,7 +12982,7 @@ class _TabsMixin {
     _tabPassesFileTypeFilter(win, tabId) {
         const f = this._tabsMenuFileTypeFilter;
         if (!f || (!f.include.size && !f.exclude.size)) return true;
-        if (!tabId || tabId === "zotero-pane") return true;
+        if (!tabId || wvIsLibraryTabID(tabId)) return true;
         const Zotero_Tabs = win && win.Zotero_Tabs;
         if (!Zotero_Tabs) return true;
         const tab = Zotero_Tabs._tabs.find(t => t.id === tabId);
@@ -12977,7 +13034,7 @@ class _TabsMixin {
             if (prior) prior.remove();
 
             const tabId = row.dataset && row.dataset.tabId;
-            if (!tabId || tabId === "zotero-pane") return;
+            if (!tabId || wvIsLibraryTabID(tabId)) return;
             const win = winOf(row);
             const doc = row.ownerDocument;
             const Z_Tabs: any = win && (win as any).Zotero_Tabs;
@@ -13018,7 +13075,7 @@ class _TabsMixin {
             if (prior) prior.remove();
 
             const tabId = row.dataset.tabId;
-            if (!tabId || tabId === "zotero-pane") return;
+            if (!tabId || wvIsLibraryTabID(tabId)) return;
             const win = winOf(row);
             const doc = row.ownerDocument;
             const Zotero_Tabs = win && win.Zotero_Tabs;

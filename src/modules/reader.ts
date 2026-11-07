@@ -36,7 +36,7 @@ import { wvTimeout } from "../lib/timers";
 import { wvListen, wvListener, wvUnlisten, wvEventOpts } from "../lib/listen";
 import { wvWrap } from "../lib/wrap";
 import { urlPattern, wvLinkVars } from "../lib/links";
-import { wvMainWins, wvWinType } from "../lib/windows";
+import { wvMainWins, wvNativeWindows, wvWinType } from "../lib/windows";
 import { wvAccel } from "../lib/keys";
 import { wvCloneFor } from "../lib/xray";
 import { wvSvgEl } from "../lib/svg";
@@ -7075,6 +7075,7 @@ class _ReaderMixin {
      *  the source tabs, then opens them together in a fresh reader window.
      *  Used by the main-tab drag-out and the "Move N tabs to new window" menu. */
     _wvMainTearOffTabs(win: any, tabIDs: any[]) {
+        if (wvNativeWindows()) return;
         try {
             const Z_Tabs: any = win && (win as any).Zotero_Tabs;
             if (!Z_Tabs || !Z_Tabs._tabs || !tabIDs || !tabIDs.length) return;
@@ -8165,6 +8166,7 @@ class _ReaderMixin {
      *  during which a reader window adopting a saved native item re-mounts its
      *  extras. Cached promise — safe to call repeatedly. */
     _wvWTLoadRestoreMap() {
+        if (wvNativeWindows()) return Promise.resolve(null);
         if (this._wvWTRestoreLoadPromise) return this._wvWTRestoreLoadPromise;
         this._wvWTRestoreLoadPromise = (async () => {
             let map: any = {};
@@ -8440,6 +8442,7 @@ class _ReaderMixin {
      *  first, then open all still-missing windows in PARALLEL. */
     async _wvPreemptReaderWindowReopen() {
         try {
+            if (wvNativeWindows()) return;
             if (this._wvReaderPreemptRan) return;
             this._wvReaderPreemptRan = true;
             // Source of truth is Weavero's OWN store (post-takeover, Zotero's
@@ -8516,6 +8519,7 @@ class _ReaderMixin {
      *  its extras/groups exactly as if Zotero had reopened it. */
     async _wvWindowStoreRestoreUnclaimedReaderWindows() {
         try {
+            if (wvNativeWindows()) return;
             if (this._wvUnclaimedReaderRestoreRan) return;
             this._wvUnclaimedReaderRestoreRan = true;
             await this._wvWTLoadRestoreMap();
@@ -8549,6 +8553,7 @@ class _ReaderMixin {
 
     async _wvWindowStoreRestoreOrphanReaderWindows() {
         try {
+            if (wvNativeWindows()) return;
             if (this._wvOrphanRestored) return;
             this._wvOrphanRestored = true;
             await this._wvWTLoadRestoreMap();   // populates the map + _wvOrphanReaderItemIDs
@@ -8760,6 +8765,7 @@ class _ReaderMixin {
      *  reader window (re-creating the window if it was closed), and close the
      *  main-window copy. Consumes the file once. */
     async _wvEnablePullBackReaderTabs() {
+        if (wvNativeWindows()) return;
         // Reader windows can only host extra tabs when the reader strip is
         // effective. If it's off (e.g. plugin re-enabled while Hide Title Bar is
         // off), DON'T consume the hand-off — the strip's OFF→ON transition
@@ -9004,7 +9010,7 @@ class _ReaderMixin {
                         return;
                     }
                     const tabsInReaderWin = !!(lp && lp._getCompactTitleBarReader && lp._getCompactTitleBarReader());
-                    if (lp && tabsInReaderWin && items && items.length > 1) {
+                    if (lp && tabsInReaderWin && !wvNativeWindows() && items && items.length > 1) {
                         // Resolve the effective openInWindow the way viewAttachment does:
                         // the pref is the default; Shift / forceAlternateWindowBehavior inverts it.
                         let openInWindow = false;

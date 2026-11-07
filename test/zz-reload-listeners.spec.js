@@ -160,8 +160,11 @@ describe("Weavero — a plugin reload leaves no listener of the previous instanc
             Zotero.Prefs.set("weavero.noteOpenInDeckWindow", false);
             await Zotero.Notes.open(note.id, null, { openInWindow: true });
             if (deck === undefined) Zotero.Prefs.clear("weavero.noteOpenInDeckWindow"); else Zotero.Prefs.set("weavero.noteOpenInDeckWindow", deck);
-            const deckWin = await wvT.plugin()._wvOpenNoteInDeckWindow(deckNote.id, null);
-            assert.isOk(deckWin && deckWin._wvWT, "deck window opened");
+            // No deck window on a Zotero with its own windows.
+            if (!wvT.nativeWindows()) {
+                const deckWin = await wvT.plugin()._wvOpenNoteInDeckWindow(deckNote.id, null);
+                assert.isOk(deckWin && deckWin._wvWT, "deck window opened");
+            }
             main.focus();
             main.Zotero_Tabs.select("zotero-pane");
             await main.ZoteroPane.selectItem(item.id);
@@ -184,6 +187,9 @@ describe("Weavero — a plugin reload leaves no listener of the previous instanc
             for (const t of ["zotero:reader", "zotero:note"]) {
                 const en = Services.wm.getEnumerator(t);
                 while (en.hasMoreElements()) { try { /** @type {any} */ (en.getNext()).close(); } catch (e) {} }
+            }
+            if (wvT.nativeWindows()) {
+                for (const w of Zotero.getMainWindows()) { if (w !== main) { try { w.close(); } catch (e) {} } }
             }
             try {
                 const Z = main.Zotero_Tabs;

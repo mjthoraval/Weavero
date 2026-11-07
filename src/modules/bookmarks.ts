@@ -41,7 +41,7 @@ import { wvLivePlugin } from "../lib/live";
 import { wvStoreWrite, wvStoreRead } from "../lib/store";
 import { wvTimeout } from "../lib/timers";
 import { wvMenuItem } from "../lib/menu";
-import { wvMainWins } from "../lib/windows";
+import { wvMainWins, wvOpenLibraryView } from "../lib/windows";
 import { wvAccel, wvAccelAny } from "../lib/keys";
 import { wvSvgEl } from "../lib/svg";
 import { wvLinkColor, wvLinkClassRules } from "../lib/links";
@@ -3388,17 +3388,19 @@ class _BookmarksMixin {
             const win = Zotero.getMainWindow();
             const zp = win && win.ZoteroPane;
             if (!zp) return;
+            // The library can be in another window than the reader asking.
+            const raise = () => { try { win.focus(); } catch (_) {} };
             // Library-side bookmarks (library / saved search / collection)
             // need the main library tab focused first; otherwise the selection
             // happens in a tree the user can't see while a reader tab is on top.
             // (For item bookmarks `selectItem` already does this — see
             // zoteroPane.js:3086 — so we only need the explicit jump here.)
-            const tabs: any = (win as any).Zotero_Tabs;
-            const jumpToLibrary = () => {
-                try { if (tabs && typeof tabs.select === "function") tabs.select("zotero-pane"); } catch (_) {}
+            const jumpToLibrary = async () => {
+                try { await wvOpenLibraryView(win); } catch (_) {}
+                raise();
             };
             if (bm.type === "library") {
-                jumpToLibrary();
+                await jumpToLibrary();
                 const cv = zp.collectionsView;
                 if (cv && typeof cv.selectLibrary === "function") {
                     await cv.selectLibrary(bm.libraryID);
@@ -3407,7 +3409,7 @@ class _BookmarksMixin {
                 return;
             }
             if (bm.type === "treerow") {
-                jumpToLibrary();
+                await jumpToLibrary();
                 const cv = zp.collectionsView;
                 if (cv && typeof cv.selectByID === "function") {
                     await cv.selectByID(bm.rowID);
@@ -3416,7 +3418,7 @@ class _BookmarksMixin {
                 return;
             }
             if (bm.type === "collection") {
-                jumpToLibrary();
+                await jumpToLibrary();
                 const col = Zotero.Collections.getByLibraryAndKey(
                     bm.libraryID, bm.collectionKey);
                 if (col && zp.collectionsView
@@ -3438,6 +3440,7 @@ class _BookmarksMixin {
                 try { att = await Zotero.Items.getAsync(_aid); } catch (_) { return; }
                 if (!att) return;
                 await zp.selectItem(att.id);
+                raise();
                 return;
             }
             // After a restart a cross-doc item may not be loaded — and
@@ -3456,6 +3459,7 @@ class _BookmarksMixin {
                 while (item.parentItem) item = item.parentItem;
             }
             await zp.selectItem(item.id);
+            raise();
         } catch (e) {
             Zotero.debug("[Weavero] _bmShowInLibrary err: " + e);
         }

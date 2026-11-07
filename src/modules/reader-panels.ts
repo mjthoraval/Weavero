@@ -3896,7 +3896,7 @@ class _ReaderPanelsMixin {
                             try { sc.focus(); } catch (_) {}
                         } catch (_) {}
                     };
-                    wvListen(mw, "outlineClickFocus:mousedown", "mousedown", h, true, this._wvWireTag());
+                    wvListen(mw, "lazy:outlineClickFocus:mousedown", "mousedown", h, true, this._wvWireTag());
                 }
             } catch (_) {}
             // If the native outline is ALREADY the active view (restored on open,

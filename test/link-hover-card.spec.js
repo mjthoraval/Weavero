@@ -258,11 +258,13 @@ describe("Weavero — the hover card on links in notes and annotation comments",
 
     // MJT 2026-11-03 (screenshot): "Cards have the same background as the
     // item pane. Can you suggest something better?" -> option A, "Try A":
-    // Zotero's raised surface, --material-button (#404040 dark, white
-    // light), over the pane's --material-sidepane, inside Zotero's popup
-    // border (--material-border); the discs behind the arrow's icons paint
-    // the card's colour. FAILED on dev.173 (the pane's own colour).
-    it("the card is a raised surface: Zotero's button material inside its popup border, the arrow's discs alike", async function () {
+    // Zotero's note popup material, --material-toolbar (#272727 dark), the one
+    // Better Notes' link preview gets from the note editor's own .popup rule
+    // (MJT 2026-11-05: "too light", "Too white", on the raised --material-button,
+    // #404040, it had since 2026-11-03), inside Zotero's popup border
+    // (--material-border); the discs behind the arrow's icons paint the card's
+    // colour. It must stay apart from the pane under it, --material-sidepane.
+    it("the card is Zotero's note popup surface, inside its popup border, the arrow's discs alike", async function () {
         await ZP.selectItem(N.id);
         const edoc = await wvT.waitFor(() => { try { wv._processNoteEditors(); } catch (e) {} const d = editorDoc(); return d && d.querySelector('a[href^="zotero://"], [data-wv-href^="zotero://"]') ? d : null; }, 45000, 500);
         assert.isOk(edoc, "the note's editor");
@@ -271,14 +273,14 @@ describe("Weavero — the hover card on links in notes and annotation comments",
         const probes = [];
         const probe = (css) => { const p = doc.createElementNS("http://www.w3.org/1999/xhtml", "div"); p.style.cssText = "position:fixed;left:-99px;top:0;width:4px;height:4px;" + css; doc.documentElement.appendChild(p); probes.push(p); return win.getComputedStyle(p); };
         try {
-            const btn = probe("background: var(--material-button)"), side = probe("background: var(--material-sidepane)"), bord = probe("border: var(--material-border)");
+            const surface = probe("background: var(--material-toolbar)"), side = probe("background: var(--material-sidepane)"), bord = probe("border: var(--material-border)");
             const cs = win.getComputedStyle(cd);
-            assert.notStrictEqual(btn.backgroundColor, side.backgroundColor, "Zotero's two materials differ in this theme");
-            assert.strictEqual(cs.backgroundColor, btn.backgroundColor, "the card paints Zotero's button material");
+            assert.notStrictEqual(surface.backgroundColor, side.backgroundColor, "Zotero's two materials differ in this theme");
+            assert.strictEqual(cs.backgroundColor, surface.backgroundColor, "the card paints the note popup material");
             assert.strictEqual(cs.borderTopColor, bord.borderTopColor, "inside Zotero's popup border");
             const disc = cd.querySelector(".wv-bl-card-icon-bg");
             assert.isOk(disc, "the kind mark's disc on the arrow");
-            assert.strictEqual(win.getComputedStyle(disc).fill, btn.backgroundColor, "the disc paints the card's colour");
+            assert.strictEqual(win.getComputedStyle(disc).fill, surface.backgroundColor, "the disc paints the card's colour");
         }
         finally { for (const p of probes) p.remove(); wv._wvLkHoverCardHide(edoc.body); }
     });

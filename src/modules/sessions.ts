@@ -3,6 +3,7 @@ import { wvStoreWrite, wvStoreRead } from "../lib/store";
 import { wvTimeout } from "../lib/timers";
 import { wvMenuItem } from "../lib/menu";
 import { wvHtmlEl } from "../lib/dom";
+import { wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvOpenLibraryView, wvSelectLibraryTab } from "../lib/windows";
 
 // Module: named TAB SESSIONS — capture the set of open tabs across all main
 // windows into a NAMED session, and switch between sessions (close the current
@@ -414,6 +415,20 @@ class _TabSessionsMixin {
         return state;
     }
 
+    /** What a window's record adds on a Zotero with its own windows: a window
+     *  there can hold no library tab, or several. */
+    _wvTabSessionLibraryFields(w: any) {
+        const out: any = {};
+        try {
+            if (!wvNativeWindows()) return out;
+            const Z: any = w.Zotero_Tabs;
+            const libs = Z.getState().filter((t: any) => String(t.type).startsWith("library"));
+            if (!libs.length) out.noLibrary = true;
+            else if (libs.length > 1) out.libraryTabs = libs.map((t: any) => ({ type: "library", title: t.title || "", data: t.data, selected: t.selected }));
+        } catch (e) {}
+        return out;
+    }
+
     /** Snapshot the full workspace topology: every main window (with its
      *  collection + column/sort state) + every reader window, in order, each
      *  with its ordered tab records. */
@@ -438,7 +453,7 @@ class _TabSessionsMixin {
                 if (tabs.length || wi === 0) {
                     let geom: any = null;
                     try { geom = this._wvWindowGeom(w); } catch (e) {}
-                    windows.push({ kind: "main", tabs, geom, ...this._wvTabSessionCaptureMainState(w) });
+                    windows.push({ kind: "main", tabs, geom, ...this._wvTabSessionCaptureMainState(w), ...this._wvTabSessionLibraryFields(w) });
                 }
             }
             const en = Services.wm.getEnumerator("zotero:reader");
@@ -686,7 +701,7 @@ class _TabSessionsMixin {
                 const Z: any = (w as any).Zotero_Tabs;
                 if (!Z || !Array.isArray(Z._tabs)) continue;
                 const ids = Z._tabs
-                    .filter((t: any) => t && t.id !== "zotero-pane" && t.type !== "library")
+                    .filter((t: any) => t && !wvIsLibraryTabID(t.id) && t.type !== "library")
                     .map((t: any) => t.id);
                 try { (this as any)._wvBlindAutomationTabClose(ids); } catch (_) {}
                 for (const id of ids) { try { Z.close(id); } catch (_) {} }
@@ -698,6 +713,79 @@ class _TabSessionsMixin {
             while (en.hasMoreElements()) wins.push(en.getNext());
             for (const w of wins) { try { w.close(); } catch (_) {} }
         } catch (e) { Zotero.debug("[Weavero] _wvTabSessionTearDown (reader) err: " + e); }
+    }
+
+    /** The same on a Zotero with its own windows: one window stays, with one
+     *  library tab, and everything else goes without landing in Zotero's reopen
+     *  list. Returns the window that stayed. */
+    async _wvTabSessionTearDownNative() {
+        const wins = wvMainWins();
+        const keep: any = wins.find((w: any) => w.ZoteroPane && w.ZoteroPane.libraryView) || wins[0];
+        if (!keep) return null;
+        const S: any = Zotero.Session;
+        const before = S.getLastClosed ? S.getLastClosed() : null;
+        await (this as any)._wvCloseQuietly(wins.filter((w: any) => w !== keep));
+        const Z: any = keep.Zotero_Tabs;
+        if (!Z._tabs.some((t: any) => wvIsLibraryTabID(t.id))) await wvOpenLibraryView(keep);
+        const home = Z._tabs.find((t: any) => wvIsLibraryTabID(t.id));
+        if (home) Z.select(home.id);
+        const ids = Z._tabs.filter((t: any) => t !== home).map((t: any) => t.id);
+        try { (this as any)._wvBlindAutomationTabClose(ids); } catch (_) {}
+        for (const id of ids) { try { Z.close(id, { skipHistory: true, skipFocus: true }); } catch (_) {} }
+        // A switch is no close to undo: what it took down is the session it left.
+        for (let n = 0; S.getLastClosed && n < 100; n++) {
+            const last = S.getLastClosed();
+            if (!last || last === before) break;
+            S.takeLastClosed();
+        }
+        return keep;
+    }
+
+    /** A session's window as an entry of the plan (lib/windows.ts). */
+    _wvTabSessionStoredWindow(rec: any, first: boolean) {
+        const tabs = this._wvTabSessionToGetStateTabs(rec.tabs, rec.libraryTitle || "");
+        if (rec.kind === "reader" || rec.noLibrary) tabs.shift();
+        else if (Array.isArray(rec.libraryTabs) && rec.libraryTabs.length) tabs.splice(0, 1, ...rec.libraryTabs);
+        const wvMainState = { collection: rec.collection, columnPrefs: rec.columnPrefs, hiddenColl: rec.hiddenColl, title: rec.title || rec.name, tagsAuto: rec.tagsAuto, pinnedPane: rec.pinnedPane, paneOpen: rec.paneOpen };
+        return { kind: first ? "main-anchor" : "main-dev", tabs, geom: rec.geom || null, wvMainState };
+    }
+
+    /** Rebuild a session on a Zotero with its own windows: its groups in first,
+     *  under the same guard as ever, then everything down but one window, which
+     *  takes the session's first window with a library tab, and the others open
+     *  through Zotero's own restore, as on the update. */
+    async _wvTabSessionReconstructNative(windows: any[], tabGroups?: any[]) {
+        const P: any = this;
+        const swapGroups = Array.isArray(tabGroups);
+        if (swapGroups) {
+            try {
+                P._wvTabGroupRestoreGuard = true;
+                P._tabGroupsSet(JSON.parse(JSON.stringify(tabGroups)));
+            } catch (e) { Zotero.debug("[Weavero] reconstruct group-swap err: " + e); }
+        }
+        const list = (windows || []).filter(Boolean);
+        const first = list.find((w: any) => w.kind === "main" && !w.noLibrary) || null;
+        const keep: any = await this._wvTabSessionTearDownNative();
+        await P._wvWindowsTransfer({
+            windows: list.map((w: any) => this._wvTabSessionStoredWindow(w, w === first)),
+            focused: { kind: "anchor" },
+        }, { focus: true });
+        // The window that stayed held another session's own state until now.
+        try { await this._wvTabSessionApplyMainState(keep, first || {}); } catch (_) {}
+        // Its other library tabs: the fill places documents, a library tab is there.
+        try {
+            const libs = (first && first.libraryTabs) || [];
+            for (const t of libs.slice(1)) keep.Zotero_Tabs.add({ type: "library-unloaded", title: t.title || "", data: t.data || {}, select: false });
+        } catch (e) { Zotero.debug("[Weavero] reconstruct library tabs err: " + e); }
+        if (swapGroups) {
+            try { P._wvTabGroupApplyEverywhere(); } catch (e) {}
+            try {
+                wvTimeout(() => {
+                    try { P._wvTabGroupRestoreGuard = false; } catch (e) {}
+                    try { P._wvTabGroupApplyEverywhere(); } catch (e) {}
+                }, 2500);
+            } catch (e) { try { P._wvTabGroupRestoreGuard = false; } catch (e2) {} }
+        }
     }
 
     /** Recreate one reader window from a session window entry. Multi-tab windows
@@ -800,6 +888,7 @@ class _TabSessionsMixin {
      *  in BEFORE the tabs are rebuilt (which carry their `wvGroupId` stamps), so
      *  groups are session-specific instead of carrying across. */
     async _wvTabSessionReconstruct(windows: any[], tabGroups?: any[]) {
+        if (wvNativeWindows()) return this._wvTabSessionReconstructNative(windows, tabGroups);
         const mains = (windows || []).filter((w: any) => w.kind === "main");
         const readers = (windows || []).filter((w: any) => w.kind === "reader");
         try {
@@ -1209,7 +1298,7 @@ class _TabSessionsMixin {
                 let n = 0;
                 for (const w of Zotero.getMainWindows()) {
                     const Z: any = (w as any).Zotero_Tabs;
-                    if (Z && Array.isArray(Z._tabs)) n += Z._tabs.filter((t: any) => t && t.id !== "zotero-pane" && t.type !== "library").length;
+                    if (Z && Array.isArray(Z._tabs)) n += Z._tabs.filter((t: any) => t && !wvIsLibraryTabID(t.id) && t.type !== "library").length;
                 }
                 const en = Services.wm.getEnumerator("zotero:reader");
                 while (en.hasMoreElements()) { const w: any = en.getNext(); const st = w._wvWT; if (st && Array.isArray(st.tabs)) n += st.tabs.length; }
@@ -1491,7 +1580,7 @@ class _TabSessionsMixin {
                         onClick: () => {
                             try {
                                 const mw = Zotero.getMainWindows()[0];
-                                if (mw) { mw.focus(); mw.Zotero_Tabs.select("zotero-pane"); }
+                                if (mw) { mw.focus(); wvSelectLibraryTab(mw); }
                             } catch (e) {}
                         },
                     };

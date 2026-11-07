@@ -24,7 +24,7 @@ import { wvWrap, wvUnwrap, wvWrapLayers } from "./lib/wrap";
 import { wvWhenWindowLoaded, wvBoolAttrOn, wvReaderMenuEvent, wvWithin, wvIsTextEntry, wvHtmlEl, WV_XHTML_NS } from "./lib/dom";
 import { wvListen, wvUnlisten, wvUnlistenAll, wvListenKeys, wvUnlistenAllOn, wvSweepTagOnChrome } from "./lib/listen";
 import { wvStoreDir, wvStorePath, wvStoreChain, wvStoreWrite, wvStoreRead, wvStoreRemove } from "./lib/store";
-import { wvMainWins, wvWinType, wvWin32Style } from "./lib/windows";
+import { wvViewEl, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvOpenLibraryView, wvPlanWindowTransfer, wvSelectLibraryTab, wvGeomToPane, wvTransferItemIDs, wvWinType, wvWin32Style } from "./lib/windows";
 import { wvAccel, wvAccelAny } from "./lib/keys";
 import { wvCloneFor } from "./lib/xray";
 import { wvMenuItem, wvMenuSeparator } from "./lib/menu";
@@ -35,7 +35,7 @@ import { wvAltReveal } from "./lib/menubar";
 
 /** The shared helpers, published as `Zotero.Weavero.lib` so the suite can
  *  exercise them directly (they are bundled, not otherwise reachable). */
-const WV_LIB = { wvLivePlugin, wvMainWins, wvWinType, wvIsTextEntry, wvAccel, wvAccelAny, wvCloneFor, wvMenuItem, wvMenuSeparator, wvSvgEl, WV_SVG_NS,
+const WV_LIB = { wvLivePlugin, wvViewEl, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvOpenLibraryView, wvSelectLibraryTab, wvPlanWindowTransfer, wvGeomToPane, wvTransferItemIDs, wvWinType, wvIsTextEntry, wvAccel, wvAccelAny, wvCloneFor, wvMenuItem, wvMenuSeparator, wvSvgEl, WV_SVG_NS,
     WV_LINK_CHAIN_PATHS, WV_BACKLINK_ARROW_PATH, WV_OUTLINK_ARROW_PATH, WV_LOOPLINK_ARROW_PATH, WV_BROKENLINK_MARK_PATH, WV_ZLINK_KIND_PATH, WV_CITE_KIND_PATH, WV_REF_MARK_TIGHT_VIEWBOX, WV_EXTLINK_PATHS, WV_LINK_MENU_ICON, wvLinkGlyphEl, wvLinkGlyphMarkup, wvLinkGlyphUri, wvHtmlEl, WV_XHTML_NS, WV_LINK_PALETTE, wvLinkVars, wvLinkColor, wvLinkClassRules, wvOutsideClick, wvReachableDocs, wvDismissOff, wvAltReveal, wvTimeout, wvClearTimeout, wvSleep, wvInjectStyle, wvRemoveStyle, wvFilterTileRules, wvWrap, wvUnwrap, wvWrapLayers,
     wvWhenWindowLoaded, wvBoolAttrOn, wvReaderMenuEvent, wvWithin,
     wvListen, wvUnlisten, wvUnlistenAll, wvListenKeys,
@@ -57,9 +57,11 @@ import { outlineEvalMethods } from "./modules/outline-eval";
 import { attachmentsMethods } from "./modules/attachments";
 import { backlinksMethods } from "./modules/backlinks";
 import { linksMethods } from "./modules/links";
+import { titleLinesMethods } from "./modules/title-lines";
 import { countPopupsMethods } from "./modules/count-popups";
 import { paneScopeMethods } from "./modules/pane-scope";
 import { windowWiringMethods } from "./modules/window-wiring";
+import { windowStateMethods } from "./modules/window-state";
 import { prefsTableMethods } from "./modules/prefs-table";
 import { WV_PREF_OBSERVERS } from "./modules/prefs-observers";
 import { WV_LINK_PALETTE, wvLinkVars, wvLinkColor, wvLinkClassRules } from "./lib/links";
@@ -441,13 +443,8 @@ class WeaveroPlugin {
                 // affect the library tab in the background but the
                 // user keeps seeing the note. Switch to the library
                 // tab first so the result is visible.
-                const switchToLibrary = () => {
-                    try {
-                        if (win.Zotero_Tabs
-                            && typeof win.Zotero_Tabs.select === "function") {
-                            win.Zotero_Tabs.select("zotero-pane");
-                        }
-                    } catch (e) {}
+                const switchToLibrary = async () => {
+                    try { await wvOpenLibraryView(win); } catch (e) {}
                 };
                 // ?itemKey=K1,K2,… — comma-separated keys (mirrors the
                 // Zotero Web API form; this is how Zotero's own select
@@ -476,7 +473,7 @@ class WeaveroPlugin {
                     } else {
                         let trashed = false;
                         try { trashed = !!(col as any).deleted; } catch (e) {}
-                        switchToLibrary();
+                        await switchToLibrary();
                         try {
                             if (pane.collectionsView
                                 && typeof pane.collectionsView.selectCollection === "function") {
@@ -491,12 +488,13 @@ class WeaveroPlugin {
                     return;
                 } else if (kind === "searches" && rest[1]) {
                     const search = this._wvResolveSearchByKey(lib, rest[1]);
-                    if (search && pane.collectionsView
-                        && typeof pane.collectionsView.selectSearch === "function") {
-                        switchToLibrary();
-                        await pane.collectionsView.selectSearch(search.id);
-                        win.focus();
-                    } else if (!search) {
+                    if (search) {
+                        await switchToLibrary();
+                        if (pane.collectionsView && typeof pane.collectionsView.selectSearch === "function") {
+                            await pane.collectionsView.selectSearch(search.id);
+                            win.focus();
+                        }
+                    } else {
                         this._showLinkWarning("The linked saved search no longer exists (key " + rest[1] + ").");
                     }
                     return;
@@ -514,7 +512,7 @@ class WeaveroPlugin {
                 // was given AND it still exists. A DELETED collection
                 // doesn't break the link — we just skip the navigate
                 // step and select the item(s) from wherever they land.
-                switchToLibrary();
+                await switchToLibrary();
                 if (scopeKind === "collections" && scopeKey) {
                     try {
                         const col = this._wvResolveCollectionByKey(lib, scopeKey);
@@ -1036,7 +1034,9 @@ class WeaveroPlugin {
     /** "Open notes in a tab-hosting window" (child of Hide Title Bar). Default
      *  ON. Read at the note-open redirect + session restore. */
     _getNoteOpenInDeckWindow() {
-        return this._wvPref("noteOpenInDeckWindow");
+        // A deck window is a reader window, which a Zotero with its own windows
+        // does not have: the opener waited for it (zotero#6035).
+        return !wvNativeWindows() && this._wvPref("noteOpenInDeckWindow");
     }
 
     /** THE switch for a second main window: the Tabs and Windows master AND
@@ -1046,9 +1046,12 @@ class WeaveroPlugin {
      *  shortcut), the restart restore. Until v0.20.2 the switch hid two menu
      *  entries and nothing else; Ctrl+N and the hamburger had been added
      *  after the flag and never wired to it (MJT, 2026-09-22: a switch that
-     *  means what it says, with its dependants nested under it again). */
+     *  means what it says, with its dependants nested under it again).
+     *  False on a Zotero with its own windows (wvNativeWindows): every one of
+     *  those routes then takes its "off" branch, which leaves the gesture to
+     *  Zotero. */
     _wvMultiMainOn() {
-        try { return !!(this._getTabsAndWindowsMaster() && this._getNewMainWindow()); }
+        try { return !!(!wvNativeWindows() && this._getTabsAndWindowsMaster() && this._getNewMainWindow()); }
         catch (e) { return false; }
     }
 
@@ -2861,6 +2864,10 @@ class WeaveroPlugin {
                     // which tabs were added / selected / closed, by id).
                     try { (this as any)._wvTGDbg("tab " + event + " " + (ids || []).join(",")); } catch (e) {}
                     try { this._wvTabSessionTrackingUpdate(); } catch (e) {}
+                    // Closing a library tab selects another: that is a "select" too.
+                    if (event === "select") {
+                        for (const w of wvMainWins()) { try { (this as any)._wvLibraryViewSync(w); } catch (e) {} }
+                    }
                 }
             }
         }, ["tab"], "weavero-tabsession-track"));
@@ -3333,6 +3340,10 @@ class WeaveroPlugin {
                         await (this as any)._wvWTLoadRestoreMap();
                         (this as any)._wvTrace("restore: anchor tabs");
                         await (this as any)._wvRestoreAnchorTabs();
+                        // The update to a Zotero with its own windows. Before the
+                        // startup group-deletion guard lifts (further down): a tab
+                        // group whose tabs are all still in windows.json reads as empty.
+                        await (this as any)._wvWindowsTransferOnce();
                     } catch (e) {}
                 })())
                 // BACKGROUND RESTORE: from here on, windows opening during the
@@ -4333,6 +4344,7 @@ class WeaveroPlugin {
                     // Libraries-box highlight observer — per-window; the single
                     // later call covers only the focused window.
                     try { this._teardownLibrariesBoxHighlight(w); } catch (e) {}
+                    try { (this as any)._wvRemoveTitleLines(w); } catch (e) {}
                     try { this._wvStripWindowChrome(w); } catch (e) {}
                 }
                 // Every reader window, deck windows included
@@ -4776,6 +4788,10 @@ Object.defineProperties(
 // modules/annotation.ts), so it goes in directly.
 Object.defineProperties(
     WeaveroPlugin.prototype,
+    titleLinesMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
     annotationMethods,
 );
 Object.defineProperties(
@@ -4849,6 +4865,10 @@ Object.defineProperties(
 Object.defineProperties(
     WeaveroPlugin.prototype,
     windowWiringMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    windowStateMethods,
 );
 Object.defineProperties(
     WeaveroPlugin.prototype,

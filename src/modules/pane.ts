@@ -42,7 +42,7 @@ import { wvMenuItem } from "../lib/menu";
 import { wvListen, wvUnlisten } from "../lib/listen";
 import { wvLivePlugin } from "../lib/live";
 import { wvWrap, wvUnwrap } from "../lib/wrap";
-import { wvMainWins, wvWinType } from "../lib/windows";
+import { wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvWinType } from "../lib/windows";
 import { wvAccel, wvAccelAny } from "../lib/keys";
 import { wvLinkVars } from "../lib/links";
 import { wvAltReveal } from "../lib/menubar";
@@ -2154,9 +2154,12 @@ class _PaneMixin {
                 catch (e) { return false; }
             };
             const newMain = (): boolean => {
-                try { const p = liveP(); return master() && !!(p && p._getNewMainWindow()); }
+                try { const p = liveP(); return master() && !!(p && p._getNewMainWindow()) && !wvNativeWindows(); }
                 catch (e) { return false; }
             };
+            // File's three entries: on a Zotero with its own windows its File
+            // menu has New Tab and New Window, and Ctrl+T / Ctrl+N are Zotero's.
+            const fileMaster = (): boolean => master() && !wvNativeWindows();
             // The popup this entry sits in was opened from the hamburger (its
             // mirrored File submenu), where the same three already lead.
             const inHamburger = (el: any): boolean => {
@@ -2211,16 +2214,16 @@ class _PaneMixin {
                         const el = ctx.menuElem;
                         el.dataset.wvMenubar = "sep";
                         place(el, 3);
-                        ctx.setVisible(master() && !inHamburger(el));
+                        ctx.setVisible(fileMaster() && !inHamburger(el));
                     } catch (e) {}
                 },
             });
-            const newReaderWin = () => entry("newreaderwin", "New Reader Window\u2026", null, 1, master,
+            const newReaderWin = () => entry("newreaderwin", "New Reader Window\u2026", null, 1, fileMaster,
                 (win, p) => p._wvNewReaderWindowPicker(win));
             const newMainWin = () => entry("newmainwin", "New Main Window", ACCEL + "N", 2, newMain,
                 (_win, p) => p._wvOpenEmptyMainWindow());
             const fileMenus = [
-                entry("newtab", "New Tab\u2026", ACCEL + "T", 0, master,
+                entry("newtab", "New Tab\u2026", ACCEL + "T", 0, fileMaster,
                     (win, p) => p._wvMainNewTabPicker(win)),
                 newReaderWin(),
                 newMainWin(),
@@ -2255,7 +2258,7 @@ class _PaneMixin {
                         // blanked directly (measured 2026-09-22), so the
                         // attribute itself moves; teardown puts it back.
                         const lp = liveP();
-                        const remap = !!(lp && lp._getAdvSearchShortcutNewWindow && lp._getAdvSearchShortcutNewWindow());
+                        const remap = !wvNativeWindows() && !!(lp && lp._getAdvSearchShortcutNewWindow && lp._getAdvSearchShortcutNewWindow());
                         el.setAttribute("acceltext", remap ? SHORTCUT_F : "Shift+Click");
                         if (anchor) {
                             if (remap) { anchor.removeAttribute("key"); anchor.removeAttribute("acceltext"); }
@@ -3445,6 +3448,9 @@ class _PaneMixin {
                     // Zotero's nodes, every id shifted, "Rename" on a Hide
                     // (MJT's My Library and Feeds menus, 2026-10-20).
                     if (m) { m._wvHidBuilding = (m._wvHidBuilding || 0) + 1; m._wvHidBuildingAt = Date.now(); wvHidMenuClear(m); }
+                    // The rows this menu is for: since a14e76b35 a right-click on an
+                    // unselected row passes them, and it stays unselected.
+                    if (m) m._wvHidMenuRows = (args[0] && args[0].length) ? args[0] : null;
                     try { return await orig.apply(this, args); }
                     finally {
                         try {
@@ -3617,7 +3623,7 @@ class _PaneMixin {
             } catch (_) {}
             if (!this._wvHidOn()) return;
             const zp = win.ZoteroPane;
-            const rows: any[] = (zp.getCollectionTreeRows && zp.getCollectionTreeRows()) || [];
+            const rows: any[] = menu._wvHidMenuRows || (zp.getCollectionTreeRows && zp.getCollectionTreeRows()) || [];
             if (!rows.length) return;
             const P: any = this;
             // `icon`: the row's own icon class (the sheet in _wvHidApply).
@@ -4766,7 +4772,16 @@ class _PaneMixin {
         };
         const opts = (side: string) => ({
             onSelectionChange: () => onSel(side),
-            onContextMenu: (e: any, x: number, y: number) => openCtx(side, e, x, y),
+            // Zotero leaves a right-clicked row unselected and hands over its index
+            // (skipContextMenuSelection, a14e76b35). This menu acts on the selection,
+            // so without this Hide and Delete took the row selected before.
+            onContextMenu: (e: any, x: number, y: number, index?: number) => {
+                try {
+                    const t = trees[side];
+                    if (index != null && t && !t.selection.isSelected(index)) t.selection.select(index);
+                } catch (_) {}
+                openCtx(side, e, x, y);
+            },
             multiSelect: true,
             // Zotero's own drag of collections and saved searches and its
             // drops on rows (re-parent, library row = the root, another
@@ -6089,13 +6104,16 @@ class _PaneMixin {
             win.addEventListener("keydown", onKey, true);
             doc._wvCollSearchKeyHandler = onKey;   // for the guard (trusted keys cannot be made in a spec)
             const ZP: any = win.ZoteroPane, origHide = ZP && ZP.hideCollectionSearch;
+            // zotero#6035: ZoteroPane's method forwards to the library view,
+            // whose own field is what listens to the blur.
+            const blurListener = (ZP && ZP.libraryView && ZP.libraryView.handleCollectionSearchBlur) || origHide;
             const onBlur = (ev: any) => {
                 try {
                     if (!doc.hasFocus()) return;   // the window lost focus: keep the box
                     if (origHide) origHide.call(ZP, ev);
                 } catch (_) {}
             };
-            if (origHide) { field.removeEventListener("blur", origHide); field.addEventListener("blur", onBlur); }
+            if (origHide) { field.removeEventListener("blur", blurListener); field.addEventListener("blur", onBlur); }
             let wasVisible = field.classList.contains("visible");
             const obs = new win.MutationObserver(() => {
                 try {
@@ -6568,10 +6586,13 @@ class _PaneMixin {
         try {
             const ZP = win && win.ZoteroPane;
             if (!ZP || typeof ZP.setTagScope !== "function") return;
-            const wraps = ZP._wvWraps && ZP._wvWraps.setTagScope;
-            const native = wraps ? wraps.native : ZP.setTagScope;
+            // zotero#6035: the library view holds it and calls its own, so a
+            // wrap on ZoteroPane (a forwarder there) is never reached.
+            const host: any = (ZP.libraryView && typeof ZP.libraryView.setTagScope === "function") ? ZP.libraryView : ZP;
+            const wraps = host._wvWraps && host._wvWraps.setTagScope;
+            const native = wraps ? wraps.native : host.setTagScope;
             if (/itemsView/.test(String(native))) return;   // Zotero's own fix is in
-            wvWrap(ZP, "setTagScope", "tagScopeRows", this._wvWireTag(), (orig: any) => function (this: any, ...args: any[]) {
+            wvWrap(host, "setTagScope", "tagScopeRows", this._wvWireTag(), (orig: any) => function (this: any, ...args: any[]) {
                 const rows = this.itemsView && this.itemsView.collectionTreeRows;
                 if (!rows || !rows.length) return orig.apply(this, args);
                 const own = Object.prototype.hasOwnProperty.call(this, "getCollectionTreeRows");
@@ -6590,7 +6611,11 @@ class _PaneMixin {
         try {
             const wins: any[] = wvMainWins();
             for (const w of wins) {
-                try { if (w && w.ZoteroPane) wvUnwrap(w.ZoteroPane, "setTagScope", "tagScopeRows"); } catch (e) {}
+                try {
+                    if (!w || !w.ZoteroPane) continue;
+                    const view: any = w.ZoteroPane.libraryView;
+                    wvUnwrap((view && typeof view.setTagScope === "function") ? view : w.ZoteroPane, "setTagScope", "tagScopeRows");
+                } catch (e) {}
             }
         } catch (e) {}
     }
@@ -6724,7 +6749,8 @@ class _PaneMixin {
         try {
             const w = det && det._wvWraps && det._wvWraps._savePinnedPane;
             const save = String(w ? w.native : det && det._savePinnedPane);
-            if (!/Prefs\.clear\(\s*['"]pinnedPane['"]\s*\)/.test(save) || /_pendingPinnedPane/.test(save)) return false;
+            // zotero#6035 saves through the window's setting: the same empty save.
+            if (!/Prefs\.(clear\(|setForWindow\([^)]*)\s*['"]pinnedPane['"]/.test(save) || /_pendingPinnedPane/.test(save)) return false;
             let proto = det && Object.getPrototypeOf(det), d: any = null;
             while (proto && !(d = Object.getOwnPropertyDescriptor(proto, "pinnedPane"))) proto = Object.getPrototypeOf(proto);
             const setter = String(d && d.set);
@@ -7628,7 +7654,8 @@ class _PaneMixin {
         try {
             const orig = cv._wvOrigCanDropCheck || cv.canDropCheck;
             if (typeof orig !== "function") return false;
-            const src = String(orig);
+            // zotero#6035 moved the body to canDropOnTreeRow, this one's callee.
+            const src = String(orig) + String(cv.canDropOnTreeRow || "");
             // Zotero's own fix is in: the comparison gone, or guarded on the row's kind.
             if (!/\bid\s*==\s*treeRow\.ref\.id\b/.test(src) || /isCollection\(\)\s*&&\s*id\s*==\s*treeRow\.ref\.id\b/.test(src)) return false;
             cv._wvOrigCanDropCheck = orig;
@@ -8168,7 +8195,7 @@ class _PaneMixin {
                 } else {
                     const Z = srcWin.Zotero_Tabs;
                     const t = Z && Z._tabs.find((x: any) => x.id === id);
-                    if (t && t.id !== "zotero-pane" && t.type !== "library") {
+                    if (t && !wvIsLibraryTabID(t.id) && t.type !== "library") {
                         itemID = t.data && t.data.itemID;
                         isNote = !!(t.type && String(t.type).indexOf("note") !== -1);
                     }
@@ -8202,6 +8229,7 @@ class _PaneMixin {
      *  fresh reader window, close the sources, and group them there. */
     async _wvMoveTabsToNewReaderWindow(srcWin: any, tabIds: any[], createNewGroup?: boolean) {
         try {
+            if (wvNativeWindows()) return;
             const srcIsReader = !!(srcWin && srcWin._wvWT);
             if (srcIsReader && !createNewGroup) {
                 // No-reload tear-off (keeps scroll/zoom/selection).
@@ -8219,7 +8247,7 @@ class _PaneMixin {
                 } else {
                     const Z = srcWin.Zotero_Tabs;
                     const t = Z && Z._tabs.find((x: any) => x.id === id);
-                    if (t && t.id !== "zotero-pane" && t.type !== "library") {
+                    if (t && !wvIsLibraryTabID(t.id) && t.type !== "library") {
                         itemID = t.data && t.data.itemID;
                         isNote = !!(t.type && String(t.type).indexOf("note") !== -1);
                     }
@@ -8263,7 +8291,7 @@ class _PaneMixin {
      *  the resolution is testable (Guard: test/copy-as-multi.spec.js). */
     _wvTabCtxTargetItems(win: any, tabID: any) {
         try {
-            if (!win || !tabID || tabID === "zotero-pane") return null;
+            if (!win || !tabID || wvIsLibraryTabID(tabID)) return null;
             const tgts = this._wvTabMultiSelTargets
                 ? this._wvTabMultiSelTargets(win, tabID) : null;
             if (!tgts || tgts.length <= 1) return null;
@@ -8271,7 +8299,7 @@ class _PaneMixin {
             const items: any[] = []; const seen = new Set();
             for (const id of tgts) {
                 const t = Z && Z._tabs && Z._tabs.find((x: any) => x.id === id);
-                if (!t || t.id === "zotero-pane" || t.type === "library") continue;
+                if (!t || wvIsLibraryTabID(t.id) || t.type === "library") continue;
                 const itemID = t.data && t.data.itemID;
                 if (itemID == null) continue;
                 const it: any = Zotero.Items.get(itemID);
@@ -8316,7 +8344,7 @@ class _PaneMixin {
                     // Live plugin at event time — closures go stale on reload.
                     const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                     const ZT: any = win.Zotero_Tabs;
-                    if (lp && ZT && ZT.selectedID && ZT.selectedID !== "zotero-pane"
+                    if (lp && ZT && ZT.selectedID && !wvIsLibraryTabID(ZT.selectedID)
                         && lp._wvTabCtxTargetItems) {
                         const tabItems = lp._wvTabCtxTargetItems(win, ZT.selectedID);
                         if (tabItems && tabItems.length > 1) {

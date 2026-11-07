@@ -265,11 +265,12 @@ const BL_CSS = [
     // meant for blurred native menus), and the card read through to the
     // rows under it (MJT 2026-10-27, "The hover card is transparent").
     "#" + BL_CARD_ID + " { position: fixed; z-index: 2147483000; box-sizing: border-box; max-width: 380px; padding: 8px 10px; pointer-events: none;"
-        // Zotero's raised surface, its button material (#404040 dark, white
-        // light), over the item pane's sidepane, inside Zotero's popup border
-        // (MJT 2026-11-03, "Cards have the same background as the item
-        // pane" -> "Try A"; the sidepane's own colour until 1.0.0-beta.1).
-        + " background: var(--material-button, var(--material-background, Field)); color: var(--fill-primary, FieldText);"
+        // Zotero's note popup material (#272727 dark), what Better Notes' link
+        // preview gets from the note editor's .popup rule, apart from the item
+        // pane's sidepane, inside Zotero's popup border (MJT 2026-11-05: the
+        // button material of 2026-11-03, #404040, read "too light"; the
+        // sidepane's own colour had read as no card at all).
+        + " background: var(--material-toolbar, var(--material-background, Field)); color: var(--fill-primary, FieldText);"
         + " border: var(--material-border, 1px solid rgba(128,128,128,0.3)); border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.25); }",
     "#" + BL_CARD_ID + "[hidden] { display: none; }",
     "#" + BL_CARD_ID + " .wv-bl-card-head { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }",
@@ -296,7 +297,7 @@ const BL_CSS = [
     // Related column's header (MJT 2026-11-02, "Use the correct color for
     // the related icon"; the arrow's grey in dev.137-138).
     "#" + BL_CARD_ID + " .wv-bl-card-rel-icon { color: var(--accent-wood, #cc7a52); }",
-    "#" + BL_CARD_ID + " .wv-bl-card-broken-x-bg, #" + BL_CARD_ID + " .wv-bl-card-icon-bg { fill: var(--material-button, var(--material-background, Field)); }",
+    "#" + BL_CARD_ID + " .wv-bl-card-broken-x-bg, #" + BL_CARD_ID + " .wv-bl-card-icon-bg { fill: var(--material-toolbar, var(--material-background, Field)); }",
     // What both ends share, once above the two columns (_wvBlCardShared);
     // as wide as the left column when an end is up there, so the arrow
     // climbing the gap reaches its title's end without crossing it.

@@ -55,6 +55,19 @@ export const WV_PREF_OBSERVERS: WvPrefObserver[] = [
         },
     },
     {
+        keys: ["extensions.zotero.weavero.titleLinesMode", "extensions.zotero.weavero.titleLinesCount", "extensions.zotero.weavero.enableVisualExtras"],
+        run(p: any, data: string) {
+            if (data === "extensions.zotero.weavero.titleLinesMode"
+                || data === "extensions.zotero.weavero.titleLinesCount"
+                || data === "extensions.zotero.weavero.enableVisualExtras") {
+                try {
+                    const wins = wvMainWins();
+                    for (const w of wins) p._wvApplyTitleLines(w);
+                } catch (e) {}
+            }
+        },
+    },
+    {
         keys: ["extensions.zotero.weavero.tagSelectorHandle", "extensions.zotero.weavero.enableVisualExtras"],
         run(p: any, data: string) {
             if (data === "extensions.zotero.weavero.tagSelectorHandle"

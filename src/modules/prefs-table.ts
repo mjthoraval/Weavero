@@ -290,6 +290,10 @@ export const WV_PREF_VALUES: Record<string, string | number> = {
     sessionSort: "created",
     // Pinned parents in the collections tree: at most this many levels.
     collectionsStickyMax: 7,
+    // Titles in the items list: "off" (Zotero's one line) | "fixed" | "adaptive".
+    titleLinesMode: "off",
+    // Lines of a title: 2 to 10 (title-lines.ts clamps a stored value).
+    titleLinesCount: 2,
 };
 
 class _PrefsTableMixin {

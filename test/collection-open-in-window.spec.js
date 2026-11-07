@@ -52,6 +52,10 @@ describe("Weavero — open a collection in a new window; right-click keeps the s
         await search.saveTx();
         await cv.selectLibrary(Zotero.Libraries.userLibraryID);
         await waitFor(() => rowElFor("C" + coll.id) && rowElFor("C" + coll2.id), 5000, "the collections' rows rendered");
+        // The first test failed twice in full Zotero 10 runs and never alone: the items
+        // list moved to the context row 300 ms after the press. A guess, not proven: a
+        // select event still due from the setup, reading the silent context when it fires.
+        await new Promise(r => win.setTimeout(r, 500));
     });
 
     after(async () => {

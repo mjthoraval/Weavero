@@ -226,6 +226,8 @@ describe("Weavero — default-branch registrations (characterization)", () => {
         "sessionSortReverse": false,
         "showLibraryBookmarksInReader": true,
         "tagSelectorHandle": true,
+        "titleLinesCount": "i:2",
+        "titleLinesMode": "s:off",
         "windowIcons": true,
         "windowTitleGlyphs": false,
         "windowTitleNameMode": "s:off",

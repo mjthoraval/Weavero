@@ -41,7 +41,8 @@ describe("Weavero — WV-TEMP-134361: a collection may be dropped on its library
     const libRow = () => cv.getRowIndexByID("L" + lib);
 
     it("tripwire: Zotero's canDropCheck still compares the dragged id with the target row's ref.id for library rows too (RETIRE the workaround when this fails)", () => {
-        const native = cv._wvOrigCanDropCheck;
+        // zotero#6035 moved the comparisons to canDropOnTreeRow, its callee.
+        const native = String(cv._wvOrigCanDropCheck) + String(cv.canDropOnTreeRow || "");
         assert.isOk(native, "the workaround is installed on the pane's tree (the original kept)");
         // The exact current form: any change there is upstream moving, to be looked at.
         assert.match(String(native), /Collections cannot be dropped on themselves[\s\S]{0,60}if \(id == treeRow\.ref\.id\)/, "upstream still compares against treeRow.ref.id whatever the row");
@@ -108,7 +109,7 @@ describe("Weavero — WV-TEMP-134361: a collection may be dropped on its library
             }
             wv._wvTeardownCollectionDropFix();
             assert.isUndefined(cv._wvOrigCanDropCheck, "the pane's original back");
-            assert.match(String(cv.canDropCheck), /\bid\s*==\s*treeRow\.ref\.id\b/, "Zotero's own check in place");
+            assert.match(String(cv.canDropCheck) + String(cv.canDropOnTreeRow || ""), /\bid\s*==\s*treeRow\.ref\.id\b/, "Zotero's own check in place");
             assert.isUndefined(mw._wvHidMgrTrees.left._wvOrigCanDropCheck, "the manager's too");
         } finally {
             const trees = mw._wvHidMgrTrees;

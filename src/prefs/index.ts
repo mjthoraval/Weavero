@@ -1,4 +1,5 @@
 import { wvSetBoolAttr } from "../lib/dom";
+import { wvNativeWindows } from "../lib/windows";
 // Module: preferences pane binding script.
 //
 // The pane is a native XUL fragment (see prefs.html). Zotero injects it
@@ -103,6 +104,17 @@ import { wvSetBoolAttr } from "../lib/dom";
             const cb = el.querySelector("checkbox");
             if (cb) wvSetBoolAttr(cb, "disabled", !onWin);
         }
+    }
+
+    /** A Zotero with its own windows (zotero#6035): the options for Weavero's
+     *  go, a line says why. `data-wv-native-off` marks them. */
+    function bindNativeWindows(doc) {
+        if (!wvNativeWindows()) return;
+        for (const el of Array.from(doc.querySelectorAll("[data-wv-native-off]")) as any[]) {
+            el.style.setProperty("display", "none", "important");
+        }
+        const note = doc.getElementById("wv-native-windows-note");
+        if (note) wvSetBoolAttr(note, "hidden", false);
     }
 
     /** Master -> children grey-out. Each `.wv-children[data-master]` fades and
@@ -556,6 +568,19 @@ import { wvSetBoolAttr } from "../lib/dom";
     // moment, so I will just design the default first"); the prefs stay,
     // read by pane-scope.ts, at their table defaults.
 
+    /** "Up to 2 lines" reads wrong under Fixed height, which is exactly that many
+     *  (MJT 2026-11-06). */
+    function bindTitleLinesLead(doc) {
+        const rg = doc.getElementById("wv-title-lines");
+        const lead = doc.getElementById("wv-title-lines-lead");
+        if (!rg || !lead || lead._wvBound) return;
+        lead._wvBound = true;
+        const show = () => { lead.textContent = rg.value === "fixed" ? "Height of" : "Up to"; };
+        rg.addEventListener("select", show);
+        rg.addEventListener("command", show);
+        show();
+    }
+
     function bindAll(doc) {
         try { bindMode(doc.getElementById("wv-mode")); } catch (e) { dbg("bindMode err: " + e); }
         try { bindSplit(doc.getElementById("wv-ctrlsplit")); } catch (e) { dbg("bindSplit err: " + e); }
@@ -567,7 +592,11 @@ import { wvSetBoolAttr } from "../lib/dom";
         try { bindOutlineTextSize(doc); } catch (e) { dbg("bindOutlineTextSize err: " + e); }
         try { bindOutlineKeys(doc); } catch (e) { dbg("bindOutlineKeys err: " + e); }
         try { bindIntInput(doc.getElementById("wv-coll-sticky-max"), "weavero.collectionsStickyMax", 1, 10, 7); } catch (e) { dbg("bindCollStickyMax err: " + e); }
+        try { bindCharRadio(doc.getElementById("wv-title-lines"), "weavero.titleLinesMode", ["off", "fixed", "adaptive"], "off"); } catch (e) { dbg("bindTitleLines err: " + e); }
+        try { bindIntInput(doc.getElementById("wv-title-lines-count"), "weavero.titleLinesCount", 2, 10, 2); } catch (e) { dbg("bindTitleLinesCount err: " + e); }
+        try { bindTitleLinesLead(doc); } catch (e) { dbg("bindTitleLinesLead err: " + e); }
         try { bindMasterDisable(doc); } catch (e) { dbg("bindMasterDisable err: " + e); }
+        try { bindNativeWindows(doc); } catch (e) { dbg("bindNativeWindows err: " + e); }
         try { bindPlatformOnly(doc); } catch (e) { dbg("bindPlatformOnly err: " + e); }
         try { bindSectionNav(doc); } catch (e) { dbg("bindSectionNav err: " + e); }
         try { bindCollapse(doc); } catch (e) { dbg("bindCollapse err: " + e); }

@@ -146,6 +146,10 @@ name to a Zotero object, window, or document.
   window had no collection-select guard, no collections-tree aids and no
   setFilter / changeCollectionTreeRow / selectItems wraps. Guard:
   `test/window-wiring.spec.js` (the parity test).
+  `views: true` promises `itemsView`, NOT `itemsView.tree`: the view can
+  exist first. A wire that needs the table waits for it instead of returning:
+  title lines stayed off in a new window in 2 runs of 3 (`iv=true tree=false`,
+  2026-11-05, `_wvApplyTitleLines`).
 - PER-MAIN-WINDOW wiring is ONE ordered table, `WV_MAIN_WIRES` in
   `src/modules/window-wiring.ts`: onMainWindowLoad runs every entry, init
   runs the `on: "both"` ones for the window already open. A new step goes

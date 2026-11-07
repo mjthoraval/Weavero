@@ -40,7 +40,7 @@ import { wvLivePlugin } from "../lib/live";
 import { wvWrap, wvUnwrap } from "../lib/wrap";
 import { wvTimeout } from "../lib/timers";
 import { wvListen, wvUnlisten } from "../lib/listen";
-import { wvMainWins } from "../lib/windows";
+import { wvMainWins, wvNativeWindows, wvViewEl } from "../lib/windows";
 import { wvSvgEl } from "../lib/svg";
 import { wvExternalLinkGlyphEl } from "../lib/link-glyph";
 import { WV_BL_ICON_CONTEXT } from "./backlinks";
@@ -1396,7 +1396,7 @@ class _FilterMixin {
                 delete host._wvHiddenBadgeHandlerInstalled;
             };
             const innerHost = doc && doc.getElementById("item-tree-main");
-            const wrapHost = doc && doc.getElementById("zotero-items-tree");
+            const wrapHost = doc && wvViewEl(doc, "zotero-items-tree");
             stripHost(innerHost);
             stripHost(wrapHost);
             const treeInner: any = innerHost || wrapHost;
@@ -2887,7 +2887,7 @@ class _FilterMixin {
                         try {
                             const w = Zotero.getMainWindow();
                             const sb: any = w
-                                && w.document.getElementById("zotero-tb-search");
+                                && wvViewEl(w.document, "zotero-tb-search");
                             if (sb && sb.value
                                 && String(sb.value).trim()) {
                                 liveSM = true;
@@ -3249,8 +3249,7 @@ class _FilterMixin {
                     // current query.
                     try {
                         const sbq: any = Zotero.getMainWindow()
-                            && Zotero.getMainWindow().document
-                                .getElementById("zotero-tb-search");
+                            && Zotero.getMainWindow().wvViewEl(document, "zotero-tb-search");
                         if (plugin && sbq) {
                             plugin._currentQuickSearchValue = sbq.value
                                 ? String(sbq.value).trim() : "";
@@ -5643,11 +5642,60 @@ class _FilterMixin {
         try { this._wvWireCollSetHeader(win); } catch (e) {}
     }
 
+    /** The filter follows the library tab on screen (a Zotero with its own
+     *  windows, where a window can hold several). One bar and one button per
+     *  window, moved into that tab's view, and one filter per tab: the rows a
+     *  filter hides belong to that view's row provider, which keeps them. Kept by
+     *  tab id, since an idle library tab can lose its view and get a new one. */
+    _wvFilterViewShown(win: any, view: any) {
+        const prevOverride = (this as any)._wvFilterWinOverride;
+        (this as any)._wvFilterWinOverride = win;
+        try {
+            const tabID = view.tabID;
+            const was = win._wvFilterViewTab;
+            const bar = this._filterBar, btn = this._filterTbBtn;
+            if (!bar || !btn) return;
+            const container = view.getElement("zotero-items-pane-container");
+            const itemsPane = view.getElement("zotero-items-pane");
+            const searchBox = view.getElement("zotero-tb-search");
+            if (!container || !itemsPane || !searchBox) return;
+            if (bar.parentNode !== container) container.insertBefore(bar, itemsPane);
+            if (btn.previousSibling !== searchBox) searchBox.parentNode.insertBefore(btn, searchBox.nextSibling);
+            const obs = this._filterTreeObserver;
+            const tree = view.getElement("zotero-items-tree");
+            if (obs && tree) {
+                try {
+                    obs.disconnect();
+                    obs.observe(tree, { childList: true, subtree: true });
+                } catch (e) {}
+            }
+            if (was === tabID) return;
+            const states = win._wvFilterViewStates || (win._wvFilterViewStates = new Map());
+            if (was != null) states.set(was, { state: this._filterState, pills: (this as any)._pillOrder });
+            const next = states.get(tabID);
+            this._filterState = (next && next.state) || { groups: [this._emptyFilterGroup()], activeGroupIndex: 0 };
+            (this as any)._pillOrder = (next && next.pills) || [];
+            win._wvFilterViewTab = tabID;
+            this._renderFilterBar();
+            this._applyItemsListFilter({});
+        } catch (e) { Zotero.debug("[Weavero] _wvFilterViewShown err: " + e); }
+        finally { (this as any)._wvFilterWinOverride = prevOverride || null; }
+    }
+
     _setupItemsListFilterIn(win: any) {
         const doc = win.document;
-        const container = doc.getElementById("zotero-items-pane-container");
-        const itemsPane = doc.getElementById("zotero-items-pane");
-        const searchBox = doc.getElementById("zotero-tb-search");
+        // No library view: nothing to set up, and Zotero runs this again when one
+        // loads (the retry below would poll for the window's whole life).
+        if (wvNativeWindows() && win.ZoteroPane && !win.ZoteroPane.libraryView) return;
+        // The view holding the bar closed: the bar is still this window's.
+        if (wvNativeWindows() && win._wvFilterBar && !win._wvFilterBar.isConnected) {
+            this._wvFilterViewShown(win, win.ZoteroPane.libraryView);
+            this._wvWireItemsFilterViewIn(win);
+            return;
+        }
+        const container = wvViewEl(doc, "zotero-items-pane-container");
+        const itemsPane = wvViewEl(doc, "zotero-items-pane");
+        const searchBox = wvViewEl(doc, "zotero-tb-search");
         if (!container || !itemsPane || !searchBox) {
             // Items pane mounts asynchronously on first window open; retry.
             win.setTimeout(() => this._setupItemsListFilter(win), 1000);
@@ -5885,7 +5933,7 @@ class _FilterMixin {
             // measurement so the popup's left edge lines up with
             // the framed search's left edge.
             try {
-                const sbEl: any = doc.getElementById("zotero-tb-search");
+                const sbEl: any = wvViewEl(doc, "zotero-tb-search");
                 if (sbEl) sbEl.classList.add("wv-filter-search-framed");
             } catch (e) {}
             // Inject the "Restrict Quick Search to:" dropdown into
@@ -5941,7 +5989,7 @@ class _FilterMixin {
             // edge (CSS in constants.ts targets `#wv-filter-popup`),
             // the user perceives one continuous frame.
             try {
-                const sb: any = docTop.getElementById("zotero-tb-search");
+                const sb: any = wvViewEl(docTop, "zotero-tb-search");
                 if (sb) sb.classList.add("wv-filter-search-framed");
             } catch (e) {}
             // Pixel-perfect left alignment: Mozilla's panel chrome
@@ -5966,7 +6014,7 @@ class _FilterMixin {
             // we measure.
             const alignPanel = () => {
                 try {
-                    const sb: any = docTop.getElementById("zotero-tb-search");
+                    const sb: any = wvViewEl(docTop, "zotero-tb-search");
                     if (!sb) return;
                     const panelAny2 = panel as any;
                     // With Advanced Search active there is no visible
@@ -6011,7 +6059,7 @@ class _FilterMixin {
             dismissOff = wvOutsideClick({
                 panel, docs: [docTop], owner: this,
                 isOpen: () => panelAny.state === "open" || panelAny.state === "showing",
-                keep: () => [tbBtn, docTop.getElementById("zotero-tb-search")],
+                keep: () => [tbBtn, wvViewEl(docTop, "zotero-tb-search")],
                 allow: (e: any) => !!(e.target && e.target.closest && e.target.closest("menupopup")),
                 onOutside: () => { try { panelAny.hidePopup(); } catch (er) {} },
             });
@@ -6022,7 +6070,7 @@ class _FilterMixin {
             try { const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; if (lp) lp._wvCollTreeExp = null; } catch (e) {}
             try {
                 const docTop = panel.ownerDocument;
-                const sb = docTop.getElementById("zotero-tb-search");
+                const sb = wvViewEl(docTop, "zotero-tb-search");
                 if (sb) sb.classList.remove("wv-filter-search-framed");
                 // Don't remove the QS scope button — it should
                 // persist whenever a filter is active so the user
@@ -6177,7 +6225,7 @@ class _FilterMixin {
         // the virtualized window. We watch the inner tree element for
         // childList mutations — every row append/remove fires here.
         const treeInner = doc.getElementById("item-tree-main")
-            || doc.getElementById("zotero-items-tree");
+            || wvViewEl(doc, "zotero-items-tree");
         if (treeInner && win.MutationObserver) {
             // Disconnect any previous observer FIRST — re-setup (plugin reload,
             // pref toggles) otherwise stacks a dead instance's observer that
@@ -7561,8 +7609,8 @@ class _FilterMixin {
         // with the legacy 150 px title column. Width is just enough
         // to span the items-pane area, capped at 320 px so the
         // popup stays compact even on wide screens.
-        const tbSearch = doc.getElementById("zotero-tb-search");
-        const itemsPane = doc.getElementById("zotero-items-pane");
+        const tbSearch = wvViewEl(doc, "zotero-tb-search");
+        const itemsPane = wvViewEl(doc, "zotero-items-pane");
         if (tbSearch && itemsPane) {
             try {
                 const sRect = tbSearch.getBoundingClientRect();
@@ -9705,7 +9753,7 @@ class _FilterMixin {
      *  search has text. Called from `popupshowing`; the inverse
      *  `_uninstallQuickSearchScopeButton` runs on `popuphidden`. */
     _installQuickSearchScopeButton(doc, refreshAll) {
-        const sb: any = doc.getElementById("zotero-tb-search");
+        const sb: any = wvViewEl(doc, "zotero-tb-search");
         if (!sb) return;
         const wrapper = sb.querySelector("#search-wrapper") || sb;
         const KINDS_QS = [
@@ -9795,7 +9843,7 @@ class _FilterMixin {
             const win = Zotero.getMainWindow();
             const doc = win && win.document;
             if (!doc) return;
-            const sb = doc.getElementById("zotero-tb-search");
+            const sb = wvViewEl(doc, "zotero-tb-search");
             const btn = doc.querySelector(".wv-qs-scope-btn");
             if (sb && btn) this._updateQuickSearchScopeButtonVisibility(sb, btn);
         } catch (e) {}
@@ -9898,7 +9946,7 @@ class _FilterMixin {
      *  off). Safe to call when not installed. */
     _uninstallQuickSearchScopeButton(doc) {
         try {
-            const sb: any = doc.getElementById("zotero-tb-search");
+            const sb: any = wvViewEl(doc, "zotero-tb-search");
             if (!sb) return;
             wvUnlisten(sb, "qsScope:input");
             wvUnlisten(sb, "qsScope:command");
@@ -11604,7 +11652,7 @@ class _FilterMixin {
             if (!(this as any)._wvViaSetFilter) {
                 const _w0 = this._wvFilterTargetWin();
                 const _sb0: any = _w0 && _w0.document
-                    && _w0.document.getElementById("zotero-tb-search");
+                    && wvViewEl(_w0.document, "zotero-tb-search");
                 if (_sb0 && _sb0.value && String(_sb0.value).trim()) {
                     this._wvArmFinalApply();
                 }
@@ -11683,8 +11731,7 @@ class _FilterMixin {
         // re-render on such chip changes. TODO: a non-flickery re-invoke.
         try {
             const _win = this._wvFilterTargetWin();
-            const _sb: any = _win && _win.document
-                .getElementById("zotero-tb-search");
+            const _sb: any = _win && wvViewEl(_win.document, "zotero-tb-search");
             const _live = (_sb && _sb.value) ? String(_sb.value).trim() : "";
             const _iv: any = _win && _win.ZoteroPane && _win.ZoteroPane.itemsView;
             if (opts && opts.cascade && _live
@@ -12007,7 +12054,7 @@ class _FilterMixin {
                         return;
                     }
                     const sb: any = w2 && w2.document
-                        && w2.document.getElementById("zotero-tb-search");
+                        && wvViewEl(w2.document, "zotero-tb-search");
                     if (!(sb && sb.value && String(sb.value).trim())) {
                         (this as any)._wvFAHold = false;                // search gone
                         return;
@@ -12138,7 +12185,7 @@ class _FilterMixin {
                     // row set is genuinely short.
                     if (coverage && !missing && !staleKeep) {
                         const sb2: any = w2 && w2.document
-                            && w2.document.getElementById("zotero-tb-search");
+                            && wvViewEl(w2.document, "zotero-tb-search");
                         const term = (sb2 && sb2.value) ? String(sb2.value) : "";
                         if (term && iv && typeof iv.setFilter === "function") {
                             dbg("[Weavero][filter] search coverage incomplete"
@@ -12745,7 +12792,7 @@ class _FilterMixin {
                         // Quick search owns the toolbar box; anything else
                         // in search mode is the advanced-search channel.
                         const sb: any = win.document
-                            && win.document.getElementById("zotero-tb-search");
+                            && wvViewEl(win.document, "zotero-tb-search");
                         const live = (sb && sb.value)
                             ? String(sb.value).trim() : "";
                         sources.push({
@@ -12915,7 +12962,7 @@ class _FilterMixin {
     _wvWireItemCountBreakdown(win: any) {
         try {
             const pane: any = win && win.document
-                && win.document.getElementById("zotero-item-pane");
+                && wvViewEl(win.document, "zotero-item-pane");
             if (!pane || typeof pane.setItemPaneMessage !== "function") return;
             if (pane._wvCountWired === 1) return;
             // Re-wire cleanly across reloads rather than stacking wraps.
@@ -13032,7 +13079,7 @@ class _FilterMixin {
     _wvUnwireItemCountBreakdown(win: any) {
         try {
             const pane: any = win && win.document
-                && win.document.getElementById("zotero-item-pane");
+                && wvViewEl(win.document, "zotero-item-pane");
             if (!pane || !pane._wvOrigSetItemPaneMessage) return;
             // Drop the centring we applied to Zotero's own message box.
             try {
@@ -13105,7 +13152,7 @@ class _FilterMixin {
         // exclusively by the quickSearchScope check — when empty,
         // scope is a no-op regardless of how it's set.
         try {
-            const sb = win.document.getElementById("zotero-tb-search") as any;
+            const sb = wvViewEl(win.document, "zotero-tb-search") as any;
             this._currentQuickSearchValue = (sb && sb.value
                 ? String(sb.value).trim() : "");
         } catch (e) { this._currentQuickSearchValue = ""; }
@@ -14449,7 +14496,7 @@ class _FilterMixin {
         // back to its default unfiltered/unsearched view.
         try {
             const win = this._wvFilterTargetWin();
-            const sb: any = win && win.document.getElementById("zotero-tb-search");
+            const sb: any = win && wvViewEl(win.document, "zotero-tb-search");
             const qs = (sb && sb.value ? String(sb.value).trim() : "");
             if (qs) return;
         } catch (e) {}
@@ -14692,7 +14739,7 @@ class _FilterMixin {
         const doc = win && win.document;
         const ZP = win && win.ZoteroPane;
         if (!doc || !ZP || !ZP.itemsView) return false;
-        const deck: any = doc.getElementById("zotero-advanced-search-pane-deck");
+        const deck: any = wvViewEl(doc, "zotero-advanced-search-pane-deck");
         // Only a temporary search collapses this way: the saved-search editor
         // has its own unsaved-changes prompt, which must not be bypassed.
         if (!deck || deck.state !== "open"
@@ -14702,7 +14749,7 @@ class _FilterMixin {
         // state including unsubmitted edits, not the last submitted search.
         const qs = this._wvQuickSearchFromAdvanced(deck.pane && deck.pane.search);
         if (!qs) return false;
-        const searchBox: any = doc.getElementById("zotero-tb-search");
+        const searchBox: any = wvViewEl(doc, "zotero-tb-search");
         if (!searchBox) return false;
 
         // An empty search carries no mode of its own -- leave the user's alone.
@@ -14729,14 +14776,17 @@ class _FilterMixin {
             const doc = win && win.document;
             const ZP = win && win.ZoteroPane;
             if (!doc || !ZP) return;
-            if (!doc.getElementById("zotero-advanced-search-pane-deck")) return;
+            if (!wvViewEl(doc, "zotero-advanced-search-pane-deck")) return;
             if (typeof ZP.toggleAdvancedSearchState !== "function"
                 || typeof ZP.setAdvancedSearchState !== "function") return;
             if (ZP._wvOrigToggleAdvancedSearchState) return;
-            const orig = ZP.toggleAdvancedSearchState;
+            // zotero#6035: the search box calls the library view itself, past a
+            // wrap on ZoteroPane (a forwarder there).
+            const host: any = (ZP.libraryView && typeof ZP.libraryView.toggleAdvancedSearchState === "function") ? ZP.libraryView : ZP;
+            const orig = host.toggleAdvancedSearchState;
             ZP._wvOrigToggleAdvancedSearchState = orig;
             const self: any = this;
-            ZP.toggleAdvancedSearchState = async function (state: string) {
+            host.toggleAdvancedSearchState = async function (state: string) {
                 try {
                     if (state === "collapsed"
                         && self._getEnableFilters()
@@ -14759,7 +14809,9 @@ class _FilterMixin {
         try {
             const ZP = win && win.ZoteroPane;
             if (!ZP || !ZP._wvOrigToggleAdvancedSearchState) return;
-            ZP.toggleAdvancedSearchState = ZP._wvOrigToggleAdvancedSearchState;
+            const view: any = ZP.libraryView;
+            if (view && Object.prototype.hasOwnProperty.call(view, "toggleAdvancedSearchState")) delete view.toggleAdvancedSearchState;
+            else ZP.toggleAdvancedSearchState = ZP._wvOrigToggleAdvancedSearchState;
             delete ZP._wvOrigToggleAdvancedSearchState;
         }
         catch (e) {}

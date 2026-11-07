@@ -1,5 +1,6 @@
 import { MD_REGEX } from "../lib/links";
 import { wvListen } from "../lib/listen";
+import { wvSelectLibraryTab } from "../lib/windows";
 import { normalize as wvNormalize } from "../lib/text";
 import { wvSetBoolAttr } from "../lib/dom";
 import { wvSvgEl } from "../lib/svg";
@@ -442,9 +443,7 @@ class _AnnotationMixin {
             if (win.ZoteroPane && typeof win.ZoteroPane.selectItem === "function") {
                 win.ZoteroPane.selectItem(item.id);
             }
-            if (win.Zotero_Tabs && typeof win.Zotero_Tabs.select === "function") {
-                win.Zotero_Tabs.select("zotero-pane");
-            }
+            wvSelectLibraryTab(win);
             win.focus();
         } catch (e) {
             Zotero.debug("[Weavero] _navigateToItem error: " + e.message);

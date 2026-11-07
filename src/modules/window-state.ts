@@ -214,8 +214,24 @@ class _WindowStateMixin {
         if (st.title && w._wvWindowTitle == null) p._wvWindowSetCustomTitle(w, st.title);
         if (typeof st.tagsAuto === "boolean") p._wvTagsAutoSet(w, st.tagsAuto, { save: false });
         if (st.hiddenColl) await p._wvHidRestore(w, st.hiddenColl);
-        if (fill.collection && zp.collectionsView) {
-            try { await zp.collectionsView.selectByID(fill.collection); } catch (e) {}
+        if (fill.collection) {
+            if (zp.collectionsView) {
+                try { await zp.collectionsView.selectByID(fill.collection); } catch (e) {}
+            }
+            else {
+                // Its library tab not shown yet, so no view to select in: Zotero makes the
+                // view from the tab's `data.state` when it first shows, and saves that state
+                // until then (tabs.js load / _getLibraryTabCollectionsState). The first
+                // window came back on My Library with a document in front (dev.8 rerun,
+                // 2026-11-07, "libraryView": false).
+                try {
+                    const lib = Z._tabs.find((t: any) => wvIsLibraryTabID(t.id));
+                    if (lib) {
+                        lib.data = lib.data || {};
+                        lib.data.state = Object.assign({}, lib.data.state, { collections: [fill.collection], focusedCollection: fill.collection });
+                    }
+                } catch (e) {}
+            }
         }
         try { p._applyTabGroups(w); } catch (e) {}
         return added;
@@ -250,6 +266,13 @@ class _WindowStateMixin {
         // In saved order, the focused one last and so on top, as Zotero does.
         const opened: any[] = plan.windows.map((sessionState: any) => Zotero.openMainWindow({ sessionState }));
         await this._wvWindowsOpened(opened);
+        // A reader window's pinned tabs, pinned in the window it became (lib/windows.ts).
+        if (plan.pins && plan.pins.length) {
+            for (const id of plan.pins) {
+                try { const it = Zotero.Items.get(id); if (it) p._pinnedTabsAdd(it.libraryID, it.key); } catch (e) {}
+            }
+            for (const w of wvMainWins()) { try { p._applyPinnedTabs(w); } catch (e) {} }
+        }
         if (opts && opts.focus && plan.focusFirst && opened.length) { try { first.focus(); } catch (e) {} }
         try { p._wvTrace("transfer: " + added + " tab(s) in the first window, " + opened.length + " window(s) opened"); } catch (e) {}
         return { added, opened };

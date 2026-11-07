@@ -112,7 +112,7 @@ export function wvTransferItemIDs(doc: any): number[] {
  *  what `_wvReaddDroppedTabs` places by. `opts.newId` names a window's state.
  *  Pure, so the specs run it on every Zotero. */
 export function wvPlanWindowTransfer(doc: any, open: Map<number, number>, kindOf: (itemID: number) => string | null,
-    opts: { columnsId?: string; newId: () => string; spare?: number }): { first: any; fills: any[]; windows: any[]; focusFirst: boolean } {
+    opts: { columnsId?: string; newId: () => string; spare?: number }): { first: any; fills: any[]; windows: any[]; focusFirst: boolean; pins: number[] } {
     const d: any = doc || {};
     const entries: any[] = (Array.isArray(d.windows) ? d.windows : []).filter(Boolean);
     const left = new Map(open);
@@ -156,6 +156,9 @@ export function wvPlanWindowTransfer(doc: any, open: Map<number, number>, kindOf
         selectID: (anchorSel && anchorSel.data && anchorSel.data.itemID) ?? null,
         geom: (anchor && anchor.geom) || null,
         state: own({ hiddenColl: d.anchorHidden, title: d.anchorTitle, tagsAuto: d.anchorTagsAuto }),
+        // The first window's collection too: only the others carried theirs, and the
+        // first came back on My Library (transition test 2026-11-07, "C3" saved).
+        collection: (anchor && anchor.wvMainState && anchor.wvMainState.collection) || null,
     };
 
     const mainTabs = (e: any) => {
@@ -176,27 +179,39 @@ export function wvPlanWindowTransfer(doc: any, open: Map<number, number>, kindOf
     };
     // Reader-window entries name items only. "" is a title Zotero fills in itself
     // (Zotero_Tabs.add).
+    // A reader window's own pins: on a Zotero with its own windows it is a window like
+    // any other, and Weavero's pins (one list, item-keyed) work there; the transfer adds
+    // these to it. Its sidebar width has no twin: Zotero keeps one reader sidebar width
+    // for every window (tabs.js sidebarState).
+    const pins: number[] = [];
+    const pin = (id: any, on: any) => { if (on && id != null && !pins.includes(id)) pins.push(id); };
     const docTab = (id: number, grp: any, selected: boolean) => {
         const data: any = { itemID: id };
         if (grp) data.wvGroupId = grp;
         return flagged({ type: kindOf(id), title: "", data }, selected);
     };
     const readerTabs = (e: any) => {
-        const listed = [{ itemID: e.nativeItemID, grp: e.nativeGrp }, ...(e.extras || [])];
+        const listed = [{ itemID: e.nativeItemID, grp: e.nativeGrp, pinned: e.nativePinned }, ...(e.extras || [])];
         const active = listed[e.activeIndex || 0];
         const rest = listed.slice();
         const tabs: any[] = [];
         for (const id of (Array.isArray(e.order) && e.order.length ? e.order : listed.map((x: any) => x.itemID))) {
             const i = rest.findIndex((x: any) => x.itemID === id);
             const src = i >= 0 ? rest.splice(i, 1)[0] : { itemID: id, grp: null };
-            if (toOpen(id)) tabs.push(docTab(id, src.grp, src === active));
+            if (toOpen(id)) {
+                tabs.push(docTab(id, src.grp, src === active));
+                pin(id, src.pinned);
+            }
         }
         return tabs;
     };
     const orphanTabs = (e: any) => {
         const tabs: any[] = [];
         (e.tabs || []).forEach((t: any, i: number) => {
-            if (t && t.itemID != null && toOpen(t.itemID)) tabs.push(docTab(t.itemID, t.grp, i === (e.activeIndex || 0)));
+            if (t && t.itemID != null && toOpen(t.itemID)) {
+                tabs.push(docTab(t.itemID, t.grp, i === (e.activeIndex || 0)));
+                pin(t.itemID, t.pinned);
+            }
         });
         return tabs;
     };
@@ -224,7 +239,7 @@ export function wvPlanWindowTransfer(doc: any, open: Map<number, number>, kindOf
         windows.push({ focused: isFocused(e), state: { type: "pane", geometry: wvGeomToPane(e.geom), tabs, settings: settings(ms) } });
     }
     windows.sort((a: any, b: any) => (a.focused ? 1 : 0) - (b.focused ? 1 : 0));
-    return { first, fills, windows: windows.map((w: any) => w.state), focusFirst: !f || f.kind === "anchor" };
+    return { first, fills, windows: windows.map((w: any) => w.state), focusFirst: !f || f.kind === "anchor", pins };
 }
 
 /** A tab id is a library tab's. "zotero-pane" is only the FIRST library tab's
@@ -249,7 +264,69 @@ export function wvViewEl(doc: any, id: string): any {
         if (view && typeof view.getElement === "function") return view.getElement(id);
     }
     catch (e) {}
-    return doc.getElementById(id);
+    try { return doc.getElementById(id); }
+    catch (e) { return null; }
+}
+
+/** The items tree element of the library view on screen. ItemTree's own `id`:
+ *  "item-tree-main-default" on 11.0-beta.3 and older, "item-tree-main" plus the
+ *  tab's suffix on a Zotero with its own windows (itemTree.jsx `get id`), where a
+ *  plain lookup found the first library tab's tree, or nothing. */
+export function wvItemsTreeEl(doc: any): any {
+    try {
+        const iv = doc.defaultView && doc.defaultView.ZoteroPane && doc.defaultView.ZoteroPane.itemsView;
+        const el = iv && iv.id && doc.getElementById(iv.id);
+        if (el) return el;
+    }
+    catch (e) {}
+    return doc.getElementById("item-tree-main") || doc.getElementById("item-tree-main-default");
+}
+
+/** Every library view of a main window: one per library tab on a Zotero with its
+ *  own windows (ZoteroPane.libraryViews), none on an older one. */
+export function wvLibraryViews(win: any): any[] {
+    try {
+        const v = win && win.ZoteroPane && win.ZoteroPane.libraryViews;
+        if (Array.isArray(v)) return v;
+    }
+    catch (e) {}
+    return [];
+}
+
+/** Every items tree element of a main window: each library tab's on a Zotero with
+ *  its own windows (a background tab's tree re-renders too), else the one. */
+export function wvItemsTreeEls(doc: any): any[] {
+    const out: any[] = [];
+    for (const v of wvLibraryViews(doc && doc.defaultView)) {
+        try {
+            const id = v.itemsView && v.itemsView.id;
+            const el = id && doc.getElementById(id);
+            if (el && !out.includes(el)) out.push(el);
+        }
+        catch (e) {}
+    }
+    if (!out.length) {
+        const el = wvItemsTreeEl(doc);
+        if (el) out.push(el);
+    }
+    return out;
+}
+
+/** An element of EVERY library view by its base id (wvViewEl is the view on screen). */
+export function wvViewEls(doc: any, id: string): any[] {
+    const out: any[] = [];
+    for (const v of wvLibraryViews(doc && doc.defaultView)) {
+        try {
+            const el = typeof v.getElement === "function" ? v.getElement(id) : null;
+            if (el && !out.includes(el)) out.push(el);
+        }
+        catch (e) {}
+    }
+    if (!out.length) {
+        const el = wvViewEl(doc, id);
+        if (el) out.push(el);
+    }
+    return out;
 }
 
 /** Where a window's document tabs start: past the library tab, which an older

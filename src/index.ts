@@ -19,12 +19,12 @@ import {
 import { makeInvisibleRe, TRAILING_RE as TRAILING_RE_LIB } from "./lib/text";
 import { wvLivePlugin } from "./lib/live";
 import { wvTimeout, wvClearTimeout, wvSleep } from "./lib/timers";
-import { wvInjectStyle, wvRemoveStyle, wvFilterTileRules } from "./lib/style";
+import { wvInjectStyle, wvRemoveStyle, wvFilterTileRules, wvViewIdsCss } from "./lib/style";
 import { wvWrap, wvUnwrap, wvWrapLayers } from "./lib/wrap";
 import { wvWhenWindowLoaded, wvBoolAttrOn, wvReaderMenuEvent, wvWithin, wvIsTextEntry, wvHtmlEl, WV_XHTML_NS } from "./lib/dom";
 import { wvListen, wvUnlisten, wvUnlistenAll, wvListenKeys, wvUnlistenAllOn, wvSweepTagOnChrome } from "./lib/listen";
 import { wvStoreDir, wvStorePath, wvStoreChain, wvStoreWrite, wvStoreRead, wvStoreRemove } from "./lib/store";
-import { wvViewEl, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvOpenLibraryView, wvPlanWindowTransfer, wvSelectLibraryTab, wvGeomToPane, wvTransferItemIDs, wvWinType, wvWin32Style } from "./lib/windows";
+import { wvViewEl, wvViewEls, wvItemsTreeEl, wvItemsTreeEls, wvLibraryViews, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvOpenLibraryView, wvPlanWindowTransfer, wvSelectLibraryTab, wvGeomToPane, wvTransferItemIDs, wvWinType, wvWin32Style } from "./lib/windows";
 import { wvAccel, wvAccelAny } from "./lib/keys";
 import { wvCloneFor } from "./lib/xray";
 import { wvMenuItem, wvMenuSeparator } from "./lib/menu";
@@ -35,7 +35,7 @@ import { wvAltReveal } from "./lib/menubar";
 
 /** The shared helpers, published as `Zotero.Weavero.lib` so the suite can
  *  exercise them directly (they are bundled, not otherwise reachable). */
-const WV_LIB = { wvLivePlugin, wvViewEl, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvOpenLibraryView, wvSelectLibraryTab, wvPlanWindowTransfer, wvGeomToPane, wvTransferItemIDs, wvWinType, wvIsTextEntry, wvAccel, wvAccelAny, wvCloneFor, wvMenuItem, wvMenuSeparator, wvSvgEl, WV_SVG_NS,
+const WV_LIB = { wvLivePlugin, wvViewEl, wvViewEls, wvItemsTreeEl, wvItemsTreeEls, wvLibraryViews, wvViewIdsCss, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvOpenLibraryView, wvSelectLibraryTab, wvPlanWindowTransfer, wvGeomToPane, wvTransferItemIDs, wvWinType, wvIsTextEntry, wvAccel, wvAccelAny, wvCloneFor, wvMenuItem, wvMenuSeparator, wvSvgEl, WV_SVG_NS,
     WV_LINK_CHAIN_PATHS, WV_BACKLINK_ARROW_PATH, WV_OUTLINK_ARROW_PATH, WV_LOOPLINK_ARROW_PATH, WV_BROKENLINK_MARK_PATH, WV_ZLINK_KIND_PATH, WV_CITE_KIND_PATH, WV_REF_MARK_TIGHT_VIEWBOX, WV_EXTLINK_PATHS, WV_LINK_MENU_ICON, wvLinkGlyphEl, wvLinkGlyphMarkup, wvLinkGlyphUri, wvHtmlEl, WV_XHTML_NS, WV_LINK_PALETTE, wvLinkVars, wvLinkColor, wvLinkClassRules, wvOutsideClick, wvReachableDocs, wvDismissOff, wvAltReveal, wvTimeout, wvClearTimeout, wvSleep, wvInjectStyle, wvRemoveStyle, wvFilterTileRules, wvWrap, wvUnwrap, wvWrapLayers,
     wvWhenWindowLoaded, wvBoolAttrOn, wvReaderMenuEvent, wvWithin,
     wvListen, wvUnlisten, wvUnlistenAll, wvListenKeys,
@@ -159,7 +159,8 @@ class WeaveroPlugin {
         if (existing) existing.remove();
         const s = doc.createElement("style");
         s.id = STYLE_ID;
-        s.textContent = PLUGIN_CSS;
+        // Every library tab's elements, not only the first one's (lib/style.ts).
+        s.textContent = wvViewIdsCss(PLUGIN_CSS);
         (doc.head || doc.documentElement).appendChild(s);
     }
 
@@ -171,7 +172,7 @@ class WeaveroPlugin {
         if (doc.getElementById(STYLE_ID)) return;
         const s = doc.createElement("style");
         s.id = STYLE_ID;
-        s.textContent = PLUGIN_CSS;
+        s.textContent = wvViewIdsCss(PLUGIN_CSS);
         (doc.head || doc.documentElement).appendChild(s);
     }
 

@@ -235,7 +235,7 @@ const WIRING_EXPECTED = {
     mainAtStart: {
         window: [
             "_wvCloseBtnPending:boolean", "_wvCloseBtnRO:object", "_wvCollAids:object",
-            "_wvCollPaneObs:object", "_wvCompactTitleBar:object", "_wvFilterBar:object",
+            "_wvCompactTitleBar:object", "_wvFilterBar:object",
             "_wvFilterState:object", "_wvFilterTbBtn:object", "_wvFilterTreeObserver:object", "_wvHid:object",
             "_wvHidMO:object", "_wvItemDropOff:function", "_wvLastLibraryID:number",
             "_wvLibrariesBoxMo:object", "_wvMainNewTabKeyH:function", "_wvOvActivateHandler:function",
@@ -316,6 +316,11 @@ const WIRING_EXPECTED = {
         "#zotero-context-pane": [
             "_wvCtxNoteWatchBy", "_wvCtxNoteWatchOff",
         ],
+        // On the pane since 2026-11-07, not the window: each library tab has its own
+        // collections pane on a Zotero with its own windows (zotero#6035).
+        "#zotero-collections-pane": [
+            "_wvCollPaneObs",
+        ],
         "#zotero-tb-search": [
             "listen qsScope:command", "listen qsScope:input",
         ],
@@ -344,7 +349,7 @@ const WIRING_EXPECTED = {
     loaded: {
         window: [
             "_wvCloseBtnPending:boolean", "_wvCloseBtnRO:object", "_wvCollAids:object",
-            "_wvCollPaneObs:object", "_wvCompactTitleBar:object", "_wvDevInitDone:boolean",
+            "_wvCompactTitleBar:object", "_wvDevInitDone:boolean",
             "_wvFilterBar:object", "_wvFilterState:object", "_wvFilterTbBtn:object",
             "_wvFilterTreeObserver:object", "_wvHid:object", "_wvHidApplyTries:number", "_wvHidMO:object",
             "_wvItemDropOff:function", "_wvLibrariesBoxMo:object", "_wvMainNewTabKeyH:function",
@@ -424,6 +429,11 @@ const WIRING_EXPECTED = {
         ],
         "#zotero-context-pane": [
             "_wvCtxNoteWatchBy", "_wvCtxNoteWatchOff",
+        ],
+        // On the pane since 2026-11-07, not the window: each library tab has its own
+        // collections pane on a Zotero with its own windows (zotero#6035).
+        "#zotero-collections-pane": [
+            "_wvCollPaneObs",
         ],
         "#zotero-tb-search": [
             "listen qsScope:command", "listen qsScope:input",

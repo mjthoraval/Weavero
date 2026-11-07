@@ -237,6 +237,13 @@
                             { reason: "no annotated " + fam.type + " in this library" });
                         continue;
                     }
+                    // A tab for it may already be open but not loaded (no reader in
+                    // _readers yet): open() then uses THAT tab, and the cleanup below
+                    // closed the user's own tab (2026-11-07: two tabs of the dev
+                    // workspace lost, put back from a backup). Only a tab this run
+                    // created is closed.
+                    const hadTab = Zotero.getMainWindows().some(w => (w.Zotero_Tabs && w.Zotero_Tabs._tabs || [])
+                        .some(t => t.data && t.data.itemID === attID));
                     await Zotero.Reader.open(attID, null, { allowDuplicate: false });
                     const t0 = Date.now();
                     while (Date.now() - t0 < 30000) {
@@ -249,7 +256,7 @@
                         check("[" + fam.type + "] opened reader becomes ready", false, { attID });
                         continue;
                     }
-                    opened.push(reader);
+                    if (!hadTab) opened.push(reader);
                 }
                 await runFor(fam, reader);
             }

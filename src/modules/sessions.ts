@@ -327,8 +327,13 @@ class _TabSessionsMixin {
             if (!itemID) return null;
             const item = Zotero.Items.get(itemID);
             if (!item || !item.key) return null;
+            // Pinned too: main-window pins live in the global pin list, and a session
+            // recorded none, so a switch away and back lost them (transition test
+            // 2026-11-07, on 11.0-beta.3 and on zotero#6035 alike).
+            let pinned = false;
+            try { pinned = !!(this as any)._pinnedTabsHas(item.libraryID, item.key); } catch (e) {}
             return this._wvTabSessionMakeRecord(base, t.title, item,
-                selID != null && t.id === selID, false, this._wvTabSessionTabGroupId(t));
+                selID != null && t.id === selID, pinned, this._wvTabSessionTabGroupId(t));
         } catch (e) { return null; }
     }
 
@@ -422,9 +427,12 @@ class _TabSessionsMixin {
         try {
             if (!wvNativeWindows()) return out;
             const Z: any = w.Zotero_Tabs;
-            const libs = Z.getState().filter((t: any) => String(t.type).startsWith("library"));
+            const all = Z.getState();
+            const libs = all.filter((t: any) => String(t.type).startsWith("library"));
             if (!libs.length) out.noLibrary = true;
-            else if (libs.length > 1) out.libraryTabs = libs.map((t: any) => ({ type: "library", title: t.title || "", data: t.data, selected: t.selected }));
+            // With their places: a second library tab came back next to the first
+            // (transition test 2026-11-07).
+            else if (libs.length > 1) out.libraryTabs = libs.map((t: any) => ({ type: "library", title: t.title || "", data: t.data, selected: t.selected, index: all.indexOf(t) }));
         } catch (e) {}
         return out;
     }
@@ -501,6 +509,9 @@ class _TabSessionsMixin {
                 lt = (Z && Z._tabs[0] && Z._tabs[0].title) || "";
             } catch (e) { lt = ""; }
         }
+        // A record lists the window's documents; when none of them was selected, the
+        // library tab was. Without it a window Zotero restored had no tab selected at
+        // all and opened blank (transition test 2026-11-07, zotero#6035).
         const out: any[] = [{ type: "library", title: lt || "" }];
         for (const rec of (recs || [])) {
             try {
@@ -518,6 +529,7 @@ class _TabSessionsMixin {
                 });
             } catch (e) {}
         }
+        if (!out.some((t: any) => t.selected)) out[0].selected = true;
         return out;
     }
 
@@ -744,7 +756,10 @@ class _TabSessionsMixin {
     /** A session's window as an entry of the plan (lib/windows.ts). */
     _wvTabSessionStoredWindow(rec: any, first: boolean) {
         const tabs = this._wvTabSessionToGetStateTabs(rec.tabs, rec.libraryTitle || "");
-        if (rec.kind === "reader" || rec.noLibrary) tabs.shift();
+        if (rec.kind === "reader" || rec.noLibrary) {
+            tabs.shift();
+            if (tabs.length && !tabs.some((t: any) => t.selected)) tabs[0].selected = true;
+        }
         else if (Array.isArray(rec.libraryTabs) && rec.libraryTabs.length) tabs.splice(0, 1, ...rec.libraryTabs);
         const wvMainState = { collection: rec.collection, columnPrefs: rec.columnPrefs, hiddenColl: rec.hiddenColl, title: rec.title || rec.name, tagsAuto: rec.tagsAuto, pinnedPane: rec.pinnedPane, paneOpen: rec.paneOpen };
         return { kind: first ? "main-anchor" : "main-dev", tabs, geom: rec.geom || null, wvMainState };
@@ -775,7 +790,11 @@ class _TabSessionsMixin {
         // Its other library tabs: the fill places documents, a library tab is there.
         try {
             const libs = (first && first.libraryTabs) || [];
-            for (const t of libs.slice(1)) keep.Zotero_Tabs.add({ type: "library-unloaded", title: t.title || "", data: t.data || {}, select: false });
+            for (const t of libs.slice(1)) {
+                const at: any = { type: "library-unloaded", title: t.title || "", data: t.data || {}, select: !!t.selected };
+                if (Number.isInteger(t.index)) at.index = Math.min(t.index, keep.Zotero_Tabs._tabs.length);
+                keep.Zotero_Tabs.add(at);
+            }
         } catch (e) { Zotero.debug("[Weavero] reconstruct library tabs err: " + e); }
         if (swapGroups) {
             try { P._wvTabGroupApplyEverywhere(); } catch (e) {}
@@ -888,6 +907,50 @@ class _TabSessionsMixin {
      *  in BEFORE the tabs are rebuilt (which carry their `wvGroupId` stamps), so
      *  groups are session-specific instead of carrying across. */
     async _wvTabSessionReconstruct(windows: any[], tabGroups?: any[]) {
+        this._wvTabSessionPinsTake(windows);
+        try { await this._wvTabSessionReconstructTabs(windows, tabGroups); }
+        finally { this._wvTabSessionPinsSettle(); }
+    }
+
+    /** The session's main-window pins become the pin list, before anything closes:
+     *  the outgoing session's are saved with it already (the switch flushes it
+     *  first). While its tabs come back, a pin whose tab is not open yet is kept
+     *  (tabs.ts _applyPinnedTabs reads `_wvSessionPinsUntil`). */
+    _wvTabSessionPinsTake(windows: any[]) {
+        const pins: any[] = [], seen = new Set<string>();
+        // On a Zotero with its own windows a session's reader window reopens as a window
+        // like any other, so its pins join the list too; elsewhere its strip keeps them.
+        const native = wvNativeWindows();
+        for (const w of windows || []) {
+            if (!w || !(w.kind === "main" || (native && w.kind === "reader"))) continue;
+            for (const t of w.tabs || []) {
+                if (!t || !t.pinned || t.itemKey == null) continue;
+                const k = t.libraryID + ":" + t.itemKey;
+                if (seen.has(k)) continue;
+                seen.add(k);
+                pins.push({ libraryID: t.libraryID, itemKey: t.itemKey });
+            }
+        }
+        (this as any)._wvSessionPinsUntil = Date.now() + 15000;
+        try { (this as any)._pinnedTabsSet(pins); } catch (e) {}
+    }
+
+    /** Pins drawn now, and once more when the protection ends (a pin whose tab never
+     *  came is dropped then, as any closed pin). */
+    _wvTabSessionPinsSettle() {
+        const apply = () => {
+            for (const w of wvMainWins()) { try { (this as any)._applyPinnedTabs(w); } catch (e) {} }
+        };
+        apply();
+        try {
+            wvTimeout(() => {
+                (this as any)._wvSessionPinsUntil = 0;
+                if (!(this as any)._wvDestroyed) apply();
+            }, 15000);
+        } catch (e) { (this as any)._wvSessionPinsUntil = 0; }
+    }
+
+    async _wvTabSessionReconstructTabs(windows: any[], tabGroups?: any[]) {
         if (wvNativeWindows()) return this._wvTabSessionReconstructNative(windows, tabGroups);
         const mains = (windows || []).filter((w: any) => w.kind === "main");
         const readers = (windows || []).filter((w: any) => w.kind === "reader");

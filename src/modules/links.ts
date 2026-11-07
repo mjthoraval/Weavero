@@ -21,7 +21,7 @@
 
 import { wvHtmlEl, wvPopupHost, winOf } from "../lib/dom";
 import { wvMenuItem, wvMenuSeparator } from "../lib/menu";
-import { wvMainWins } from "../lib/windows";
+import { wvItemsTreeEls, wvMainWins } from "../lib/windows";
 import { wvLinkGlyphUri } from "../lib/link-glyph";
 import { WvSectionDesc, WvLkRow, WvBlEnd, WV_BL_CARD_FOOT, wvBlBodyRegister, wvBlBodyForget, wvBlCardHide, wvBlCardHost, wvBlHtmlToText, wvBlAttOf, wvBlAnnText, wvBlTargetHl } from "./backlinks";
 
@@ -298,13 +298,14 @@ class _LinksMixin {
     _wvTreeLkCardWire(doc: any) {
         try {
             if (!this._wvLkCardOn()) return;
-            const tree = doc.getElementById("item-tree-main") || doc.getElementById("item-tree-main-default");
-            if (!tree) return;
-            // No expando to skip a wired span: the keyed listeners are the
-            // record, and a reloaded instance re-wires what an old one left.
-            for (const span of tree.querySelectorAll(".row .wv-url-span.wv-link-zotero") as any) {
-                if (span.hasAttribute("title")) span.removeAttribute("title");
-                (this as any)._wvBlCardHover(span, "lkcard", (lp: any) => lp._wvTreeLkCardShow(span));
+            // Every library tab's tree (a Zotero with its own windows has one per tab).
+            for (const tree of wvItemsTreeEls(doc)) {
+                // No expando to skip a wired span: the keyed listeners are the
+                // record, and a reloaded instance re-wires what an old one left.
+                for (const span of tree.querySelectorAll(".row .wv-url-span.wv-link-zotero") as any) {
+                    if (span.hasAttribute("title")) span.removeAttribute("title");
+                    (this as any)._wvBlCardHover(span, "lkcard", (lp: any) => lp._wvTreeLkCardShow(span));
+                }
             }
         } catch (e) { Zotero.debug("[Weavero] tree link card wire err: " + e); }
     }

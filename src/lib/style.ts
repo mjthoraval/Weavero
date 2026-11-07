@@ -8,6 +8,28 @@
 
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 
+/** Library-view element ids Weavero's rules name. On a Zotero with its own windows
+ *  every library tab but a window's first suffixes them with "-" + its tab id,
+ *  "tab-" and random characters (libraryView.js init, tabs.js; zotero#6035), and
+ *  ItemTree's own id the same way (itemTree.jsx `get id`). */
+const WV_VIEW_IDS = [
+    "zotero-items-pane-container", "zotero-toolbar-collection-tree", "zotero-collections-splitter",
+    "zotero-collections-toolbar", "zotero-collections-search", "zotero-tag-selector-container",
+    "zotero-view-item-sidenav", "zotero-collections-tree", "zotero-collections-pane", "zotero-items-splitter",
+    "zotero-items-toolbar", "zotero-layout-switcher", "zotero-tag-selector", "item-tree-main-default",
+    "zotero-items-tree", "zotero-items-pane", "zotero-item-pane", "zotero-view-item", "zotero-tb-search",
+    "item-tree-main",
+];
+const WV_VIEW_ID_RE = new RegExp("#(" + WV_VIEW_IDS.join("|") + ")(?![\\w-])", "g");
+
+/** A stylesheet's library-view ids, made to match every library tab: `#x` becomes
+ *  `:is(#x, [id^="x-tab-"])`, the same specificity. Until 2026-11-07 a rule
+ *  reached the window's first library tab alone: in a second one the multi-line
+ *  titles did not wrap, so their rows were measured back to one line. */
+export function wvViewIdsCss(css: string): string {
+    return css.replace(WV_VIEW_ID_RE, (_m, id) => ':is(#' + id + ',[id^="' + id + '-tab-"])');
+}
+
 /** Inject (or refresh) the stylesheet `id` in `doc`. Idempotent and cheap:
  *  the text is written only when it changed, so an "ensure" pass that runs
  *  on every apply costs a string compare. `parent` overrides the default
@@ -17,6 +39,7 @@ const HTML_NS = "http://www.w3.org/1999/xhtml";
  *  instead). Returns the element, or null without a document. */
 export function wvInjectStyle(doc: any, id: string, css: string, parent?: any): any {
     if (!doc) return null;
+    css = wvViewIdsCss(css);
     let st: any = doc.getElementById(id);
     if (st && st.localName !== "style") { try { st.remove(); } catch (e) {} st = null; }
     if (!st) {

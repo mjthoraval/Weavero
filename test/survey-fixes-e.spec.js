@@ -33,12 +33,13 @@ describe("Weavero — survey fixes, round E (per-window delegates)", () => {
     };
 
     it("the items-tree delegate is per window: another window's setup/teardown leaves this one's alone", () => {
+        // `mos`: one observer per library tab's tree (zotero#6035; one tree elsewhere).
         const mine = win._wvTreeDelegate;
-        assert.isOk(mine && mine.mo, "the main window has its own delegate (wired at window load)");
+        assert.isOk(mine && mine.mos && mine.mos.length, "the main window has its own delegate (wired at window load)");
         const other = fakeWindow('<div id="item-tree-main"></div>');
         wv._setupTreeClickDelegate(other);
         try {
-            assert.isOk(other._wvTreeDelegate && other._wvTreeDelegate.mo, "the other window got its own delegate");
+            assert.isOk(other._wvTreeDelegate && other._wvTreeDelegate.mos && other._wvTreeDelegate.mos.length, "the other window got its own delegate");
             assert.strictEqual(win._wvTreeDelegate, mine, "the main window's was not replaced");
             assert.notStrictEqual(other._wvTreeDelegate, mine);
         }

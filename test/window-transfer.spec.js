@@ -135,6 +135,24 @@ describe("Weavero — the saved windows move to Zotero's own (zotero#6035)", () 
             assert.isTrue(plan({ windows, focused: { kind: "anchor" } }).focusFirst);
         });
 
+        // MJT 2026-11-07, "Will you implement that?": a reader window's pinned tabs stay
+        // pinned in the window it becomes.
+        it("a reader window's pinned tabs are listed to pin", () => {
+            const p = plan({ windows: [
+                { kind: "reader", nativeItemID: 1, nativePinned: true, extras: [{ itemID: 2, pinned: false }, { itemID: 3, pinned: true }], activeIndex: 0 },
+                { kind: "reader-orphan", tabs: [{ itemID: 4, pinned: true }] },
+            ] });
+            assert.sameMembers(p.pins, [1, 3, 4]);
+            assert.lengthOf(plan({ windows: [{ kind: "reader", nativeItemID: 1, extras: [] }] }).pins, 0, "none pinned, none listed");
+        });
+
+        // Transition test 2026-11-07: the first window came back on My Library, its "C3" lost.
+        it("the first window keeps its collection", () => {
+            const p = plan({ windows: [{ kind: "main-anchor", tabs: [library()], wvMainState: { collection: "C3" } }] });
+            assert.strictEqual(p.first.collection, "C3");
+            assert.isNull(plan({ windows: [{ kind: "main-anchor", tabs: [library()] }] }).first.collection, "none saved, none chosen");
+        });
+
         it("the first window's own state comes from the store's own fields", () => {
             const p = plan({ windows: [], anchorTitle: "First", anchorHidden: { groups: [1] }, anchorTagsAuto: true });
             assert.deepEqual(p.first.state, { hiddenColl: { groups: [1] }, title: "First", tagsAuto: true });

@@ -28,6 +28,7 @@ import { wvLivePlugin } from "../lib/live";
 import { WV_BL_ICON_CONTEXT, wvBlAttFile, wvBlDrawSegs } from "./backlinks";
 import { WV_LK_ICON_CONTEXT } from "./links";
 import { wvExternalLinkGlyphEl, wvExternalLinkGlyphUri } from "../lib/link-glyph";
+import { wvViewEl } from "../lib/windows";
 
 /** The External Links column's and popup's icon: Has External Link's box
  *  with the arrow out, painted by its host's context fill. */
@@ -782,10 +783,11 @@ class _CountPopupsMixin {
 
     /** Per main window: the moves over the items tree drive the tip; a
      *  press, a scroll, leaving the list, a key or leaving the window end it
-     *  (Gecko's tooltip goes on the same). */
+     *  (Gecko's tooltip goes on the same). The tree of the library tab on
+     *  screen: each further tab's comes through the table's perView run. */
     _wvWireCountTip(win: any): void {
         const doc = win && win.document;
-        const tree = doc && doc.getElementById("zotero-items-tree");
+        const tree = doc && wvViewEl(doc, "zotero-items-tree");
         if (!tree) return;
         const on = wvListener((this as any)._wvWireTag());
         on(tree, "countTip:pointermove", "pointermove", (e: any) => { const lp = tipLive(); if (lp) lp._wvCountTipMove(win, e); }, { passive: true });

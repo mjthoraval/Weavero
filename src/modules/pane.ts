@@ -42,7 +42,7 @@ import { wvMenuItem } from "../lib/menu";
 import { wvListen, wvUnlisten } from "../lib/listen";
 import { wvLivePlugin } from "../lib/live";
 import { wvWrap, wvUnwrap } from "../lib/wrap";
-import { wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvWinType } from "../lib/windows";
+import { wvIsLibraryTabID, wvItemsTreeEl, wvItemsTreeEls, wvMainWins, wvNativeWindows, wvViewEl, wvViewEls, wvWinType } from "../lib/windows";
 import { wvAccel, wvAccelAny } from "../lib/keys";
 import { wvLinkVars } from "../lib/links";
 import { wvAltReveal } from "../lib/menubar";
@@ -5712,22 +5712,24 @@ class _PaneMixin {
         } catch (e) {}
     }
 
+    /** The button, the pane and its observer belong to the library tab on screen:
+     *  on a Zotero with its own windows each tab has its own collections pane and
+     *  toolbars, ids suffixed (zotero#6035), and until 2026-11-07 only the window's
+     *  first tab had a button. The table's perView entry runs this per tab. */
     _wvApplyCollectionsPaneToggle(win: any) {
         try {
             const doc = win && win.document;
             if (!doc) return;
-            let btn: any = doc.getElementById("wv-tb-toggle-collections-pane");
-            const pane = doc.getElementById("zotero-collections-pane");
-            const splitter = doc.getElementById("zotero-collections-splitter");
+            const view: any = (win.ZoteroPane && win.ZoteroPane.libraryView) || null;
+            let btn: any = (view || doc).querySelector("#wv-tb-toggle-collections-pane");
+            const pane = wvViewEl(doc, "zotero-collections-pane");
             if (!(this as any)._getCollectionsPaneToggle() || !pane) {
-                if (btn) btn.remove();
-                // Button off: Zotero's full-width band is the way back again.
-                try { if (splitter) splitter.removeAttribute("wv-thin"); } catch (_) {}
-                try { if (win._wvCollPaneObs) { win._wvCollPaneObs.disconnect(); delete win._wvCollPaneObs; } } catch (_) {}
+                this._wvCollPaneToggleOff(win);
                 return;
             }
-            const collBar = doc.getElementById("zotero-collections-toolbar");
-            const itemsBar = doc.getElementById("zotero-items-toolbar");
+            const splitter = wvViewEl(doc, "zotero-collections-splitter");
+            const collBar = wvViewEl(doc, "zotero-collections-toolbar");
+            const itemsBar = wvViewEl(doc, "zotero-items-toolbar");
             if (!collBar || !itemsBar) return;
             if (!btn) {
                 btn = doc.createXULElement("toolbarbutton");
@@ -5762,7 +5764,7 @@ class _PaneMixin {
                 // (its container's padding, the pane sits at x = 0).
                 let target = 8;
                 try {
-                    const tb = doc.getElementById("zotero-toolbar-collection-tree");
+                    const tb = wvViewEl(doc, "zotero-toolbar-collection-tree");
                     const v = tb && parseFloat(win.getComputedStyle(tb).paddingInlineStart);
                     if (v != null && !isNaN(v)) target = Math.round(v);
                 } catch (_) {}
@@ -5776,7 +5778,7 @@ class _PaneMixin {
                 fix();
                 try { win.requestAnimationFrame(fix); } catch (_) {}
             }
-            if (!win._wvCollPaneObs) {
+            if (!pane._wvCollPaneObs) {
                 const obs = new win.MutationObserver(() => {
                     try {
                         const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
@@ -5784,9 +5786,24 @@ class _PaneMixin {
                     } catch (e) {}
                 });
                 obs.observe(pane, { attributes: true, attributeFilter: ["collapsed"] });
-                win._wvCollPaneObs = obs;
+                pane._wvCollPaneObs = obs;
             }
         } catch (e) { Zotero.debug("[Weavero] _wvApplyCollectionsPaneToggle err: " + e); }
+    }
+
+    /** Every library tab of `win` back to Zotero's own: no button, the full drag
+     *  band, no observer (the window-level one of builds before 2026-11-07 too). */
+    _wvCollPaneToggleOff(win: any) {
+        const doc = win && win.document;
+        if (!doc) return;
+        try { for (const b of [...doc.querySelectorAll("#wv-tb-toggle-collections-pane")]) b.remove(); } catch (e) {}
+        try { for (const s of wvViewEls(doc, "zotero-collections-splitter")) s.removeAttribute("wv-thin"); } catch (e) {}
+        try {
+            for (const p of wvViewEls(doc, "zotero-collections-pane")) {
+                if (p._wvCollPaneObs) { p._wvCollPaneObs.disconnect(); delete p._wvCollPaneObs; }
+            }
+        } catch (e) {}
+        try { if (win._wvCollPaneObs) { win._wvCollPaneObs.disconnect(); delete win._wvCollPaneObs; } } catch (e) {}
     }
 
     /** Issue #58: a handle on the Tag Selector's top edge -- a pill just
@@ -6214,8 +6231,8 @@ class _PaneMixin {
     _wvCollectionsPaneToggle(win: any) {
         try {
             const doc = win && win.document;
-            const pane = doc && doc.getElementById("zotero-collections-pane");
-            const sp = doc && doc.getElementById("zotero-collections-splitter");
+            const pane = doc && wvViewEl(doc, "zotero-collections-pane");
+            const sp = doc && wvViewEl(doc, "zotero-collections-splitter");
             if (!pane || !sp) return;
             if (pane.hasAttribute("collapsed")) {
                 sp.setAttribute("state", "open");
@@ -6233,11 +6250,7 @@ class _PaneMixin {
     _wvTeardownCollectionsPaneToggle() {
         try {
             const wins: any[] = wvMainWins();
-            for (const w of wins) {
-                try { const b = w.document && w.document.getElementById("wv-tb-toggle-collections-pane"); if (b) b.remove(); } catch (e) {}
-                try { const s = w.document && w.document.getElementById("zotero-collections-splitter"); if (s) s.removeAttribute("wv-thin"); } catch (e) {}
-                try { if (w._wvCollPaneObs) { w._wvCollPaneObs.disconnect(); delete w._wvCollPaneObs; } } catch (e) {}
-            }
+            for (const w of wins) this._wvCollPaneToggleOff(w);
         } catch (e) {}
     }
 
@@ -6758,16 +6771,29 @@ class _PaneMixin {
         } catch (e) { return false; }
     }
 
+    /** Each library tab's item pane (zotero#6035 gives every tab one, ids suffixed). */
+    _wvLibItemDetails(win: any): any[] {
+        const doc = win && win.document;
+        if (!doc) return [];
+        let out: any[] = [];
+        try { out = wvViewEls(doc, "zotero-item-pane").map((ip: any) => ip.querySelector("item-details")).filter(Boolean); } catch (e) {}
+        if (!out.length) {
+            try { const d = doc.querySelector("#zotero-item-pane item-details"); if (d) out = [d]; } catch (e) {}
+        }
+        return out;
+    }
+
     _wvWirePinDeferFix(win: any) {
-        try {
-            const det = win && win.document && win.document.querySelector("#zotero-item-pane item-details");
-            if (!det || typeof det._savePinnedPane !== "function" || !this._wvPinDeferNeeded(det)) return;   // Zotero's own fix is in
-            wvWrap(det, "_savePinnedPane", "pinDefer", this._wvWireTag(), (orig: any) => function (this: any, ...args: any[]) {
-                // Set aside, not un-pinned by the user: the saved pin stays.
-                if (!this.pinnedPane && this._pendingPinnedPane) return;
-                return orig.apply(this, args);
-            });
-        } catch (e) { Zotero.debug("[Weavero] _wvWirePinDeferFix err: " + e); }
+        for (const det of this._wvLibItemDetails(win)) {
+            try {
+                if (typeof det._savePinnedPane !== "function" || !this._wvPinDeferNeeded(det)) continue;   // Zotero's own fix is in
+                wvWrap(det, "_savePinnedPane", "pinDefer", this._wvWireTag(), (orig: any) => function (this: any, ...args: any[]) {
+                    // Set aside, not un-pinned by the user: the saved pin stays.
+                    if (!this.pinnedPane && this._pendingPinnedPane) return;
+                    return orig.apply(this, args);
+                });
+            } catch (e) { Zotero.debug("[Weavero] _wvWirePinDeferFix err: " + e); }
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -6940,7 +6966,7 @@ class _PaneMixin {
      *  pane's half of the second path installs only while it does. */
     _wvStalePaneNeeded(win: any): boolean {
         try {
-            const ip = win && win.document && win.document.getElementById("zotero-item-pane");
+            const ip = win && win.document && wvViewEl(win.document, "zotero-item-pane");
             return /requestIdleCallback/.test(String((ip && ip.renderItemPane) || ""));
         } catch (e) { return false; }
     }
@@ -6987,16 +7013,16 @@ class _PaneMixin {
      *  the preview again) and for the attachment pane. */
     _wvWireStalePreviewFix(win: any) {
         try { for (const det of (win && win.document && win.document.querySelectorAll("item-details")) || []) this._wvFixStalePreview(det); } catch (e) {}
-        try {
-            const ip = win.document.getElementById("zotero-item-pane");
+        // Each library tab's item pane (zotero#6035): the observer is the pane's.
+        for (const ip of (win && win.document ? wvViewEls(win.document, "zotero-item-pane") : [])) try {
             const det = ip && ip.querySelector("item-details");
             const box = det && det.querySelector("attachments-box");
             const abox = det && det.querySelector("attachment-box");
-            if (!ip || WV_STALE_VIEW_MO.has(win)) return;
+            if (!ip || WV_STALE_VIEW_MO.has(ip)) continue;
             const needSection = !!box && this._wvFixStalePreview(det);
             const needPane = !!abox && this._wvStalePaneNeeded(win);
             if (needPane) this._wvSyncStaleAttachmentPane(abox);
-            if (!needSection && !needPane) return;
+            if (!needSection && !needPane) continue;
             // A microtask after `mode = "item"`: before the next paint.
             const mo = new win.MutationObserver(() => {
                 try {
@@ -7008,7 +7034,7 @@ class _PaneMixin {
                 } catch (e) {}
             });
             mo.observe(ip, { attributes: true, attributeFilter: ["view-type"] });
-            WV_STALE_VIEW_MO.set(win, mo);
+            WV_STALE_VIEW_MO.set(ip, mo);
         } catch (e) { Zotero.debug("[Weavero] stale preview view-switch err: " + e); }
     }
 
@@ -7017,8 +7043,11 @@ class _PaneMixin {
     _wvTeardownStalePreviewFix() {
         for (const w of wvMainWins()) {
             try {
-                const mo = WV_STALE_VIEW_MO.get(w);
-                if (mo) { mo.disconnect(); WV_STALE_VIEW_MO.delete(w); }
+                // Keyed by item pane since 2026-11-07 (one per library tab), by window before.
+                for (const k of [w, ...wvViewEls(w.document, "zotero-item-pane")]) {
+                    const mo = WV_STALE_VIEW_MO.get(k);
+                    if (mo) { mo.disconnect(); WV_STALE_VIEW_MO.delete(k); }
+                }
             } catch (e) {}
             try {
                 for (const box of w.document.querySelectorAll("attachments-box, attachment-box") as any) {
@@ -7039,8 +7068,9 @@ class _PaneMixin {
     _wvTeardownPinDeferFix() {
         try {
             for (const w of wvMainWins()) {
-                const det = w && w.document && w.document.querySelector("#zotero-item-pane item-details");
-                try { if (det) wvUnwrap(det, "_savePinnedPane", "pinDefer"); } catch (e) {}
+                for (const det of this._wvLibItemDetails(w)) {
+                    try { wvUnwrap(det, "_savePinnedPane", "pinDefer"); } catch (e) {}
+                }
             }
         } catch (e) {}
     }
@@ -7450,7 +7480,7 @@ class _PaneMixin {
     // gone) a section bound to them earlier falls back to Zotero's own.
     // ─────────────────────────────────────────────────────────────────────────
     _wvPaneDet(win: any): any {
-        try { return win && win.document && win.document.querySelector("#zotero-item-pane item-details"); } catch (e) { return null; }
+        try { const ip = win && win.document && wvViewEl(win.document, "zotero-item-pane"); return ip && ip.querySelector("item-details"); } catch (e) { return null; }
     }
 
     _wvWireWindowPanePrefs(win: any) {
@@ -9354,8 +9384,8 @@ class _PaneMixin {
                     this._updateSelectionTargetAutoCues(popup);
                 }
             } catch (e) {}
-            const tree = doc.getElementById("item-tree-main")
-                || doc.getElementById("item-tree-main-default");
+            // The tab on screen's tree: its filter is the one resolved here.
+            const tree = wvItemsTreeEl(doc);
             if (!tree) return;
             // Resolved Selection Target — explicit chips, or the smart
             // default inferred from the active filters (e.g. annotation
@@ -9437,11 +9467,9 @@ class _PaneMixin {
      *  pass. */
     _paintAddedByCells(doc) {
         try {
-            const itemsTree = doc.getElementById("item-tree-main")
-                || doc.getElementById("item-tree-main-default");
-            if (!itemsTree) return;
-            const cells: any = itemsTree.querySelectorAll(
-                ".row .cell.addedBy");
+            // Every library tab's tree (zotero#6035 gives each tab its own).
+            const cells: any = wvItemsTreeEls(doc).flatMap((t: any) => [...t.querySelectorAll(".row .cell.addedBy")]);
+            if (!cells.length) return;
             const colorOn = this._getEnableAddedByColors();
             for (const cell of cells) {
                 const existing = cell.querySelector(
@@ -10793,18 +10821,17 @@ class _PaneMixin {
         if (!win || win.closed || !win.document) return;
         const doc  = win.document;
         this._teardownTreeClickDelegate(win, true);
-        const H: any = (win._wvTreeDelegate = { click: null, down: null, up: null, resize: null, resizeTimer: null, mo: null, lastHandled: 0 });
+        const H: any = (win._wvTreeDelegate = { click: null, down: null, up: null, resize: null, resizeTimer: null, mos: [], lastHandled: 0 });
 
         // Initial mark pass
         this._markCellLinks(doc);
 
         // Watch for tree re-renders to re-mark cells (attribute only — lightweight)
-        // Zotero 10 beta.4 (PR #5802 — Item tree refactor) renamed the
-        // items-tree element from `item-tree-main-default` to `item-tree-main`.
-        // Prefer the new ID; fall back to the old one for older builds.
-        const tree = doc.getElementById("item-tree-main")
-                  || doc.getElementById("item-tree-main-default");
-        if (tree) {
+        // Every library tab's tree: a Zotero with its own windows has one per tab,
+        // each id suffixed (zotero#6035), and a plain lookup watched the first
+        // tab's alone. The table's perView entry runs this again as tabs appear.
+        const trees = wvItemsTreeEls(doc);
+        if (trees.length) {
             // Run _markCellLinks SYNCHRONOUSLY in the observer callback rather
             // than via setTimeout. MutationObserver callbacks are microtasks,
             // so they run before the next browser paint — meaning the user
@@ -10814,14 +10841,20 @@ class _PaneMixin {
             // the browser could paint between Zotero's DOM mutation and our
             // re-render. The cache check inside _markCellLinks (cachedMode ===
             // wantMode) prevents work amplification on our own DOM writes.
-            H.mo = new win.MutationObserver(() => {
-                try { this._markCellLinks(doc); }
-                catch(e) { Zotero.debug("[Weavero] tree mark error: " + e); }
-            });
-            H.mo.observe(tree,
-                { childList: true, subtree: true, characterData: true });
+            for (const tree of trees) {
+                const mo = new win.MutationObserver(() => {
+                    try { this._markCellLinks(doc); }
+                    catch(e) { Zotero.debug("[Weavero] tree mark error: " + e); }
+                });
+                mo.observe(tree, { childList: true, subtree: true, characterData: true });
+                H.mos.push(mo);
+            }
         } else {
             delete win._wvTreeDelegate;
+            // A window with no library view (a Zotero with its own windows holds
+            // readers alone in one) has no tree to wait for: the per-tab wiring
+            // comes back if a library tab opens there. It retried every second, for good.
+            if (wvNativeWindows() && !(win.ZoteroPane && win.ZoteroPane.libraryView)) return;
             win.setTimeout(() => this._setupTreeClickDelegate(win), 1000);
             return;
         }
@@ -10842,9 +10875,7 @@ class _PaneMixin {
         // strip but well before Mozilla's 500ms tooltip delay. The
         // handler re-sets `title` from the span's `data-href` (markdown
         // links) or its text content (bare URLs).
-        const treeXul: any = doc.getElementById("item-tree-main")
-            || doc.getElementById("item-tree-main-default");
-        if (treeXul) {
+        for (const treeXul of trees as any[]) {
             // Keyed, instance-tagged (lib/listen.ts; wiring slice 3). Builds
             // before it stamped `_wvUrlTitleListener` and skipped: peel that.
             if (treeXul._wvUrlTitleListener) {
@@ -11395,7 +11426,8 @@ class _PaneMixin {
             }
             if (H.resize) win.removeEventListener("resize", H.resize);
             if (H.resizeTimer) win.clearTimeout(H.resizeTimer);
-            if (H.mo) H.mo.disconnect();
+            if (H.mo) H.mo.disconnect();   // builds before the per-tab observers
+            for (const mo of (H.mos || [])) { try { mo.disconnect(); } catch (e) {} }
         } catch(e) {}
         delete win._wvTreeDelegate;
     }

@@ -39,7 +39,7 @@
 
 import { PANEL_ID } from "./constants";
 import { wvUnlisten } from "../lib/listen";
-import { wvNativeWindows, wvWinType } from "../lib/windows";
+import { wvItemsTreeEls, wvNativeWindows, wvWinType } from "../lib/windows";
 
 declare const Zotero: any;
 
@@ -108,7 +108,7 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     { id: "new-tab-shortcut", on: "both", nativeOff: true, wire: (p, win) => p._wvWireMainNewTabShortcut(win) },
     { id: "new-window-shortcut", on: "both", nativeOff: true, wire: (p, win) => p._wvWireNewWindowShortcut(win) },
     { id: "advsearch-new-window", on: "both", nativeOff: true, wire: (p, win) => p._wvWireAdvSearchNewWindow(win) },
-    { id: "collections-pane-toggle", on: "both", wire: (p, win) => p._wvApplyCollectionsPaneToggle(win) },
+    { id: "collections-pane-toggle", on: "both", perView: true, wire: (p, win) => p._wvApplyCollectionsPaneToggle(win) },
     // Multi-line titles: each window's items tree, hence `views`.
     { id: "title-lines", on: "both", views: true, wire: (p, win) => p._wvApplyTitleLines(win) },
     // The Tag Selector's handle (issue #58): its filter mark follows the
@@ -143,24 +143,26 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     // of creeping down 1 px per scroll event (upstream register #40; installs
     // nothing once Zotero's scroll handler stops adding the integer
     // clientHeight). The context panes created later: the pane observer.
-    { id: "item-pane-creep", on: "both", wire: (p, win) => p._wvWireItemPaneCreepFix(win) },
+    // perView (this and the item-pane entries below): a library tab opened later
+    // has its own item pane on a Zotero with its own windows (zotero#6035).
+    { id: "item-pane-creep", on: "both", perView: true, wire: (p, win) => p._wvWireItemPaneCreepFix(win) },
     // WV-TEMP-134490: a preview page that loads after Zotero's one-second
     // cutoff is fitted when it arrives (upstream register #42; installs
     // nothing once ReaderPreview._open waits for the document). Before
     // stale-preview: this one wraps the element class, that one instances.
-    { id: "preview-fit", on: "both", wire: (p, win) => p._wvWirePreviewFitFix(win) },
+    { id: "preview-fit", on: "both", perView: true, wire: (p, win) => p._wvWirePreviewFitFix(win) },
     // WV-TEMP-REG41: the Attachments section hides the previous item's
     // preview and rows until it has drawn the new item's (upstream register
     // #41; installs nothing once Zotero's sync render() touches them). The
     // context panes created later: the pane observer.
-    { id: "stale-preview", on: "both", wire: (p, win) => p._wvWireStalePreviewFix(win) },
+    { id: "stale-preview", on: "both", perView: true, wire: (p, win) => p._wvWireStalePreviewFix(win) },
     // WV-TEMP-134569: the pinned section stays at the top while a section
     // above it changes height (upstream register #43 / #44, forum 113626's
     // resize; installs nothing once Zotero's item pane watches its sections'
     // sizes). The context panes created later: the pane observer.
-    { id: "pin-anchor", on: "both", wire: (p, win) => p._wvWirePinAnchorFix(win) },
+    { id: "pin-anchor", on: "both", perView: true, wire: (p, win) => p._wvWirePinAnchorFix(win) },
     // Pinned section headers in the item pane (Extras; 2026-11-03).
-    { id: "sticky-heads", on: "both", wire: (p, win) => p._wvApplyItemPaneStickyHeads(win) },
+    { id: "sticky-heads", on: "both", perView: true, wire: (p, win) => p._wvApplyItemPaneStickyHeads(win) },
     // The pinned section and open sections per main window (the first keeps
     // Zotero's own settings; pane.ts _wvWireWindowPanePrefs). The managed
     // init wires a new window itself; this entry covers a reload.
@@ -242,12 +244,12 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
         p._teardownPaneObserver(win);
         try {
             const doc = win && win.document;
-            const tree = doc && (doc.getElementById("item-tree-main")
-                || doc.getElementById("item-tree-main-default"));
-            if (tree) wvUnlisten(tree, "urlTitle:mouseover");
-            if (tree && tree._wvUrlTitleListener) {   // builds before the keyed wiring
-                tree.removeEventListener("mouseover", tree._wvUrlTitleListener);
-                delete tree._wvUrlTitleListener;
+            for (const tree of (doc ? wvItemsTreeEls(doc) : [])) {
+                wvUnlisten(tree, "urlTitle:mouseover");
+                if (tree._wvUrlTitleListener) {   // builds before the keyed wiring
+                    tree.removeEventListener("mouseover", tree._wvUrlTitleListener);
+                    delete tree._wvUrlTitleListener;
+                }
             }
         } catch (e) {}
         try { p._resetStaleMarkers(win && win.document); } catch (e) {}
@@ -264,10 +266,12 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
         try { p.injectStylesInto(win && win.document); }
         catch (e) { p.injectStyles(); }
     } },
-    { id: "tree-click-delegate", on: "both", wire: (p, win) => p._setupTreeClickDelegate(win) },
+    // perView: each library tab's tree gets the marking observer and the tooltip
+    // (zotero#6035; until 2026-11-07 only the window's first tab had them).
+    { id: "tree-click-delegate", on: "both", perView: true, wire: (p, win) => p._setupTreeClickDelegate(win) },
     // Weavero's tooltip on a cut count cell: the 500 ms / hide-on-move /
     // show-again rule, in the numbers' colours (count-popups.ts).
-    { id: "count-tooltip", on: "both", wire: (p, win) => p._wvWireCountTip(win) },
+    { id: "count-tooltip", on: "both", perView: true, wire: (p, win) => p._wvWireCountTip(win) },
     { id: "items-list-context-menu", on: "load", wire: (p) => p._setupItemsListContextMenu() },
     { id: "collections-context-menu", on: "load", wire: (p) => p._setupCollectionsContextMenu() },
     { id: "tab-external-repositioner", on: "both", wire: (p, win) => p._setupTabExternalRepositioner(win) },
@@ -620,7 +624,12 @@ class _WindowWiringMixin {
                 const lp = live();
                 if (!lp || win.closed || !Z.isLibraryTab(Z.selectedID)) return;
                 const view = ZP.getLibraryView(Z.selectedID);
-                if (view && view.loaded && view.itemsView && view.collectionsView && ZP.libraryView === view) {
+                // The tree's element too: right after the view loads, ItemTree's id still
+                // reads "null-tab-..." and the element is not findable, so the per-tab
+                // wiring found the first tab's tree alone (traced 2026-11-07).
+                const iv = view && view.itemsView;
+                if (view && view.loaded && iv && view.collectionsView && ZP.libraryView === view
+                        && iv.id && win.document.getElementById(iv.id)) {
                     lp._wvLibraryViewActivated(win, view);
                     return;
                 }
@@ -644,6 +653,8 @@ class _WindowWiringMixin {
             try { p._wvInstallCollapseToQuickSearch(win); } catch (e) {}
         }
         p._wvFilterViewShown(win, view);
+        // Multi-line titles leave a tab in the back alone: its rows now.
+        try { p._wvTlViewShown(win); } catch (e) {}
     }
 
     /** Run `fn(livePlugin)` once main window `win` has BOTH pane views.

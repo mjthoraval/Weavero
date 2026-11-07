@@ -59,6 +59,7 @@
 
 import { wvInjectStyle, wvRemoveStyle } from "../lib/style";
 import { wvUnwrap, wvWrap } from "../lib/wrap";
+import { wvLibraryViews } from "../lib/windows";
 
 declare const Zotero: any;
 
@@ -67,6 +68,20 @@ const LAYER = "titleLines";
 const ROW = "#zotero-items-tree .virtualized-table .row[aria-level='1']:not(.library-header-row):not(.spacer-row)";
 const TEXT_CELL = ROW + " .cell:not(.title):not(.fixed-width):not(.wv-count-cell):not(.numNotes)";
 const HEADER_TITLE = "#zotero-items-tree .virtualized-table-header .cell.title";
+
+/** The Title column's header of THIS state's tree. The tree element has ItemTree's
+ *  own id ("item-tree-main-default" up to 11.0-beta.3, "item-tree-main" plus the
+ *  library tab's suffix with zotero#6035); a document-wide lookup found the
+ *  window's first tab's header. */
+function headerTitle(st: { win: any; iv: any }): any {
+    try {
+        const doc = st.win.document;
+        const el = st.iv && st.iv.id && doc.getElementById(st.iv.id);
+        if (el) return el.querySelector(".virtualized-table-header .cell.title");
+        return doc.querySelector(HEADER_TITLE);
+    }
+    catch (e) { return null; }
+}
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 /** The lines a row has, for the columns beside its title in adaptive. */
 const LINES_VAR = "--wv-tl-lines";
@@ -152,6 +167,9 @@ interface TlNeed { key: string; text: string; width: number; }
 /** One tree's adaptive state. In a WeakMap, not on the tree: nothing to strip. */
 interface TlState {
     win: any;
+    /** The tree's own items view: on a Zotero with its own windows a window has one
+     *  per library tab, and ZoteroPane.itemsView is the tab on screen's (zotero#6035). */
+    iv: any;
     tree: any;
     /** True line counts from the hidden block, by key (width and text). */
     cache: Map<string, number>;
@@ -185,6 +203,7 @@ const STATES = new WeakMap<any, TlState>();
 /** One tree's fixed mode: what its child rows need. */
 interface TlFixed {
     win: any;
+    iv: any;
     tree: any;
     /** Zotero's own one-line row, from the wrapped _getRowHeight. */
     one: number;
@@ -226,30 +245,47 @@ class _TitleLinesMixin {
      *  `itemsView` can exist before `itemsView.tree`: a window opened with the
      *  setting on landed in that gap and stayed on one line (traced 2026-11-05,
      *  `iv=true tree=false`, 2 runs in 3), so the tree is waited for here. */
+    /** Every items view of `win`: one per library tab on a Zotero with its own
+     *  windows (zotero#6035), where a setting changed or switched off reached only
+     *  the tab on screen; else the window's one. */
+    _wvTlItemsViews(win: any): any[] {
+        const views = wvLibraryViews(win);
+        const ivs = views.length ? views.map((v: any) => v && v.itemsView) : [win && win.ZoteroPane && win.ZoteroPane.itemsView];
+        return ivs.filter(Boolean);
+    }
+
     _wvApplyTitleLines(win: any, tries = 0) {
         try {
-            const iv = win && win.ZoteroPane && win.ZoteroPane.itemsView;
-            const tree = iv && iv.tree;
             const mode = this._wvTitleLinesMode();
             if (mode === "off") {
                 this._wvRemoveTitleLines(win);
                 return;
             }
-            if (!tree || !tree._jsWindow) {
-                if (win && !win.closed && tries < 100) {
-                    win.setTimeout(() => {
-                        const p = livePlugin();
-                        if (p) p._wvApplyTitleLines(win, tries + 1);
-                    }, 100);
-                }
-                return;
+            const ivs = this._wvTlItemsViews(win);
+            let pending = !ivs.length, sheet = false;
+            for (const iv of ivs) {
+                const tree = iv.tree;
+                if (!tree || !tree._jsWindow) { pending = true; continue; }
+                if (!sheet) { this._wvTlSheet(win); sheet = true; }
+                this._wvTlApplyTree(win, iv, tree, mode);
             }
+            if (pending && win && !win.closed && tries < 100) {
+                win.setTimeout(() => {
+                    const p = livePlugin();
+                    if (p) p._wvApplyTitleLines(win, tries + 1);
+                }, 100);
+            }
+        }
+        catch (e) { Zotero.debug("[Weavero] title lines apply err: " + e); }
+    }
+
+    _wvTlApplyTree(win: any, iv: any, tree: any, mode: string) {
+        try {
             if (typeof tree._getRowHeight !== "function") return;
-            this._wvTlSheet(win);
             if (mode === "adaptive") {
                 this._wvTlFixedStop(tree);
                 if (wvUnwrap(tree, "_getRowHeight", LAYER)) tree.updateFontSize();
-                this._wvTlStart(win, tree);
+                this._wvTlStart(win, tree, iv);
                 return;
             }
             this._wvTlStop(tree);
@@ -263,10 +299,52 @@ class _TitleLinesMixin {
                 }
                 catch (e) { return base; }
             });
-            this._wvTlFixedStart(win, tree);
+            this._wvTlFixedStart(win, tree, iv);
             tree.updateFontSize();
         }
         catch (e) { Zotero.debug("[Weavero] title lines apply err: " + e); }
+    }
+
+    /** Read-only, for live checks: the state of the tree on screen. */
+    _wvTlInspect(win: any): any {
+        try {
+            const iv = win && win.ZoteroPane && win.ZoteroPane.itemsView;
+            const tree = iv && iv.tree;
+            const st = tree && STATES.get(tree);
+            const fx = tree && FIXED.get(tree);
+            if (!st) return { adaptive: false, fixed: !!fx, mode: this._wvTitleLinesMode() };
+            return {
+                adaptive: true, mode: this._wvTitleLinesMode(), sameIv: st.iv === iv, keys: st.keys.length,
+                nonEmpty: st.keys.filter(Boolean).length, cache: st.cache.size, real: st.real.size,
+                header: !!headerTitle(st), cellW: st.cellW, lineH: st.lineH, timer: !!st.timer, pushing: st.pushing,
+                custom: tree._jsWindow ? tree._jsWindow.customRowHeights.length : null,
+            };
+        }
+        catch (e) { return { err: String(e) }; }
+    }
+
+    /** A library tab came on screen (window-wiring _wvLibraryViewActivated): its
+     *  tree was not redone while another tab was in front, so it is now. */
+    _wvTlViewShown(win: any) {
+        try {
+            const iv = win && win.ZoteroPane && win.ZoteroPane.itemsView;
+            const tree = iv && iv.tree;
+            if (!tree) return;
+            const st = STATES.get(tree);
+            if (st) {
+                // Its invalidates were skipped while it was in the back, and an unforced
+                // redo pushes only a changed list: forced, and again once it is laid out.
+                // (The 28-px rows of 2026-11-07 in a second tab were the stylesheet's
+                // plain ids, lib/style.ts wvViewIdsCss, not this.)
+                const redo = () => { const p = livePlugin(); if (p && win.ZoteroPane.itemsView === iv) p._wvTlRedo(win, true); };
+                redo();
+                win.setTimeout(redo, 250);
+                return;
+            }
+            const fx = FIXED.get(tree);
+            if (fx) this._wvTlFixedRows(fx, true);
+        }
+        catch (e) {}
     }
 
     /** Holds the row padding, so a density change comes through here as well. */
@@ -279,22 +357,23 @@ class _TitleLinesMixin {
         try {
             if (!win || !win.document) return;
             wvRemoveStyle(win.document, STYLE_ID);
-            const iv = win.ZoteroPane && win.ZoteroPane.itemsView;
-            const tree = iv && iv.tree;
-            if (!tree) return;
-            this._wvTlStop(tree);
-            this._wvTlFixedStop(tree);
-            if (wvUnwrap(tree, "_getRowHeight", LAYER)) tree.updateFontSize();
+            for (const iv of this._wvTlItemsViews(win)) {
+                const tree = iv.tree;
+                if (!tree) continue;
+                this._wvTlStop(tree);
+                this._wvTlFixedStop(tree);
+                if (wvUnwrap(tree, "_getRowHeight", LAYER)) tree.updateFontSize();
+            }
         }
         catch (e) { Zotero.debug("[Weavero] title lines remove err: " + e); }
     }
 
     // ---- fixed: the child rows
 
-    _wvTlFixedStart(win: any, tree: any) {
+    _wvTlFixedStart(win: any, tree: any, iv: any) {
         let st = FIXED.get(tree);
         if (!st) {
-            st = { win, tree, one: 0, sig: "", pushing: false };
+            st = { win, iv, tree, one: 0, sig: "", pushing: false };
             FIXED.set(tree, st);
         }
         const state = st;
@@ -333,10 +412,10 @@ class _TitleLinesMixin {
 
     /** Every child row at Zotero's one line. A flat list has nothing to do. */
     _wvTlFixedRows(st: TlFixed, force = false) {
-        const { win, tree } = st;
+        const { win, tree, iv } = st;
         const jsw = tree._jsWindow;
-        const iv = win.ZoteroPane && win.ZoteroPane.itemsView;
-        if (!st.one || !jsw || !iv || iv.tree !== tree) return;
+        // Its own rows, and only on screen: a tab in the back is done when it shows.
+        if (!st.one || !jsw || !iv || iv.tree !== tree || (win.ZoteroPane && win.ZoteroPane.itemsView) !== iv) return;
         const rp = iv.rowProvider || iv;
         const n = rp.getRowCount ? rp.getRowCount() : rp._rows.length;
         const pairs: number[][] = [];
@@ -359,11 +438,11 @@ class _TitleLinesMixin {
 
     // ---- adaptive
 
-    _wvTlStart(win: any, tree: any) {
+    _wvTlStart(win: any, tree: any, iv: any) {
         let st = STATES.get(tree);
         if (!st) {
             st = {
-                win, tree, cache: new Map(), est: new Map(), real: new Map(), keys: [], ids: [], sig: "", geo: "",
+                win, iv, tree, cache: new Map(), est: new Map(), real: new Map(), keys: [], ids: [], sig: "", geo: "",
                 gen: 0, timer: null, pushTimer: null, pump: null, pushedAt: 0, pushing: false,
                 ro: null, roEl: null, mo: null, cellW: 0, padR: 0, prefix: new Map(), font: "", lineH: 0, charW: 0,
             };
@@ -412,7 +491,8 @@ class _TitleLinesMixin {
             const r = orig.apply(this, args);
             try {
                 const p = livePlugin();
-                if (p && !state.pushing) {
+                // A library tab in the back is redone when it comes on screen (_wvTlViewShown).
+                if (p && !state.pushing && state.win.ZoteroPane.itemsView === state.iv) {
                     const moved = p._wvTlStale(state);
                     if (moved) p._wvTlRedo(state.win);
                     // Still out of step: nothing laid out yet, the timer tries again.
@@ -475,7 +555,7 @@ class _TitleLinesMixin {
      *  task that moved them, no frame shows it. Only the screen counts: an invalidate
      *  that moved nothing in view stays on the timer, which is what coalesces them. */
     _wvTlStale(st: TlState): boolean {
-        const iv = st.win.ZoteroPane.itemsView;
+        const iv = st.iv;
         const rp = iv.rowProvider || iv;
         for (const i of st.tree._jsWindow._renderedRows.keys()) {
             const row = rp.getRow(i);
@@ -487,7 +567,7 @@ class _TitleLinesMixin {
     /** A row redrawn: only a changed title costs anything. */
     _wvTlRowTouched(st: TlState, index: any) {
         if (typeof index !== "number" || !st.keys[index]) return;
-        const iv = st.win.ZoteroPane.itemsView;
+        const iv = st.iv;
         const row = (iv.rowProvider || iv).getRow(index);
         const text = rowText(row);
         if (text !== null && !st.keys[index].endsWith("|" + text)) this._wvTlSchedule(st);
@@ -538,7 +618,7 @@ class _TitleLinesMixin {
      *  step, and it is rebuilt with the columns, so it is looked up again. */
     _wvTlWatchWidth(st: TlState) {
         const { win } = st;
-        const el = win.document.querySelector(HEADER_TITLE) || win.document.getElementById("zotero-items-tree");
+        const el = headerTitle(st) || win.document.getElementById(st.iv && st.iv.id) || win.document.getElementById("zotero-items-tree");
         if (!el || el === st.roEl) return;
         if (st.ro) st.ro.disconnect();
         st.roEl = el;
@@ -598,7 +678,7 @@ class _TitleLinesMixin {
         const rp = iv.rowProvider || iv;
         if (!jsw) return;
         // The Title column hidden: nothing wraps, nothing to be tall for.
-        if (!win.document.querySelector(HEADER_TITLE)) {
+        if (!headerTitle(st)) {
             st.gen++;
             if (st.keys.length) {
                 st.keys = [];

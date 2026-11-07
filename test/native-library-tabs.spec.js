@@ -124,6 +124,46 @@ describe("Weavero — the filter in every library tab (zotero#6035)", () => {
         assert.isOk(await filterOn(w), "it filters there");
     });
 
+    // 2026-11-07, before the 1.0.0 release: the link marking, the count tooltip, the link
+    // titles and the collections-pane button reached the window's first library tab alone,
+    // and Weavero's rules named the first tab's ids, so the second tab's multi-line titles
+    // did not wrap and were measured back to one line (28-px rows for two-line titles).
+    it("the second tab's tree, toolbar and rules get Weavero's wiring", async function () {
+        this.timeout(60000);
+        const { w, view } = await twoTabs();
+        const d = w.document;
+        const views = w.ZoteroPane.libraryViews;
+        assert.strictEqual(views.length, 2, "two library views");
+        assert.isOk(await wvT.waitFor(() => (w._wvTreeDelegate && w._wvTreeDelegate.mos && w._wvTreeDelegate.mos.length === 2) || null, 8000),
+            "the link-marking observer on both trees");
+        for (const v of views) {
+            const tree = d.getElementById(v.itemsView.id);
+            assert.isOk(tree, "tree " + v.itemsView.id + " found by its own id");
+            assert.include(lib.wvListenKeys(tree).map(k => k.key), "urlTitle:mouseover", "link titles kept on " + v.tabID);
+            assert.include(lib.wvListenKeys(v.getElement("zotero-items-tree")).map(k => k.key), "countTip:pointermove", "count tooltip on " + v.tabID);
+            if (wv._getCollectionsPaneToggle()) assert.isOk(v.querySelector("#wv-tb-toggle-collections-pane"), "collections-pane button in " + v.tabID);
+        }
+        // A rule naming #zotero-items-tree reaches the second tab's tree too.
+        const css = lib.wvViewIdsCss("#zotero-items-tree .row { }");
+        assert.isTrue(view.getElement("zotero-items-tree").matches(css.split(" .row")[0]), "the rewritten selector matches the suffixed id");
+        // Fixed height, in both tabs.
+        const pref = "extensions.zotero.weavero.titleLinesMode";
+        const before = Zotero.Prefs.get(pref, true);
+        try {
+            Zotero.Prefs.set(pref, "fixed", true);
+            for (const v of views) {
+                w.Zotero_Tabs.select(v.tabID);
+                const tall = await wvT.waitFor(() => {
+                    const row = d.getElementById(v.itemsView.id) && d.getElementById(v.itemsView.id).querySelector(".row");
+                    // One line is 22 to 28 px by density; two lines 40 px or more.
+                    return row && row.getBoundingClientRect().height > 30 ? true : null;
+                }, 8000, 200);
+                assert.isOk(tall, "Fixed height rows in " + v.tabID);
+            }
+        }
+        finally { Zotero.Prefs.set(pref, before === undefined ? "off" : before, true); }
+    });
+
     it("the view wiring runs for the second tab's tree", async function () {
         this.timeout(45000);
         const { w, view } = await twoTabs();

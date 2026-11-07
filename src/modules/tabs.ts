@@ -4471,7 +4471,10 @@ class _TabsMixin {
             // miss (group libraries load late) and tabs aren't all back yet —
             // pruning then silently forgets pins (a group-library pin was lost
             // on every restart). Keep everything until the guard lifts.
-            const restoring = !!(this as any)._wvTabGroupRestoreGuard;
+            // A session switch protects its pins the same way while its tabs come
+            // back (sessions.ts _wvTabSessionPinsTake).
+            const restoring = !!(this as any)._wvTabGroupRestoreGuard
+                || ((this as any)._wvSessionPinsUntil || 0) > Date.now();
             const newPref: Array<{ libraryID: number, itemKey: string }> = pinnedOpenInOrder
                 .map(p => ({ libraryID: p.libraryID, itemKey: p.itemKey }));
             const carried = new Set<string>();   // belt: a stored dupe never survives a rebuild

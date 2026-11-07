@@ -25,6 +25,26 @@ describe("Weavero — shared helpers (src/lib)", () => {
         assert.strictEqual(lib.wvLivePlugin(), wv);
     });
 
+    // zotero#6035 suffixes a library tab's element ids with "-tab-..." in every tab but a
+    // window's first; a rule naming the plain id reached that first tab alone (2026-11-07).
+    it("wvViewIdsCss: a library-view id matches its tab-suffixed copies, nothing else changes", () => {
+        const css = lib.wvViewIdsCss("#zotero-items-tree .row, #item-tree-main-default .x, #item-tree-main .y, #zotero-items-tree-foo .z, #other { }");
+        assert.include(css, ':is(#zotero-items-tree,[id^="zotero-items-tree-tab-"]) .row');
+        assert.include(css, ':is(#item-tree-main-default,[id^="item-tree-main-default-tab-"]) .x');
+        assert.include(css, ':is(#item-tree-main,[id^="item-tree-main-tab-"]) .y', "the shorter id on its own");
+        assert.include(css, "#zotero-items-tree-foo .z", "a longer id left alone");
+        assert.include(css, "#other", "an unknown id left alone");
+        const doc = win.document;
+        const probe = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+        probe.id = "zotero-items-tree-tab-AbC123";
+        doc.documentElement.appendChild(probe);
+        try {
+            assert.isTrue(probe.matches(lib.wvViewIdsCss("#zotero-items-tree")), "the rewritten selector matches a suffixed id");
+            assert.isFalse(probe.matches("#zotero-items-tree"), "the plain one does not");
+        }
+        finally { probe.remove(); }
+    });
+
     it("wvWrap: layers rebuild from the native, a foreign instance's layer drops, unwrap restores exactly", () => {
         const proto = { m(x) { return "n" + x; } };
         const host = Object.create(proto);

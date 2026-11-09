@@ -285,7 +285,9 @@ describe("Weavero — native windows (zotero#6035)", () => {
             // whole, its window buttons clear of the tab bar's (MJT 2026-11-07, they
             // overlapped), and the styles a window gets at load.
             const d = w.document;
-            assert.strictEqual(!!w._wvCompactTitleBar, !!wv._getCompactTitleBarMain(), "the full setup, not the early hide alone");
+            // macOS has no compact title bar (_applyCompactTitleBar returns
+            // there: the system draws the window buttons and the menu bar).
+            assert.strictEqual(!!w._wvCompactTitleBar, !!wv._getCompactTitleBarMain() && !Zotero.isMac, "the full setup, not the early hide alone");
             assert.isOk(await wvT.waitFor(() => d.querySelector("#wv-styles, style[id^='wv-'], link[href*='weavero']"), 5000), "Weavero's styles");
             const box = d.querySelector(".titlebar-buttonbox").getBoundingClientRect();
             for (const id of ["zotero-tb-tabs-menu", "zotero-tb-sync"]) {

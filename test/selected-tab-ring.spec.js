@@ -353,7 +353,13 @@ describe("Weavero — selected-tab outline (Firefox nova)", () => {
         wv._ensureTabGroupStyles(doc);
         for (const lib of doc.querySelectorAll("#tab-bar-container .tabs > .tab:first-child")) {
             const c = lib.querySelector(".tab-close");
-            if (c) assert.equal(win.getComputedStyle(c).display, "none");
+            // A library tab Zotero itself makes closable keeps Zotero's own
+            // button: on a Zotero with its own windows every closable tab is
+            // closable on macOS (tabs.js _isClosable: there closing the last
+            // tab closes the window), and on any system once the window has a
+            // second tab -- Zotero's call, not ours (macOS CI on 11.0-beta.4,
+            // 2026-11-10).
+            if (c && !lib.classList.contains("closable")) assert.equal(win.getComputedStyle(c).display, "none");
         }
     });
 });

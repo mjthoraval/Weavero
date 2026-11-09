@@ -24,6 +24,47 @@
 // window: an Alt+F -> Close flow once touched a dead menubar from a deferred
 // timer ("can't access dead object", a crash).
 
+declare const Zotero: any;
+
+/** Whether a window's `<menubar>` may hold anything but menus. NOT on macOS
+ *  (2026-11-09): there Gecko never draws the menubar in the window -- it
+ *  mirrors it into the system menu bar (widget/cocoa/nsMenuBarX.mm), and a
+ *  child that is not a menu throws its native list out of step (see
+ *  wvMenubarSafeBefore). The note window's Zotero icon, the reader window's
+ *  and the window controls following an Alt-revealed menu row stay out:
+ *  never visible on macOS, where the menubar is the system's. */
+export function wvMenubarTakesNonMenus(): boolean {
+    try { return !Zotero.isMac; } catch (e) { return true; }
+}
+
+const XUL_NS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
+
+/** The node a menu must go before in a window's `<menubar>` on macOS, given
+ *  the node it should go before (`want`; null = the end). Gecko's
+ *  nsMenuBarX builds its native menu list from the MENUS among the
+ *  menubar's children, but maps every later insertion and removal by the
+ *  node's index among ALL its child nodes (ObserveContentInserted /
+ *  ObserveContentRemoved -> ComputeIndexOf). Past a child that is not a
+ *  menu -- note.xhtml has macCommandSet and macKeyset before its Window
+ *  menu -- the two disagree: a removal takes the wrong native menu, and an
+ *  insertion past the list's end is InvalidArrayIndex_CRASH. Weavero's Tools
+ *  / Help mirrors went in around the note window's Window menu, so a plugin
+ *  reload or update with a note window open (title bar hidden) took Help
+ *  out instead of Tools and then inserted Help past the end: Zotero crashed
+ *  (macOS CI, every run since 2026-11-03; the crash reports and probes of
+ *  2026-11-09). Only where every node before is a menu do the indexes agree:
+ *  `want` when that holds, else the first node that is not a menu (macOS
+ *  then lists the menu before Window rather than after it). Elsewhere the
+ *  menubar is drawn in the window and `want` is returned as given. */
+export function wvMenubarSafeBefore(menubar: any, want: any, mac: boolean = !wvMenubarTakesNonMenus()): any {
+    if (!mac) return want;
+    for (let n = menubar.firstChild; n; n = n.nextSibling) {
+        if (n === want) return want;
+        if (!(n.nodeType === 1 && n.localName === "menu" && n.namespaceURI === XUL_NS)) return n;
+    }
+    return want;
+}
+
 export interface WvAltRevealSpec {
     /** The window whose key and mouse events drive the machine (capture listeners). */
     win: any;

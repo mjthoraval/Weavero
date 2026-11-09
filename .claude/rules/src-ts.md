@@ -318,6 +318,15 @@ name to a Zotero object, window, or document.
   REPLACES what it owns; teardown removes everything it injects; a guard
   spec re-injects after a simulated teardown. Guard:
   `test/plugins-search.spec.js`.
+- The same in a note editor's ProseMirror: a plugin swapped in one
+  `reconfigure` under the SAME key keeps the OLD plugin's state field (only
+  new keys run `init`), so a note open across an update carries the older
+  bundle's state shape. Read a plugin's state through a normaliser that
+  fills what an older shape lacks, and let `apply` start from it -- never
+  assume `init`'s shape (2026-11-09: 1.0.0's fold state had no `lists`;
+  in notes open across the 1.0.1 update the list arrows folded nothing and
+  typing threw). Guard: `test/note-fold.spec.js` ("a note open across an
+  update from 1.0.0").
 - Never vary PADDING between Zotero tabs by state (selected, narrow...):
   they are `flex: 1 1 200px; box-sizing: border-box`, so while shrinking a
   tab with more padding comes out wider -- the selected tab grew ~6 px and

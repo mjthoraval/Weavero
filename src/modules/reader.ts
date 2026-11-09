@@ -43,7 +43,7 @@ import { wvSvgEl } from "../lib/svg";
 import { WV_LINK_MENU_ICON } from "../lib/link-glyph";
 import { wvStageNativeUndo } from "./undo";
 import { wvRefTitle, type WvRefKind } from "./backlinks";
-import { wvAltReveal } from "../lib/menubar";
+import { wvAltReveal, wvMenubarTakesNonMenus, wvMenubarSafeBefore } from "../lib/menubar";
 
 class _ReaderMixin {
     [k: string]: any;
@@ -3854,9 +3854,11 @@ class _ReaderMixin {
             // note.xhtml (unlike reader.xhtml) doesn't render the native title-
             // bar app icon, so the Alt-revealed menubar would have no Zotero
             // icon — add one at its left to match the main/reader windows.
-            // Idempotent.
+            // Idempotent. Not on macOS: a non-menu child throws Gecko's native
+            // menu list out of step there (lib/menubar.ts wvMenubarSafeBefore;
+            // the menubar is the system's anyway).
             try {
-                if (!menubar.querySelector(":scope > .wv-menubar-zicon")) {
+                if (wvMenubarTakesNonMenus() && !menubar.querySelector(":scope > .wv-menubar-zicon")) {
                     const zicon: any = wvHtmlEl(doc, "div");
                     zicon.className = "wv-menubar-zicon";
                     zicon.style.cssText = "width:16px;height:16px;margin-inline:6px;flex:0 0 auto;"
@@ -14717,8 +14719,9 @@ class _ReaderMixin {
             // menubar machinery (which iterates `<menu>` children for
             // accesskey activation) doesn't see it as a navigation
             // target. The menubar gets a left-pad to leave room for it.
+            // Not on macOS (lib/menubar.ts wvMenubarTakesNonMenus).
             try {
-                if (!menubar.querySelector(".wv-reader-menubar-icon")) {
+                if (wvMenubarTakesNonMenus() && !menubar.querySelector(".wv-reader-menubar-icon")) {
                     const iconEl = wvHtmlEl(doc, "span", "wv-reader-menubar-icon");
                     iconEl.setAttribute("aria-hidden", "true");
                     menubar.insertBefore(iconEl, menubar.firstChild);
@@ -15107,14 +15110,16 @@ class _ReaderMixin {
             const tools = mkMirror("wv-reader-tools-menu", "toolsMenu", "Tools");
             tools.setAttribute("data-wv-tag", tag);
             const help = mkMirror("wv-reader-help-menu", "helpMenu", "Help");
-            // Main-window order is … Tools, Window, Help.
+            // Main-window order is … Tools, Window, Help. On macOS only
+            // where Gecko's native menu list stays in step (lib/menubar.ts
+            // wvMenubarSafeBefore: the note window's Window menu follows two
+            // non-menu children, and placing Help after it crashed Zotero on
+            // a reload).
             const windowMenu = doc.getElementById("windowMenu");
-            if (windowMenu) {
-                menubar.insertBefore(tools, windowMenu);
-                menubar.insertBefore(help, windowMenu.nextSibling);
-            } else {
-                menubar.append(tools, help);
-            }
+            const wantTools = windowMenu || null;
+            menubar.insertBefore(tools, wvMenubarSafeBefore(menubar, wantTools));
+            const wantHelp = windowMenu ? windowMenu.nextSibling : null;
+            menubar.insertBefore(help, wvMenubarSafeBefore(menubar, wantHelp));
             // Edit → Copy Citation / Copy Bibliography: the main window
             // shows these on reader tabs (they act on the reader's item
             // through the synced library selection). Here they act on
@@ -16271,10 +16276,14 @@ class _ReaderMixin {
             const stash = win._wvTabStrip || (win._wvTabStrip = {});
             if (stash.ctrlFollowObserver) return;   // already wired
             const isHidden = () => menubar.getAttribute("wv-compact-hidden") === "true";
+            // On macOS the controls never go into the menubar: it is the
+            // system's, and a non-menu child throws Gecko's native menu list
+            // out of step (lib/menubar.ts wvMenubarSafeBefore).
+            const inStrip = () => isHidden() || !wvMenubarTakesNonMenus();
             const position = () => {
                 try {
                     if (win.closed) return;
-                    if (isHidden()) {
+                    if (inStrip()) {
                         if (controls.parentNode !== strip) strip.appendChild(controls);
                         controls.classList.remove("wv-in-menubar");
                         strip.style.paddingInlineEnd = "";

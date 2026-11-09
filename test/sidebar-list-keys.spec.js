@@ -64,6 +64,11 @@ describe("Weavero — sidebar list keys: one key map for the outline and the Boo
         return { rows, list, idoc, calls, reader, m, press, active, selected, inView, outside };
     }
     const flat = (keys) => keys.map(key => ({ key }));
+    // The platform's accelerator, as _wvListKeyNav reads it (lib/keys.ts
+    // wvAccel): Cmd on macOS, where Ctrl is no accelerator (macOS CI,
+    // 2026-11-09).
+    const ACC = Zotero.isMac ? { metaKey: true } : { ctrlKey: true };
+    const acc = (more) => Object.assign({}, ACC, more || {});
 
     it("the first nav key enters the list: Down / Home at the top, Up / End at the bottom; a plain move single-selects, anchors, navigates and lands", () => {
         let r = rig(flat(["a", "b", "c"]));
@@ -85,16 +90,16 @@ describe("Weavero — sidebar list keys: one key map for the outline and the Boo
         r.press("ArrowDown", { shiftKey: true });                 // b..c
         assert.deepEqual(r.selected(), ["b", "c"]); assert.strictEqual(r.active(), "c"); assert.strictEqual(r.reader.anchor, "b");
         assert.strictEqual(r.calls.length, 2, "Shift never navigates");
-        r.press("ArrowDown", { ctrlKey: true });                  // cursor d, selection kept
+        r.press("ArrowDown", acc());                              // cursor d, selection kept
         assert.strictEqual(r.active(), "d"); assert.deepEqual(r.selected(), ["b", "c"]); assert.strictEqual(r.reader.anchor, "d"); assert.strictEqual(r.calls.length, 2);
         r.press(" ");                                             // toggle d in
         assert.deepEqual(r.selected(), ["b", "c", "d"]); assert.strictEqual(r.active(), "d"); assert.strictEqual(r.reader.cursor, "d");
-        r.press("ArrowDown", { ctrlKey: true });                  // cursor e
+        r.press("ArrowDown", acc());                              // cursor e
         r.press(" ");                                             // toggle e in
-        r.press("ArrowUp", { ctrlKey: true }); r.press("ArrowUp", { ctrlKey: true });   // cursor c, anchor c
+        r.press("ArrowUp", acc()); r.press("ArrowUp", acc());     // cursor c, anchor c
         r.press(" ");                                             // toggle c OUT
         assert.deepEqual(r.selected(), ["b", "d", "e"]);
-        r.press("ArrowUp", { ctrlKey: true, shiftKey: true });    // merge c..b into the selection
+        r.press("ArrowUp", acc({ shiftKey: true }));              // merge c..b into the selection
         assert.deepEqual(r.selected(), ["b", "c", "d", "e"], "Ctrl+Shift merges the range, the scattered selection survives");
         r.press("ArrowUp", { shiftKey: true });                   // plain Shift from the anchor c to a: REPLACES
         assert.deepEqual(r.selected(), ["a", "b", "c"]);
@@ -115,7 +120,7 @@ describe("Weavero — sidebar list keys: one key map for the outline and the Boo
         r.press("ArrowLeft"); assert.strictEqual(r.calls[r.calls.length - 1], "open:f:false", "an open container closes");
         r.press("End");                                           // cursor z (depth 2)
         r.press("ArrowLeft"); assert.strictEqual(r.active(), "g", "the nearest shallower row");
-        r.press("a", { ctrlKey: true });
+        r.press("a", acc());
         assert.deepEqual(r.selected(), ["f", "x", "g", "z"], "Ctrl+A selects every row");
         r.press("Enter"); assert.notInclude(r.calls.slice(-1)[0], "edit:", "no edit for a multi-selection");
         r.press("ArrowRight"); assert.strictEqual(r.calls[r.calls.length - 1], "selOpen:true");

@@ -180,46 +180,63 @@ describe("Weavero — reader and note window wiring, characterized (reloads the 
         const W = {};
         got = {};
         const snap = (step) => { for (const [label, w] of Object.entries(W)) got[label + "." + step] = marks(w); };
+        // Each step into the quit trace: Zotero dies inside this setup on
+        // macOS CI (every run since 2026-11-03), with no report; the trace's
+        // last STEP names where.
+        const step = (s) => { try { wvT.trace("STEP zz-wiring " + s); } catch (_) {} };
         try {
             // Hide title bar ON for reader and note windows (the defaults).
             Zotero.Prefs.set("weavero.compactTitleBarReader", true);
             Zotero.Prefs.set("weavero.compactTitleBarNote", true);
+            step("open reader1");
             W.reader1 = await openReaderWindow(pdfA.id);
+            step("open note1");
             W.note1 = await openStockNoteWindow(note1.id);
+            step("open deck1");
             W.deck1 = await wvT.plugin()._wvOpenNoteInDeckWindow(deckNote.id, null);
             assert.isOk(W.deck1 && W.deck1._wvWT, "deck window opened");
             await settle(4000);
             snap("on.open");
 
+            step("reload 1");
             await reloadPlugin(addon);
+            step("reload 1 done");
             snap("on.reload");
 
             // The deck window is closed before the toggle: turning the reader
             // strip off moves a window's extra tabs into the main window,
             // which is a window-set change, not wiring.
+            step("close deck1");
             try { W.deck1.close(); } catch (_) {}
             for (let i = 0; i < 50 && !W.deck1.closed; i++) await sleep(100);
             delete W.deck1;
             await settle(1000);
 
+            step("title bars off");
             Zotero.Prefs.set("weavero.compactTitleBarReader", false);
             Zotero.Prefs.set("weavero.compactTitleBarNote", false);
             await settle(3000);
             snap("toOff.pref");
 
+            step("open reader2");
             W.reader2 = await openReaderWindow(pdfB.id);
+            step("open note2");
             W.note2 = await openStockNoteWindow(note2.id);
             await settle(4000);
             got["reader2.off.open"] = marks(W.reader2);
             got["note2.off.open"] = marks(W.note2);
 
+            step("reload 2");
             await reloadPlugin(addon);
+            step("reload 2 done");
             snap("off.reload");
 
+            step("title bars on");
             Zotero.Prefs.set("weavero.compactTitleBarReader", true);
             Zotero.Prefs.set("weavero.compactTitleBarNote", true);
             await settle(3000);
             snap("toOn.pref");
+            step("setup done");
         }
         finally {
             for (const p of PREFS) restorePref(p, saved[p]);

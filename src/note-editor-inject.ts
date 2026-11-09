@@ -35,7 +35,15 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
     // 9: the heading flash (outline click, heading link) as a decoration.
     // 10: the fold arrow is Zotero's chevron-8 twisty.
     // 11: list items fold too; Fold All / Unfold All (2026-11-09).
-    const INJECT_V = 11;
+    // 12: on main, an older bundle's fold state is read whole (foldShape):
+    // notes open across the update to 1.0.1 folded no list and refused
+    // typing; on branch notecite, Zotero links and the citations added
+    // after them (2026-11-09). 13: both, merged -- one number past either,
+    // so a page running either 12 takes the merged bundle. 14: the
+    // citations taken out again (MJT 2026-11-09, "move safely"; they live
+    // on branch notecite) -- past 13, so a page running the citation
+    // bundle takes this one.
+    const INJECT_V = 14;
 
     /** CROSS-BUNDLE DecorationSet interop (issue #37 -- "Search in notes
      *  does not find anything", root-caused 2026-08-27).
@@ -311,6 +319,27 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
     // back on screen even though this plugin stays in the page.
     const FKEY = new PluginKey("wvNoteFold");
 
+    /** The fold state, whole, whatever bundle made it. install() swaps the
+     *  fold plugin in ONE reconfigure under the same key, and ProseMirror
+     *  KEEPS a state field whose key is in both plugin sets (only new keys
+     *  run `init`): an older bundle's state outlives its plugin. 1.0.0's was
+     *  { folded, flash } -- in a note open across the update to 1.0.1 every
+     *  read of `lists` threw, the arrow folded nothing and a typed character
+     *  failed in `apply` (MJT 2026-11-09). Every read goes through here, and
+     *  `apply` starts from it, so such a state heals on its next transaction. */
+    function foldShape(v: any): any {
+        if (v && Array.isArray(v.folded) && Array.isArray(v.lists) && "flash" in v) return v;
+        return {
+            folded: v && Array.isArray(v.folded) ? v.folded : [],
+            lists: v && Array.isArray(v.lists) ? v.lists : [],
+            flash: v && v.flash != null ? v.flash : null,
+        };
+    }
+
+    function fstate(state: any): any {
+        return foldShape(FKEY.getState(state));
+    }
+
     function viewOf(): any {
         const ci: any = (window as any)._currentEditorInstance;
         return ci && ci._editorCore && ci._editorCore.view;
@@ -440,7 +469,7 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
     }
 
     function foldDecos(state: any): any {
-        const st: any = FKEY.getState(state);
+        const st: any = fstate(state);
         const decos: any[] = [];
         // The heading flash (outline click, heading link): the reader
         // outline's text highlight, over the heading's TEXT only -- an inline
@@ -494,7 +523,8 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
             key: FKEY,
             state: {
                 init: () => ({ folded: [], lists: [], flash: null }),
-                apply(tr: any, prev: any, _old: any, next: any) {
+                apply(tr: any, was: any, _old: any, next: any) {
+                    const prev = foldShape(was);   // an older bundle's state, read whole
                     const remap = (ps: number[]) => ps.map((p) => {
                         const r = tr.mapping.mapResult(p, 1);
                         return r.deleted ? -1 : r.pos;
@@ -543,7 +573,7 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
             appendTransaction(trs: any[], _old: any, next: any) {
                 try {
                     if (!foldOn()) return null;
-                    const st: any = FKEY.getState(next);
+                    const st: any = fstate(next);
                     if (!st || (!st.folded.length && !st.lists.length)) return null;
                     if (trs.some((t) => t.getMeta(FKEY))) return null;
                     if (!trs.some((t) => t.selectionSet || t.docChanged)) return null;
@@ -563,7 +593,7 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
                     update(view: any, prev: any) {
                         try {
                             const doc = view.state.doc !== prev.doc;
-                            const a: any = FKEY.getState(view.state), b: any = FKEY.getState(prev);
+                            const a: any = fstate(view.state), b: any = fstate(prev);
                             const fold = !!a && !!b && (a.folded !== b.folded || a.lists !== b.lists);
                             if (!doc && !fold) return;
                             const d: any = view.dom.ownerDocument;
@@ -586,7 +616,7 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
     function headingsJSON(): string {
         const view = viewOf();
         if (!view) return "[]";
-        const st: any = FKEY.getState(view.state);
+        const st: any = fstate(view.state);
         const folded: number[] = st ? st.folded : [];
         const { tops, foldable, owners } = foldLayout(view.state.doc, folded);
         const topIdx = new Map<number, number>();
@@ -614,7 +644,7 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
         if (!view) return "no-view";
         const h = headingsOf(view.state.doc)[ord];
         if (!h || !h.top) return "no-heading";
-        const st: any = FKEY.getState(view.state);
+        const st: any = fstate(view.state);
         const was = !!st && st.folded.indexOf(h.pos) >= 0;
         let tr = view.state.tr.setMeta(FKEY, { toggle: h.pos }).setMeta("addToHistory", false);
         if (!was) {
@@ -640,7 +670,7 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
         const hs = headingsOf(view.state.doc);
         const set = ords.map((o) => hs[o]).filter((h) => h && h.top).map((h) => h.pos);
         view.dispatch(view.state.tr.setMeta(FKEY, { set }).setMeta("addToHistory", false));
-        const st: any = FKEY.getState(view.state);
+        const st: any = fstate(view.state);
         return st ? st.folded.length : 0;
     }
 
@@ -650,7 +680,7 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
         const view = viewOf();
         if (!view) return 0;
         const h = headingsOf(view.state.doc)[ord];
-        const st: any = FKEY.getState(view.state);
+        const st: any = fstate(view.state);
         if (!h || !st || (!st.folded.length && !st.lists.length)) return 0;
         const idx = view.state.doc.resolve(h.pos).index(0);
         const own = st.folded.length ? foldLayout(view.state.doc, st.folded).owners.get(idx) || [] : [];
@@ -665,7 +695,7 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
     function listItemsJSON(): string {
         const view = viewOf();
         if (!view) return "[]";
-        const st: any = FKEY.getState(view.state);
+        const st: any = fstate(view.state);
         const lset = new Set(st ? st.lists : []);
         return JSON.stringify(listItemsOf(view.state.doc).map((li: any) => ({
             ord: li.ord,
@@ -680,7 +710,7 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
         if (!view) return "no-view";
         const li = listItemsOf(view.state.doc)[ord];
         if (!li || !li.foldable) return "no-item";
-        const st: any = FKEY.getState(view.state);
+        const st: any = fstate(view.state);
         const was = !!st && st.lists.indexOf(li.pos) >= 0;
         let tr = view.state.tr.setMeta(FKEY, { listToggle: li.pos }).setMeta("addToHistory", false);
         // A caret inside the part being hidden moves to the end of the
@@ -702,7 +732,7 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
         const items = listItemsOf(view.state.doc);
         const listSet = ords.map((o) => items[o]).filter((li) => li && li.foldable).map((li) => li.pos);
         view.dispatch(view.state.tr.setMeta(FKEY, { listSet }).setMeta("addToHistory", false));
-        const st: any = FKEY.getState(view.state);
+        const st: any = fstate(view.state);
         return st ? st.lists.length : 0;
     }
 
@@ -739,7 +769,7 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
     function unfoldAll(): number {
         const view = viewOf();
         if (!view) return -1;
-        const st: any = FKEY.getState(view.state);
+        const st: any = fstate(view.state);
         const n = st ? st.folded.length + st.lists.length : 0;
         view.dispatch(view.state.tr.setMeta(FKEY, { set: [], listSet: [] }).setMeta("addToHistory", false));
         return n;
@@ -750,7 +780,7 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
     function foldCounts(): string {
         const view = viewOf();
         if (!view) return JSON.stringify({ foldable: 0, folded: 0 });
-        const st: any = FKEY.getState(view.state);
+        const st: any = fstate(view.state);
         const foldable = foldLayout(view.state.doc, []).foldable.size
             + listItemsOf(view.state.doc).filter((li: any) => li.foldable).length;
         return JSON.stringify({ foldable, folded: st ? st.folded.length + st.lists.length : 0 });

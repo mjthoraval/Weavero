@@ -302,7 +302,9 @@ describe("Weavero — selected-tab outline (Firefox nova)", () => {
             assert.include(cg.boxShadow, focus, "the 1px inset ring in Firefox's drag outline colour: " + cg.boxShadow);
             assert.include(cg.boxShadow, "inset", "...inset");
             assert.equal(cg.backgroundColor, fill, "the selected fill");
-            assert.equal(cg.opacity, "1");
+            // Not faded beyond a tab's own opacity (Zotero's 0.6 in an
+            // inactive window on macOS and Linux; see the design-off case).
+            assert.equal(cg.opacity, win.getComputedStyle(sel).opacity, "a tab's own opacity");
             assert.equal(win.getComputedStyle(pin).width, "28px", "a pin-to-be is a 28px circle");
             // A multi-tab drag from another window: the ghost carries the
             // same card stack as a same-window multi-drag's held tab.
@@ -325,7 +327,10 @@ describe("Weavero — selected-tab outline (Firefox nova)", () => {
             assert.equal(co.borderTopLeftRadius, "4px", "design off: Weavero's own 4px corners, untouched");
             assert.equal(co.outlineStyle, "solid", "design off: the accent outline");
             assert.equal(co.backgroundColor, "rgba(64, 114, 229, 0.12)", "design off: the blue fill");
-            assert.equal(co.opacity, "1");
+            // Zotero's own tab opacity: 0.6 in an inactive window on macOS
+            // and Linux (scss _tabBar.scss, inactive-opacity) -- the macOS
+            // runner's window is one (macOS CI, 2026-11-09).
+            assert.equal(co.opacity, win.getComputedStyle(sel).opacity, "design off: a tab's own opacity");
             assert.equal(win.getComputedStyle(pin).width, "36px", "design off: Weavero's 36px pins");
             for (const [el, what] of [[unpin, "unpin preview"], [toPin, "pin preview"]]) {
                 const c = win.getComputedStyle(el);

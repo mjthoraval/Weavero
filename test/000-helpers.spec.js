@@ -428,14 +428,31 @@
             // not yet on the machine that recorded (2026-11-03); pane-scope.
             // spec.js holds both.
             const lazyPane = /^(wv-scope-menu-(reset|sep)( x\d+)?|_wvScopeFilters:object|_wvOvSettled:boolean)$/;
+            // What macOS never wires, the menu bar being the system's (macOS
+            // CI, 2026-11-09): the main window's compact title bar
+            // (_applyCompactTitleBar returns there) -- no hamburger nor its
+            // File / Edit promos, no title-bar styles, no window-name tooltip;
+            // the reader window's compact menubar (_wvEnsureReaderCompactMenubar
+            // returns there) -- its stash, styles, icon and the reader frame's
+            // no-drag rule; the note window's Zotero icon in its menubar
+            // (lib/menubar.ts wvMenubarTakesNonMenus).
+            const noMacMain = /^(_wvCompactTitleBar:object|wv-compact-titlebar-styles|wv-early-compact-css|wv-hamburger-popup|wv-win-name-tooltip|_wvCompactMenubar:object|wv-reader-compact-menubar-styles|wv-reader-menubar-icon|wv-reader-iframe-nodrag|wv-menubar-zicon)( x\d+)?$|^listen hamburgerPromo:/;
             const fixStr = (s) => typeof s === "string" ? s.replace(/menu_fileQuitItem(Win|Unix)/g, "menu_fileQuitItem") : s;
             const keep = (s) => typeof s !== "string"
-                || !(/^wv-ui-dark( x\d+)?$/.test(s) || lazyPane.test(s) || (!Zotero.isWin && winOnly.test(s)));
+                || !(/^wv-ui-dark( x\d+)?$/.test(s) || lazyPane.test(s) || (!Zotero.isWin && winOnly.test(s)) || (Zotero.isMac && noMacMain.test(s)));
             const walk = (v) => {
                 if (Array.isArray(v)) return v.filter(keep).map(fixStr).map(walk);
                 if (v && typeof v === "object") {
                     const o = {};
-                    for (const k of Object.keys(v)) o[fixStr(k)] = walk(v[k]);
+                    for (const k of Object.keys(v)) {
+                        const w = walk(v[k]);
+                        // An empty host goes, on both sides alike: one emptied
+                        // by the marks left out (macOS: #menu_FilePopup; the
+                        // recording's rootClasses, wv-ui-dark alone) equals one
+                        // that was empty to begin with.
+                        if (Array.isArray(w) && !w.length) continue;
+                        o[fixStr(k)] = w;
+                    }
                     return o;
                 }
                 return v;
@@ -469,6 +486,8 @@
             { re: /^Weavero — column picker on macOS .* is not installed off macOS$/, why: "platform: the case is for non-macOS and the run is on macOS" },
             { re: /^Weavero -- Plugins Manager title bar is one row on every platform /, why: "platform: macOS, or a display that refuses to maximize" },
             { re: / \(Windows\)$/, why: "platform: Windows only" },
+            // Unlisted until macOS CI got past its crash (2026-11-09).
+            { re: /^Weavero — File \/ Edit menubar entries for the window commands (opened from the hamburger|the menubar keeps Settings, Plugins and Exit)/, why: "platform: macOS has no hamburger (_applyCompactTitleBar skips it; the menu bar is the system's)" },
             { re: /^Weavero — tab-level undo choice a NEW main window gets the Edit hook/, why: "platform: Windows only, multi-main on" },
             { re: /^Weavero — window identity, lone window/, why: "needs the lone-window case" },
             { re: /^Weavero — View → Layout follows the tab .*note tab/, why: "version: note tabs (note-in-tab) need a Zotero that loads 'note' tabs" },
@@ -529,6 +548,10 @@
             },
         });
     } catch (e) {}
+    /** A line of your own in the quit trace, e.g. the step a spec is at: the
+     *  trace is all a run leaves when Zotero dies mid-suite (macOS CI, at the
+     *  reader-window wiring spec's reloads, 2026-11-03 to 11-09). */
+    wvT.trace = (line) => traceWrite(String(line));
 
     before(async function () {
         // Zotero's OWN readiness, beyond the plugin's: on a fresh profile the

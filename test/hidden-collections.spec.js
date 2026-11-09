@@ -376,7 +376,12 @@ describe("Weavero — hidden collections (per window)", () => {
                 catch (e) { calls.push("threw " + e); throw e; }
                 finally { calls.push("after:" + popState()); }
             };
-            const ev = new win.MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 0, clientX: 40, clientY: 40, screenX: win.mozInnerScreenX + 40, screenY: win.mozInnerScreenY + 40 });
+            // A right-click is button 2. On macOS Zotero takes a contextmenu
+            // of button 0 with no button down and no Ctrl for the Sequoia
+            // Ctrl-Return shortcut (platformKeys.js): stopped at the
+            // document and re-sent to the focused element -- never ours
+            // (macOS CI, 2026-11-09).
+            const ev = new win.MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, buttons: 2, clientX: 40, clientY: 40, screenX: win.mozInnerScreenX + 40, screenY: win.mozInnerScreenY + 40 });
             cell.dispatchEvent(ev);
             assert.isTrue(ev.defaultPrevented, "the header right-click is ours (no Zotero menu)");
             const pop = await wvT.waitFor(() => { const p = win.document.getElementById("wv-hid-groups-menu"); return p && p.state !== "closed" ? p : null; }, 3000);
@@ -391,7 +396,7 @@ describe("Weavero — hidden collections (per window)", () => {
             wv._wvHidListGroups = () => [];
             const origLibs = wv._wvHidListLibraries; wv._wvHidListLibraries = () => [];
             try {
-                const ev2 = new win.MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 0, clientX: 40, clientY: 40, screenX: win.mozInnerScreenX + 40, screenY: win.mozInnerScreenY + 40 });
+                const ev2 = new win.MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, buttons: 2, clientX: 40, clientY: 40, screenX: win.mozInnerScreenX + 40, screenY: win.mozInnerScreenY + 40 });
                 cell.dispatchEvent(ev2);
                 assert.isTrue(ev2.defaultPrevented, "still ours with nothing hidden");
                 const pop2 = await wvT.waitFor(() => { const p = win.document.getElementById("wv-hid-groups-menu"); return p && p.state !== "closed" ? p : null; }, 3000);
@@ -1291,7 +1296,8 @@ describe("Weavero — hidden collections (per window)", () => {
             // A pinned row's right-click: the manager's own menu, the row selected as from its own row.
             const rows = [...d.querySelectorAll("#wv-hid-mgr-sticky-left .row")];
             const offBefore = L.tree._jsWindow.scrollOffset;
-            const ev = new mw.MouseEvent("contextmenu", { bubbles: true, cancelable: true, screenX: mw.screenX + 100, screenY: mw.screenY + 100 });
+            // button 2: see the Group Libraries header's right-click above (macOS).
+            const ev = new mw.MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, buttons: 2, screenX: mw.screenX + 100, screenY: mw.screenY + 100 });
             rows[1].dispatchEvent(ev);
             assert.isTrue(ev.defaultPrevented, "the browser's own menu is not wanted");
             assert.strictEqual(L.tree._jsWindow.scrollOffset, offBefore, "no scroll to the row: the pinned copy stands for it (Zotero's select scrolls otherwise)");

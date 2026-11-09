@@ -49,11 +49,11 @@ jobs:
     name: Mocha + Chai (${{ matrix.label }}, Zotero ${{ matrix.channel }}${{ matrix.shard && format(', {0}', matrix.shard) || '' }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
-    # The macOS jobs report but do not decide the run (MJT 2026-11-03,
-    # "Ok to fix"): Zotero crashes there at a reader window's close, the
-    # cause not yet known; until it is, a red macOS job leaves the run --
-    # and release.yml's gate on it -- green. Drop `experimental` from the
-    # macOS rows once they pass.
+    # A row marked `experimental` reports but does not decide the run (a red
+    # job leaves the run -- and release.yml's gate on it -- green). The
+    # macOS rows were, from 2026-11-03 until their crash was found and fixed
+    # (lib/menubar.ts wvMenubarSafeBefore) and the rest went green, all
+    # twelve jobs (branch ci-macos, 2026-11-09): every system decides now.
     continue-on-error: ${{ matrix.experimental == true }}
     strategy:
       # One red job never cancels the others: each system and channel
@@ -80,10 +80,10 @@ jobs:
           - { os: windows-latest, label: Windows, channel: release, experimental: false, shard: "2/2", part: "-2of2" }
           - { os: windows-latest, label: Windows, channel: beta, experimental: false, shard: "1/2", part: "-1of2" }
           - { os: windows-latest, label: Windows, channel: beta, experimental: false, shard: "2/2", part: "-2of2" }
-          - { os: macos-latest, label: macOS, channel: release, experimental: true, shard: "1/2", part: "-1of2" }
-          - { os: macos-latest, label: macOS, channel: release, experimental: true, shard: "2/2", part: "-2of2" }
-          - { os: macos-latest, label: macOS, channel: beta, experimental: true, shard: "1/2", part: "-1of2" }
-          - { os: macos-latest, label: macOS, channel: beta, experimental: true, shard: "2/2", part: "-2of2" }
+          - { os: macos-latest, label: macOS, channel: release, experimental: false, shard: "1/2", part: "-1of2" }
+          - { os: macos-latest, label: macOS, channel: release, experimental: false, shard: "2/2", part: "-2of2" }
+          - { os: macos-latest, label: macOS, channel: beta, experimental: false, shard: "1/2", part: "-1of2" }
+          - { os: macos-latest, label: macOS, channel: beta, experimental: false, shard: "2/2", part: "-2of2" }
 
     steps:
       - uses: actions/checkout@v7
@@ -177,6 +177,8 @@ jobs:
         shell: bash
         env:
           WV_TEST_SHARD: ${{ matrix.shard }}
+          WV_TEST_ENTRIES: ${{ matrix.entries }}
+          WV_TEST_PREFS: ${{ matrix.prefs }}
         run: |
           set -o pipefail
           npm test 2>&1 | tee "$RUNNER_TEMP/wv-test.log"
@@ -212,7 +214,15 @@ jobs:
           if [ "$RUNNER_OS" = "macOS" ]; then
             for d in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
               find "$d" -maxdepth 2 -type f -mmin -45 -exec cp {} "$out/" \; 2>/dev/null || true
+              # The system folder may be root's: list it (and copy) with sudo.
+              { echo "== $d"; sudo ls -la "$d" 2>&1 | tail -n 40; } >> "$out/diagnostic-reports-listing.txt"
+              sudo find "$d" -maxdepth 2 -type f -mmin -45 -exec cp {} "$out/" \; 2>/dev/null || true
             done
+            sudo chmod -R a+r "$out" 2>/dev/null || true
+            # The unified log: how Zotero's process ended (a signal, the
+            # kernel, a watchdog) when nothing else says so (2026-11-09).
+            log show --last 40m --style compact --predicate 'process == "zotero"' 2>&1 | tail -n 3000 > "$out/unified-zotero.log" || true
+            log show --last 40m --style compact --predicate 'eventMessage CONTAINS[c] "zotero" AND process != "zotero"' 2>&1 | tail -n 1500 > "$out/unified-about-zotero.log" || true
           fi
           if [ -d .scaffold/test/profile/minidumps ]; then cp -R .scaffold/test/profile/minidumps "$out/" 2>/dev/null || true; fi
           ls -la "$out"

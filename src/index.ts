@@ -31,12 +31,12 @@ import { wvMenuItem, wvMenuSeparator } from "./lib/menu";
 import { wvSvgEl, WV_SVG_NS } from "./lib/svg";
 import { WV_LINK_CHAIN_PATHS, WV_BACKLINK_ARROW_PATH, WV_OUTLINK_ARROW_PATH, WV_LOOPLINK_ARROW_PATH, WV_BROKENLINK_MARK_PATH, WV_ZLINK_KIND_PATH, WV_CITE_KIND_PATH, WV_REF_MARK_TIGHT_VIEWBOX, WV_EXTLINK_PATHS, WV_LINK_MENU_ICON, wvLinkGlyphEl, wvLinkGlyphMarkup, wvLinkGlyphUri } from "./lib/link-glyph";
 import { wvOutsideClick, wvReachableDocs, wvDismissOff } from "./lib/dismiss";
-import { wvAltReveal } from "./lib/menubar";
+import { wvAltReveal, wvMenubarSafeBefore } from "./lib/menubar";
 
 /** The shared helpers, published as `Zotero.Weavero.lib` so the suite can
  *  exercise them directly (they are bundled, not otherwise reachable). */
 const WV_LIB = { wvLivePlugin, wvViewEl, wvViewEls, wvItemsTreeEl, wvItemsTreeEls, wvLibraryViews, wvViewIdsCss, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvWindowArgs, wvAdvSearchWindowArgs, wvAdvSearchGeometry, wvOpenLibraryView, wvPaneSizesRead, wvPaneSizesWrite, wvSelectLibraryTab, wvPlanWindowTransfer, wvGeomToPane, wvTransferItemIDs, wvWinType, wvIsTextEntry, wvAccel, wvAccelAny, wvCloneFor, wvMenuItem, wvMenuSeparator, wvSvgEl, WV_SVG_NS,
-    WV_LINK_CHAIN_PATHS, WV_BACKLINK_ARROW_PATH, WV_OUTLINK_ARROW_PATH, WV_LOOPLINK_ARROW_PATH, WV_BROKENLINK_MARK_PATH, WV_ZLINK_KIND_PATH, WV_CITE_KIND_PATH, WV_REF_MARK_TIGHT_VIEWBOX, WV_EXTLINK_PATHS, WV_LINK_MENU_ICON, wvLinkGlyphEl, wvLinkGlyphMarkup, wvLinkGlyphUri, wvHtmlEl, WV_XHTML_NS, WV_LINK_PALETTE, wvLinkVars, wvLinkColor, wvLinkClassRules, wvOutsideClick, wvReachableDocs, wvDismissOff, wvAltReveal, wvTimeout, wvClearTimeout, wvSleep, wvInjectStyle, wvRemoveStyle, wvFilterTileRules, wvWrap, wvUnwrap, wvWrapLayers,
+    WV_LINK_CHAIN_PATHS, WV_BACKLINK_ARROW_PATH, WV_OUTLINK_ARROW_PATH, WV_LOOPLINK_ARROW_PATH, WV_BROKENLINK_MARK_PATH, WV_ZLINK_KIND_PATH, WV_CITE_KIND_PATH, WV_REF_MARK_TIGHT_VIEWBOX, WV_EXTLINK_PATHS, WV_LINK_MENU_ICON, wvLinkGlyphEl, wvLinkGlyphMarkup, wvLinkGlyphUri, wvHtmlEl, WV_XHTML_NS, WV_LINK_PALETTE, wvLinkVars, wvLinkColor, wvLinkClassRules, wvOutsideClick, wvReachableDocs, wvDismissOff, wvAltReveal, wvMenubarSafeBefore, wvTimeout, wvClearTimeout, wvSleep, wvInjectStyle, wvRemoveStyle, wvFilterTileRules, wvWrap, wvUnwrap, wvWrapLayers,
     wvWhenWindowLoaded, wvBoolAttrOn, wvReaderMenuEvent, wvWithin,
     wvListen, wvUnlisten, wvUnlistenAll, wvListenKeys,
     wvStoreDir, wvStorePath, wvStoreChain, wvStoreWrite, wvStoreRead, wvStoreRemove };

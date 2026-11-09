@@ -40,8 +40,14 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
         return waitFor(() => tabOf(it), 15000, "note tab " + name);
     }
     const apply = () => { wv._applyPinnedTabs(win); wv._applyTabGroups(win); };
+    // The screen point is the client point plus the window's place: a chip
+    // released outside every Zotero window tears its group out (tab-groups.ts
+    // dragend), and macOS puts the runner's window below the system menu bar,
+    // so the client point taken as a screen point fell outside it there -- the
+    // group D, E went to a new window and every later case missed it (macOS
+    // CI, 2026-11-09).
     const dragEv = (type, x, y, dt, target) => {
-        const ev = new win.DragEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, screenX: x, screenY: y, dataTransfer: dt });
+        const ev = new win.DragEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, screenX: Math.round(win.mozInnerScreenX + x), screenY: Math.round(win.mozInnerScreenY + y), dataTransfer: dt });
         target.dispatchEvent(ev);
         return ev;
     };

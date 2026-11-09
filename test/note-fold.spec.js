@@ -483,4 +483,46 @@ describe("Weavero — note list folding", function () {
             "arrows back without an edit").to.equal(true);
         expect(!!ed.d.querySelector(".ProseMirror h1 .wv-fold-toggle"), "the heading's too").to.equal(true);
     });
+
+    it("a note open across an update from 1.0.0 folds its lists and takes typing", async function () {
+        // MJT 2026-11-09: in notes open since before 1.0.1, a list item's
+        // arrow folded nothing -- and a typed character threw. The install
+        // swaps the fold plugin in one reconfigure under the SAME key, and
+        // ProseMirror keeps a state field whose key is in both plugin sets:
+        // 1.0.0's state ({ folded, flash }, inject 10) outlived its plugin,
+        // and the new one read its missing list part. Here the page's own
+        // install runs over a 1.0.0-shaped plugin, as an update does.
+        const iw = Components.utils.waiveXrays(ed.f.contentWindow);
+        const swapped = String(iw.eval(
+            "(function () { const v = window._currentEditorInstance._editorCore.view;"
+            + " const fp = v.state.plugins.find((p) => p.spec && p.spec.__wvFold);"
+            + " v.updateState(v.state.reconfigure({ plugins: v.state.plugins.filter((p) => p !== fp) }));"
+            + " const old = new fp.constructor({ key: fp.spec.key, __wvFold: true, __wvFoldV: 10,"
+            + "   state: { init: () => ({ folded: [], flash: null }), apply: (tr, prev) => prev } });"
+            + " v.updateState(v.state.reconfigure({ plugins: v.state.plugins.concat([old]) }));"
+            + " const was = Object.keys(old.getState(v.state)).join(',');"
+            + " return was + '|' + window.__wvInstallNoteLinkify(); })()"));
+        expect(swapped, "1.0.0's state, then the current plugin installed over it").to.equal("folded,flash|installed");
+        expect(await wvT.waitFor(() => !!arrowOf(itemByText("Methods")), 5000), "arrows drawn").to.equal(true);
+        press(itemByText("Methods"));
+        expect(await wvT.waitFor(() => folded("Methods") && !visible(paraByText("methods second paragraph")), 5000),
+            "the arrow folds the item").to.equal(true);
+        press(itemByText("Methods"));
+        expect(await wvT.waitFor(() => !folded("Methods") && visible(paraByText("methods second paragraph")), 5000),
+            "and opens it again").to.equal(true);
+        const typed = String(iw.eval(
+            "(function () { const v = window._currentEditorInstance._editorCore.view; let pos = -1;"
+            + " v.state.doc.descendants((n, p) => { if (pos < 0 && n.isText && n.text === 'Results') pos = p + n.nodeSize; });"
+            + " try { v.dispatch(v.state.tr.insertText('!', pos)); } catch (e) { return 'threw: ' + e; }"
+            + " return v.state.doc.textContent.includes('Results!') ? 'typed' : 'lost'; })()"));
+        expect(typed, "a typed character").to.equal("typed");
+        // Zotero saves the edit a moment later: wait for it. The after hook
+        // erases this note, and a save landing on an erased note fails
+        // (FOREIGN KEY on itemNotes) and sets Zotero.crash() -- every main
+        // window opened later in the run then stops at "Please restart
+        // Zotero" (the 1.0.2 gates' full suite, 2026-11-09: 25 failures from
+        // the next real window on).
+        expect(await wvT.waitFor(() => /** @type {any} */ (Zotero.Items.get(note.id)).getNote().includes("Results!") ? true : null, 15000, 300),
+            "the edit saved").to.equal(true);
+    });
 });

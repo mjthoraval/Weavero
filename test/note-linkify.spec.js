@@ -157,8 +157,10 @@ describe("Weavero — note-editor bare-URL decoration", () => {
         const iw = edoc.defaultView;
         const pm = edoc.querySelector(".ProseMirror");
         pm.focus();
+        // Cmd+F on macOS: the note editor's findbar reads the platform's
+        // accelerator (note-editor src/ui/findbar.js; macOS CI, 2026-11-09).
         pm.dispatchEvent(new iw.KeyboardEvent("keydown",
-            { key: "f", code: "KeyF", ctrlKey: true, bubbles: true }));
+            Object.assign({ key: "f", code: "KeyF", bubbles: true }, Zotero.isMac ? { metaKey: true } : { ctrlKey: true })));
         const input = await waitFor(() => edoc.querySelector(".findbar input"), 8000);
         expect(input, "findbar opened by Ctrl+F").to.be.ok;
         // React-controlled input: go through the native value setter so the

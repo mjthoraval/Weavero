@@ -48,6 +48,15 @@ function wvTestEntries(): string[] {
   return [dir];
 }
 
+/** Extra test-profile prefs from WV_TEST_PREFS (a JSON object), {} when unset. */
+function wvTestExtraPrefs(): Record<string, string | number | boolean> {
+  const raw = process.env.WV_TEST_PREFS;
+  if (!raw) return {};
+  const o = JSON.parse(raw);
+  console.log("[weavero] extra test prefs: " + JSON.stringify(o));
+  return o;
+}
+
 /** Local test runs on Linux use Gecko's own headless mode (MOZ_HEADLESS --
  *  nothing to install, unlike the scaffold's `test.headless`, which runs
  *  `sudo apt install` for Xvfb). On a desktop session -- GNOME/Wayland,
@@ -168,6 +177,16 @@ export default defineConfig({
     prefs: {
       "widget.windows.window_occlusion_tracking.enabled": false,
       "widget.windows.window_occlusion_tracking_display_state.enabled": false,
+      // macOS: an app in the background cannot take focus there, and the
+      // runner's Zotero is one (CI's, and a local run behind the editor):
+      // every spec that waits for a focus or blur failed on macOS CI.
+      // Gecko's own test pref -- its mochitests run with it -- lets windows
+      // and elements take focus as if the app were in front. Shard 1/2 went
+      // from 14 failures to the 6 menu ones with it (2026-11-09, round 3).
+      ...(process.platform === "darwin" ? { "focusmanager.testmode": true } : {}),
+      // A CI job's own prefs on top (WV_TEST_PREFS, a JSON object): the
+      // macOS rounds of 2026-11-09 test one platform setting at a time.
+      ...wvTestExtraPrefs(),
     },
     abortOnFail: false,
     // One-shot run: exit after a single pass instead of staying in

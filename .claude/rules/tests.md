@@ -233,3 +233,12 @@ paths:
   dispatching -- an `eraseTx` in a later hook hung past its timeout
   (anchor-mark-close.spec.js, 2026-10-14, where a wait that returned at
   once closed the window within milliseconds).
+- A spec that EDITS a note in an open editor (a typed character, a
+  dispatched insert) waits for the save -- the saved `getNote()` holds the
+  edit -- before anything erases that note. Zotero saves a moment later; a
+  save landing on an erased note fails (FOREIGN KEY on itemNotes) and sets
+  `Zotero.crash()`, and from then on every main window the run opens stops
+  at "Please restart Zotero". The failures land in unrelated specs far
+  away and only in the full suite (the root hook's "ZOTERO CRASHED, first
+  seen after" line names the spec): 2026-11-04, and the 1.0.2 gates
+  (2026-11-09, note-fold.spec.js's update guard, 25 failures).

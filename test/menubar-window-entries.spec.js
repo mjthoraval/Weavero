@@ -441,7 +441,11 @@ describe("Weavero — File / Edit menubar entries for the window commands", () =
 			const stubborn = { closed: false, focus() { focusCalls++; }, document: { hasFocus: () => false } };
 			Zotero.getMainWindows = () => [win, stubborn];
 			wv._wvRaiseNewMainWindow(new Set([win]));
-			await new Promise(r => win.setTimeout(r, 1600));
+			// Ten 100 ms ticks: waited for, not timed -- a slow runner's timers
+			// lag (9 tries at 1600 ms on macOS CI, 2026-11-09); then a pause to
+			// see that no eleventh comes.
+			for (let t = 0; t < 45 && focusCalls < 10; t++) await new Promise(r => win.setTimeout(r, 100));
+			await new Promise(r => win.setTimeout(r, 400));
 			assert.strictEqual(focusCalls, 10, "a window that never gets focus is left alone after ten tries");
 		}
 		finally { Zotero.getMainWindows = origGet; }

@@ -98,7 +98,7 @@ jobs:
       # caches its own (its ci.yml): `npm ci` took ~3 min of each Windows job.
       - name: Cache node_modules
         id: nm
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: node_modules
           key: node-modules-${{ runner.os }}-${{ steps.node.outputs.node-version }}-${{ hashFiles('package-lock.json') }}

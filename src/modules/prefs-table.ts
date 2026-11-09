@@ -71,6 +71,10 @@ export const WV_MASTER_KEYS: Record<string, string[]> = {
     _getEnableItemsTreeFilter: ["enableItemsTreeFilter"],
     _getCompactTitleBar: ["compactTitleBar"],
     _wvMultiMainOn: ["enableTabsAndWindows", "newMainWindow"],
+    // An older Zotero's answer, which prefs.html states; on a Zotero with its
+    // own windows Settings re-gates the two rows under the master alone
+    // (data-wv-native-gate, prefs/index.ts bindNativeWindows).
+    _wvAdvSearchWindowsOn: ["enableTabsAndWindows", "newMainWindow"],
 };
 
 /** Keyed by the pref name under `extensions.zotero.weavero.`. */
@@ -225,7 +229,7 @@ export const WV_PREFS: Record<string, WvPrefRow> = {
     compactTitleBarPluginsManager: { def: true, masters: ["_getCompactTitleBar"], strings: true },
     noteOpenInDeckWindow: { def: true, strings: true, gate: ["compactTitleBarReader"] },
     newMainWindow: { def: true, strings: true, gate: ["enableTabsAndWindows"] },
-    advSearchShortcutNewWindow: { def: true, masters: ["_wvMultiMainOn"] },
+    advSearchShortcutNewWindow: { def: true, masters: ["_wvAdvSearchWindowsOn"] },
     advSearchWindowHidePanes: { def: true, gate: ["newMainWindow"] },
     enableTabGroups: { def: true, masters: [TW] },
     windowTitleGlyphs: { def: false, masters: [TW] },

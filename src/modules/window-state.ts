@@ -4,7 +4,7 @@
 // store stands down (wvNativeWindows, lib/windows.ts). Two things stay Weavero's:
 //
 //   - What Zotero does not know about a window: its custom title, its hidden
-//     collections, its own Tags-column count. They ride `weavero.windowState`,
+//     collections, its own Tags-column count, its colour. They ride `weavero.windowState`,
 //     one of the settings a window keeps for itself (ZoteroPane.setWindowSetting).
 //     Zotero saves those with the window, so they go where it goes: a restart, a
 //     closed window reopened.
@@ -15,8 +15,9 @@
 // Guards: test/window-transfer.spec.js, and the real update (an older Zotero's
 // profile started on the new build) in the z6035 live check.
 
-import { wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvPlanWindowTransfer, wvTransferItemIDs, wvWinType, WV_WINDOW_STATE_PREF } from "../lib/windows";
+import { wvIsLibraryTabID, wvLibraryViews, wvMainWins, wvNativeWindows, wvPaneOpenSettingNames, wvPaneSizesRead, wvPaneSizesWrite, wvPlanWindowTransfer, wvTransferItemIDs, wvWinType, WV_WINDOW_STATE_PREF } from "../lib/windows";
 import { wvSleep } from "../lib/timers";
+import { wvUnwrap, wvWrap } from "../lib/wrap";
 
 declare const Zotero: any;
 declare const IOUtils: any;
@@ -42,7 +43,115 @@ class _WindowStateMixin {
         if (title) st.title = title;
         const tagsAuto = p._wvTagsAutoCapture(w);
         if (typeof tagsAuto === "boolean") st.tagsAuto = tagsAuto;
+        // The Advanced Search window's hidden side panes (pane.ts
+        // _wvAdvSearchHidePanesNative): Zotero's shared layout never has them.
+        const advPanes = p._wvAdvSearchPanesHidden(w);
+        if (advPanes.length) st.advPanes = advPanes;
+        // Its colour, drawn or picked (tabs.ts _wvGlyphRestore).
+        Object.assign(st, p._wvGlyphFields(w));
+        // Its own pane sizes (_wvPaneSizesApply).
+        const sizes = this._wvPaneSizesCapture(w);
+        if (sizes) st.paneSizes = sizes;
         return st;
+    }
+
+    /** Where window `w`'s panes are: in `view` (a library tab's, on a Zotero with
+     *  its own windows; the one shown by default), else in its document. */
+    _wvPaneSizesGetter(w: any, view?: any): (id: string) => any {
+        const v = view || (w && w.ZoteroPane && w.ZoteroPane.libraryView);
+        if (v && typeof v.getElement === "function") return (id: string) => v.getElement(id);
+        if (wvNativeWindows()) return () => null;   // a window with no library tab
+        return (id: string) => w.document.getElementById(id);
+    }
+
+    /** Window `w`'s pane sizes (lib/windows.ts wvPaneSizesRead), its last known
+     *  when it shows no library view, null when none. */
+    _wvPaneSizesCapture(w: any): any {
+        try { return wvPaneSizesRead(this._wvPaneSizesGetter(w)) || (w && w._wvPaneSizes) || null; }
+        catch (e) { return null; }
+    }
+
+    /** Give window `w` its own pane sizes (MJT 2026-11-08: each window keeps its
+     *  own widths; whether a pane is collapsed stays Zotero's shared setting).
+     *  On a Zotero with its own windows: every library view it holds, and the ones
+     *  its library tabs take when shown again (_wvPaneSizesWire). */
+    _wvPaneSizesApply(w: any, sizes: any) {
+        if (!w || !sizes || typeof sizes !== "object") return;
+        try {
+            if (wvNativeWindows()) {
+                w._wvPaneSizes = Object.assign({}, sizes);
+                for (const v of wvLibraryViews(w)) wvPaneSizesWrite((id: string) => v.getElement(id), sizes);
+            }
+            else wvPaneSizesWrite((id: string) => w.document.getElementById(id), sizes);
+            try { w.ZoteroPane.updateLayoutConstraints(); } catch (e) {}
+        }
+        catch (e) { Zotero.debug("[Weavero] _wvPaneSizesApply err: " + e); }
+    }
+
+    /** Window `w`'s own sizes: the ones it last held, else its saved state's,
+     *  unless that state is the copy Zotero hands a window opened from another
+     *  (_wvWinStateApply's rule: that window starts from its opener's, as Zotero's). */
+    _wvPaneSizesOwn(w: any): any {
+        if (w._wvPaneSizes) return w._wvPaneSizes;
+        try {
+            const text = w.ZoteroPane.getWindowSettings().prefs[WV_WINDOW_STATE_PREF];
+            const st = text ? JSON.parse(text) : null;
+            if (!st || !st.paneSizes) return null;
+            if (st.id && wvMainWins().some((x: any) => x !== w && x._wvWinStateId === st.id)) return null;
+            return st.paneSizes;
+        }
+        catch (e) { return null; }
+    }
+
+    /** On a Zotero with its own windows, Zotero keeps ONE layout for every window
+     *  and library tab, on purpose ("Library views share one set of values",
+     *  zoteroPane.js serializePersist), and puts it back on each library tab shown
+     *  (libraryView.adoptSharedState): a window took the widths whichever window
+     *  saved last (restart checks 2026-11-07). What a window saves is noted as its
+     *  own, and its own go back on after Zotero's. Zotero's shared value is left as
+     *  it is: a window opened from another starts from it, and without Weavero
+     *  nothing changes. Before the window's first library view shows.
+     *  Guard: test/window-pane-sizes.spec.js. */
+    _wvPaneSizesWire(w: any) {
+        const zp = w && w.ZoteroPane;
+        if (!wvNativeWindows() || !zp || typeof zp.serializePersist !== "function" || typeof zp.unserializePersist !== "function") return;
+        const tag = (this as any)._wvWireTag();
+        wvWrap(zp, "serializePersist", "paneSizes", tag, (orig: any) => function (this: any, view?: any) {
+            const r = orig.apply(this, arguments);
+            try {
+                const lp = live();
+                const sizes = lp && wvPaneSizesRead(lp._wvPaneSizesGetter(w, view));
+                // Zotero saves its layout when a library tab is left, a window
+                // opened from this one, and this window closing: the window's own
+                // state with it, when the sizes changed.
+                if (sizes && JSON.stringify(sizes) !== JSON.stringify(w._wvPaneSizes || null)) {
+                    w._wvPaneSizes = sizes;
+                    try { lp._wvWinStateSave(w); } catch (e) {}
+                }
+            }
+            catch (e) {}
+            return r;
+        });
+        wvWrap(zp, "unserializePersist", "paneSizes", tag, (orig: any) => function (this: any, view?: any) {
+            const r = orig.apply(this, arguments);
+            try {
+                const lp = live();
+                const own = lp && lp._wvPaneSizesOwn(w);
+                if (own) {
+                    const views = view ? [view] : wvLibraryViews(w);
+                    for (const v of views) wvPaneSizesWrite((id: string) => v.getElement(id), own);
+                }
+            }
+            catch (e) {}
+            return r;
+        });
+    }
+
+    _wvPaneSizesUnwire(w: any) {
+        const zp = w && w.ZoteroPane;
+        if (!zp) return;
+        try { wvUnwrap(zp, "serializePersist", "paneSizes"); } catch (e) {}
+        try { wvUnwrap(zp, "unserializePersist", "paneSizes"); } catch (e) {}
     }
 
     /** Into the window's own settings. Only a window whose saved state has been
@@ -87,8 +196,17 @@ class _WindowStateMixin {
             if (text && !st) zp.setWindowSetting(WV_WINDOW_STATE_PREF, "");
             if (st) {
                 w._wvWinStateId = st.id;
+                if (st.glyph != null) p._wvGlyphRestore(w, st.glyph, st.glyphPicked === true);
+                if (st.paneSizes) this._wvPaneSizesApply(w, st.paneSizes);
                 if (st.title && w._wvWindowTitle == null) p._wvWindowSetCustomTitle(w, st.title);
                 if (typeof st.tagsAuto === "boolean") p._wvTagsAutoSet(w, st.tagsAuto, { save: false });
+                // An Advanced Search window back from a restart or reopened:
+                // its panes hidden again, its size remembered from now on.
+                if (Array.isArray(st.advPanes) && st.advPanes.length && p._wvAdvSearchWindowsOn() && p._getAdvSearchWindowHidePanes()) {
+                    w._wvAdvSearchWin = true;
+                    p._wvAdvSearchHidePanesNative(w, st.advPanes);
+                    try { p._wvAdvSearchRememberSize(w); } catch (e) {}
+                }
                 // The tree may not exist yet: _wvHidApply refreshes it when it comes.
                 if (st.hiddenColl) await p._wvHidRestore(w, st.hiddenColl);
             }
@@ -111,6 +229,7 @@ class _WindowStateMixin {
         const zp = w.ZoteroPane;
         if (!zp || typeof zp.getWindowSettings !== "function") return;
         const p: any = this;
+        try { this._wvPaneSizesWire(w); } catch (e) { Zotero.debug("[Weavero] _wvPaneSizesWire err: " + e); }
         const seen = p._wvWinStateSeen || (p._wvWinStateSeen = new WeakSet());
         if (seen.has(w)) return;
         seen.add(w);
@@ -211,6 +330,8 @@ class _WindowStateMixin {
         for (const [name, value] of Object.entries((fill.settings && fill.settings.prefs) || {})) zp.setWindowSetting(name, value);
         for (const [id, prefs] of Object.entries((fill.settings && fill.settings.itemTreeColumns) || {})) zp.setItemTreeColumnPrefs(id, prefs);
         const st = fill.state;
+        if (st.glyph != null) p._wvGlyphRestore(w, st.glyph, st.glyphPicked === true);
+        if (st.paneSizes) this._wvPaneSizesApply(w, st.paneSizes);
         if (st.title && w._wvWindowTitle == null) p._wvWindowSetCustomTitle(w, st.title);
         if (typeof st.tagsAuto === "boolean") p._wvTagsAutoSet(w, st.tagsAuto, { save: false });
         if (st.hiddenColl) await p._wvHidRestore(w, st.hiddenColl);
@@ -237,6 +358,24 @@ class _WindowStateMixin {
         return added;
     }
 
+    /** Make the pinned section and the section states `win` shows its own
+     *  before other windows open. A setting a window has not read yet comes
+     *  from the pref of that name, and every window that draws its item pane
+     *  writes its own pin there (zoteroPane.js getWindowSetting /
+     *  setWindowSetting, zotero#6035); read that late, the first window took
+     *  the pin of a window opened after it (transition test 2026-11-07:
+     *  Window A came back with Window C's "libraries-collections" for its
+     *  "tags"). Reading fixes the value the window has now. */
+    _wvWindowSettingsOwn(win: any) {
+        try {
+            const zp: any = win && win.ZoteroPane;
+            if (!zp || typeof zp.getWindowSetting !== "function") return;
+            zp.getWindowSetting("pinnedPane");
+            for (const name of wvPaneOpenSettingNames(win)) zp.getWindowSetting(name);
+        }
+        catch (e) { Zotero.debug("[Weavero] _wvWindowSettingsOwn err: " + e); }
+    }
+
     /** Open what `doc` (windows.json) holds as Zotero's own windows: the first
      *  window's tabs in the window that is there, each other window in the one
      *  Zotero reopened for it or through Zotero's own restore. Returns
@@ -246,6 +385,7 @@ class _WindowStateMixin {
         const wins = wvMainWins();
         const first: any = wins[0];
         if (!first || !first.Zotero_Tabs) return { added: 0, opened: [] };
+        this._wvWindowSettingsOwn(first);
         const others = wins.slice(1).filter((w: any) => w.Zotero_Tabs && w.Zotero_Tabs._tabs.some((t: any) => wvIsLibraryTabID(t.id)));
         const open = new Map<number, number>();
         for (const w of wins) {

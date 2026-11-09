@@ -107,7 +107,9 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     // strip build).
     { id: "new-tab-shortcut", on: "both", nativeOff: true, wire: (p, win) => p._wvWireMainNewTabShortcut(win) },
     { id: "new-window-shortcut", on: "both", nativeOff: true, wire: (p, win) => p._wvWireNewWindowShortcut(win) },
-    { id: "advsearch-new-window", on: "both", nativeOff: true, wire: (p, win) => p._wvWireAdvSearchNewWindow(win) },
+    // On a Zotero with its own windows too (the port, MJT 2026-11-07): there
+    // Shift+click is Zotero's, the rest of the routes Weavero's.
+    { id: "advsearch-new-window", on: "both", wire: (p, win) => p._wvWireAdvSearchNewWindow(win) },
     { id: "collections-pane-toggle", on: "both", perView: true, wire: (p, win) => p._wvApplyCollectionsPaneToggle(win) },
     // Multi-line titles: each window's items tree, hence `views`.
     { id: "title-lines", on: "both", views: true, wire: (p, win) => p._wvApplyTitleLines(win) },

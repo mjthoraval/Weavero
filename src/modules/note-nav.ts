@@ -6,9 +6,11 @@
 // heading API live in the injected bundle (note-editor-inject.ts, INJECT_V 6).
 // This is the chrome half, wired into every <note-editor> note-editor.ts
 // wires (item pane, note tabs, note windows, the reader's notes pane):
-//  - fold arrows: a press on `.wv-fold-toggle` -> the page's toggle; the
-//    folds are remembered per note in <data dir>/weavero/note-view.json,
-//    this computer only -- nothing is written into the note;
+//  - fold arrows on headings and, since 2026-11-09, on list items: a press
+//    on `.wv-fold-toggle` -> the page's toggle; the folds are remembered
+//    per note in <data dir>/weavero/note-view.json, this computer only --
+//    nothing is written into the note; Fold All / Unfold All end the
+//    note's own menu;
 //  - the outline: a panel left of the editor, below its toolbar (whose
 //    start holds the Toggle Outline button), the reader outline's look and
 //    its current-section rule (the last heading the reading line, a quarter
@@ -39,7 +41,10 @@ const HEADINGS = "h1, h2, h3, h4, h5, h6";
 // narrow (MJT 2026-11-03); the user's choice per kind wins from then on.
 const OUTLINE_OPEN_DEFAULT: Record<string, boolean> = { tab: true, window: true, pane: false, context: false };
 const OUTLINE_W_DEF = 200, OUTLINE_W_MIN = 120, OUTLINE_W_MAX = 480;
-const NN_KEYS = ["noteNav:down", "noteNav:change", "noteNav:scroll", "noteNav:ctx"];
+const NN_KEYS = ["noteNav:down", "noteNav:change", "noteNav:scroll", "noteNav:ctx", "noteNav:over", "noteNav:out"];
+// What Weavero adds to the note's own menu (#editor-menu), taken out again
+// on every open and close: Zotero rebuilds the menu's own items each time.
+const NN_MENU_ITEMS = ":scope > [id^='wv-note-heading-link'], :scope > [id^='wv-note-fold'], :scope > #wv-note-unfold-all";
 
 // Per-editor state, keyed by the <note-editor> element: never an expando on
 // Zotero's element, and gone with it.
@@ -228,6 +233,27 @@ class _NoteNavMixin {
         catch (e) { return -1; }
     }
 
+    /** The list item holding `target`, as its index among the editor's
+     *  `li` elements -- the page's listItemsOf order. */
+    _wvNnListOrdOf(idoc: any, target: any): number {
+        try {
+            let t = target;
+            if (t && t.nodeType === 3) t = t.parentNode;
+            const li = t && t.closest ? t.closest("li") : null;
+            const pm = li ? li.closest(".ProseMirror") : null;
+            return pm ? Array.from(pm.querySelectorAll("li")).indexOf(li) : -1;
+        }
+        catch (e) { return -1; }
+    }
+
+    /** The page's list items (note-editor-inject.ts listItemsJSON). */
+    _wvNnListItems(iframe: any): any[] {
+        const wj = this._wvNnPage(iframe);
+        if (!wj || typeof wj.__wvListItems !== "function") return [];
+        try { return JSON.parse(String(wj.__wvListItems())) || []; }
+        catch (e) { return []; }
+    }
+
     _wvNnNoteKey(ne: any): string {
         try { const it = ne && ne.item; return it && it.key ? it.libraryID + ":" + it.key : ""; }
         catch (e) { return ""; }
@@ -309,6 +335,14 @@ class _NoteNavMixin {
                 const p = wvLivePlugin();
                 if (p) p._wvNnOnContext(e, ne, iframe);
             }, true, tag);
+            wvListen(idoc, "noteNav:over", "mouseover", (e: any) => {
+                const p = wvLivePlugin();
+                if (p) p._wvNnHandleHover(e, iframe, true);
+            }, true, tag);
+            wvListen(idoc, "noteNav:out", "mouseout", (e: any) => {
+                const p = wvLivePlugin();
+                if (p) p._wvNnHandleHover(e, iframe, false);
+            }, true, tag);
             // Zotero rebuilds #editor-menu on every right-click
             // (editorInstance.js _openPopup) and opens it once built.
             const menu = ne.querySelector("#editor-menu");
@@ -319,7 +353,7 @@ class _NoteNavMixin {
                 }, false, tag);
                 wvListen(menu, "noteNav:menuHide", "popuphidden", (e: any) => {
                     if (e.target !== menu) return;   // a submenu closing bubbles here
-                    try { for (const el of menu.querySelectorAll(":scope > [id^='wv-note-heading-link']")) el.remove(); }
+                    try { for (const el of menu.querySelectorAll(NN_MENU_ITEMS)) el.remove(); }
                     catch (er) {}
                 }, false, tag);
             }
@@ -331,12 +365,20 @@ class _NoteNavMixin {
         catch (e) { Zotero.debug("[Weavero] note nav wire err: " + e); }
     }
 
-    /** Push the fold switch into the page and its stylesheet hook. */
+    /** Push the fold switch into the page and its stylesheet hook. A flip
+     *  repaints: the page draws arrows only in a transaction, and after a
+     *  plugin reload or update the page keeps the same bundle (install says
+     *  "already", which does not repaint) while the old instance's strip
+     *  had switched folding off -- every note lost its arrows until its
+     *  next edit or click (found 2026-11-09, 1.0.1-dev.9 -> dev.10). */
     _wvNnSetFlags(iframe: any) {
         try {
             const on = this._wvNoteFoldOn();
             const wj = this._wvNnPage(iframe);
-            if (wj) wj.__wvFoldEnabled = on;
+            if (wj && wj.__wvFoldEnabled !== on) {
+                wj.__wvFoldEnabled = on;
+                if (typeof wj.__wvRedecorateNotes === "function") wj.__wvRedecorateNotes();
+            }
             const body = iframe.contentDocument && iframe.contentDocument.body;
             if (body) {
                 body.classList.toggle("wv-fold-on", on);
@@ -413,11 +455,41 @@ class _NoteNavMixin {
             e.preventDefault();
             e.stopPropagation();
             if (e.stopImmediatePropagation) e.stopImmediatePropagation();
-            const ord = this._wvNnOrdOf(iframe.contentDocument, tog);
             const wj = this._wvNnPage(iframe);
+            if (tog.getAttribute("data-wv-fold") === "li") {
+                const lord = this._wvNnListOrdOf(iframe.contentDocument, tog);
+                if (lord >= 0 && wj && typeof wj.__wvListFoldToggle === "function") wj.__wvListFoldToggle(lord);
+                return;
+            }
+            const ord = this._wvNnOrdOf(iframe.contentDocument, tog);
             if (ord >= 0 && wj && typeof wj.__wvFoldToggle === "function") wj.__wvFoldToggle(ord);
         }
         catch (er) { Zotero.debug("[Weavero] fold toggle err: " + er); }
+    }
+
+    /** The pointer on Zotero's grab handle keeps its block's fold arrow lit
+     *  (MJT 2026-11-09: "The arrow should still be visible when the mouse is
+     *  on the handle"): the handle lies outside the block, so the block's
+     *  :hover ends there. The block is the one right of the handle (an li's
+     *  gutter box or the heading itself). The mark goes on the arrow, a
+     *  widget whose attributes ProseMirror ignores -- never on the block. */
+    _wvNnHandleHover(e: any, iframe: any, on: boolean) {
+        try {
+            const t = e.target;
+            if (!t || !t.classList || !t.classList.contains("drag-handle")) return;
+            const d = iframe.contentDocument;
+            for (const a of d.querySelectorAll(".wv-fold-toggle[data-wv-lit]")) a.removeAttribute("data-wv-lit");
+            if (!on) return;
+            const r = t.getBoundingClientRect();
+            const hit = d.elementFromPoint(r.right + 2, r.top + r.height / 2);
+            const block = hit && hit.closest ? hit.closest("li, " + HEADINGS) : null;
+            if (!block || !block.closest(".ProseMirror")) return;
+            const arrow = block.localName === "li"
+                ? block.querySelector(":scope > .wv-fold-li > .wv-fold-toggle")
+                : block.querySelector(":scope > .wv-fold-toggle");
+            if (arrow) arrow.setAttribute("data-wv-lit", "true");
+        }
+        catch (er) {}
     }
 
     _wvNnOnChange(e: any, ne: any, iframe: any) {
@@ -463,11 +535,12 @@ class _NoteNavMixin {
     }
 
     /** The heading's two copy entries at the top of the note's own menu when
-     *  the right-click was in a heading. */
+     *  the right-click was in a heading; Fold All / Unfold All at its end. */
     _wvNnOnMenuShowing(e: any, ne: any, iframe: any, menu: any) {
         try {
             if (e.target !== menu) return;   // a submenu opening bubbles here
-            for (const el of menu.querySelectorAll(":scope > [id^='wv-note-heading-link']")) el.remove();
+            for (const el of menu.querySelectorAll(NN_MENU_ITEMS)) el.remove();
+            this._wvNnFoldMenuAdd(ne, iframe, menu);
             const st = this._wvNnState(ne);
             if (st.ctxOrd < 0 || Date.now() - st.ctxAt > 3000) return;
             if (!this._wvNoteHeadingLinksOn()) return;
@@ -482,6 +555,41 @@ class _NoteNavMixin {
             for (const kind of ["select", "open"]) menu.insertBefore(this._wvNnLinkMenuItem(doc, ne, heads, h, kind), sep);
         }
         catch (er) { Zotero.debug("[Weavero] heading-link menu err: " + er); }
+    }
+
+    /** "Fold All" / "Unfold All" at the end of the note's own menu: every
+     *  heading and list item, at every level (MJT 2026-11-09, as Obsidian's
+     *  "Fold all headings and lists"). Absent while folding is off or the
+     *  note has nothing to fold; each greyed when it has nothing to do. */
+    _wvNnFoldMenuAdd(ne: any, iframe: any, menu: any) {
+        try {
+            if (!this._wvNoteFoldOn()) return;
+            const wj = this._wvNnPage(iframe);
+            if (!wj || typeof wj.__wvFoldCounts !== "function") return;
+            const c: any = JSON.parse(String(wj.__wvFoldCounts()));
+            if (!c || !c.foldable) return;
+            const doc = menu.ownerDocument;
+            wvMenuSeparator(doc, menu).id = "wv-note-fold-sep";
+            const run = (fold: boolean) => {
+                const p = wvLivePlugin();
+                if (p) p._wvNoteFoldAll(ne, fold);
+            };
+            wvMenuItem(doc, { label: "Fold All", attrs: { id: "wv-note-fold-all" },
+                disabled: c.folded >= c.foldable, onCommand: () => run(true) }, menu);
+            wvMenuItem(doc, { label: "Unfold All", attrs: { id: "wv-note-unfold-all" },
+                disabled: !c.folded, onCommand: () => run(false) }, menu);
+        }
+        catch (er) { Zotero.debug("[Weavero] fold menu err: " + er); }
+    }
+
+    /** Fold (or open) every heading and list item of the note in `ne`. */
+    _wvNoteFoldAll(ne: any, fold: boolean): boolean {
+        const wj = this._wvNnPage(this._wvNnIframe(ne));
+        if (!wj) return false;
+        const fn = fold ? wj.__wvFoldAll : wj.__wvUnfoldAll;
+        if (typeof fn !== "function") return false;
+        fn();
+        return true;
     }
 
     /** The reader outline's "Highlight the heading text when clicking an
@@ -548,8 +656,14 @@ class _NoteNavMixin {
             const key = this._wvNnNoteKey(ne);
             const saved = key ? nv.folds[key] : null;
             if (Array.isArray(saved) && saved.length) {
-                const ords = this._wvNnMatchFolds(this._wvNnHeadings(iframe), saved);
+                const heads = saved.filter((e: any) => e && e.k !== "li");
+                const lists = saved.filter((e: any) => e && e.k === "li");
+                const ords = heads.length ? this._wvNnMatchFolds(this._wvNnHeadings(iframe), heads) : [];
                 if (ords.length) wj2.__wvFoldSet(JSON.stringify(ords));
+                if (lists.length && typeof wj2.__wvListFoldSet === "function") {
+                    const lords = this._wvNnMatchListFolds(this._wvNnListItems(iframe), lists);
+                    if (lords.length) wj2.__wvListFoldSet(JSON.stringify(lords));
+                }
             }
             st.foldTag = tag;
             st.foldTagPending = "";
@@ -567,6 +681,19 @@ class _NoteNavMixin {
             let m: any = e.id ? tops.find((h: any) => h.id === e.id) : null;
             if (!m) m = tops.filter((h: any) => h.text === e.t && h.level === e.l)[e.n || 0];
             if (m && out.indexOf(m.ord) < 0) out.push(m.ord);
+        }
+        return out;
+    }
+
+    /** Saved list folds ({k: "li", t, n}) -> list-item ordinals: the n-th
+     *  item whose first line reads `t`, when it can still fold. An older
+     *  Weavero's matcher skips these entries (no heading level matches). */
+    _wvNnMatchListFolds(items: any[], saved: any[]): number[] {
+        const out: number[] = [];
+        for (const e of saved) {
+            if (!e || e.k !== "li") continue;
+            const m: any = items.filter((li: any) => li.t === e.t)[e.n || 0];
+            if (m && m.foldable && out.indexOf(m.ord) < 0) out.push(m.ord);
         }
         return out;
     }
@@ -590,6 +717,12 @@ class _NoteNavMixin {
                 const e: any = { t: h.text, l: h.level, n };
                 if (h.id) e.id = h.id;
                 entries.push(e);
+            });
+            const items = this._wvNnListItems(iframe);
+            items.forEach((li: any, i: number) => {
+                if (!li.folded) return;
+                const n = items.slice(0, i).filter((o: any) => o.t === li.t).length;
+                entries.push({ k: "li", t: li.t, n });
             });
             const before = JSON.stringify(nv.folds[key] || null);
             if (entries.length) nv.folds[key] = entries;

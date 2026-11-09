@@ -53,6 +53,10 @@ describe("Weavero — the filter in every library tab (zotero#6035)", () => {
 
     async function filterOn(w) {
         if (wv._wvRecentlyAddedItemIDs) wv._wvRecentlyAddedItemIDs.clear();
+        // A new tab's rows arrive after its view reports loaded: a count taken before is 0,
+        // which no filter shrinks (2 runs in 10 on 1.0.0, 2026-11-07: 0, then 4 rows
+        // filtered to 2 within 400 ms -- the filter had worked).
+        await wvT.waitFor(() => (rows(w) > 0 ? true : null), 8000);
         const all = rows(w);
         await bound(w, async () => {
             const g = wv._emptyFilterGroup();

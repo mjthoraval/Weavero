@@ -135,7 +135,16 @@ class _NoteEditorMixin {
             // padding - 22), so folding widens it by 16px for the arrow.
             "body.wv-fold-on .primary-editor { padding-inline-start: calc(var(--editor-padding-inline, 30px) + 16px) !important; }",
             ".wv-fold-hidden { display: none !important; }",
-            ".wv-fold-toggle { position: absolute; inset-inline-start: calc(-1 * var(--editor-padding-inline, 30px) - 14px);"
+            // The arrow hugs Zotero's grab handle (MJT 2026-11-09, "Does the
+            // horizontal gap need to be so large?"). The handle is a 24px box
+            // whose dots start 8px in (_core.scss .drag-handle svg: circles
+            // at x 9 and 14, r 1); drag.js puts it 26px left of a top-level
+            // block. The arrow's 14px box starts 6px left of the handle, so
+            // its 8px chevron (centred) ends 3px before the dots, and the box
+            // covers the handle's empty left strip -- drawn ABOVE the handle
+            // (z-index 100 over its 99): a press there folds, the dots still
+            // grab, and no strip between the two belongs to neither.
+            ".wv-fold-toggle { position: absolute; inset-inline-start: -32px; z-index: 100;"
                 + " top: 0; width: 14px; height: 1.25em; display: flex; align-items: center; justify-content: center;"
                 + " cursor: pointer; opacity: 0; color: var(--fill-secondary, #888); -moz-user-select: none; user-select: none; }",
             // Zotero's tree twisty (_virtualized-table.scss .twisty): the
@@ -146,6 +155,42 @@ class _NoteEditorMixin {
             ".wv-fold-h:hover .wv-fold-toggle, .wv-fold-folded .wv-fold-toggle { opacity: 1; }",
             ".wv-fold-toggle:hover { color: var(--fill-primary, #333); }",
             ".wv-fold-folded::after { content: ' …'; opacity: .45; }",
+            // List folding (2026-11-09): the arrow sits on the item's first
+            // line against ZOTERO'S GRAB HANDLE, as the heading arrows do (MJT
+            // 2026-11-09). note-editor drag.js puts an LI's handle at the
+            // item's left - 4 - 22 - 22 = -48px; the arrow's box starts 6px
+            // left of it, as above: -54px. li is position: relative, so the
+            // arrow is placed against the item. A top-level item stands
+            // 30 + 16 (gutter) + 2rem from the editor's edge: 54px fits.
+            // Zotero also gives every li an invisible 100px box left of its
+            // first line (_core.scss li:after, margin-left -100px, 1.5em
+            // tall: what the pointer hits in the gutter, so drag.js finds the
+            // item); as an ::after it would paint over the arrow, which the
+            // z-index above also clears.
+            ".wv-fold-li > .wv-fold-toggle { inset-inline-start: -54px; height: 1.5em; }",
+            // Shown while the pointer is anywhere on the item -- its gutter
+            // box included, as a heading's arrow stays lit across its gutter
+            // -- but only for the innermost item hovered: a parent's arrow
+            // stays out while a sub-item is under the pointer.
+            "li:hover:not(:has(li:hover)) > .wv-fold-li > .wv-fold-toggle { opacity: 1; }",
+            // The pointer on the block's grab handle (note-nav.ts
+            // _wvNnHandleHover marks the arrow): headings and list items.
+            ".wv-fold-toggle[data-wv-lit] { opacity: 1; }",
+            // WV-TEMP-DRAGHANDLE (2026-11-09, MJT "In narrow windows, cannot
+            // click the arrow to fold"). Zotero's grab handle sits where
+            // drag.js computes it (--drag-handle-default-inline-offset) plus
+            // --drag-handle-max-width-inline-offset, which _core.scss defines
+            // for the "comfortable" view only. In the "wide" view (the item
+            // pane, note windows, a narrow editor) the sum is an invalid
+            // var(), `left` falls back to 0, and EVERY handle sits at the
+            // editor's left edge, over the fold arrows and above them
+            // (z-index 99), so a press on an arrow grabs the block instead.
+            // Defining the term as 0 there puts each handle where drag.js
+            // means it to be, next to its block, as in a note tab. Only while
+            // the arrows are on; never in the comfortable view, whose own
+            // value centres the handle. Retire when Zotero defines the term
+            // for every view (work/zotero-upstream-bugs.md).
+            ":root:not([contentViewMode=\"comfortable\"]) body.wv-fold-on .drag-handle { --drag-handle-max-width-inline-offset: 0px; }",
             // The note outline lies over the page's left edge, below the
             // toolbar (note-nav.ts OUTLINE_CSS): what sits under the toolbar
             // (find bar, notice, the editor) moves right by its width.

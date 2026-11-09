@@ -42,7 +42,7 @@ import { wvMenuItem } from "../lib/menu";
 import { wvListen, wvUnlisten } from "../lib/listen";
 import { wvLivePlugin } from "../lib/live";
 import { wvWrap, wvUnwrap } from "../lib/wrap";
-import { wvIsLibraryTabID, wvItemsTreeEl, wvItemsTreeEls, wvMainWins, wvNativeWindows, wvViewEl, wvViewEls, wvWinType } from "../lib/windows";
+import { wvAdvSearchGeometry, wvAdvSearchWindowArgs, wvIsLibraryTabID, wvItemsTreeEl, wvItemsTreeEls, wvMainWins, wvNativeWindows, wvPaneOpenSettingNames, wvViewEl, wvViewEls, wvWindowArgs, wvWinType } from "../lib/windows";
 import { wvAccel, wvAccelAny } from "../lib/keys";
 import { wvLinkVars } from "../lib/links";
 import { wvAltReveal } from "../lib/menubar";
@@ -2258,18 +2258,22 @@ class _PaneMixin {
                         // blanked directly (measured 2026-09-22), so the
                         // attribute itself moves; teardown puts it back.
                         const lp = liveP();
-                        const remap = !wvNativeWindows() && !!(lp && lp._getAdvSearchShortcutNewWindow && lp._getAdvSearchShortcutNewWindow());
+                        const remap = !!(lp && lp._getAdvSearchShortcutNewWindow && lp._getAdvSearchShortcutNewWindow());
                         el.setAttribute("acceltext", remap ? SHORTCUT_F : "Shift+Click");
                         if (anchor) {
                             if (remap) { anchor.removeAttribute("key"); anchor.removeAttribute("acceltext"); }
                             else if (!anchor.hasAttribute("key")) anchor.setAttribute("key", "key_advancedSearch");
                         }
-                        ctx.setVisible(newMain() && !!anchor
+                        // On a Zotero with its own windows the window is Zotero's
+                        // (openAdvancedSearchInNewWindow): shown where it exists.
+                        const w = doc.defaultView;
+                        const route = !wvNativeWindows() || !!(w && w.ZoteroPane && typeof w.ZoteroPane.openAdvancedSearchInNewWindow === "function");
+                        ctx.setVisible(!!(lp && lp._wvAdvSearchWindowsOn()) && route && !!anchor
                             && !!doc.getElementById("cmd_zotero_advancedSearch"));
                     } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
                 },
-                onCommand: (_ev: any, _ctx: any) => {
-                    try { const p = liveP(); if (p) p._wvAdvSearchOpenNewWindow(); }
+                onCommand: (_ev: any, ctx: any) => {
+                    try { const p = liveP(); if (p) p._wvAdvSearchOpenNewWindow(winOfCtx(ctx)); }
                     catch (e) { Zotero.debug("[Weavero] menubar entry advsearchwin err: " + e); }
                 },
             }];
@@ -2355,6 +2359,10 @@ class _PaneMixin {
             try { const p0 = doc.getElementById("wv-advsearch-context"); if (p0) p0.remove(); } catch (_) {}
             doc._wvAdvSearchWinWire = TAG;
             if (!doc.getElementById("cmd_zotero_advancedSearch")) return;
+            // Zotero's funnel. On a Zotero with its own windows every library
+            // tab of the window has one (an id suffixed with the tab's, or not).
+            const FUNNEL = '[id^="zotero-tb-search-advanced-button"]';
+            const viewOf = (t: any) => { try { return (t && t.closest && t.closest("library-view")) || null; } catch (_) { return null; } };
             const isTarget = (t: any) => {
                 try {
                     if (!t) return false;
@@ -2369,7 +2377,7 @@ class _PaneMixin {
                     // the interceptor requires shift ALONE).
                     if (t.id === "cmd_zotero_advancedSearch") return true;
                     // ONLY Zotero's funnel — never Weavero's own filter funnel.
-                    return !!(t.closest && t.closest("#zotero-tb-search-advanced-button"));
+                    return !!(t.closest && t.closest(FUNNEL));
                 } catch (_) { return false; }
             };
             const handler = (e: any) => {
@@ -2378,7 +2386,9 @@ class _PaneMixin {
                     if (e.type === "click" && e.button !== 0) return;
                     if (!isTarget(e.target)) return;
                     const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-                    if (!live || live._wvDestroyed || !live._wvMultiMainOn()) return;   // native
+                    // A Zotero with its own windows opens the search in one on
+                    // Shift+click itself (quickSearchTextbox.js): left to it.
+                    if (!live || live._wvDestroyed || !live._wvMultiMainOn()) return;
                     e.preventDefault();
                     e.stopPropagation();
                     if (e.stopImmediatePropagation) e.stopImmediatePropagation();
@@ -2399,12 +2409,12 @@ class _PaneMixin {
             const ctx = (e: any) => {
                 try {
                     const t = e.target;
-                    if (!(t && t.closest && t.closest("#zotero-tb-search-advanced-button"))) return;
+                    if (!(t && t.closest && t.closest(FUNNEL))) return;
                     const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-                    if (!live || live._wvDestroyed || !live._wvMultiMainOn()) return;
+                    if (!live || live._wvDestroyed || !live._wvAdvSearchWindowsOn()) return;
                     e.preventDefault();
                     e.stopPropagation();
-                    live._wvAdvSearchContextMenu(win, e);
+                    live._wvAdvSearchContextMenu(win, e, viewOf(t));
                 } catch (_) {}
             };
             doc._wvAdvSearchCtxHandler = ctx;
@@ -2417,12 +2427,12 @@ class _PaneMixin {
                 try {
                     if (e.button !== 1) return;
                     const t = e.target;
-                    if (!(t && t.closest && t.closest("#zotero-tb-search-advanced-button"))) return;
+                    if (!(t && t.closest && t.closest(FUNNEL))) return;
                     const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-                    if (!live || live._wvDestroyed || !live._wvMultiMainOn()) return;   // native
+                    if (!live || live._wvDestroyed || !live._wvAdvSearchWindowsOn()) return;
                     e.preventDefault();
                     e.stopPropagation();
-                    if (e.type === "auxclick") live._wvAdvSearchOpenNewWindow();
+                    if (e.type === "auxclick") live._wvAdvSearchOpenNewWindow(win, viewOf(t));
                 } catch (_) {}
             };
             doc._wvAdvSearchMidHandler = mid;
@@ -2441,7 +2451,7 @@ class _PaneMixin {
                     if (!live || live._wvDestroyed || !live._getAdvSearchShortcutNewWindow()) return;
                     ke.preventDefault();
                     ke.stopPropagation();
-                    live._wvAdvSearchOpenNewWindow();
+                    live._wvAdvSearchOpenNewWindow(win);
                 } catch (_) {}
             };
             doc._wvAdvSearchKeyHandler = key;
@@ -2452,7 +2462,7 @@ class _PaneMixin {
     /** The funnel's right-click menu: the plain open and the new-window open
      *  (the Shift+click action, made discoverable). Built lazily once per
      *  window; entries resolve the live plugin at command time. */
-    _wvAdvSearchContextMenu(win: any, event: any) {
+    _wvAdvSearchContextMenu(win: any, event: any, view?: any) {
         try {
             const doc = win.document;
             let popup: any = doc.getElementById("wv-advsearch-context");
@@ -2460,15 +2470,30 @@ class _PaneMixin {
                 popup = doc.createXULElement("menupopup");
                 popup.id = "wv-advsearch-context";
                 const mk = (label: string, hint: string | null, onCmd: () => void) => wvMenuItem(doc, { label, acceltext: hint || undefined, onCommand: () => onCmd() }, popup);
+                // The library tab whose funnel was right-clicked (a Zotero with
+                // its own windows has one per tab), read at command time.
+                const target = () => popup._wvView || win.ZoteroPane;
                 mk("Open Advanced Search", null, () => {
-                    try { win.ZoteroPane.toggleAdvancedSearchState("open"); } catch (_) {}
+                    try { target().toggleAdvancedSearchState("open"); } catch (_) {}
                 });
                 mk("Open in New Window", "Shift+Click / Middle-click", () => {
                     const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-                    if (live && !live._wvDestroyed) live._wvAdvSearchOpenNewWindow();
+                    if (live && !live._wvDestroyed) live._wvAdvSearchOpenNewWindow(win, popup._wvView || null);
                 });
+                // Zotero's own Ctrl+click on the funnel there (quickSearchTextbox.js).
+                if (wvNativeWindows()) {
+                    mk("Open in New Tab", Zotero.isMac ? "⌘Click" : "Ctrl+Click", () => {
+                        try {
+                            const v = target();
+                            const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            const q = live ? live._wvAdvSearchQuickSearch(win, v) : { text: "", mode: "fields" };
+                            v.openAdvancedSearchInNewTab(q.text, q.mode);
+                        } catch (_) {}
+                    });
+                }
                 (doc.querySelector("popupset") || doc.documentElement).appendChild(popup);
             }
+            popup._wvView = view || null;
             popup.openPopupAtScreen(event.screenX, event.screenY, true);
         } catch (e) { Zotero.debug("[Weavero] _wvAdvSearchContextMenu err: " + e); }
     }
@@ -7544,9 +7569,27 @@ class _PaneMixin {
     }
 
     /** The window's own pin and section states for its saved state; nothing
-     *  for the first window (Zotero's own settings carry them). */
+     *  for the first window (Zotero's own settings carry them). On a Zotero
+     *  with its own windows (zotero#6035) every window keeps its own in
+     *  Zotero's window settings: they are read from there, for every window,
+     *  "" for no pin. Without them a session's windows came back with the pin
+     *  last saved by any window and every section open (transition test
+     *  2026-11-07: Window B, "related" and Tags collapsed, after a round trip
+     *  through another session). */
     _wvPanePrefsCapture(win: any): any {
         try {
+            if (wvNativeWindows()) {
+                const zp: any = win && win.ZoteroPane;
+                if (!zp || typeof zp.getWindowSetting !== "function") return null;
+                const out: any = { pinnedPane: String(zp.getWindowSetting("pinnedPane") || "") };
+                const open: any = {};
+                for (const name of wvPaneOpenSettingNames(win)) {
+                    const v = zp.getWindowSetting(name);
+                    if (typeof v === "boolean") open[name.slice("panes.".length, -".open".length)] = v;
+                }
+                if (Object.keys(open).length) out.paneOpen = open;
+                return out;
+            }
             if (!win || !win._wvManagedWindow) return null;
             const out: any = {};
             const det = this._wvPaneDet(win);
@@ -7561,6 +7604,17 @@ class _PaneMixin {
      *  section states (absent: the shared state on first sight). */
     _wvPanePrefsApply(win: any, entry: any) {
         try {
+            if (wvNativeWindows()) {
+                // Zotero's own window settings, for any window; a record from
+                // before they were saved (no field) leaves the window as it is.
+                const zp: any = win && win.ZoteroPane;
+                if (!zp || typeof zp.setWindowSetting !== "function" || !entry) return;
+                if (typeof entry.pinnedPane === "string") zp.setWindowSetting("pinnedPane", entry.pinnedPane);
+                if (entry.paneOpen && typeof entry.paneOpen === "object") {
+                    for (const [pane, isOpen] of Object.entries(entry.paneOpen)) zp.setWindowSetting("panes." + pane + ".open", !!isOpen);
+                }
+                return;
+            }
             if (!win || !win._wvManagedWindow) return;
             this._wvWireWindowPanePrefs(win);
             const det = this._wvPaneDet(win);
@@ -7848,6 +7902,239 @@ class _PaneMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvAdvSearchApplyPaneLayout err: " + e); }
     }
 
+    /** A window Zotero opens for an Advanced Search, on a Zotero with its own
+     *  windows (wvAdvSearchWindowArgs): Zotero's Shift+click on the funnel and
+     *  every route of Weavero's. It becomes the Advanced Search window an older
+     *  Zotero had (MJT 2026-11-07, the port): its remembered size, centred on
+     *  the screen of the window it came from, then (_wvAdvSearchWindowReady)
+     *  the side panes hidden and the search focused. Zotero alone opens it at
+     *  the size every window shares, with the search not focused (measured on
+     *  228f132e1: 700 x 592, focus outside the search).
+     *
+     *  Called by the early window listener (tabs.ts _wvWireEarlyRestoreTracing)
+     *  as the window opens and at its DOMContentLoaded, both before Zotero
+     *  takes its arguments at load (zoteroPane.js takeWindowState): the size
+     *  goes into them. Measured 2026-11-07: set at DOMContentLoaded, the window
+     *  opened at exactly that size and place, a maximized source window too. */
+    _wvAdvSearchWindowOpening(w: any) {
+        try {
+            if (!w || w.closed || !wvNativeWindows()) return;
+            const p: any = this;
+            const seen: WeakSet<any> = p._wvAdvSearchSeen || (p._wvAdvSearchSeen = new WeakSet());
+            if (seen.has(w)) return;
+            const args = wvWindowArgs(w);
+            if (!args) return;   // not readable yet: the DOMContentLoaded call follows
+            seen.add(w);
+            if (!wvAdvSearchWindowArgs(args) || !p._wvAdvSearchWindowsOn()) return;
+            w._wvAdvSearchWin = true;
+            try {
+                const src: any = Services.wm.getMostRecentWindow("navigator:browser");
+                const scr = (src && src !== w && !src.closed ? src : w).screen;
+                const avail = { left: scr.availLeft, top: scr.availTop, width: scr.availWidth, height: scr.availHeight };
+                // The outer size the window had (_wvAdvSearchRememberSize); the
+                // content size an older Zotero remembered stands in once.
+                const outer = String(Zotero.Prefs.get("weavero.advSearchWindowOuter") || "");
+                const saved = /^\d{3,5}x\d{3,5}$/.test(outer) ? outer : String(Zotero.Prefs.get("weavero.advSearchWindowSize") || "");
+                args.geometry = wvAdvSearchGeometry(saved, { w: 0, h: 0 }, avail);
+                Zotero.debug("[Weavero] advsearch window at " + JSON.stringify(args.geometry));
+            } catch (e) { Zotero.debug("[Weavero] advsearch window size err: " + e); }
+            this._wvAdvSearchWindowReady(w);
+        } catch (e) { Zotero.debug("[Weavero] _wvAdvSearchWindowOpening err: " + e); }
+    }
+
+    /** The rest of the Advanced Search window, once its library view is up and
+     *  Weavero has read the window's own state (_wvWinStateApply): the size
+     *  remembered, the side panes hidden when Settings says so, the search
+     *  focused. Bounded waits; a closed window stops it. */
+    async _wvAdvSearchWindowReady(w: any) {
+        try {
+            const zp = w.ZoteroPane;
+            for (let i = 0; i < 200 && !w.closed && !(w.ZoteroPane && w.ZoteroPane.libraryView); i++) await new Promise((r) => wvTimeout(r, 50));
+            if (w.closed || !w.ZoteroPane || !w.ZoteroPane.libraryView) return;
+            try { await (w.ZoteroPane.loadedPromise || zp && zp.loadedPromise); } catch (_) {}
+            const p: any = this;
+            for (let i = 0; i < 100 && !w.closed && !(p._wvWinStateReady && p._wvWinStateReady.has(w)); i++) await new Promise((r) => wvTimeout(r, 50));
+            const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+            if (w.closed || !live || live._wvDestroyed) return;
+            try { live._wvAdvSearchRememberSize(w); } catch (_) {}
+            if (live._getAdvSearchWindowHidePanes()) {
+                live._wvAdvSearchHidePanesNative(w);
+                try { live._wvWinStateSave(w); } catch (_) {}
+            }
+            const deck = w.ZoteroPane.libraryView.getElement("zotero-advanced-search-pane-deck");
+            for (let i = 0; i < 100 && !w.closed && !(deck && deck.pane && deck.state === "open"); i++) await new Promise((r) => wvTimeout(r, 50));
+            if (deck && deck.pane && !w.closed) await live._wvAdvSearchHoldFocus(w, deck.pane);
+        } catch (e) { Zotero.debug("[Weavero] _wvAdvSearchWindowReady err: " + e); }
+    }
+
+    /** Hide the Advanced Search window's side panes on a Zotero with its own
+     *  windows, the way View > Layout does (splitter `state`, pane
+     *  `collapsed`), and keep them OUT of the layout every window shares.
+     *  Zotero keeps one pane layout for all windows (`pane.persist`) and saves
+     *  it from a window as it closes and from the window a new one is opened
+     *  from (zoteroPane.js serializePersist, zotero.js openMainWindow): a
+     *  search window closed with its panes hidden hid them in every window
+     *  opened after it (measured 2026-11-07). So this window's own save writes
+     *  the layout it had before, for each pane still hidden -- a pane the user
+     *  shows again (View > Layout) is theirs and saved as it is. `which`: the
+     *  panes to hide (a restart's saved list); every one by default. Undone by
+     *  _wvAdvSearchUnhidePanesNative. Guard: test/native-advsearch-window.spec.js. */
+    _wvAdvSearchHidePanesNative(w: any, which?: string[]) {
+        try {
+            const zp = w && w.ZoteroPane;
+            const v = zp && zp.libraryView;
+            if (!v || w._wvAdvHid) return;
+            const PAIRS: [string, string][] = [["zotero-collections-pane", "zotero-collections-splitter"], ["zotero-item-pane", "zotero-items-splitter"]];
+            const hid: any[] = [];
+            for (const [paneId, spId] of PAIRS) {
+                if (which && which.indexOf(paneId) < 0) continue;
+                const pane = v.getElement(paneId), sp = v.getElement(spId);
+                if (!pane || !sp) continue;
+                hid.push({ id: paneId, pane, sp, state: sp.getAttribute("state"), collapsed: pane.getAttribute("collapsed") });
+                sp.setAttribute("state", "collapsed");
+                pane.setAttribute("collapsed", "true");
+            }
+            if (!hid.length) return;
+            w._wvAdvHid = hid;
+            const put = (el: any, name: string, value: any) => { if (value == null) el.removeAttribute(name); else el.setAttribute(name, value); };
+            // Layered wraps (lib/wrap.ts), as the window's pane widths
+            // (window-state.ts _wvPaneSizesWire, layer "paneSizes"): a wrapper
+            // assigned by hand over a layered member was dropped by the next
+            // rebuild and could outlive its layer's removal.
+            const tag = (this as any)._wvWireTag();
+            wvWrap(zp, "serializePersist", "advPanes", tag, (orig: any) => function (this: any) {
+                const swapped: any[] = [];
+                for (const h of (w._wvAdvHid || [])) {
+                    if (h.sp.getAttribute("state") !== "collapsed") continue;
+                    swapped.push(h);
+                    // Still hidden for the window's own state while the save
+                    // shows it: the pane-width layer saves that state inside
+                    // this call (_wvAdvSearchPanesHidden).
+                    h.swapped = true;
+                    put(h.sp, "state", h.state);
+                    put(h.pane, "collapsed", h.collapsed);
+                }
+                try { return orig.apply(this, arguments); }
+                finally {
+                    for (const h of swapped) {
+                        h.sp.setAttribute("state", "collapsed");
+                        h.pane.setAttribute("collapsed", "true");
+                        h.swapped = false;
+                    }
+                }
+            });
+            // Zotero puts the layout every window shares back on a library view
+            // each time its tab is selected (libraryView.js adoptSharedState ->
+            // unserializePersist): a shared "open" showed the hidden collections
+            // pane again (the full suite on zotero#6035, 2026-11-09, after an
+            // earlier spec had left that splitter "open" in pane.persist). That
+            // value is the shared layout, so it becomes what this window's save
+            // writes back; the pane stays hidden. Only a splitter's `state` is
+            // shared (zotero-persist="state"); a pane keeps just its size.
+            wvWrap(zp, "unserializePersist", "advPanes", tag, (orig: any) => function (this: any) {
+                const keep = (w._wvAdvHid || []).filter((h: any) => h.sp.getAttribute("state") === "collapsed");
+                const r = orig.apply(this, arguments);
+                try {
+                    let shared: any = {};
+                    try { shared = JSON.parse(String(Zotero.Prefs.get("pane.persist") || "{}")) || {}; } catch (_) {}
+                    for (const h of keep) {
+                        const persisted = (h.sp.getAttribute("zotero-persist") || "").split(/[\s,]+/);
+                        const v = shared[h.sp.id];
+                        if (v && Object.prototype.hasOwnProperty.call(v, "state") && persisted.indexOf("state") >= 0) {
+                            // The pane follows its splitter, as when it was hidden.
+                            h.state = v.state;
+                            h.collapsed = v.state === "collapsed" ? "true" : null;
+                        }
+                        h.sp.setAttribute("state", "collapsed");
+                        h.pane.setAttribute("collapsed", "true");
+                    }
+                    if (keep.length) { try { zp.updateLayoutConstraints(); } catch (_) {} }
+                }
+                catch (e) { Zotero.debug("[Weavero] advsearch unserializePersist err: " + e); }
+                return r;
+            });
+            // A pane shown or hidden again goes into the window's saved state
+            // (advPanes, _wvWinStateCapture), so a restart brings back what the
+            // user left. Microtask timing: a save's swap is over by then.
+            try {
+                const MO = w.MutationObserver;
+                if (MO) {
+                    const obs = new MO(() => {
+                        const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (live && !live._wvDestroyed && !w.closed) { try { live._wvWinStateSave(w); } catch (_) {} }
+                    });
+                    for (const h of hid) obs.observe(h.sp, { attributes: true, attributeFilter: ["state"] });
+                    w._wvAdvHidObs = obs;
+                }
+            } catch (_) {}
+            try { zp.updateLayoutConstraints(); } catch (_) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvAdvSearchHidePanesNative err: " + e); }
+    }
+
+    /** The side panes the Advanced Search window still hides (its saved state);
+     *  one a save shows for its own write still counts. */
+    _wvAdvSearchPanesHidden(w: any): string[] {
+        try { return ((w && w._wvAdvHid) || []).filter((h: any) => h.swapped || h.sp.getAttribute("state") === "collapsed").map((h: any) => h.id); }
+        catch (e) { return []; }
+    }
+
+    /** Weavero going away: the hidden panes come back, the save is Zotero's
+     *  again (a window left hidden and unguarded would hide them everywhere).
+     *  The observer goes first, so the window's saved state keeps its list and
+     *  a reloaded Weavero hides them again. */
+    _wvAdvSearchUnhidePanesNative(w: any) {
+        try {
+            if (!w) return;
+            try { if (w._wvAdvHidObs) w._wvAdvHidObs.disconnect(); } catch (_) {}
+            w._wvAdvHidObs = null;
+            const put = (el: any, name: string, value: any) => { if (value == null) el.removeAttribute(name); else el.setAttribute(name, value); };
+            for (const h of (w._wvAdvHid || [])) {
+                if (h.sp.getAttribute("state") !== "collapsed") continue;
+                put(h.sp, "state", h.state);
+                put(h.pane, "collapsed", h.collapsed);
+            }
+            w._wvAdvHid = null;
+            const zp = w.ZoteroPane;
+            if (zp) {
+                try { wvUnwrap(zp, "serializePersist", "advPanes"); } catch (_) {}
+                try { wvUnwrap(zp, "unserializePersist", "advPanes"); } catch (_) {}
+            }
+            try { if (zp) zp.updateLayoutConstraints(); } catch (_) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvAdvSearchUnhidePanesNative err: " + e); }
+    }
+
+    /** Hold the focus in the search, as the in-window open does (it focuses the
+     *  conditions); the window's own late init pulls it away ("should focus the
+     *  same place as when opened in the main window", MJT 2026-09-01).
+     *  SETTLE-AND-HOLD, not first-success: breaking on the first :focus-within
+     *  let the late init steal it right back (the conditions menu "flickered,
+     *  finally not selected"), and OS focus sometimes never transferred (window
+     *  opened BEHIND) -- both MJT 2026-09-01. Done after ~600 ms of steady focus,
+     *  bounded at 6 s. OS focus is best-effort and bounded: it needs a user
+     *  gesture, and each window.focus() resets the focus the previous round
+     *  set (measured). */
+    async _wvAdvSearchHoldFocus(nw: any, pane: any) {
+        try {
+            const t1 = Date.now();
+            let stable = 0, osTries = 0;
+            while (Date.now() - t1 < 6000 && stable < 6) {
+                try {
+                    if (nw.closed) return;
+                    if (!nw.document.hasFocus() && osTries < 10) {
+                        osTries++;
+                        nw.focus();
+                    }
+                    if (pane.matches(":focus-within")) stable++;
+                    else {
+                        stable = 0;
+                        pane.focus();
+                    }
+                } catch (_) {}
+                await new Promise((r) => wvTimeout(r, 100));
+            }
+        } catch (_) {}
+    }
+
     /** Remember the Advanced Search window's size: on resize (debounced --
      *  Gecko fires `resize` with the paint cycle, so never while the window
      *  is occluded) and again at unload, which sees the final size whatever
@@ -7867,6 +8154,13 @@ class _PaneMixin {
                 // its frame on every open (measured: 1240 -> 1256).
                 const w = nw.innerWidth, h = nw.innerHeight;
                 if (w >= 100 && h >= 100) Zotero.Prefs.set("weavero.advSearchWindowSize", w + "x" + h);
+                // And the OUTER size, for a Zotero with its own windows: its
+                // restoreWindowGeometry sizes the outer window, and the frame
+                // cannot be read before the window loads (measured 2026-11-07:
+                // 32 px of height at open, 8 once loaded, so the window grew
+                // 24 px at every open).
+                const ow = nw.outerWidth, oh = nw.outerHeight;
+                if (ow >= 100 && oh >= 100) Zotero.Prefs.set("weavero.advSearchWindowOuter", ow + "x" + oh);
             } catch (_) {}
         };
         nw.addEventListener("resize", () => {
@@ -7875,8 +8169,36 @@ class _PaneMixin {
         nw.addEventListener("unload", () => store(true));
     }
 
-    async _wvAdvSearchOpenNewWindow() {
+    /** The quick search a new Advanced Search starts from, as Zotero's funnel
+     *  reads it: the view's search box and the window's search mode
+     *  (quickSearchTextbox.js, the funnel's command). */
+    _wvAdvSearchQuickSearch(win: any, view: any): { text: string; mode: string } {
+        let text = "", mode = "fields";
+        try { const box = view && view.getElement && view.getElement("zotero-tb-search"); text = String((box && box.value) || ""); } catch (_) {}
         try {
+            const P: any = Zotero.Prefs;
+            mode = String((typeof P.getForWindow === "function" ? P.getForWindow(win, "search.quicksearch-mode") : P.get("search.quicksearch-mode")) || "fields");
+        } catch (_) {}
+        return { text, mode };
+    }
+
+    async _wvAdvSearchOpenNewWindow(win?: any, view?: any) {
+        try {
+            // A Zotero with its own windows has the route itself (Shift+click on
+            // the funnel): the window is Zotero's, opened exactly that way, and
+            // what made it the Advanced Search window comes when it opens
+            // (_wvAdvSearchWindowOpening). MJT 2026-11-07, the port.
+            if (wvNativeWindows()) {
+                if (!(this as any)._wvAdvSearchWindowsOn()) return;
+                const now = Date.now();
+                if (now - ((this as any)._wvAdvSearchLastOpen || 0) < 500) return;
+                (this as any)._wvAdvSearchLastOpen = now;
+                const w = win || Zotero.getMainWindow();
+                const v = view || (w && w.ZoteroPane && w.ZoteroPane.libraryView);
+                if (!v || typeof v.openAdvancedSearchInNewWindow !== "function") return;
+                const q = this._wvAdvSearchQuickSearch(w, v);
+                return v.openAdvancedSearchInNewWindow(q.text, q.mode);
+            }
             if (!(this as any)._wvMultiMainOn()) return;   // Multiple main windows off
             // click + synthesized command can both reach the interceptor for
             // one gesture -- collapse them.
@@ -7936,43 +8258,11 @@ class _PaneMixin {
             // still-running init pulls focus back (items tree / quick
             // search), so the pane looked unfocused ("should focus the same
             // place as when opened in the main window", MJT 2026-09-01).
-            // Re-assert until it sticks, bounded.
+            // Re-assert until it sticks, bounded (_wvAdvSearchHoldFocus).
             try {
                 const deck = nw.document.getElementById("zotero-advanced-search-pane-deck");
                 const pane = deck && deck.pane;
-                if (pane) {
-                    // SETTLE-AND-HOLD, not first-success: breaking on the
-                    // first :focus-within let the window's late init steal
-                    // focus right back (the conditions menu "flickered,
-                    // finally not selected"), and OS focus sometimes never
-                    // transferred at all (window opened BEHIND) -- both
-                    // MJT 2026-09-01. Done only after ~600ms of continuous
-                    // window+pane focus; bounded at 6s.
-                    // OS focus is BEST-EFFORT and bounded (it needs a user
-                    // gesture; retrying forever fights pane.focus() — each
-                    // window.focus() resets the internal focus the previous
-                    // iteration just set, measured live). Pane-internal focus
-                    // is the stability criterion.
-                    const t1 = Date.now();
-                    let stable = 0, osTries = 0;
-                    while (Date.now() - t1 < 6000 && stable < 6) {
-                        try {
-                            if (nw.closed) return;
-                            if (!nw.document.hasFocus() && osTries < 10) {
-                                osTries++;
-                                nw.focus();
-                            }
-                            if (pane.matches(":focus-within")) {
-                                stable++;
-                            }
-                            else {
-                                stable = 0;
-                                pane.focus();
-                            }
-                        } catch (_) {}
-                        await new Promise(r => setT(r, 100));
-                    }
-                }
+                if (pane) await this._wvAdvSearchHoldFocus(nw, pane);
             } catch (_) {}
         } catch (e) { Zotero.debug("[Weavero] _wvAdvSearchOpenNewWindow err: " + e); }
     }

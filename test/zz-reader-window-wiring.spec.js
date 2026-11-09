@@ -24,6 +24,8 @@
 // windows with a native reader, so once destroy() removed the old
 // instance's listeners a reloaded deck window lost Ctrl+T, Ctrl+Shift+T,
 // Ctrl+N, its window controls and its close-time cleanup.
+// `_wvGlyphLazy` beside `_wvTitleGlyphIdx` (1.0.1-dev.4): where the window's
+// colour came from, the pool or a choice (tabs.ts _wvGlyphRestore).
 
 describe("Weavero — reader and note window wiring, characterized (reloads the plugin)", function () {
     this.timeout(300000);
@@ -312,7 +314,7 @@ const WIRING2_EXPECTED = {
     "reader1.on.open": {
         window: [
             "_wvCloseBtnPending:boolean", "_wvCloseBtnRO:object", "_wvCompactMenubar:object",
-            "_wvIdentityTag:string", "_wvOvActivateHandler:function", "_wvOvBirthMon:string",
+            "_wvGlyphLazy:number", "_wvIdentityTag:string", "_wvOvActivateHandler:function", "_wvOvBirthMon:string",
             "_wvOvFollowWired:number", "_wvOvMoveHandler:function", "_wvOvPollId:number",
             "_wvOvPosKey:string", "_wvOvSettled:boolean", "_wvPrevWinIcons:object",
             "_wvReaderDragOverlaySync:function", "_wvReaderMergeAbsorberWired:boolean",
@@ -392,7 +394,7 @@ const WIRING2_EXPECTED = {
     "deck1.on.open": {
         window: [
             "_wvCloseBtnPending:boolean", "_wvCloseBtnRO:object", "_wvCompactMenubar:object",
-            "_wvIdentityTag:string", "_wvNoteDeckHidden:boolean", "_wvNoteDeckRevealTimer:null",
+            "_wvGlyphLazy:number", "_wvIdentityTag:string", "_wvNoteDeckHidden:boolean", "_wvNoteDeckRevealTimer:null",
             "_wvOvActivateHandler:function", "_wvOvBirthMon:string", "_wvOvFollowWired:number",
             "_wvOvMoveHandler:function", "_wvOvPollId:number", "_wvOvPosKey:string", "_wvOvSettled:boolean",
             "_wvPrevWinIcons:object", "_wvReaderDragOverlaySync:function",
@@ -437,7 +439,7 @@ const WIRING2_EXPECTED = {
     "reader1.on.reload": {
         window: [
             "_wvCloseBtnPending:boolean", "_wvCloseBtnRO:object", "_wvCompactMenubar:object",
-            "_wvIdentityTag:string", "_wvOvActivateHandler:function", "_wvOvBirthMon:string",
+            "_wvGlyphLazy:number", "_wvIdentityTag:string", "_wvOvActivateHandler:function", "_wvOvBirthMon:string",
             "_wvOvFollowWired:number", "_wvOvMoveHandler:function", "_wvOvPollId:number",
             "_wvOvPosKey:string", "_wvOvSettled:boolean", "_wvPrevWinIcons:object",
             "_wvReaderDragOverlaySync:function", "_wvReaderMergeAbsorberWired:boolean",
@@ -519,7 +521,7 @@ const WIRING2_EXPECTED = {
     "deck1.on.reload": {
         window: [
             "_wvCloseBtnPending:boolean", "_wvCloseBtnRO:object", "_wvCompactMenubar:object",
-            "_wvIdentityTag:string", "_wvNoteDeckHidden:boolean", "_wvNoteDeckRevealTimer:null",
+            "_wvGlyphLazy:number", "_wvIdentityTag:string", "_wvNoteDeckHidden:boolean", "_wvNoteDeckRevealTimer:null",
             "_wvOvActivateHandler:function", "_wvOvBirthMon:string", "_wvOvFollowWired:number",
             "_wvOvMoveHandler:function", "_wvOvPollId:number", "_wvOvPosKey:string", "_wvOvSettled:boolean",
             "_wvPrevWinIcons:object", "_wvReaderDragOverlaySync:function",
@@ -563,7 +565,7 @@ const WIRING2_EXPECTED = {
     },
     "reader1.toOff.pref": {
         window: [
-            "_wvCloseBtnPending:boolean", "_wvCloseBtnRO:object", "_wvIdentityTag:string",
+            "_wvCloseBtnPending:boolean", "_wvCloseBtnRO:object", "_wvGlyphLazy:number", "_wvIdentityTag:string",
             "_wvOvActivateHandler:function", "_wvOvBirthMon:string", "_wvOvFollowWired:number",
             "_wvOvMoveHandler:function", "_wvOvPollId:number", "_wvOvPosKey:string", "_wvOvSettled:boolean",
             "_wvPrevWinIcons:object", "_wvReaderDragOverlaySync:function",
@@ -623,7 +625,7 @@ const WIRING2_EXPECTED = {
     },
     "reader2.off.open": {
         window: [
-            "_wvIdentityTag:string", "_wvOvActivateHandler:function", "_wvOvBirthMon:string",
+            "_wvGlyphLazy:number", "_wvIdentityTag:string", "_wvOvActivateHandler:function", "_wvOvBirthMon:string",
             "_wvOvFollowWired:number", "_wvOvMoveHandler:function", "_wvOvPollId:number",
             "_wvOvPosKey:string", "_wvOvSettled:boolean", "_wvPrevWinIcons:object",
             "_wvReaderNotesObsID:string", "_wvReaderPaneItemID:number", "_wvRedoKeyH:function",
@@ -672,7 +674,7 @@ const WIRING2_EXPECTED = {
     },
     "reader1.off.reload": {
         window: [
-            "_wvCloseBtnPending:boolean", "_wvCloseBtnRO:object", "_wvIdentityTag:string",
+            "_wvCloseBtnPending:boolean", "_wvCloseBtnRO:object", "_wvGlyphLazy:number", "_wvIdentityTag:string",
             "_wvOvActivateHandler:function", "_wvOvBirthMon:string", "_wvOvFollowWired:number",
             "_wvOvMoveHandler:function", "_wvOvPollId:number", "_wvOvPosKey:string", "_wvOvSettled:boolean",
             "_wvPrevWinIcons:object", "_wvReaderDragOverlaySync:function",
@@ -731,7 +733,7 @@ const WIRING2_EXPECTED = {
     },
     "reader2.off.reload": {
         window: [
-            "_wvIdentityTag:string", "_wvOvActivateHandler:function", "_wvOvBirthMon:string",
+            "_wvGlyphLazy:number", "_wvIdentityTag:string", "_wvOvActivateHandler:function", "_wvOvBirthMon:string",
             "_wvOvFollowWired:number", "_wvOvMoveHandler:function", "_wvOvPollId:number",
             "_wvOvPosKey:string", "_wvOvSettled:boolean", "_wvPrevWinIcons:object",
             "_wvReaderNotesObsID:string", "_wvReaderPaneItemID:number", "_wvRedoKeyH:function",
@@ -783,7 +785,7 @@ const WIRING2_EXPECTED = {
     "reader1.toOn.pref": {
         window: [
             "_wvCloseBtnPending:boolean", "_wvCloseBtnRO:object", "_wvCompactMenubar:object",
-            "_wvIdentityTag:string", "_wvOvActivateHandler:function", "_wvOvBirthMon:string",
+            "_wvGlyphLazy:number", "_wvIdentityTag:string", "_wvOvActivateHandler:function", "_wvOvBirthMon:string",
             "_wvOvFollowWired:number", "_wvOvMoveHandler:function", "_wvOvPollId:number",
             "_wvOvPosKey:string", "_wvOvSettled:boolean", "_wvPrevWinIcons:object",
             "_wvReaderDragOverlaySync:function", "_wvReaderMergeAbsorberWired:boolean",
@@ -865,7 +867,7 @@ const WIRING2_EXPECTED = {
     "reader2.toOn.pref": {
         window: [
             "_wvCloseBtnPending:boolean", "_wvCloseBtnRO:object", "_wvCompactMenubar:object",
-            "_wvIdentityTag:string", "_wvOvActivateHandler:function", "_wvOvBirthMon:string",
+            "_wvGlyphLazy:number", "_wvIdentityTag:string", "_wvOvActivateHandler:function", "_wvOvBirthMon:string",
             "_wvOvFollowWired:number", "_wvOvMoveHandler:function", "_wvOvPollId:number",
             "_wvOvPosKey:string", "_wvOvSettled:boolean", "_wvPrevWinIcons:object",
             "_wvReaderDragOverlaySync:function", "_wvReaderMergeAbsorberWired:boolean",

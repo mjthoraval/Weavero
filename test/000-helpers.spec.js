@@ -455,6 +455,10 @@
         PENDING_ALLOWLIST: [
             { re: /^Weavero — plugin compat: /, why: "companion plugin not installed in this run (npm run test:compat installs it)" },
             { re: /^Weavero — native windows \(zotero#6035\) on a real native build/, why: "version: needs a Zotero with its own windows" },
+            { re: /^Weavero — Advanced Search in New Window on a Zotero with its own windows real windows/, why: "version: needs a Zotero with its own windows" },
+            { re: /^Weavero — a window keeps its colour \(zotero#6035\) on a real native build/, why: "version: needs a Zotero with its own windows" },
+            { re: /^Weavero — each window keeps its own pane widths on a real native build/, why: "version: needs a Zotero with its own windows" },
+            { re: /^Weavero — the first window's place comes back without a store entry the restart puts it back/, why: "version: Weavero's own restart, an older Zotero (Zotero restores each of its own windows)" },
             { re: /^Weavero — the saved windows move to Zotero's own \(zotero#6035\) on a real native build/, why: "version: needs a Zotero with its own windows" },
             { re: /^Weavero — saved windows and group moves on Zotero's windows \(zotero#6035\) on a real native build/, why: "version: needs a Zotero with its own windows" },
             { re: /^Weavero — named sessions on Zotero's windows \(zotero#6035\)/, why: "version: needs a Zotero with its own windows" },

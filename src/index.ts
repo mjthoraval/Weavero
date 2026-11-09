@@ -24,7 +24,7 @@ import { wvWrap, wvUnwrap, wvWrapLayers } from "./lib/wrap";
 import { wvWhenWindowLoaded, wvBoolAttrOn, wvReaderMenuEvent, wvWithin, wvIsTextEntry, wvHtmlEl, WV_XHTML_NS } from "./lib/dom";
 import { wvListen, wvUnlisten, wvUnlistenAll, wvListenKeys, wvUnlistenAllOn, wvSweepTagOnChrome } from "./lib/listen";
 import { wvStoreDir, wvStorePath, wvStoreChain, wvStoreWrite, wvStoreRead, wvStoreRemove } from "./lib/store";
-import { wvViewEl, wvViewEls, wvItemsTreeEl, wvItemsTreeEls, wvLibraryViews, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvOpenLibraryView, wvPlanWindowTransfer, wvSelectLibraryTab, wvGeomToPane, wvTransferItemIDs, wvWinType, wvWin32Style } from "./lib/windows";
+import { wvViewEl, wvViewEls, wvItemsTreeEl, wvItemsTreeEls, wvLibraryViews, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvWindowArgs, wvAdvSearchWindowArgs, wvAdvSearchGeometry, wvOpenLibraryView, wvPaneSizesRead, wvPaneSizesWrite, wvPlanWindowTransfer, wvSelectLibraryTab, wvGeomToPane, wvTransferItemIDs, wvWinType, wvWin32Style } from "./lib/windows";
 import { wvAccel, wvAccelAny } from "./lib/keys";
 import { wvCloneFor } from "./lib/xray";
 import { wvMenuItem, wvMenuSeparator } from "./lib/menu";
@@ -35,7 +35,7 @@ import { wvAltReveal } from "./lib/menubar";
 
 /** The shared helpers, published as `Zotero.Weavero.lib` so the suite can
  *  exercise them directly (they are bundled, not otherwise reachable). */
-const WV_LIB = { wvLivePlugin, wvViewEl, wvViewEls, wvItemsTreeEl, wvItemsTreeEls, wvLibraryViews, wvViewIdsCss, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvOpenLibraryView, wvSelectLibraryTab, wvPlanWindowTransfer, wvGeomToPane, wvTransferItemIDs, wvWinType, wvIsTextEntry, wvAccel, wvAccelAny, wvCloneFor, wvMenuItem, wvMenuSeparator, wvSvgEl, WV_SVG_NS,
+const WV_LIB = { wvLivePlugin, wvViewEl, wvViewEls, wvItemsTreeEl, wvItemsTreeEls, wvLibraryViews, wvViewIdsCss, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvWindowArgs, wvAdvSearchWindowArgs, wvAdvSearchGeometry, wvOpenLibraryView, wvPaneSizesRead, wvPaneSizesWrite, wvSelectLibraryTab, wvPlanWindowTransfer, wvGeomToPane, wvTransferItemIDs, wvWinType, wvIsTextEntry, wvAccel, wvAccelAny, wvCloneFor, wvMenuItem, wvMenuSeparator, wvSvgEl, WV_SVG_NS,
     WV_LINK_CHAIN_PATHS, WV_BACKLINK_ARROW_PATH, WV_OUTLINK_ARROW_PATH, WV_LOOPLINK_ARROW_PATH, WV_BROKENLINK_MARK_PATH, WV_ZLINK_KIND_PATH, WV_CITE_KIND_PATH, WV_REF_MARK_TIGHT_VIEWBOX, WV_EXTLINK_PATHS, WV_LINK_MENU_ICON, wvLinkGlyphEl, wvLinkGlyphMarkup, wvLinkGlyphUri, wvHtmlEl, WV_XHTML_NS, WV_LINK_PALETTE, wvLinkVars, wvLinkColor, wvLinkClassRules, wvOutsideClick, wvReachableDocs, wvDismissOff, wvAltReveal, wvTimeout, wvClearTimeout, wvSleep, wvInjectStyle, wvRemoveStyle, wvFilterTileRules, wvWrap, wvUnwrap, wvWrapLayers,
     wvWhenWindowLoaded, wvBoolAttrOn, wvReaderMenuEvent, wvWithin,
     wvListen, wvUnlisten, wvUnlistenAll, wvListenKeys,
@@ -1053,6 +1053,18 @@ class WeaveroPlugin {
      *  Zotero. */
     _wvMultiMainOn() {
         try { return !!(!wvNativeWindows() && this._getTabsAndWindowsMaster() && this._getNewMainWindow()); }
+        catch (e) { return false; }
+    }
+
+    /** Advanced Search in New Window and its two settings (the shortcut, the
+     *  hidden side panes). On an older Zotero they ride Weavero's own second
+     *  main window, so Multiple main windows decides; on a Zotero with its own
+     *  windows (zotero#6035) the window is Zotero's (Shift+click on the funnel
+     *  opens it there too) and the Tabs and Windows master alone decides: the
+     *  Multiple main windows box is hidden there, and an "off" left in it must
+     *  not take the search window away (MJT 2026-11-07, the port). */
+    _wvAdvSearchWindowsOn() {
+        try { return wvNativeWindows() ? !!this._getTabsAndWindowsMaster() : this._wvMultiMainOn(); }
         catch (e) { return false; }
     }
 
@@ -4155,6 +4167,10 @@ class WeaveroPlugin {
             (this as any)._wvWindowStoreFrozen = true;
         } catch (e) {}
         try { (this as any)._wvUnwireEarlyRestoreTracing(); } catch (e) {}
+        // An Advanced Search window's hidden panes, before its guard goes: a
+        // window left hidden without it would hide them in every window.
+        try { for (const w of wvMainWins()) (this as any)._wvAdvSearchUnhidePanesNative(w); } catch (e) {}
+        try { for (const w of wvMainWins()) (this as any)._wvPaneSizesUnwire(w); } catch (e) {}
         try { (this as any)._wvUnwireWindowCloseIndicators(); } catch (e) {}
         // Restore the per-window <item-details> tab-select filter.
         try {

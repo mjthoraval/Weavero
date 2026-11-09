@@ -34,7 +34,8 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
     // not edit), the number kept so no page runs an older bundle as newer.
     // 9: the heading flash (outline click, heading link) as a decoration.
     // 10: the fold arrow is Zotero's chevron-8 twisty.
-    const INJECT_V = 10;
+    // 11: list items fold too; Fold All / Unfold All (2026-11-09).
+    const INJECT_V = 11;
 
     /** CROSS-BUNDLE DecorationSet interop (issue #37 -- "Search in notes
      *  does not find anything", root-caused 2026-08-27).
@@ -355,6 +356,52 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
         return folded.filter((p) => ok.has(p));
     }
 
+    // ---- List folding (display only, MJT 2026-11-09: "the Obsidian way").
+    //
+    // A list item -- bulleted or numbered, at any depth -- folds when it
+    // holds anything after its first line (its first child, a textblock):
+    // sub-lists, further paragraphs. A fold hides those children; the first
+    // line stays, and so do the items after it (a numbered list keeps its
+    // numbers). Same rules as the heading folds: positions in this plugin's
+    // state (`lists`), mapped through every edit, nothing written into the
+    // note.
+
+    /** Every list item in document order -- the order of the editor DOM's
+     *  `li` elements, which is how chrome addresses them -- with whether it
+     *  can fold and where its first line ends (`headEnd`, the start of what
+     *  a fold hides). */
+    function listItemsOf(doc: any): any[] {
+        const out: any[] = [];
+        doc.descendants((node: any, pos: number) => {
+            if (node.type.name !== "listItem") return true;
+            const first = node.firstChild;
+            out.push({
+                ord: out.length, pos, node,
+                foldable: node.childCount > 1 && !!first && first.isTextblock,
+                headEnd: pos + 1 + (first ? first.nodeSize : 0),
+                end: pos + node.nodeSize,
+            });
+            return true;
+        });
+        return out;
+    }
+
+    /** Keep only list folds that still sit on a foldable item. */
+    function validLists(doc: any, lists: number[]): number[] {
+        if (!lists.length) return lists;
+        const ok = new Set<number>();
+        for (const li of listItemsOf(doc)) if (li.foldable) ok.add(li.pos);
+        return lists.filter((p) => ok.has(p));
+    }
+
+    /** The folded items whose hidden part holds `pos`, outermost first. */
+    function listOwners(items: any[], lists: number[], pos: number): number[] {
+        if (!lists.length) return [];
+        const fset = new Set(lists);
+        return items.filter((li: any) => li.foldable && fset.has(li.pos) && pos >= li.headEnd && pos < li.end - 1)
+            .map((li: any) => li.pos);
+    }
+
     /** Every heading in document order (headings nested in a list or a
      *  quote included); `ord` is the index in this list, the same order
      *  as the editor DOM's `h1..h6`, which is how chrome addresses them. */
@@ -382,6 +429,13 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
         path.setAttribute("d", "M0 2.70711L4 6.70711L8 2.70711L7.29289 2L4 5.29289L0.707107 2L0 2.70711Z");
         svg.appendChild(path);
         s.appendChild(svg);
+        return s;
+    }
+
+    /** A list item's arrow: chrome tells it from a heading's by the mark. */
+    function listArrowDOM(): any {
+        const s = arrowDOM();
+        s.setAttribute("data-wv-fold", "li");
         return s;
     }
 
@@ -414,6 +468,23 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
                 side: -1, key: "wv-fold", ignoreSelection: true, stopEvent: () => true,
             }));
         }
+        // List items: the class and the arrow on the first line, the rest
+        // of a folded item hidden child by child.
+        const lset = new Set(st ? st.lists : []);
+        for (const li of listItemsOf(state.doc)) {
+            if (!li.foldable) continue;
+            const isFolded = lset.has(li.pos);
+            decos.push(Decoration.node(li.pos + 1, li.headEnd, { class: isFolded ? "wv-fold-li wv-fold-folded" : "wv-fold-li" }));
+            decos.push(Decoration.widget(li.pos + 2, listArrowDOM, {
+                side: -1, key: "wv-fold-li", ignoreSelection: true, stopEvent: () => true,
+            }));
+            if (!isFolded) continue;
+            li.node.forEach((child: any, offset: number, index: number) => {
+                if (index === 0) return;
+                const from = li.pos + 1 + offset;
+                decos.push(Decoration.node(from, from + child.nodeSize, { class: "wv-fold-hidden" }));
+            });
+        }
         // null, never our bundle's empty set (issue #37, see buildDecos).
         return decos.length ? DecorationSet.create(state.doc, decos) : null;
     }
@@ -422,15 +493,16 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
         const spec: any = {
             key: FKEY,
             state: {
-                init: () => ({ folded: [], flash: null }),
+                init: () => ({ folded: [], lists: [], flash: null }),
                 apply(tr: any, prev: any, _old: any, next: any) {
+                    const remap = (ps: number[]) => ps.map((p) => {
+                        const r = tr.mapping.mapResult(p, 1);
+                        return r.deleted ? -1 : r.pos;
+                    }).filter((p) => p >= 0);
                     let folded: number[] = prev.folded;
-                    if (tr.docChanged && folded.length) {
-                        folded = folded.map((p) => {
-                            const r = tr.mapping.mapResult(p, 1);
-                            return r.deleted ? -1 : r.pos;
-                        }).filter((p) => p >= 0);
-                    }
+                    let lists: number[] = prev.lists;
+                    if (tr.docChanged && folded.length) folded = remap(folded);
+                    if (tr.docChanged && lists.length) lists = remap(lists);
                     const m = tr.getMeta(FKEY);
                     if (m) {
                         if (Array.isArray(m.set)) folded = m.set.slice();
@@ -440,6 +512,13 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
                                 : folded.concat([m.toggle]);
                         }
                         if (Array.isArray(m.unfold)) folded = folded.filter((p) => m.unfold.indexOf(p) < 0);
+                        if (Array.isArray(m.listSet)) lists = m.listSet.slice();
+                        if (typeof m.listToggle === "number") {
+                            lists = lists.indexOf(m.listToggle) >= 0
+                                ? lists.filter((p) => p !== m.listToggle)
+                                : lists.concat([m.listToggle]);
+                        }
+                        if (Array.isArray(m.listUnfold)) lists = lists.filter((p) => m.listUnfold.indexOf(p) < 0);
                     }
                     let flash: any = prev.flash;
                     if (flash != null && tr.docChanged) {
@@ -447,9 +526,10 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
                         flash = r.deleted ? null : r.pos;
                     }
                     if (m && Object.prototype.hasOwnProperty.call(m, "flash")) flash = m.flash;
-                    if (folded === prev.folded && flash === prev.flash) return prev;
+                    if (folded === prev.folded && lists === prev.lists && flash === prev.flash) return prev;
                     return {
                         folded: folded === prev.folded ? prev.folded : validFolds(next.doc, folded),
+                        lists: lists === prev.lists ? prev.lists : validLists(next.doc, lists),
                         flash,
                     };
                 },
@@ -464,13 +544,15 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
                 try {
                     if (!foldOn()) return null;
                     const st: any = FKEY.getState(next);
-                    if (!st || !st.folded.length) return null;
+                    if (!st || (!st.folded.length && !st.lists.length)) return null;
                     if (trs.some((t) => t.getMeta(FKEY))) return null;
                     if (!trs.some((t) => t.selectionSet || t.docChanged)) return null;
-                    const idx = next.doc.resolve(next.selection.head).index(0);
-                    const own = foldLayout(next.doc, st.folded).owners.get(idx);
-                    if (!own) return null;
-                    return next.tr.setMeta(FKEY, { unfold: own }).setMeta("addToHistory", false);
+                    const head = next.selection.head;
+                    const own = st.folded.length
+                        ? foldLayout(next.doc, st.folded).owners.get(next.doc.resolve(head).index(0)) : null;
+                    const lown = listOwners(st.lists.length ? listItemsOf(next.doc) : [], st.lists, head);
+                    if (!own && !lown.length) return null;
+                    return next.tr.setMeta(FKEY, { unfold: own || [], listUnfold: lown }).setMeta("addToHistory", false);
                 } catch (e) { return null; }
             },
             // Tells chrome that the text or the folds changed (the outline
@@ -482,7 +564,7 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
                         try {
                             const doc = view.state.doc !== prev.doc;
                             const a: any = FKEY.getState(view.state), b: any = FKEY.getState(prev);
-                            const fold = !!a && !!b && a.folded !== b.folded;
+                            const fold = !!a && !!b && (a.folded !== b.folded || a.lists !== b.lists);
                             if (!doc && !fold) return;
                             const d: any = view.dom.ownerDocument;
                             d.dispatchEvent(new (d.defaultView as any).CustomEvent("wvnotechange", {
@@ -509,6 +591,8 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
         const { tops, foldable, owners } = foldLayout(view.state.doc, folded);
         const topIdx = new Map<number, number>();
         tops.forEach((t: any, i: number) => topIdx.set(t.pos, i));
+        const lists: number[] = st ? st.lists : [];
+        const items = lists.length ? listItemsOf(view.state.doc) : [];
         return JSON.stringify(headingsOf(view.state.doc).map((h: any) => {
             const ti = h.top ? topIdx.get(h.pos) : view.state.doc.resolve(h.pos).index(0);
             return {
@@ -519,7 +603,8 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
                 top: h.top,
                 foldable: h.top && foldable.has(ti as number),
                 folded: h.top && folded.indexOf(h.pos) >= 0,
-                hidden: owners.has(ti as number),
+                // A heading inside a folded list item is out of sight too.
+                hidden: owners.has(ti as number) || listOwners(items, lists, h.pos).length > 0,
             };
         }));
     }
@@ -559,18 +644,116 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
         return st ? st.folded.length : 0;
     }
 
-    /** Open whatever folds hide the heading at `ord`; the number opened. */
+    /** Open whatever folds hide the heading at `ord` -- heading folds and
+     *  the folds of list items it sits in; the number opened. */
     function foldReveal(ord: number): number {
         const view = viewOf();
         if (!view) return 0;
         const h = headingsOf(view.state.doc)[ord];
         const st: any = FKEY.getState(view.state);
-        if (!h || !st || !st.folded.length) return 0;
+        if (!h || !st || (!st.folded.length && !st.lists.length)) return 0;
         const idx = view.state.doc.resolve(h.pos).index(0);
-        const own = foldLayout(view.state.doc, st.folded).owners.get(idx);
-        if (!own) return 0;
-        view.dispatch(view.state.tr.setMeta(FKEY, { unfold: own }).setMeta("addToHistory", false));
-        return own.length;
+        const own = st.folded.length ? foldLayout(view.state.doc, st.folded).owners.get(idx) || [] : [];
+        const lown = listOwners(st.lists.length ? listItemsOf(view.state.doc) : [], st.lists, h.pos);
+        if (!own.length && !lown.length) return 0;
+        view.dispatch(view.state.tr.setMeta(FKEY, { unfold: own, listUnfold: lown }).setMeta("addToHistory", false));
+        return own.length + lown.length;
+    }
+
+    /** List items for chrome, as JSON: the first line's text, whether the
+     *  item can fold, whether it is folded. */
+    function listItemsJSON(): string {
+        const view = viewOf();
+        if (!view) return "[]";
+        const st: any = FKEY.getState(view.state);
+        const lset = new Set(st ? st.lists : []);
+        return JSON.stringify(listItemsOf(view.state.doc).map((li: any) => ({
+            ord: li.ord,
+            t: li.node.firstChild ? li.node.firstChild.textContent : "",
+            foldable: li.foldable,
+            folded: lset.has(li.pos),
+        })));
+    }
+
+    function listFoldToggle(ord: number): string {
+        const view = viewOf();
+        if (!view) return "no-view";
+        const li = listItemsOf(view.state.doc)[ord];
+        if (!li || !li.foldable) return "no-item";
+        const st: any = FKEY.getState(view.state);
+        const was = !!st && st.lists.indexOf(li.pos) >= 0;
+        let tr = view.state.tr.setMeta(FKEY, { listToggle: li.pos }).setMeta("addToHistory", false);
+        // A caret inside the part being hidden moves to the end of the
+        // first line, so the next keystroke never lands out of sight.
+        const head = view.state.selection.head;
+        if (!was && head >= li.headEnd && head < li.end - 1) {
+            tr = tr.setSelection(TextSelection.create(tr.doc, li.headEnd - 1));
+        }
+        view.dispatch(tr);
+        return was ? "unfolded" : "folded";
+    }
+
+    /** Fold exactly the list items at these ordinals (chrome's restore). */
+    function listFoldSet(ordsJSON: string): number {
+        const view = viewOf();
+        if (!view) return -1;
+        let ords: number[] = [];
+        try { ords = JSON.parse(String(ordsJSON)) || []; } catch (e) {}
+        const items = listItemsOf(view.state.doc);
+        const listSet = ords.map((o) => items[o]).filter((li) => li && li.foldable).map((li) => li.pos);
+        view.dispatch(view.state.tr.setMeta(FKEY, { listSet }).setMeta("addToHistory", false));
+        const st: any = FKEY.getState(view.state);
+        return st ? st.lists.length : 0;
+    }
+
+    /** Fold every heading and every list item, at every level (the note
+     *  menu's Fold All). A caret now out of sight goes to the end of the
+     *  outermost line still showing above it. */
+    function foldAll(): number {
+        const view = viewOf();
+        if (!view) return -1;
+        const doc = view.state.doc;
+        const { tops, foldable } = foldLayout(doc, []);
+        const set = Array.from(foldable).map((i) => tops[i].pos);
+        const items = listItemsOf(doc);
+        const listSet = items.filter((li: any) => li.foldable).map((li: any) => li.pos);
+        let tr = view.state.tr.setMeta(FKEY, { set, listSet }).setMeta("addToHistory", false);
+        const head = view.state.selection.head;
+        const own = foldLayout(doc, set).owners.get(doc.resolve(head).index(0));
+        let to = -1;
+        if (own && own.length) {
+            const hn = doc.nodeAt(own[0]);
+            if (hn) to = own[0] + hn.nodeSize - 1;
+        }
+        else {
+            const lown = listOwners(items, listSet, head);
+            const li = lown.length ? items.find((x: any) => x.pos === lown[0]) : null;
+            if (li) to = li.headEnd - 1;
+        }
+        if (to >= 0) tr = tr.setSelection(TextSelection.create(tr.doc, to));
+        view.dispatch(tr);
+        return set.length + listSet.length;
+    }
+
+    /** Open every fold, headings and lists (the note menu's Unfold All). */
+    function unfoldAll(): number {
+        const view = viewOf();
+        if (!view) return -1;
+        const st: any = FKEY.getState(view.state);
+        const n = st ? st.folded.length + st.lists.length : 0;
+        view.dispatch(view.state.tr.setMeta(FKEY, { set: [], listSet: [] }).setMeta("addToHistory", false));
+        return n;
+    }
+
+    /** What could fold and what is folded, headings and lists together, as
+     *  JSON (the note menu greys Fold All / Unfold All by these). */
+    function foldCounts(): string {
+        const view = viewOf();
+        if (!view) return JSON.stringify({ foldable: 0, folded: 0 });
+        const st: any = FKEY.getState(view.state);
+        const foldable = foldLayout(view.state.doc, []).foldable.size
+            + listItemsOf(view.state.doc).filter((li: any) => li.foldable).length;
+        return JSON.stringify({ foldable, folded: st ? st.folded.length + st.lists.length : 0 });
     }
 
     /** One tag per editor view: chrome restores a note's folds once per
@@ -698,6 +881,12 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
     (window as any).__wvHeadingFocus = headingFocus;
     (window as any).__wvEditorFocus = editorFocus;
     (window as any).__wvHeadingFlash = headingFlash;
+    (window as any).__wvListItems = listItemsJSON;
+    (window as any).__wvListFoldToggle = listFoldToggle;
+    (window as any).__wvListFoldSet = listFoldSet;
+    (window as any).__wvFoldAll = foldAll;
+    (window as any).__wvUnfoldAll = unfoldAll;
+    (window as any).__wvFoldCounts = foldCounts;
     // Force a re-scan: `decorations` reads __wvLinkifyRegexSrc fresh each call,
     // so dispatching an empty transaction re-runs it under the current toggle
     // state (chrome calls this after a "Show:" toggle changes, and once after

@@ -47,7 +47,10 @@
 //     pinned section and the sections per main window). And with the pinned
 //     section headers' stylesheet (`wv-sticky-heads-styles`, 0.22.3-dev.166;
 //     its scroll listener sits on the item pane's scroller, not a recorded
-//     host, and its per-section observers in a WeakMap). Set
+//     host, and its per-section observers in a WeakMap). And with where a
+//     window's colour came from (`_wvGlyphLazy` beside `_wvTitleGlyphIdx`,
+//     1.0.1-dev.4: a colour drawn from the pool, which a window's saved colour
+//     may take back on a Zotero with its own windows). Set
 //     WV_WIRING_RECORD=<path> to dump a new recording instead of comparing.
 //     A deliberate change edits the affected lines here, in the same commit,
 //     with the reason.
@@ -351,7 +354,7 @@ const WIRING_EXPECTED = {
             "_wvCloseBtnPending:boolean", "_wvCloseBtnRO:object", "_wvCollAids:object",
             "_wvCompactTitleBar:object", "_wvDevInitDone:boolean",
             "_wvFilterBar:object", "_wvFilterState:object", "_wvFilterTbBtn:object",
-            "_wvFilterTreeObserver:object", "_wvHid:object", "_wvHidApplyTries:number", "_wvHidMO:object",
+            "_wvFilterTreeObserver:object", "_wvGlyphLazy:number", "_wvHid:object", "_wvHidApplyTries:number", "_wvHidMO:object",
             "_wvItemDropOff:function", "_wvLibrariesBoxMo:object", "_wvMainNewTabKeyH:function",
             "_wvManagedWindow:boolean", "_wvOvActivateHandler:function", "_wvOvBirthMon:string",
             "_wvOvFollowWired:number", "_wvOvMoveHandler:function", "_wvOvPollId:number",

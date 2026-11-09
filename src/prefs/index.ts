@@ -107,11 +107,18 @@ import { wvNativeWindows } from "../lib/windows";
     }
 
     /** A Zotero with its own windows (zotero#6035): the options for Weavero's
-     *  go, a line says why. `data-wv-native-off` marks them. */
+     *  go, a line says why. `data-wv-native-off` marks them. A row that stays
+     *  with other masters there names them in `data-wv-native-gate` (the
+     *  Advanced Search window's two: Multiple main windows is hidden, so its
+     *  "off" must not grey them). Runs BEFORE bindMasterDisable, which reads
+     *  data-gated-by once. */
     function bindNativeWindows(doc) {
         if (!wvNativeWindows()) return;
         for (const el of Array.from(doc.querySelectorAll("[data-wv-native-off]")) as any[]) {
             el.style.setProperty("display", "none", "important");
+        }
+        for (const el of Array.from(doc.querySelectorAll("[data-wv-native-gate]")) as any[]) {
+            el.setAttribute("data-gated-by", el.getAttribute("data-wv-native-gate"));
         }
         const note = doc.getElementById("wv-native-windows-note");
         if (note) wvSetBoolAttr(note, "hidden", false);
@@ -595,8 +602,9 @@ import { wvNativeWindows } from "../lib/windows";
         try { bindCharRadio(doc.getElementById("wv-title-lines"), "weavero.titleLinesMode", ["off", "fixed", "adaptive"], "off"); } catch (e) { dbg("bindTitleLines err: " + e); }
         try { bindIntInput(doc.getElementById("wv-title-lines-count"), "weavero.titleLinesCount", 2, 10, 2); } catch (e) { dbg("bindTitleLinesCount err: " + e); }
         try { bindTitleLinesLead(doc); } catch (e) { dbg("bindTitleLinesLead err: " + e); }
-        try { bindMasterDisable(doc); } catch (e) { dbg("bindMasterDisable err: " + e); }
+        // Native windows first: it re-gates rows bindMasterDisable reads.
         try { bindNativeWindows(doc); } catch (e) { dbg("bindNativeWindows err: " + e); }
+        try { bindMasterDisable(doc); } catch (e) { dbg("bindMasterDisable err: " + e); }
         try { bindPlatformOnly(doc); } catch (e) { dbg("bindPlatformOnly err: " + e); }
         try { bindSectionNav(doc); } catch (e) { dbg("bindSectionNav err: " + e); }
         try { bindCollapse(doc); } catch (e) { dbg("bindCollapse err: " + e); }

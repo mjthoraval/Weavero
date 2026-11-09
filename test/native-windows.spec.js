@@ -123,7 +123,10 @@ describe("Weavero — native windows (zotero#6035)", () => {
 
     it("the wiring table: Zotero's twins stay out, the rest is wired", async () => {
         const off = wv._wvMainWires().filter(e => e.nativeOff).map(e => e.id).sort();
-        assert.deepEqual(off, ["advsearch-new-window", "context-pane-guard", "itemdetails-tabselect", "items-cross-window-drop",
+        // advsearch-new-window is wired there too since 1.0.1-dev.2 (the port,
+        // test/native-advsearch-window.spec.js): Shift+click is Zotero's, the
+        // rest of its routes Weavero's.
+        assert.deepEqual(off, ["context-pane-guard", "itemdetails-tabselect", "items-cross-window-drop",
             "managed-window", "new-tab-shortcut", "new-window-shortcut", "tag-selector-class", "window-pane-prefs"]);
         const wires = wv._wvMainWires();
         const saved = wires.map(e => e.wire);
@@ -177,7 +180,10 @@ describe("Weavero — native windows (zotero#6035)", () => {
         });
     });
 
-    it("File and Edit: Weavero's entries stay hidden, Zotero's Advanced Search keeps its shortcut", async () => {
+    // File: Zotero has New Tab and New Window there. Edit: Advanced Search in
+    // New Window stays (the port, MJT 2026-11-07), shown where Zotero has the
+    // route, and the shortcut sits on whichever line Settings gives it.
+    it("File: Weavero's entries stay hidden; Edit: Advanced Search in New Window shows, the shortcut follows the setting", async () => {
         if (!wv._wvMenubarMenus) wvT.absent("_wvMenubarMenus");
         const doc = win.document;
         const anchor = doc.getElementById("menu_advancedSearch");
@@ -190,19 +196,28 @@ describe("Weavero — native windows (zotero#6035)", () => {
             menu.onShowing(null, { menuElem: el, setVisible: (v) => { vis = v; } });
             return vis;
         };
+        const key = anchor ? anchor.getAttribute("key") : null;
+        const remap = Zotero.Prefs.get("weavero.advSearchShortcutNewWindow");
         try {
-            await withNative(() => {
+            await withNative(async () => {
                 for (const m of wv._wvMenubarMenus.file) assert.isFalse(show(m), "File entry shown");
-                if (anchor) {
-                    // An earlier spec may have left the remap on: it comes back to Zotero's line.
-                    const key = anchor.getAttribute("key");
-                    assert.isFalse(show(wv._wvMenubarMenus.edit[0]), "Edit entry shown");
-                    assert.strictEqual(anchor.getAttribute("key"), "key_advancedSearch", "the key stays on Zotero's line");
-                    if (!key) anchor.removeAttribute("key");
-                }
+                if (!anchor) return;
+                const zp = win.ZoteroPane;
+                const run = async () => {
+                    Zotero.Prefs.set("weavero.advSearchShortcutNewWindow", false);
+                    assert.isTrue(show(wv._wvMenubarMenus.edit[0]), "Edit entry hidden");
+                    assert.strictEqual(anchor.getAttribute("key"), "key_advancedSearch", "the setting off: the key on Zotero's line");
+                    Zotero.Prefs.set("weavero.advSearchShortcutNewWindow", true);
+                    assert.isTrue(show(wv._wvMenubarMenus.edit[0]));
+                    assert.isNull(anchor.getAttribute("key"), "the setting on: the shortcut is the entry's");
+                };
+                if (typeof zp.openAdvancedSearchInNewWindow === "function") await run();
+                else await withStub(zp, "openAdvancedSearchInNewWindow", () => null, run);
             });
         }
         finally {
+            if (remap !== undefined) Zotero.Prefs.set("weavero.advSearchShortcutNewWindow", remap);
+            if (anchor) { if (key == null) anchor.removeAttribute("key"); else anchor.setAttribute("key", key); }
             popup.remove();
             for (const el of doc.querySelectorAll("[data-wv-menubar='advsearchwin']")) { if (!el.closest("#main-menubar, menubar")) el.remove(); }
         }

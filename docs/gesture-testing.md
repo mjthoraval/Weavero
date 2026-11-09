@@ -1004,6 +1004,37 @@ stand in. On macOS, by hand:
       window"* on (the default): the Advanced Search window has no
       collections pane and no item pane; *View → Layout* brings one back
       there; the primary window's panes are untouched, also after a restart.
+- [ ] (A Zotero with its own windows, zotero#6035: Zotero main today, the
+      next beta once it carries it.) `test/native-advsearch-window.spec.js`
+      covers the routes and the window; by hand, the real gestures: a real
+      **Shift+click** on the funnel (Zotero's own route) and a real
+      **Ctrl+Shift+F** / ⇧⌘F (the setting on) each open the Advanced Search
+      window at its remembered size, centred, side panes hidden, the
+      conditions focused, seeded with the quick search text if any;
+      **middle-click** on the funnel does the same; **right-click** offers
+      *Open Advanced Search*, *Open in New Window* and *Open in New Tab*.
+      *View → Layout* brings a pane back in that window only. Close it, open
+      **File → New Window**: its panes are where the other windows have
+      them. Restart with the search window open: it comes back with its
+      panes still hidden. In *Settings*, *Open new main windows* is not
+      shown; the two Advanced Search window options are, and grey only with
+      the Tabs and Windows switch.
+- [ ] (Any Zotero; on one with its own windows, zotero#6035, too.)
+      `test/window-colours.spec.js` covers the saved colour; by hand: three
+      windows or more, and a reader window where Zotero has them. In *List
+      all tabs*, right-click one window's header and click a colour; give a
+      second window the colour a third one has; give the reader window a
+      colour. Restart three times, a different window in front each time:
+      every window comes back in its colour, the picks included (the first
+      window in Zotero's list shows the anchor instead).
+- [ ] (Any Zotero.) `test/window-pane-sizes.spec.js` covers the records and
+      Zotero's own windows; by hand: two windows, drag the collections pane
+      and the item pane to clearly different widths in each. On a Zotero
+      with its own windows, open a document tab in each, then go back to
+      each library tab: each keeps its own widths. Restart: each window
+      comes back with its own. *File → New Window* from one: it starts with
+      that window's widths. Whether a pane is collapsed stays Zotero's one
+      setting for every window, as before.
 - [ ] (Any platform.) The collections-pane button at the window's top-left
       collapses the pane and stays exactly where it was (it re-homes from
       the collections toolbar to the items toolbar under the same pixels);

@@ -48,6 +48,80 @@ export function wvNativeWindows(): boolean {
  *  with its own windows: a JSON string, "" for none (modules/window-state.ts). */
 export const WV_WINDOW_STATE_PREF = "weavero.windowState";
 
+declare const Services: any;
+
+/** The section open / collapsed settings a window can hold (`panes.<pane>.open`):
+ *  its own sections, and every one Zotero has saved a state for. */
+export function wvPaneOpenSettingNames(win: any): string[] {
+    const out = new Set<string>();
+    try {
+        for (const s of win.document.querySelectorAll("collapsible-section[data-pane]")) out.add("panes." + s.dataset.pane + ".open");
+    }
+    catch (e) {}
+    try {
+        for (const p of Services.prefs.getChildList("extensions.zotero.panes.")) {
+            if (/\.open$/.test(p)) out.add(p.replace(/^extensions\.zotero\./, ""));
+        }
+    }
+    catch (e) {}
+    return [...out];
+}
+
+/** The object a main window was opened with (`Zotero.openMainWindow(args)`),
+ *  boxed through `wrappedJSObject` as zoteroPane.js getWindowArgs reads it;
+ *  null for none. */
+export function wvWindowArgs(win: any): any {
+    try {
+        let a = win && win.arguments && win.arguments[0];
+        if (a && a.wrappedJSObject) a = a.wrappedJSObject;
+        return a && typeof a === "object" ? a : null;
+    }
+    catch (e) {
+        return null;
+    }
+}
+
+/** A window opened for an Advanced Search on a Zotero with its own windows
+ *  (zotero#6035): `openAdvancedSearchInNewWindow` -- Zotero's Shift+click on
+ *  the funnel, and every route of Weavero's -- passes a library tab whose
+ *  search is open and nothing else. A plain New Window carries only the
+ *  collections, a torn-off library tab (its search may be open) comes with
+ *  `geometry`, where it was dropped, a restored or reopened window with
+ *  `sessionState`. Read in Zotero main at 228f132e1: libraryView.js 1431-1476,
+ *  zoteroPane.js 1974-2031, tabs.js 212-216. */
+export function wvAdvSearchWindowArgs(args: any): boolean {
+    try {
+        if (!args || typeof args !== "object") return false;
+        if (args.geometry || args.sessionState || args.movedTab) return false;
+        const adv = args.libraryTabState && args.libraryTabState.advancedSearch;
+        return !!(adv && adv.state === "open");
+    }
+    catch (e) {
+        return false;
+    }
+}
+
+/** Where an Advanced Search window opens: the remembered CONTENT size
+ *  ("WxH", weavero.advSearchWindowSize; 1100 x 720 without one) plus the
+ *  window's frame, centred in `avail` (a screen's available rect) and never
+ *  larger. Zotero's restoreWindowGeometry resizes the OUTER window, while the
+ *  size is remembered as the content (the older Zotero's open features set the
+ *  content area), hence the frame: without it the window shrank by its frame
+ *  at every open. */
+export function wvAdvSearchGeometry(saved: string, frame: { w: number; h: number }, avail: { left: number; top: number; width: number; height: number }): { screenX: number; screenY: number; width: number; height: number } {
+    let w = 1100, h = 720;
+    const m = String(saved || "").match(/^(\d{3,5})x(\d{3,5})$/);
+    if (m) { w = parseInt(m[1], 10); h = parseInt(m[2], 10); }
+    const fw = Number.isFinite(frame && frame.w) && frame.w >= 0 && frame.w <= 80 ? frame.w : 0;
+    const fh = Number.isFinite(frame && frame.h) && frame.h >= 0 && frame.h <= 120 ? frame.h : 0;
+    const width = Math.min(w + fw, avail.width), height = Math.min(h + fh, avail.height);
+    return {
+        screenX: Math.round(avail.left + (avail.width - width) / 2),
+        screenY: Math.round(avail.top + (avail.height - height) / 2),
+        width, height,
+    };
+}
+
 /** A window's geometry as windows.json keeps it (`_wvWindowGeom`), in the form
  *  of Zotero's saved windows (`ZoteroPane.getState`). A minimized window has no
  *  position, and an older store can hold Windows' parking spot. */
@@ -71,6 +145,8 @@ export function wvGeomToPane(g: any): any {
 export function wvStoredFromSaved(e: any): any {
     const ms = Object.assign({}, e.wvMainState);
     if (e.named && e.name) ms.title = e.name;
+    // Its colour: the entry's own field, from before the window record carried it.
+    if (ms.glyph == null && Number.isInteger(e.glyph)) ms.glyph = e.glyph;
     if (e.kind === "main") return { kind: "main-dev", tabs: e.tabs || [], geom: e.geom, wvMainState: ms };
     const tabs = (e.tabs || []).filter((t: any) => t && t.itemID != null).map((t: any) => ({ itemID: t.itemID }));
     return { kind: "reader-orphan", tabs, activeIndex: 0, geom: e.geom, wvMainState: ms };
@@ -129,11 +205,20 @@ export function wvPlanWindowTransfer(doc: any, open: Map<number, number>, kindOf
         if (ms && ms.hiddenColl) st.hiddenColl = ms.hiddenColl;
         if (ms && ms.title) st.title = ms.title;
         if (ms && typeof ms.tagsAuto === "boolean") st.tagsAuto = ms.tagsAuto;
+        // Its colour (tabs.ts _wvGlyphRestore), into the window state that keeps it there.
+        if (ms && Number.isInteger(ms.glyph)) {
+            st.glyph = ms.glyph;
+            if (ms.glyphPicked === true) st.glyphPicked = true;
+        }
+        // Its pane sizes (window-state.ts _wvPaneSizesApply).
+        if (ms && ms.paneSizes && typeof ms.paneSizes === "object") st.paneSizes = ms.paneSizes;
         return st;
     };
     const settings = (ms: any) => {
         const prefs: any = {}, itemTreeColumns: any = {};
-        if (ms && ms.pinnedPane) prefs.pinnedPane = ms.pinnedPane;
+        // "" is a window with no pin, saved as such: left out, the window would
+        // take the pin last saved by any window (transition test 2026-11-07).
+        if (ms && typeof ms.pinnedPane === "string") prefs.pinnedPane = ms.pinnedPane;
         for (const [pane, isOpen] of Object.entries((ms && ms.paneOpen) || {})) prefs["panes." + pane + ".open"] = !!isOpen;
         if (ms && ms.columnPrefs && opts.columnsId) itemTreeColumns[opts.columnsId] = ms.columnPrefs;
         const st = own(ms);
@@ -154,8 +239,9 @@ export function wvPlanWindowTransfer(doc: any, open: Map<number, number>, kindOf
             return id == null || toOpen(id) ? t : {};
         }) : [],
         selectID: (anchorSel && anchorSel.data && anchorSel.data.itemID) ?? null,
-        geom: (anchor && anchor.geom) || null,
-        state: own({ hiddenColl: d.anchorHidden, title: d.anchorTitle, tagsAuto: d.anchorTagsAuto }),
+        // Its entry's, else the store's own field (no entry: it held only its library tab).
+        geom: (anchor && anchor.geom) || d.anchorGeom || null,
+        state: own({ hiddenColl: d.anchorHidden, title: d.anchorTitle, tagsAuto: d.anchorTagsAuto, paneSizes: d.anchorPaneSizes }),
         // The first window's collection too: only the others carried theirs, and the
         // first came back on My Library (transition test 2026-11-07, "C3" saved).
         collection: (anchor && anchor.wvMainState && anchor.wvMainState.collection) || null,
@@ -226,7 +312,8 @@ export function wvPlanWindowTransfer(doc: any, open: Map<number, number>, kindOf
             : e.kind === "reader" ? readerTabs(e)
                 : e.kind === "reader-orphan" ? orphanTabs(e) : null;
         if (!tabs || !tabs.length) continue;
-        const ms = e.wvMainState;
+        // A reader window's entry has no window record, only its colour.
+        const ms = e.wvMainState || (Number.isInteger(e.glyph) ? { glyph: e.glyph, glyphPicked: e.glyphPicked } : undefined);
         if (e.kind === "main-dev" && spare > 0) {
             spare--;
             const sel = tabs.find((t: any) => t.selected);
@@ -284,6 +371,46 @@ export function wvItemsTreeEl(doc: any): any {
 
 /** Every library view of a main window: one per library tab on a Zotero with its
  *  own windows (ZoteroPane.libraryViews), none on an older one. */
+/** A window's own pane sizes (MJT 2026-11-08): the collections pane's width, the
+ *  item pane's width and, in the stacked layout, its height. The attributes Zotero
+ *  persists for them (`zotero-persist`), under short keys. */
+const WV_PANE_SIZES: Array<[string, string, string]> = [
+    ["coll", "zotero-collections-pane", "width"],
+    ["item", "zotero-item-pane", "width"],
+    ["itemH", "zotero-item-pane", "height"],
+];
+
+/** The sizes `get(id)`'s elements hold, null when none. */
+export function wvPaneSizesRead(get: (id: string) => any): any {
+    const out: any = {};
+    for (const [key, id, attr] of WV_PANE_SIZES) {
+        let v = NaN;
+        try { const el = get(id); v = el ? parseFloat(el.getAttribute(attr)) : NaN; } catch (e) {}
+        if (Number.isFinite(v) && v > 0) out[key] = Math.round(v);
+    }
+    return Object.keys(out).length ? out : null;
+}
+
+/** Put `sizes` on `get(id)`'s elements as Zotero's own restore does
+ *  (zoteroPane.js unserializePersist: the attribute and the style). Returns
+ *  whether anything was written. */
+export function wvPaneSizesWrite(get: (id: string) => any, sizes: any): boolean {
+    let n = 0;
+    for (const [key, id, attr] of WV_PANE_SIZES) {
+        const v = sizes && sizes[key];
+        if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) continue;
+        try {
+            const el = get(id);
+            if (!el) continue;
+            el.setAttribute(attr, String(v));
+            el.style[attr] = v + "px";
+            n++;
+        }
+        catch (e) {}
+    }
+    return n > 0;
+}
+
 export function wvLibraryViews(win: any): any[] {
     try {
         const v = win && win.ZoteroPane && win.ZoteroPane.libraryViews;

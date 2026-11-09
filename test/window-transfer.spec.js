@@ -93,6 +93,13 @@ describe("Weavero — the saved windows move to Zotero's own (zotero#6035)", () 
             assert.deepEqual(JSON.parse(s.settings.prefs[STATE]), { hiddenColl: { groups: [7] }, title: "Mine", tagsAuto: false, id: "new" });
         });
 
+        it("a window saved with no pin opens with none, not with the pin another window saved last", () => {
+            const none = plan({ windows: [{ kind: "main-dev", tabs: [library()], wvMainState: { pinnedPane: "" } }] });
+            assert.strictEqual(none.windows[0].settings.prefs.pinnedPane, "", "an explicit none");
+            const old = plan({ windows: [{ kind: "main-dev", tabs: [library()], wvMainState: { title: "Old" } }] });
+            assert.notProperty(old.windows[0].settings.prefs, "pinnedPane", "a record with no field: Zotero's shared pin, as before");
+        });
+
         it("a library tab that knows its collection keeps it", () => {
             const state = { collections: ["L1"], focusedCollection: "L1" };
             const p = plan({ windows: [{ kind: "main-dev", tabs: [library({ data: { state } })], wvMainState: { collection: "C5" } }] });
@@ -151,6 +158,12 @@ describe("Weavero — the saved windows move to Zotero's own (zotero#6035)", () 
             const p = plan({ windows: [{ kind: "main-anchor", tabs: [library()], wvMainState: { collection: "C3" } }] });
             assert.strictEqual(p.first.collection, "C3");
             assert.isNull(plan({ windows: [{ kind: "main-anchor", tabs: [library()] }] }).first.collection, "none saved, none chosen");
+        });
+
+        // MJT 2026-11-08, "Fix": a first window holding only its library tab has no entry.
+        it("the first window's place: its entry's, else the store's own field", () => {
+            assert.deepEqual(plan({ windows: [], anchorGeom: { x: 7 } }).first.geom, { x: 7 });
+            assert.deepEqual(plan({ windows: [{ kind: "main-anchor", tabs: [library(), reader(1)], geom: { x: 1 } }], anchorGeom: { x: 7 } }).first.geom, { x: 1 });
         });
 
         it("the first window's own state comes from the store's own fields", () => {
@@ -379,8 +392,66 @@ describe("Weavero — the saved windows move to Zotero's own (zotero#6035)", () 
             const copy = Z.openMainWindow({ windowSettings: w.ZoteroPane.getWindowSettings() });
             assert.isOk(await wvT.waitFor(() => wv._wvWinStateReady && wv._wvWinStateReady.has(copy), 10000), "read");
             assert.notOk(copy._wvWindowTitle, "no title");
-            assert.notOk(copy.ZoteroPane.getWindowSettings().prefs[STATE], "no state of its own");
+            // Its own state, if any, is its own: since 1.0.1-dev.7 a window saves its
+            // pane widths as soon as Zotero saves its layout (window-pane-sizes.spec).
+            const own = JSON.parse(copy.ZoteroPane.getWindowSettings().prefs[STATE] || "{}");
+            assert.notOk(own.title, "not the first one's title");
+            assert.notStrictEqual(own.id, JSON.parse(w.ZoteroPane.getWindowSettings().prefs[STATE]).id, "not the first one's state");
             assert.strictEqual(JSON.parse(w.ZoteroPane.getWindowSettings().prefs[STATE]).title, "Only mine", "the first keeps its own");
+        });
+
+        // Transition test 2026-11-07: Window A came back with Window C's pin. A setting a
+        // window has not read comes from the pref, which each window opened next writes.
+        it("the first window's pin and section states are its own before the saved windows open", async function () {
+            this.timeout(45000);
+            const zp = win.ZoteroPane, read = zp.getWindowSetting, open = Z.openMainWindow;
+            let opened = 0;
+            const early = new Set();
+            zp.getWindowSetting = function (name) {
+                if (!opened) early.add(name);
+                return read.apply(this, arguments);
+            };
+            Z.openMainWindow = function () {
+                opened++;
+                return open.apply(this, arguments);
+            };
+            try {
+                await wv._wvWindowsTransfer({ windows: [{ kind: "main-dev", wvWinId: 21, tabs: [{ type: "library", title: "My Library", selected: true }],
+                    wvMainState: { pinnedPane: "related", paneOpen: { tags: false } } }] });
+            }
+            finally {
+                zp.getWindowSetting = read;
+                Z.openMainWindow = open;
+            }
+            assert.strictEqual(opened, 1, "the saved window opened");
+            assert.isTrue(early.has("pinnedPane"), "the first window's pin read first");
+            assert.isTrue([...early].some(n => /^panes\..+\.open$/.test(n)), "and its section states");
+        });
+
+        // Same run: Window B lost "related" and its collapsed Tags through a session round trip.
+        it("a window's pin and section states go into its session record and come back from it", async function () {
+            this.timeout(45000);
+            const keep = ["pinnedPane", "panes.tags.open", "panes.related.open"].map(name => ({ name, value: Zotero.Prefs.get(name) }));
+            const w = await wvT.openMainWindow();
+            const zp = w.ZoteroPane;
+            try {
+                zp.setWindowSetting("pinnedPane", "related");
+                zp.setWindowSetting("panes.tags.open", false);
+                const rec = wv._wvTabSessionCaptureMainState(w);
+                assert.strictEqual(rec.pinnedPane, "related", "its pin");
+                assert.isFalse(rec.paneOpen && rec.paneOpen.tags, "its collapsed Tags");
+                zp.setWindowSetting("pinnedPane", "");
+                assert.strictEqual(wv._wvTabSessionCaptureMainState(w).pinnedPane, "", "no pin, recorded as none");
+                wv._wvPanePrefsApply(w, { pinnedPane: "tags", paneOpen: { tags: true, related: false } });
+                assert.strictEqual(zp.getWindowSetting("pinnedPane"), "tags", "the record's pin back");
+                assert.isTrue(zp.getWindowSetting("panes.tags.open"));
+                assert.isFalse(zp.getWindowSetting("panes.related.open"));
+                wv._wvPanePrefsApply(w, { title: "a record from before" });
+                assert.strictEqual(zp.getWindowSetting("pinnedPane"), "tags", "a record with no field changes nothing");
+            }
+            finally {
+                for (const k of keep) { if (k.value === undefined) Zotero.Prefs.clear(k.name); else Zotero.Prefs.set(k.name, k.value); }
+            }
         });
 
         it("a window not read yet keeps its saved state: a save in between does not wipe it", function () {

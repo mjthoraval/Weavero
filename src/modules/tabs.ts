@@ -2078,21 +2078,7 @@ class _TabsMixin {
                             ev.stopPropagation();
                             const p: any = live();
                             if (!p) return;
-                            // Manual pick — verbatim on purpose (duplicating
-                            // a colour deliberately is the user's call).
-                            (targetWin as any)._wvTitleGlyphIdx = idx;
-                            delete (targetWin as any)._wvWinIconName;
-                            delete (targetWin as any)._wvOverlayName;
-                            try { p._wvApplyWindowIcon(targetWin); } catch (e2) {}
-                            try {
-                                const mt: any = p._wvOvMonTop;
-                                if (mt) delete mt[p._wvOvScreenKeyOf(targetWin)];
-                                p._wvOvSetBadge(targetWin, "recolor");
-                            } catch (e2) {}
-                            try {
-                                if (isReader) p._wvUpdateWindowBadgeDot(targetWin, !!p._getTabsAndWindowsMaster(), true);
-                                else p._wvUpdateMainWindowIndicator(targetWin);
-                            } catch (e2) {}
+                            p._wvWindowSetColour(targetWin, idx, isReader);
                             for (const x of wrap.querySelectorAll(".wv-tg-swatch")) x.classList.remove("wv-selected");
                             sw.classList.add("wv-selected");
                             refreshPanel();
@@ -2320,19 +2306,7 @@ class _TabsMixin {
                         if (!p) return;
                         p._wvWindowSetCustomTitle(targetWin, (!name || name === defName) ? null : name);
                         if (swatchIndex != null && swatchIndex !== curIdx) {
-                            (targetWin as any)._wvTitleGlyphIdx = swatchIndex;   // manual pick — verbatim
-                            delete (targetWin as any)._wvWinIconName;
-                            delete (targetWin as any)._wvOverlayName;
-                            try { p._wvApplyWindowIcon(targetWin); } catch (e) {}
-                            try {
-                                const mt: any = p._wvOvMonTop;
-                                if (mt) delete mt[p._wvOvScreenKeyOf(targetWin)];
-                                p._wvOvSetBadge(targetWin, "recolor");
-                            } catch (e) {}
-                            try {
-                                if (isReader) p._wvUpdateWindowBadgeDot(targetWin, !!p._getTabsAndWindowsMaster(), true);
-                                else p._wvUpdateMainWindowIndicator(targetWin);
-                            } catch (e) {}
+                            p._wvWindowSetColour(targetWin, swatchIndex, isReader);
                         }
                         p._wvTabsMenuRefreshOpenPanel();
                     } catch (e) {}
@@ -2426,19 +2400,7 @@ class _TabsMixin {
                             ev.stopPropagation();
                             const p: any = live();
                             if (!p) return;
-                            (targetWin as any)._wvTitleGlyphIdx = idx;   // manual pick — verbatim
-                            delete (targetWin as any)._wvWinIconName;
-                            delete (targetWin as any)._wvOverlayName;
-                            try { p._wvApplyWindowIcon(targetWin); } catch (e2) {}
-                            try {
-                                const mt: any = p._wvOvMonTop;
-                                if (mt) delete mt[p._wvOvScreenKeyOf(targetWin)];
-                                p._wvOvSetBadge(targetWin, "recolor");
-                            } catch (e2) {}
-                            try {
-                                if (isReader) p._wvUpdateWindowBadgeDot(targetWin, !!p._getTabsAndWindowsMaster(), true);
-                                else p._wvUpdateMainWindowIndicator(targetWin);
-                            } catch (e2) {}
+                            p._wvWindowSetColour(targetWin, idx, isReader);
                             try {
                                 if (panel && typeof panel.refreshList === "function") panel.refreshList();
                                 else if (panel) p._wvRegroupTabsMenu(panel);
@@ -2520,11 +2482,88 @@ class _TabsMixin {
                     used.add(w._wvTitleGlyphIdx);
                 }
             }
-            if (!used.has(idx)) (win as any)._wvTitleGlyphIdx = idx;
+            if (!used.has(idx)) { (win as any)._wvTitleGlyphIdx = idx; delete (win as any)._wvGlyphLazy; }
             // else: leave unstamped — the allocator assigns a free colour.
         } catch (e) {}
     }
 
+    /** A colour picked by hand: verbatim (duplicating a colour on purpose is
+     *  the user's call), on every surface that shows it, and on a Zotero with
+     *  its own windows into the window's saved state at once (window-state.ts). */
+    _wvWindowSetColour(win: any, idx: number, isReader: boolean) {
+        win._wvTitleGlyphIdx = idx;
+        delete win._wvGlyphLazy;
+        win._wvGlyphPicked = true;
+        (this as any)._wvCarryGlyphRefresh(win, isReader);
+        if (!isReader && wvNativeWindows()) {
+            try { (this as any)._wvWinStateSave(win); } catch (e) {}
+        }
+        // An older Zotero: into windows.json, not only at quit.
+        else { try { this._wvWindowStoreSaveDebounced(); } catch (e) {} }
+    }
+
+    /** A window's colour as its saved records carry it (its window state, the
+     *  restart store, tab sessions): `{ glyph, glyphPicked }`, empty when it
+     *  has none. */
+    _wvGlyphFields(w: any): any {
+        const out: any = {};
+        if (w && Number.isInteger(w._wvTitleGlyphIdx)) {
+            out.glyph = w._wvTitleGlyphIdx;
+            if (w._wvGlyphPicked) out.glyphPicked = true;
+        }
+        return out;
+    }
+
+    /** A colour a window saved, back on it (window-state.ts, zotero#6035).
+     *  Zotero reopens its windows in its own order, the one in front at quit
+     *  last, so a window back before this one may have drawn this colour from
+     *  the pool: it gives the colour up and draws again. A colour shared
+     *  with a window that picked it by hand comes back shared, whichever of
+     *  the two Zotero reopens first (dev.4's restart check: the second lost
+     *  it). A colour another window got back as its own, not picked, stays
+     *  where it is, and this window keeps the one it has: a closed window
+     *  reopened after its colour went to a new one. `picked`: this window's
+     *  colour was picked by hand, and comes back as chosen (restart checks
+     *  2026-11-07: every colour shuffled at each restart, a picked one
+     *  lost). Guard: test/window-colours.spec.js. */
+    _wvGlyphRestore(w: any, idx: any, picked?: boolean) {
+        try {
+            if (!w || !Number.isInteger(idx) || idx < 0) return;
+            if (w._wvTitleGlyphIdx === idx) {
+                delete w._wvGlyphLazy;
+                if (picked) w._wvGlyphPicked = true;
+                return;
+            }
+            const holders: any[] = [];
+            for (const x of (Zotero.getMainWindows() || [])) {
+                if (x !== w && (x as any)._wvTitleGlyphIdx === idx) holders.push(x);
+            }
+            const en = Services.wm.getEnumerator("zotero:reader");
+            while (en.hasMoreElements()) {
+                const x: any = en.getNext();
+                if (x && x !== w && x._wvTitleGlyphIdx === idx) holders.push(x);
+            }
+            const drawn = holders.filter((x: any) => x._wvGlyphLazy === idx);
+            const own = holders.filter((x: any) => x._wvGlyphLazy !== idx);
+            if (!picked && own.some((x: any) => !x._wvGlyphPicked)) return;
+            w._wvTitleGlyphIdx = idx;
+            delete w._wvGlyphLazy;
+            if (picked) w._wvGlyphPicked = true;
+            const refresh = (x: any) => {
+                try { (this as any)._wvCarryGlyphRefresh(x, wvWinType(x) === "zotero:reader"); } catch (e) {}
+            };
+            refresh(w);
+            for (const x of drawn) {
+                delete x._wvTitleGlyphIdx;
+                delete x._wvGlyphLazy;
+                this._wvTitleGlyphIdx(x);
+                refresh(x);
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvGlyphRestore err: " + e); }
+    }
+
+    /** `_wvGlyphLazy` holds the index the pool handed out, so a saved colour
+     *  can tell a drawn one from a chosen one (_wvGlyphRestore). */
     _wvTitleGlyphIdx(win: any, _isReader?: boolean): number {
         if (win._wvTitleGlyphIdx != null) return win._wvTitleGlyphIdx;
         const used = new Set();
@@ -2541,6 +2580,7 @@ class _TabsMixin {
         let i = 0;
         while (used.has(i)) i++;
         win._wvTitleGlyphIdx = i;
+        win._wvGlyphLazy = i;
         return i;
     }
 
@@ -8174,7 +8214,7 @@ class _TabsMixin {
                 try {
                     const ms = (this as any)._wvTabSessionCaptureMainState
                         ? (this as any)._wvTabSessionCaptureMainState(w) : null;
-                    if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl || ms.title || typeof ms.tagsAuto === "boolean" || ms.pinnedPane || ms.paneOpen)) wvMainState = ms;
+                    if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl || ms.title || typeof ms.tagsAuto === "boolean" || ms.pinnedPane || ms.paneOpen || ms.glyph != null || ms.paneSizes)) wvMainState = ms;
                 } catch (e) {}
                 groups.push({ kind: "main-dev", tabs, wvWinId: (w._wvWindowId != null ? w._wvWindowId : null),
                     geom: (this as any)._wvWindowGeom(w), wvMainState });
@@ -8241,7 +8281,7 @@ class _TabsMixin {
             try {
                 const ms = (this as any)._wvTabSessionCaptureMainState
                     ? (this as any)._wvTabSessionCaptureMainState(w) : null;
-                if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl || ms.title || typeof ms.tagsAuto === "boolean" || ms.pinnedPane || ms.paneOpen)) wvMainState = ms;
+                if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl || ms.title || typeof ms.tagsAuto === "boolean" || ms.pinnedPane || ms.paneOpen || ms.glyph != null || ms.paneSizes)) wvMainState = ms;
             } catch (e) {}
             return { kind: "main-anchor", tabs, geom: (this as any)._wvWindowGeom(w), wvMainState };
         } catch (e) { return null; }
@@ -8262,7 +8302,17 @@ class _TabsMixin {
         // The anchor's own Tags-column automatic-count choice, same reason
         // (pane.ts _wvTagsAutoFor; undefined = follows Settings).
         try { const a0: any = (Zotero.getMainWindows() || [])[0]; anchorTagsAuto = a0 && (this as any)._wvTagsAutoCapture ? (this as any)._wvTagsAutoCapture(a0) : undefined; } catch (e) {}
-        return { version: 4, windows, focused: this._wvWindowStoreFocusDescriptor(), anchorHidden, anchorTitle, anchorTagsAuto };
+        // And its own pane sizes (window-state.ts _wvPaneSizesApply): Zotero's
+        // one saved layout is whichever window closed last.
+        let anchorPaneSizes: any;
+        try { const a0: any = (Zotero.getMainWindows() || [])[0]; anchorPaneSizes = (a0 && (this as any)._wvPaneSizesCapture(a0)) || undefined; } catch (e) {}
+        // And its geometry: Zotero reopens every main window from ONE saved
+        // geometry, the last window closed, and the anchor's entry (which
+        // carries its own) is skipped when it holds only its library tab --
+        // it came back at another window's place (MJT 2026-11-08, "Fix").
+        let anchorGeom: any;
+        try { const a0: any = (Zotero.getMainWindows() || [])[0]; anchorGeom = (a0 && (this as any)._wvWindowGeom(a0)) || undefined; } catch (e) {}
+        return { version: 4, windows, focused: this._wvWindowStoreFocusDescriptor(), anchorHidden, anchorTitle, anchorTagsAuto, anchorPaneSizes, anchorGeom };
     }
 
     _wvWindowStoreSaveSync() {
@@ -8377,7 +8427,7 @@ class _TabsMixin {
                 try {
                     const ms = (this as any)._wvTabSessionCaptureMainState
                         ? (this as any)._wvTabSessionCaptureMainState(win) : null;
-                    if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl || ms.title || typeof ms.tagsAuto === "boolean" || ms.pinnedPane || ms.paneOpen)) wvMainState = ms;
+                    if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl || ms.title || typeof ms.tagsAuto === "boolean" || ms.pinnedPane || ms.paneOpen || ms.glyph != null || ms.paneSizes)) wvMainState = ms;
                 } catch (e) {}
             }
             const entry = {
@@ -9583,6 +9633,11 @@ class _TabsMixin {
                 if (hw && doc && doc.anchorHidden) (this as any)._wvHidRestore(hw, doc.anchorHidden);
                 if (hw && doc && doc.anchorTitle && hw._wvWindowTitle == null) this._wvWindowSetCustomTitle(hw, doc.anchorTitle);
                 if (hw && doc && typeof doc.anchorTagsAuto === "boolean" && (this as any)._wvTagsAutoSet) (this as any)._wvTagsAutoSet(hw, doc.anchorTagsAuto, { save: false });
+                if (hw && doc && doc.anchorPaneSizes) (this as any)._wvPaneSizesApply(hw, doc.anchorPaneSizes);
+                // No entry (it holds only its library tab): its geometry from its
+                // own field, else Zotero's one saved geometry, the last window
+                // closed (2026-11-08). With an entry, the entry's below.
+                if (hw && doc && !entry && doc.anchorGeom) (this as any)._wvApplyWindowGeom(hw, doc.anchorGeom);
             } catch (e) {}
             if (!entry) return;   // pre-takeover store → Zotero restored natively
             const win: any = (this as any)._wvAnchorWindow();
@@ -9721,6 +9776,7 @@ class _TabsMixin {
             const tag = (self as any)._wvWireTag();
             const wireWhenReady = (w: any) => {
                 try { self._wvEarlyHideTitleBar(w); } catch (e) {}
+                try { self._wvAdvSearchWindowOpening(w); } catch (e) {}
                 try { self._wvWinStateOpened(w); } catch (e) {}
                 if (tryWire(w)) return;
                 // Loaded already (and not the initial about:blank a new window
@@ -9732,6 +9788,7 @@ class _TabsMixin {
                 const onDCL = () => {
                     wvUnlisten(w, "earlyRestore:DOMContentLoaded");
                     try { self._wvEarlyHideTitleBar(w); } catch (e) {}
+                    try { self._wvAdvSearchWindowOpening(w); } catch (e) {}
                     try { self._wvWinStateOpened(w); } catch (e) {}
                     try {
                         if (String(w.location && w.location.href).indexOf("zoteroPane.xhtml") !== -1) tryWire(w);

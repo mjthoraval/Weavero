@@ -8127,7 +8127,7 @@ class _ReaderMixin {
                     // BEFORE it (e.g. a note first, PDF second) lands after it.
                     const order = realTabs.map((t: any) => t.itemID);
                     return { kind: "reader", nativeItemID: native.itemID, extras, activeIndex, nativePinned: !!native.pinned, nativeGrp: native.wvGroupId || null, order,
-                        geom: this._wvWindowGeom(w), sb: this._wvWTSidebarSnapshot(w) };
+                        geom: this._wvWindowGeom(w), sb: this._wvWTSidebarSnapshot(w), ...(this as any)._wvGlyphFields(w) };
                 }
                 else {
                     // ORPHAN window: the native tab was closed, so Zotero has no
@@ -8138,7 +8138,7 @@ class _ReaderMixin {
                     let activeIndex = realTabs.findIndex((t: any) => t.id === st.activeId);
                     if (activeIndex < 0) activeIndex = 0;
                     return { kind: "reader-orphan", tabs, activeIndex,
-                        geom: this._wvWindowGeom(w), sb: this._wvWTSidebarSnapshot(w) };
+                        geom: this._wvWindowGeom(w), sb: this._wvWTSidebarSnapshot(w), ...(this as any)._wvGlyphFields(w) };
                 }
             }
         } catch (e) { Zotero.debug("[Weavero] _wvWindowStoreCaptureReaderWindow err: " + e); }
@@ -8192,7 +8192,8 @@ class _ReaderMixin {
                     const orphanIDs: any[] = [];
                     for (const g of doc.windows) {
                         if (g && g.kind === "reader" && g.nativeItemID != null) {
-                            map[g.nativeItemID] = { extras: g.extras, activeIndex: g.activeIndex, nativePinned: g.nativePinned, nativeGrp: g.nativeGrp || null, order: g.order, geom: g.geom || null, sb: g.sb || null };
+                            map[g.nativeItemID] = { extras: g.extras, activeIndex: g.activeIndex, nativePinned: g.nativePinned, nativeGrp: g.nativeGrp || null, order: g.order, geom: g.geom || null, sb: g.sb || null,
+                                glyph: g.glyph, glyphPicked: g.glyphPicked };
                         } else if (g && g.kind === "reader-orphan" && Array.isArray(g.tabs) && g.tabs.length) {
                             // Orphan: recreate by opening the FIRST tab as a fresh
                             // reader window (it becomes the new native); the rest
@@ -8207,6 +8208,7 @@ class _ReaderMixin {
                                     nativePinned: !!head.pinned,
                                     nativeGrp: head.grp || null,
                                     geom: g.geom || null, sb: g.sb || null,
+                                    glyph: g.glyph, glyphPicked: g.glyphPicked,
                                 };
                                 orphanIDs.push(head.itemID);
                             }
@@ -8279,6 +8281,8 @@ class _ReaderMixin {
                     try { (this as any)._wvTrace && (this as any)._wvTrace("restore: reader window adopt item " + nativeItemID + " + " + extrasIn.length + " extra(s)"); } catch (e) {}
                     // Multi-monitor placement + shared sidebar state, saved at quit.
                     try { this._wvApplyWindowGeom(win, entry.geom); } catch (e) {}
+                    // Its colour (tabs.ts _wvGlyphRestore; MJT 2026-11-08).
+                    try { if (entry.glyph != null) (this as any)._wvGlyphRestore(win, entry.glyph, entry.glyphPicked === true); } catch (e) {}
                     try {
                         if (entry.sb && win._wvWT) {
                             // Later mounts inherit this shared state; apply to the

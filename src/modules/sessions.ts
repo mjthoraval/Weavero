@@ -412,10 +412,17 @@ class _TabSessionsMixin {
             if (typeof ta === "boolean") state.tagsAuto = ta;
             // And, for a window other than the first, its own pinned section
             // and open / collapsed sections (pane.ts _wvPanePrefsCapture; the
-            // first window's ride Zotero's own settings).
+            // first window's ride Zotero's own settings). On a Zotero with its
+            // own windows, every window's, "" for no pin.
             const pp = (this as any)._wvPanePrefsCapture ? (this as any)._wvPanePrefsCapture(w) : null;
-            if (pp && pp.pinnedPane) state.pinnedPane = pp.pinnedPane;
+            if (pp && typeof pp.pinnedPane === "string") state.pinnedPane = pp.pinnedPane;
             if (pp && pp.paneOpen) state.paneOpen = pp.paneOpen;
+            // And its colour (tabs.ts _wvGlyphRestore): on an older Zotero this
+            // record is what a restart reopens the window from.
+            Object.assign(state, (this as any)._wvGlyphFields(w));
+            // And its own pane sizes (window-state.ts _wvPaneSizesApply).
+            const ps = (this as any)._wvPaneSizesCapture(w);
+            if (ps) state.paneSizes = ps;
         } catch (e) { Zotero.debug("[Weavero] _wvTabSessionCaptureMainState err: " + e); }
         return state;
     }
@@ -761,7 +768,8 @@ class _TabSessionsMixin {
             if (tabs.length && !tabs.some((t: any) => t.selected)) tabs[0].selected = true;
         }
         else if (Array.isArray(rec.libraryTabs) && rec.libraryTabs.length) tabs.splice(0, 1, ...rec.libraryTabs);
-        const wvMainState = { collection: rec.collection, columnPrefs: rec.columnPrefs, hiddenColl: rec.hiddenColl, title: rec.title || rec.name, tagsAuto: rec.tagsAuto, pinnedPane: rec.pinnedPane, paneOpen: rec.paneOpen };
+        const wvMainState = { collection: rec.collection, columnPrefs: rec.columnPrefs, hiddenColl: rec.hiddenColl, title: rec.title || rec.name, tagsAuto: rec.tagsAuto, pinnedPane: rec.pinnedPane, paneOpen: rec.paneOpen,
+            glyph: rec.glyph, glyphPicked: rec.glyphPicked, paneSizes: rec.paneSizes };
         return { kind: first ? "main-anchor" : "main-dev", tabs, geom: rec.geom || null, wvMainState };
     }
 
@@ -878,9 +886,14 @@ class _TabSessionsMixin {
             // The Tags column's automatic count, same rule (absent = follow
             // Settings). No save: the restore itself is what is saved.
             try { if ((this as any)._wvTagsAutoSet) (this as any)._wvTagsAutoSet(w, typeof entry.tagsAuto === "boolean" ? entry.tagsAuto : null, { save: false }); } catch (_) {}
+            // Its colour (absent = the one it has).
+            try { if (entry.glyph != null) (this as any)._wvGlyphRestore(w, entry.glyph, entry.glyphPicked === true); } catch (_) {}
+            // Its own pane sizes (absent = the ones it has).
+            try { if (entry.paneSizes) (this as any)._wvPaneSizesApply(w, entry.paneSizes); } catch (_) {}
             // A window other than the first: its own pin (absent = none) and
             // section states (pane.ts _wvPanePrefsApply; the first window keeps
-            // Zotero's own settings).
+            // Zotero's own settings). On a Zotero with its own windows, any
+            // window: Zotero's window settings.
             try { if ((this as any)._wvPanePrefsApply) (this as any)._wvPanePrefsApply(w, entry); } catch (_) {}
             // Collection first — selecting it reloads the items view.
             if (entry.collection && zp.collectionsView

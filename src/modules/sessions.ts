@@ -438,8 +438,9 @@ class _TabSessionsMixin {
             const libs = all.filter((t: any) => String(t.type).startsWith("library"));
             if (!libs.length) out.noLibrary = true;
             // With their places: a second library tab came back next to the first
-            // (transition test 2026-11-07).
-            else if (libs.length > 1) out.libraryTabs = libs.map((t: any) => ({ type: "library", title: t.title || "", data: t.data, selected: t.selected, index: all.indexOf(t) }));
+            // (transition test 2026-11-07). And Zotero's own pin of a library tab
+            // (getState `pinned`, zotero 49b48f5d08): a single pinned one is recorded too.
+            else if (libs.length > 1 || libs.some((t: any) => t.pinned)) out.libraryTabs = libs.map((t: any) => ({ type: "library", title: t.title || "", data: t.data, selected: t.selected, index: all.indexOf(t), pinned: t.pinned ? true : undefined }));
         } catch (e) {}
         return out;
     }
@@ -745,6 +746,12 @@ class _TabSessionsMixin {
         const before = S.getLastClosed ? S.getLastClosed() : null;
         await (this as any)._wvCloseQuietly(wins.filter((w: any) => w !== keep));
         const Z: any = keep.Zotero_Tabs;
+        // A library tab Zotero holds pinned can't be closed (and the one kept
+        // would carry its pin into a session without it): unpin them first; the
+        // session's own records pin again what they held (_wvTabSessionReconstructNative).
+        if (typeof Z.setPinned === "function") {
+            for (const t of Z._tabs.slice()) { if (t && t.pinned) { try { Z.setPinned(t.id, false); } catch (_) {} } }
+        }
         if (!Z._tabs.some((t: any) => wvIsLibraryTabID(t.id))) await wvOpenLibraryView(keep);
         const home = Z._tabs.find((t: any) => wvIsLibraryTabID(t.id));
         if (home) Z.select(home.id);
@@ -798,10 +805,20 @@ class _TabSessionsMixin {
         // Its other library tabs: the fill places documents, a library tab is there.
         try {
             const libs = (first && first.libraryTabs) || [];
+            const KZ: any = keep.Zotero_Tabs;
+            const pinsAPI = typeof KZ.setPinned === "function";
             for (const t of libs.slice(1)) {
                 const at: any = { type: "library-unloaded", title: t.title || "", data: t.data || {}, select: !!t.selected };
-                if (Number.isInteger(t.index)) at.index = Math.min(t.index, keep.Zotero_Tabs._tabs.length);
-                keep.Zotero_Tabs.add(at);
+                if (Number.isInteger(t.index)) at.index = Math.min(t.index, KZ._tabs.length);
+                const r: any = KZ.add(at);
+                const nid = r && (r.id || (typeof r === "string" ? r : null));
+                if (pinsAPI && t.pinned && nid) { try { KZ.setPinned(nid, true); } catch (_) {} }
+            }
+            // The window that stayed keeps its first library tab: Zotero's own pin
+            // from the session's record (the teardown unpinned it).
+            if (pinsAPI && libs[0] && libs[0].pinned) {
+                const home = KZ._tabs.find((x: any) => x && wvIsLibraryTabID(x.id));
+                if (home && !home.pinned) { try { KZ.setPinned(home.id, true); } catch (_) {} }
             }
         } catch (e) { Zotero.debug("[Weavero] reconstruct library tabs err: " + e); }
         if (swapGroups) {

@@ -24,7 +24,7 @@ import { wvWrap, wvUnwrap, wvWrapLayers } from "./lib/wrap";
 import { wvWhenWindowLoaded, wvBoolAttrOn, wvReaderMenuEvent, wvWithin, wvIsTextEntry, wvHtmlEl, WV_XHTML_NS } from "./lib/dom";
 import { wvListen, wvUnlisten, wvUnlistenAll, wvListenKeys, wvUnlistenAllOn, wvSweepTagOnChrome } from "./lib/listen";
 import { wvStoreDir, wvStorePath, wvStoreChain, wvStoreWrite, wvStoreRead, wvStoreRemove } from "./lib/store";
-import { wvViewEl, wvViewEls, wvItemsTreeEl, wvItemsTreeEls, wvLibraryViews, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvWindowArgs, wvAdvSearchWindowArgs, wvAdvSearchGeometry, wvOpenLibraryView, wvPaneSizesRead, wvPaneSizesWrite, wvPlanWindowTransfer, wvSelectLibraryTab, wvGeomToPane, wvTransferItemIDs, wvWinType, wvWin32Style } from "./lib/windows";
+import { wvLibraryTabPinned, wvZoteroPinsLibraryTabs, wvViewEl, wvViewEls, wvItemsTreeEl, wvItemsTreeEls, wvLibraryViews, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvWindowArgs, wvAdvSearchWindowArgs, wvAdvSearchGeometry, wvOpenLibraryView, wvPaneSizesRead, wvPaneSizesWrite, wvPlanWindowTransfer, wvSelectLibraryTab, wvGeomToPane, wvTransferItemIDs, wvWinType, wvWin32Style } from "./lib/windows";
 import { wvAccel, wvAccelAny } from "./lib/keys";
 import { wvCloneFor } from "./lib/xray";
 import { wvMenuItem, wvMenuSeparator } from "./lib/menu";
@@ -35,7 +35,7 @@ import { wvAltReveal, wvMenubarSafeBefore } from "./lib/menubar";
 
 /** The shared helpers, published as `Zotero.Weavero.lib` so the suite can
  *  exercise them directly (they are bundled, not otherwise reachable). */
-const WV_LIB = { wvLivePlugin, wvViewEl, wvViewEls, wvItemsTreeEl, wvItemsTreeEls, wvLibraryViews, wvViewIdsCss, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvWindowArgs, wvAdvSearchWindowArgs, wvAdvSearchGeometry, wvOpenLibraryView, wvPaneSizesRead, wvPaneSizesWrite, wvSelectLibraryTab, wvPlanWindowTransfer, wvGeomToPane, wvTransferItemIDs, wvWinType, wvIsTextEntry, wvAccel, wvAccelAny, wvCloneFor, wvMenuItem, wvMenuSeparator, wvSvgEl, WV_SVG_NS,
+const WV_LIB = { wvLivePlugin, wvLibraryTabPinned, wvZoteroPinsLibraryTabs, wvViewEl, wvViewEls, wvItemsTreeEl, wvItemsTreeEls, wvLibraryViews, wvViewIdsCss, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvWindowArgs, wvAdvSearchWindowArgs, wvAdvSearchGeometry, wvOpenLibraryView, wvPaneSizesRead, wvPaneSizesWrite, wvSelectLibraryTab, wvPlanWindowTransfer, wvGeomToPane, wvTransferItemIDs, wvWinType, wvIsTextEntry, wvAccel, wvAccelAny, wvCloneFor, wvMenuItem, wvMenuSeparator, wvSvgEl, WV_SVG_NS,
     WV_LINK_CHAIN_PATHS, WV_BACKLINK_ARROW_PATH, WV_OUTLINK_ARROW_PATH, WV_LOOPLINK_ARROW_PATH, WV_BROKENLINK_MARK_PATH, WV_ZLINK_KIND_PATH, WV_CITE_KIND_PATH, WV_REF_MARK_TIGHT_VIEWBOX, WV_EXTLINK_PATHS, WV_LINK_MENU_ICON, wvLinkGlyphEl, wvLinkGlyphMarkup, wvLinkGlyphUri, wvHtmlEl, WV_XHTML_NS, WV_LINK_PALETTE, wvLinkVars, wvLinkColor, wvLinkClassRules, wvOutsideClick, wvReachableDocs, wvDismissOff, wvAltReveal, wvMenubarSafeBefore, wvTimeout, wvClearTimeout, wvSleep, wvInjectStyle, wvRemoveStyle, wvFilterTileRules, wvWrap, wvUnwrap, wvWrapLayers,
     wvWhenWindowLoaded, wvBoolAttrOn, wvReaderMenuEvent, wvWithin,
     wvListen, wvUnlisten, wvUnlistenAll, wvListenKeys,

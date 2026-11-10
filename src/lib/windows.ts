@@ -255,7 +255,12 @@ export function wvPlanWindowTransfer(doc: any, open: Map<number, number>, kindOf
             if (base === "library") {
                 const data = Object.assign({}, t.data);
                 if (!data.state && ms.collection) data.state = { collections: [ms.collection], focusedCollection: ms.collection };
-                tabs.push(flagged({ type: "library", title: t.title || "", data }, t.selected));
+                const rec: any = { type: "library", title: t.title || "", data };
+                // Zotero's own pin of a library tab rides on the tab, not in its
+                // data (tabs.js getState `pinned`, restoreState setPinned); a
+                // Zotero without it ignores the field.
+                if (t.pinned) rec.pinned = true;
+                tabs.push(flagged(rec, t.selected));
             }
             else if ((base === "reader" || base === "note") && t.data && t.data.itemID != null && toOpen(t.data.itemID)) {
                 tabs.push(flagged({ type: base, title: t.title || "", data: t.data }, t.selected));
@@ -353,21 +358,43 @@ export function wvIsFixedLibraryTab(id: any): boolean {
 }
 
 /** The first index a tab may be moved to: past the fixed library tab on an older
- *  Zotero; on a Zotero with its own windows, past the tabs Zotero itself holds
- *  pinned (none today -- Weavero's pins are its own), so the first place. */
+ *  Zotero; on a Zotero with its own windows, past the library tabs Zotero itself
+ *  holds pinned (wvZoteroPinsLibraryTabs; none on 11.0-beta.4), else the first place. */
 export function wvFirstMovableIndex(Z: any): number {
     if (!wvNativeWindows()) return 1;
     try { if (Z && typeof Z._getFirstUnpinnedIndex === "function") return Z._getFirstUnpinnedIndex(); } catch (e) {}
     return 0;
 }
 
-/** A library tab Weavero pinned on a Zotero with its own windows: the flag rides
- *  in the tab's data, which Zotero saves with the session and restores
- *  (tabs.js getState / restoreState), so the pin survives a restart and a
+/** Zotero pins library tabs itself: `Zotero_Tabs.setPinned` (zotero 49b48f5d08,
+ *  2026-11-10, the 11.0 beta after beta.4). A pinned library tab keeps the start
+ *  of the bar and can't be closed or moved until unpinned; Zotero saves the pin
+ *  with the session. Weavero's library-tab pin is then Zotero's (MJT 2026-11-10:
+ *  "Whose pin for My Library? Zotero's own"). A feature test, cached once a
+ *  window answers: the API does not come and go. */
+let wvZoteroPinsCache: boolean | null = null;
+export function wvZoteroPinsLibraryTabs(): boolean {
+    if (wvZoteroPinsCache != null) return wvZoteroPinsCache;
+    try {
+        for (const w of wvMainWins()) {
+            const Z: any = w && (w as any).Zotero_Tabs;
+            if (Z) { wvZoteroPinsCache = typeof Z.setPinned === "function"; return wvZoteroPinsCache; }
+        }
+    }
+    catch (e) {}
+    return false;
+}
+
+/** A pinned library tab on a Zotero with its own windows. Where Zotero pins
+ *  library tabs itself, its own pin (`tab.pinned`). Before that (11.0-beta.4),
+ *  Weavero's flag in the tab's data, which Zotero saves with the session and
+ *  restores (tabs.js getState / restoreState), so the pin survives a restart and a
  *  Zotero without Weavero ignores it. Item tabs pin through the item-keyed store
  *  (`weavero.pinnedTabs`); a library tab has no item. */
 export function wvLibraryTabPinned(tab: any): boolean {
-    return !!(tab && wvNativeWindows() && tab.data && tab.data.wvPinned && wvIsLibraryTabID(tab.id));
+    if (!tab || !wvNativeWindows()) return false;
+    const on = wvZoteroPinsLibraryTabs() ? !!tab.pinned : !!(tab.data && tab.data.wvPinned);
+    return on && wvIsLibraryTabID(tab.id);
 }
 
 /** An element of the library view on screen, by its base id. A Zotero with its own

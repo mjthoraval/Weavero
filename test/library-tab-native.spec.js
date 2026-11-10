@@ -15,6 +15,8 @@
 // pass redrew the bar in a loop (24 moves in 3 s, D:/tmp/wv-libtab-probe.txt).
 //
 // An older Zotero keeps its fixed first library tab: the whole file is skipped.
+// So is a Zotero that pins library tabs itself (zotero 49b48f5d08, the beta after
+// beta.4): there My Library's pin is Zotero's (test/library-tab-zotero-pin.spec.js).
 describe("Weavero — a library tab is a tab like any other on a Zotero with its own windows", function () {
     this.timeout(120000);
     let wv, win, doc, ZT, cont, a, b, group, prevGroups, prevTW;
@@ -107,6 +109,7 @@ describe("Weavero — a library tab is a tab like any other on a Zotero with its
         wv = wvT.plugin();
         if (!wv) wvT.absent("plugin");
         if (!wvT.nativeWindows()) this.skip();
+        if (wvT.lib() && wvT.lib().wvZoteroPinsLibraryTabs && wvT.lib().wvZoteroPinsLibraryTabs()) this.skip();
         for (const m of ["_applyPinnedTabs", "_applyTabGroups", "_pinnedTabsAdd", "_pinnedTabsRemove", "_tabGroupCreate",
             "_wvTabGroupAddTab", "_wvTabGroupStamp", "_wvTabGroupStampLeave", "_wvTabGroupSaveAndClose"]) {
             if (typeof wv[m] !== "function") wvT.absent("plugin." + m);

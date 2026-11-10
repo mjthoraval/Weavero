@@ -488,7 +488,8 @@
             { re: /^Weavero — saved windows and group moves on Zotero's windows \(zotero#6035\) on a real native build/, why: "version: needs a Zotero with its own windows" },
             { re: /^Weavero — named sessions on Zotero's windows \(zotero#6035\)/, why: "version: needs a Zotero with its own windows" },
             { re: /^Weavero — the filter in every library tab \(zotero#6035\)/, why: "version: needs a Zotero with its own windows" },
-            { re: /^Weavero — a library tab is a tab like any other on a Zotero with its own windows /, why: "version: needs a Zotero with its own windows (an older Zotero's library tab is fixed first)" },
+            { re: /^Weavero — a library tab is a tab like any other on a Zotero with its own windows /, why: "version: needs a Zotero with its own windows (an older Zotero's library tab is fixed first), without Zotero's own Pin Tab (there: library-tab-zotero-pin.spec.js)" },
+            { re: /^Weavero — My Library pinned by Zotero's own Pin Tab /, why: "version: needs Zotero's own Pin Tab for library tabs (Zotero_Tabs.setPinned, zotero 49b48f5d08, the beta after 11.0-beta.4)" },
             // Nested suites: a full title starts with the OUTER describe's.
             { re: /^Weavero — context-menu handlers ignore bubbled submenu events /, why: "popups do not open in this runner window, or no bookmarkable row is selected" },
             { re: /^Weavero — items-list header contributes no intrinsic width its max-content width/, why: "the desktop keeps the runner's window hidden (measured on CI)" },

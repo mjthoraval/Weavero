@@ -27,7 +27,7 @@ import { wvInjectStyle, wvRemoveStyle } from "../lib/style";
 import { wvSleep, wvTimeout } from "../lib/timers";
 import { wvMenuItem } from "../lib/menu";
 import { wvStoreWrite, wvStoreRead } from "../lib/store";
-import { wvFirstDocTab, wvFirstMovableIndex, wvIsFixedLibraryTab, wvIsLibraryTabID, wvLibraryTabPinned, wvMainWins, wvNativeWindows, wvWinType } from "../lib/windows";
+import { wvFirstDocTab, wvFirstMovableIndex, wvIsFixedLibraryTab, wvIsLibraryTabID, wvLibraryTabPinned, wvMainWins, wvNativeWindows, wvWinType, wvZoteroPinsLibraryTabs } from "../lib/windows";
 import { wvAccelAny } from "../lib/keys";
 
 /** A surface the tab multi-select runs on: the main window's tab bar
@@ -2115,6 +2115,10 @@ class _TabGroupsMixin {
             // Another window: Zotero's own move there, which keeps a loaded
             // reader's document (zotero#6035). Within a window, as ever.
             if (wvNativeWindows() && tgtWin && tgtWin !== srcWin) {
+                // A tab Zotero won't move (a library tab it holds pinned) stays:
+                // moveToWindow recreates it there, then fails to close it here.
+                const t0 = srcWin.Zotero_Tabs && srcWin.Zotero_Tabs._tabs.find((x: any) => x && x.id === tabId);
+                if (t0 && t0.movable === false) return;
                 const newID = await srcWin.Zotero_Tabs.moveToWindow(tabId, tgtWin);
                 if (newID && groupId) this._wvTabGroupAddTab(tgtWin, newID, groupId);
                 return;
@@ -4049,7 +4053,12 @@ class _TabGroupsMixin {
             //   2. the rest in place: each group as ONE contiguous run with its
             //      PINNED members first; loose unpinned tabs where they are --
             //      an unpinned library tab of a Zotero with its own windows too
-            const start = wvFirstDocTab(Z_Tabs._tabs);
+            // From the first tab that can move: library tabs Zotero itself holds
+            // pinned (wvZoteroPinsLibraryTabs) keep the start of the bar, and
+            // move() refuses both them and any slot before them -- counting them
+            // made every pass "differ" (two refused moves per pass, Zotero main
+            // 49b48f5d0 with 1.0.3, 2026-11-10).
+            const start = Math.max(wvFirstDocTab(Z_Tabs._tabs), wvFirstMovableIndex(Z_Tabs));
             const emitted = new Set<string>();
             const desired: string[] = [];
             for (let i = start; i < Z_Tabs._tabs.length; i++) {
@@ -4059,13 +4068,13 @@ class _TabGroupsMixin {
             }
             const membersOf = (gid: string) => {
                 const pinned: string[] = [], unpinned: string[] = [];
-                for (let i = wvFirstDocTab(Z_Tabs._tabs); i < Z_Tabs._tabs.length; i++) {
+                for (let i = start; i < Z_Tabs._tabs.length; i++) {
                     const t = Z_Tabs._tabs[i];
                     if (groupAt(t) === gid) (isPinned(t) ? pinned : unpinned).push(t.id);
                 }
                 return pinned.concat(unpinned);
             };
-            for (let i = wvFirstDocTab(Z_Tabs._tabs); i < Z_Tabs._tabs.length; i++) {
+            for (let i = start; i < Z_Tabs._tabs.length; i++) {
                 const t = Z_Tabs._tabs[i];
                 if (!t || emitted.has(t.id)) continue;
                 const gid = groupAt(t);
@@ -4248,6 +4257,13 @@ class _TabGroupsMixin {
                 const iid = tab.data && tab.data.itemID;
                 if (bm && iid != null) bm.delete(iid);
             } catch (e) {}
+        }
+        // A library tab Zotero itself holds pinned leaves the pins to join a
+        // group, as in Firefox (tabgroup.mjs addTabs: "if (tab.pinned) unpinTab";
+        // MJT 2026-11-10: "Same as Firefox"): Zotero's pinned tab can't move, so
+        // it could never sit in the group's run. Every join path stamps here.
+        if (groupID && wvZoteroPinsLibraryTabs() && tab.pinned && tab.id && wvIsLibraryTabID(tab.id)) {
+            try { (this as any)._wvSetLibraryTabPinnedFlag(tab, false); } catch (e) {}
         }
         if (tab.data) {
             if (groupID) tab.data.wvGroupId = groupID; else { try { delete tab.data.wvGroupId; } catch (e) { tab.data.wvGroupId = undefined; } }

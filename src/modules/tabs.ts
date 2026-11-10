@@ -25,7 +25,7 @@ import { wvListen, wvListener, wvUnlisten } from "../lib/listen";
 import { wvStoreWrite, wvStoreRead, wvStoreRemove } from "../lib/store";
 import { wvTimeout } from "../lib/timers";
 import { wvMenuItem } from "../lib/menu";
-import { wvFirstDocTab, wvFirstMovableIndex, wvIsFixedLibraryTab, wvIsLibraryTabID, wvLibraryTabPinned, wvMainWins, wvNativeWindows, wvSelectLibraryTab, wvStoredFromSaved, wvWinType } from "../lib/windows";
+import { wvFirstDocTab, wvFirstMovableIndex, wvIsFixedLibraryTab, wvIsLibraryTabID, wvLibraryTabPinned, wvMainWins, wvNativeWindows, wvSelectLibraryTab, wvStoredFromSaved, wvWinType, wvZoteroPinsLibraryTabs } from "../lib/windows";
 import { wvAccel } from "../lib/keys";
 import { wvSvgEl } from "../lib/svg";
 import { WV_FUNNEL_DATA_URI } from "./constants";
@@ -4392,6 +4392,11 @@ class _TabsMixin {
     _wvTabIsPinned(win: any, tab: any): boolean {
         if (!tab) return false;
         if (wvLibraryTabPinned(tab)) return true;
+        // A library tab pins by its own flag or Zotero's pin only (above): the
+        // published set may still list one just unpinned -- a pinned My Library
+        // joining a group unpins, and the order pass then kept it first in the
+        // group as a "pinned member" (library-tab-zotero-pin.spec.js, 2026-11-10).
+        if (String(tab.type || "").startsWith("library")) return false;
         try {
             const set = win && (win as any)._wvPinnedTabIDs;
             if (set instanceof Set) return set.has(tab.id);
@@ -4400,10 +4405,23 @@ class _TabsMixin {
         } catch (e) { return false; }
     }
 
-    /** Set or clear a library tab's pin flag (a Zotero with its own windows).
-     *  The flag lives in `tab.data`, which Zotero saves with the session. */
+    /** Pin or unpin a library tab (a Zotero with its own windows). Where Zotero
+     *  pins library tabs itself, through Zotero (`setPinned`: the end of its
+     *  pinned run, unclosable and unmovable until unpinned; MJT 2026-11-10,
+     *  "Zotero's own"); else Weavero's flag in `tab.data`, which Zotero saves
+     *  with the session. */
     _wvSetLibraryTabPinnedFlag(tab: any, on: boolean) {
         if (!tab || wvIsFixedLibraryTab(tab.id) || !wvIsLibraryTabID(tab.id)) return;
+        if (wvZoteroPinsLibraryTabs()) {
+            const clearOwn = () => { if (tab.data && "wvPinned" in tab.data) { try { delete tab.data.wvPinned; } catch (e) {} } };
+            clearOwn();
+            if (!!tab.pinned === !!on) return;
+            for (const w of wvMainWins()) {
+                const Z: any = w && (w as any).Zotero_Tabs;
+                if (Z && Z._tabs && Z._tabs.includes(tab)) { try { Z.setPinned(tab.id, !!on); } catch (e) {} return; }
+            }
+            return;
+        }
         if (on) { if (!tab.data) tab.data = {}; tab.data.wvPinned = true; }
         else if (tab.data) { try { delete tab.data.wvPinned; } catch (e) { tab.data.wvPinned = undefined; } }
     }
@@ -4419,7 +4437,8 @@ class _TabsMixin {
             const tab = Z && Z._tabs.find((t: any) => t && t.id === tabID);
             if (!tab) return;
             this._wvSetLibraryTabPinnedFlag(tab, on);
-            if (on && Z._tabs.indexOf(tab) > 0 && typeof Z.move === "function") {
+            // Zotero's own pin places the tab itself (end of its pinned run).
+            if (on && !wvZoteroPinsLibraryTabs() && Z._tabs.indexOf(tab) > 0 && typeof Z.move === "function") {
                 try { Z.move(tab.id, wvFirstMovableIndex(Z)); } catch (e) {}
             }
             this._applyPinnedTabs(win);
@@ -4454,6 +4473,14 @@ class _TabsMixin {
             // windows). Pinned like the rest: ordered among the pins like any,
             // drawn as icons like every pin (MJT 2026-11-10: "The pinned library
             // tab does not have the same size as the others").
+            // A library tab pinned with Weavero's own flag (1.0.3 on 11.0-beta.4)
+            // where Zotero now pins library tabs itself: hand the pin to Zotero
+            // once, so it is Zotero's from then on (and the flag goes).
+            if (wvZoteroPinsLibraryTabs()) {
+                for (const t of Z_Tabs._tabs.slice()) {
+                    if (t && t.data && t.data.wvPinned && wvIsLibraryTabID(t.id)) this._wvSetLibraryTabPinnedFlag(t, true);
+                }
+            }
             const libPinIDs = new Set<string>();
             for (const t of Z_Tabs._tabs) { if (wvLibraryTabPinned(t)) libPinIDs.add(t.id); }
             if (!pinPref.length && !libPinIDs.size) {
@@ -4819,7 +4846,9 @@ class _TabsMixin {
                 m.classList.toggle("selected", Z.selectedID === tid);
                 // A mirror kept from an older build (the container survives a
                 // plugin reload) gets the drag source too -- check-before-write.
-                if (m.getAttribute("draggable") !== "true") m.setAttribute("draggable", "true");
+                // Not for a tab Zotero won't move (a library tab it holds pinned).
+                const drag = tab.movable === false ? "false" : "true";
+                if (m.getAttribute("draggable") !== drag) m.setAttribute("draggable", drag);
                 try {
                     let ttl = m.querySelector(".wv-pinned-mirror-title");
                     if (!ttl) { ttl = doc.createElement("span"); ttl.className = "wv-pinned-mirror-title"; m.appendChild(ttl); }
@@ -7127,18 +7156,28 @@ class _TabsMixin {
                             const libIDs = self._wvPinLibTargetsFor(winPin, ctx.tabID);
                             const item = ctx.items && ctx.items[0];
                             if (!libIDs.length && (!item || !item.libraryID || !item.key)) { ctx.setVisible(false); return; }
-                            ctx.setVisible(true);
                             const tgts = self._wvPinTargetsFor(winPin, ctx.tabID);
-                            const nPin = (tgts.length + libIDs.length) || 1;
-                            // Mixed selection pins: only an all-pinned selection
-                            // offers Unpin (Firefox's rule).
-                            const pinned = (tgts.length || libIDs.length)
-                                ? tgts.every((t: any) => self._pinnedTabsHas(t.libraryID, t.itemKey))
-                                    && libIDs.every((id: any) => self._wvLibTabPinnedByID(winPin, id))
-                                : self._pinnedTabsHas(item.libraryID, item.key);
-                            ctx.menuElem.setAttribute("label",
-                                (pinned ? "Unpin" : "Pin")
-                                + (nPin > 1 ? " " + nPin + " Tabs" : " Tab"));
+                            // Where Zotero pins library tabs itself, its own Pin
+                            // Tab / Unpin Tab serves library tabs alone: two
+                            // entries read two states (MJT 2026-11-10, "Zotero's
+                            // own"). A selection with item tabs keeps Weavero's
+                            // entry, which pins its library tabs through Zotero.
+                            // Hidden only: the rest of this handler (Group Tabs,
+                            // the multi-tab menus) still runs.
+                            const zoteroLibOnly = wvZoteroPinsLibraryTabs() && libIDs.length > 0 && !tgts.length;
+                            ctx.setVisible(!zoteroLibOnly);
+                            if (!zoteroLibOnly) {
+                                const nPin = (tgts.length + libIDs.length) || 1;
+                                // Mixed selection pins: only an all-pinned selection
+                                // offers Unpin (Firefox's rule).
+                                const pinned = (tgts.length || libIDs.length)
+                                    ? tgts.every((t: any) => self._pinnedTabsHas(t.libraryID, t.itemKey))
+                                        && libIDs.every((id: any) => self._wvLibTabPinnedByID(winPin, id))
+                                    : self._pinnedTabsHas(item.libraryID, item.key);
+                                ctx.menuElem.setAttribute("label",
+                                    (pinned ? "Unpin" : "Pin")
+                                    + (nPin > 1 ? " " + nPin + " Tabs" : " Tab"));
+                            }
                             // MenuManager appends custom items AFTER all built-ins
                             // (Show in Library / Move Tab / Duplicate Tab / Close /
                             // Close Other Tabs / Reopen Closed Tab). The user wants
@@ -7547,7 +7586,17 @@ class _TabsMixin {
             sep.classList.add("wv-mv-extra");
             if (before && before.parentNode === submenu) submenu.insertBefore(sep, before);
             else submenu.appendChild(sep);
-            const tids = (targets && targets.length) ? targets.slice() : [];
+            // Tabs Zotero won't move (a library tab it holds pinned, movable false)
+            // stay where they are: Zotero's own menu offers Move for movable tabs
+            // only, and its move to another window recreated the tab there and then
+            // failed to close it here -- a pinned My Library in both windows
+            // (Zotero main 49b48f5d08, tabs.js moveToWindow).
+            const Zm: any = win && (win as any).Zotero_Tabs;
+            const tids = ((targets && targets.length) ? targets.slice() : []).filter((id: any) => {
+                const t = Zm && Zm._tabs && Zm._tabs.find((x: any) => x && x.id === id);
+                return !(t && t.movable === false);
+            });
+            if (!tids.length) { try { sep.remove(); } catch (e) {} return; }
             const onPick = (target: any) => {
                 try {
                     // "New Reader/Main Window" move ALL the tabs into one new window.
@@ -7620,14 +7669,23 @@ class _TabsMixin {
 
     _wvMakeCloseTabsMenuMulti(win: any, popup: any, targets: any[]) {
         try {
+            // Tabs Zotero won't close (a library tab it holds pinned, closable
+            // false) stay: Zotero_Tabs.close() checks every id first and throws
+            // on the first one, which closed NOTHING (Zotero main 49b48f5d08).
+            const ZT0: any = win && (win as any).Zotero_Tabs;
+            const closable = targets.filter((id: any) => {
+                const t = ZT0 && ZT0._tabs && ZT0._tabs.find((x: any) => x && x.id === id);
+                return !(t && t.closable === false);
+            });
+            if (!closable.length) return;
             const closeLabel = Zotero.getString("general.close");
             for (const mi of Array.from(popup.querySelectorAll("menuitem")) as any[]) {
                 if (!mi.getAttribute || mi.getAttribute("label") !== closeLabel) continue;
                 const clone = mi.cloneNode(true);   // drops the native single-tab command listener
-                clone.setAttribute("label", "Close " + targets.length + " Tabs");
+                clone.setAttribute("label", closable.length > 1 ? "Close " + closable.length + " Tabs" : "Close Tab");
                 mi.replaceWith(clone);
                 clone.addEventListener("command", () => {
-                    try { const ZT: any = win && (win as any).Zotero_Tabs; if (ZT && typeof ZT.close === "function") ZT.close(targets.slice()); } catch (e) {}
+                    try { const ZT: any = win && (win as any).Zotero_Tabs; if (ZT && typeof ZT.close === "function") ZT.close(closable.slice()); } catch (e) {}
                 });
                 break;   // only the first plain "Close" (not "Close Other Tabs")
             }

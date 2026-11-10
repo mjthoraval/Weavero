@@ -208,7 +208,8 @@ describe("Weavero — note outline", function () {
     // Navigation only (MJT 2026-11-04, "I do not want to do outline edition
     // directly in the outline pane"): the reader's +/- and Ctrl+F, but none of
     // its editing tools -- no multi-selection (Shift / Ctrl+arrows, Space,
-    // Ctrl+A, Ctrl+click), no undo / redo from the outline, Delete inert.
+    // Ctrl+click), no undo / redo from the outline, Delete inert. Ctrl+A is
+    // back for opening / closing everything (next test).
     it("keys: +/- and Ctrl+F search as in the reader; its selection, undo and Delete do nothing", async function () {
         const list = tab.ne.querySelector(".wv-note-outline-list");
         list.focus();
@@ -228,8 +229,7 @@ describe("Weavero — note outline", function () {
         press("ArrowDown", { shiftKey: true });
         press("ArrowDown", ctrl);
         press(" ");
-        press("a", ctrl);
-        expect(selected(), "Shift / Ctrl+arrows, Space, Ctrl+A: no selection").to.deep.equal(["Intro"]);
+        expect(selected(), "Shift / Ctrl+arrows, Space: no selection").to.deep.equal(["Intro"]);
         expect(active(), "...and no move").to.equal("Intro");
         const r2 = rowByText(tab.ne, "Results");
         r2.dispatchEvent(new win.MouseEvent("click", { bubbles: true, ctrlKey: true }));
@@ -290,6 +290,74 @@ describe("Weavero — note outline", function () {
         expect(sin.value, "Escape empties the search").to.equal("");
         expect(rows(tab.ne).filter((r) => !r.hidden).length).to.equal(5);
         expect(on(sbox), "...and closes it").to.equal(false);
+    });
+
+    // MJT 2026-11-10: "I still want the CTRL+A in the Outline of a note to
+    // select all, so that I can expand all or collapse all." Every heading,
+    // those inside a closed one too: a second Ctrl+A after closing all must
+    // open the inner levels as well.
+    it("Ctrl+A selects every heading; Right / Left then open or close them all", async function () {
+        const list = tab.ne.querySelector(".wv-note-outline-list");
+        list.focus();
+        const press = (key, mods) => {
+            const t = doc.activeElement && list.contains(doc.activeElement) ? doc.activeElement : list;
+            t.dispatchEvent(new win.KeyboardEvent("keydown", Object.assign({ key, bubbles: true, cancelable: true }, mods || {})));
+        };
+        const name = (r) => r.textContent.trim().replace(NEEDLE + " ", "");
+        const shown = () => rows(tab.ne).filter((r) => !r.hidden).map(name);
+        const selected = () => rows(tab.ne).filter((r) => r.classList.contains("wv-note-outline-selected")).map(name);
+        const ctrl = { ctrlKey: !Zotero.isMac, metaKey: !!Zotero.isMac };
+        press("Home");
+        press("a", ctrl);
+        expect(selected(), "every heading").to.deep.equal(["Intro", "Background", "Detail", "Results", "Discussion"]);
+        press("ArrowLeft");
+        expect(shown(), "Left closes them all").to.deep.equal(["Intro", "Results"]);
+        press("a", ctrl);
+        press("ArrowRight");
+        expect(shown(), "Right opens them all, the inner levels too").to.deep.equal(["Intro", "Background", "Detail", "Results", "Discussion"]);
+        press("Home");
+        expect(selected(), "a plain move goes back to one row").to.deep.equal(["Intro"]);
+    });
+
+    // MJT 2026-11-10: "The fold option on a right-click in the Outline actually
+    // folds the section in the reader. This is counterintuitive. The context
+    // menu of the outline should apply to the outline."
+    it("the outline's right-click menu acts on the outline: Collapse / Expand, Expand All, Collapse All", async function () {
+        const open = (t) => {
+            const row = rowByText(tab.ne, t), r = row.getBoundingClientRect();
+            wv._wvNoteOutlineContext({ target: row, preventDefault() {},
+                screenX: Math.round(win.mozInnerScreenX + r.left + 10), screenY: Math.round(win.mozInnerScreenY + r.top + 5) }, tab.ne, tab.f);
+            return doc.getElementById("wv-note-outline-menu");
+        };
+        const close = (m) => { try { m.hidePopup(); } catch (e) {} try { m.remove(); } catch (e) {} };
+        let menu = open("Background");
+        try {
+            expect(menu, "the menu").to.be.ok;
+            const labels = [...menu.querySelectorAll("menuitem")].map((m) => m.getAttribute("label"));
+            expect(labels, "no fold of the note's section here: " + labels.join(" | ")).to.not.include("Fold Section");
+            const tog = menu.querySelector("#wv-note-outline-toggle");
+            expect(tog && tog.getAttribute("label")).to.equal("Collapse");
+            expect(menu.querySelector("#wv-note-outline-expand-all").hasAttribute("disabled"), "nothing closed: Expand All grey").to.equal(true);
+            expect(menu.querySelector("#wv-note-outline-collapse-all").hasAttribute("disabled")).to.equal(false);
+            expect(menu.querySelector("#wv-note-outline-expand-all").getAttribute("acceltext")).to.equal("+");
+            tog.dispatchEvent(new win.Event("command"));
+        }
+        finally { close(menu); }
+        // Gecko runs a menu item's command once its popup has closed.
+        expect(await wvT.waitFor(() => rowByText(tab.ne, "Detail").hidden, 3000), "Collapse closed Background in the outline").to.equal(true);
+        expect(headEl(tab.d, "Detail").getClientRects().length, "...and left the note alone").to.be.above(0);
+        menu = open("Background");
+        try {
+            expect(menu.querySelector("#wv-note-outline-toggle").getAttribute("label")).to.equal("Expand");
+            const ea = menu.querySelector("#wv-note-outline-expand-all");
+            expect(ea.hasAttribute("disabled"), "a row closed: Expand All live").to.equal(false);
+            ea.dispatchEvent(new win.Event("command"));
+        }
+        finally { close(menu); }
+        expect(await wvT.waitFor(() => rows(tab.ne).filter((r) => !r.hidden).length === 5, 3000), "Expand All").to.equal(true);
+        menu = open("Detail");
+        try { expect(menu.querySelector("#wv-note-outline-toggle"), "a heading without sub-headings has no Collapse").to.equal(null); }
+        finally { close(menu); }
     });
 
     it("follows edits to the note", async function () {

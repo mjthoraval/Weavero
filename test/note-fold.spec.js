@@ -451,6 +451,32 @@ describe("Weavero — note list folding", function () {
         expect(ed.d.querySelector(".ProseMirror .wv-fold-folded"), "no fold left").to.equal(null);
     });
 
+    // MJT 2026-11-10: "A right-click on a section only offers to expand/collapse
+    // all. I want a menu option to fold or expand as relevant."
+    it("a right-click on a heading offers Fold Section / Unfold Section for it", async function () {
+        const tail = () => [...ed.d.querySelectorAll(".ProseMirror h2")].find((h) => (h.textContent || "").includes("Tail"));
+        let menu = menuOpen(tail());
+        try {
+            const fs = menu.querySelector("#wv-note-fold-section");
+            expect(fs && fs.getAttribute("label"), "Fold Section on an open heading").to.equal("Fold Section");
+            expect(fs.nextElementSibling, "just before Fold All").to.equal(menu.querySelector("#wv-note-fold-all"));
+            fs.dispatchEvent(new win.Event("command"));
+        }
+        finally { menu.dispatchEvent(new win.Event("popuphidden")); }
+        expect(await wvT.waitFor(() => !visible(paraByText("tail body")), 5000), "Tail folded").to.equal(true);
+        menu = menuOpen(tail());
+        try {
+            const fs = menu.querySelector("#wv-note-fold-section");
+            expect(fs && fs.getAttribute("label"), "Unfold Section on a folded one").to.equal("Unfold Section");
+            fs.dispatchEvent(new win.Event("command"));
+        }
+        finally { menu.dispatchEvent(new win.Event("popuphidden")); }
+        expect(await wvT.waitFor(() => visible(paraByText("tail body")), 5000), "Tail open again").to.equal(true);
+        menu = menuOpen(paraByText("tail body"));
+        try { expect(menu.querySelector("#wv-note-fold-section"), "not on a paragraph").to.equal(null); }
+        finally { menu.dispatchEvent(new win.Event("popuphidden")); }
+    });
+
     it("the Fold switch takes list arrows and list folds away, and back", async function () {
         press(itemByText("Methods"));
         await wvT.waitFor(() => !visible(paraByText("methods second paragraph")), 5000);

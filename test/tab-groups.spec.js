@@ -178,16 +178,27 @@ describe("Weavero — tab-group chip resilience", function () {
         expect(chipEl(group.id), "chip not restored after the drag ended").to.exist;
     });
 
-    // Root-cause fix: the library tab is not groupable, and a cancelled gesture
-    // on it can skip dragend -- so dragstart must never arm the drag flag for it.
-    it("never arms drag-state for the library ('zotero-pane') tab", function () {
+    // Root-cause fix: an older Zotero's library tab is not groupable, and a
+    // cancelled gesture on it can skip dragend -- so dragstart must never arm the
+    // drag flag for it. On a Zotero with its own windows a library tab Zotero
+    // lets move drags like any tab, through the same gap drag (MJT 2026-11-10).
+    it("arms drag-state for the library ('zotero-pane') tab only on a Zotero with its own windows", function () {
         if (!group || typeof p._wvTabGroupDnDDragStart !== "function") this.skip();
         win._wvTabGroupDragTabID = null;
-        const zp = win.document.querySelector('#tab-bar-container .tab[data-id="zotero-pane"]');
+        const zp = Array.from(win.document.querySelectorAll('#tab-bar-container .tab[data-id="zotero-pane"]')).find(n => n.getBoundingClientRect().width > 0);
         expect(zp, "zotero-pane tab node not found").to.exist;
+        const t = win.Zotero_Tabs._tabs.find(x => x.id === "zotero-pane");
+        const want = (wvT.lib().wvNativeWindows() && t && t.movable !== false) ? "zotero-pane" : null;
         const ev = { target: zp, clientX: 0, dataTransfer: { setData() {}, setDragImage() {} } };
-        p._wvTabGroupDnDDragStart(win, ev);
-        expect(win._wvTabGroupDragTabID, "a library-tab drag armed the group drag flag").to.equal(null);
+        try {
+            p._wvTabGroupDnDDragStart(win, ev);
+            expect(win._wvTabGroupDragTabID, "the group drag flag for a library-tab drag").to.equal(want);
+        }
+        finally {
+            // No dragend follows this synthetic start: put the lifted tab down.
+            try { p._wvClearGap(win); } catch (e) {}
+            win._wvTabGroupDragTabID = null;
+        }
     });
 
     // Vacuity guard for the test above: a real member tab MUST arm the flag

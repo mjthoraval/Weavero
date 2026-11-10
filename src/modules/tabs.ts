@@ -25,7 +25,7 @@ import { wvListen, wvListener, wvUnlisten } from "../lib/listen";
 import { wvStoreWrite, wvStoreRead, wvStoreRemove } from "../lib/store";
 import { wvTimeout } from "../lib/timers";
 import { wvMenuItem } from "../lib/menu";
-import { wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvSelectLibraryTab, wvStoredFromSaved, wvWinType } from "../lib/windows";
+import { wvFirstDocTab, wvFirstMovableIndex, wvIsFixedLibraryTab, wvIsLibraryTabID, wvLibraryTabPinned, wvMainWins, wvNativeWindows, wvSelectLibraryTab, wvStoredFromSaved, wvWinType } from "../lib/windows";
 import { wvAccel } from "../lib/keys";
 import { wvSvgEl } from "../lib/svg";
 import { WV_FUNNEL_DATA_URI } from "./constants";
@@ -858,7 +858,7 @@ class _TabsMixin {
                 if (r.classList.contains("wv-tabsmenu-ghost")) return false;
                 if (r.classList.contains("wv-tabs-menu-row-hidden")) return false;
                 const tid = tidOf(r);
-                if (!tid || wvIsLibraryTabID(tid)) return false;
+                if (!tid || wvIsFixedLibraryTab(tid)) return false;
                 if (exclTab != null && tid === exclTab) return false;
                 if (exclGrp && win) {
                     try { const t = this._wvTabObjInWin(win, tid, isReader); if (t && (this as any)._wvTabGroupStamp(t) === exclGrp) return false; } catch (e) {}
@@ -1012,7 +1012,7 @@ class _TabsMixin {
                                 let v: any = placedBefore.previousElementSibling;
                                 while (v && v.classList && (v.classList.contains("wv-tgrow-hidden") || v.classList.contains("wv-tabsmenu-ghost") || v.classList.contains("wv-tgrow-header"))) v = v.previousElementSibling;
                                 anchorTabId = (v && ((v as any)._wvSrcTabId || (v.dataset && v.dataset.tabId))) || null;
-                                if (wvIsLibraryTabID(anchorTabId)) anchorTabId = null;
+                                if (wvIsFixedLibraryTab(anchorTabId)) anchorTabId = null;
                             }
                         } else {
                             // Below every collapsed header → after the LAST group.
@@ -1192,7 +1192,7 @@ class _TabsMixin {
                     let nativeRow = false;
                     if (!srcWin) {
                         const tid = row.dataset && row.dataset.tabId;
-                        if (!tid || wvIsLibraryTabID(tid)) return;
+                        if (!tid || wvIsFixedLibraryTab(tid)) return;
                         srcWin = panelWin; tabId = tid; isReader = false;
                         nativeRow = true;
                     }
@@ -1533,7 +1533,7 @@ class _TabsMixin {
                 } catch (e) {}
                 // Show the anchor mark only when it's ALSO shown in the window
                 // itself — >1 window of any kind (matches _wvAnchorDecorVisible).
-                const wIsAnchor = this._wvIsAnchorWindow(w) && this._wvAnchorDecorVisible();
+                const wIsAnchor = this._wvAnchorLook(w) === "anchor";
                 if (tabs.length) sections.push({ label: this._wvWindowName(w), win: w, libraryTab, tabs, kind: "main", iconType: wIsAnchor ? "anchor" : "main", anchorIconClass: wIsAnchor ? this._wvAnchorLibIconClass(w) : "" });
             }
             // Reader windows.
@@ -1856,6 +1856,19 @@ class _TabsMixin {
             return false;
         } catch (e) { return true; }
     }
+    /** How a window's identity is drawn when it is the anchor (the oldest
+     *  main window): "anchor" = the ⚓ (an older Zotero, 2+ windows); "none"
+     *  = no mark (a lone window has nothing to be told apart from, MJT
+     *  2026-09-29); "" = a colour like any window. On a Zotero with its own
+     *  windows no window is special (Zotero.getMainWindow is the most recent
+     *  one with a library), so the oldest takes a colour too (MJT 2026-11-10:
+     *  "drop the ⚓"). Drawing only: the restore steps still use the anchor
+     *  as "the oldest window" (_wvAnchorWindow, _wvIsAnchorWindow). */
+    _wvAnchorLook(win: any): "anchor" | "none" | "" {
+        if (!this._wvIsAnchorWindow(win)) return "";
+        if (!this._wvAnchorDecorVisible()) return "none";
+        return wvNativeWindows() ? "" : "anchor";
+    }
     /** Right-side window-identity glyph for a XUL menuitem window row
      *  (the Move Tab / Move Group / Open-in target lists — user request
      *  2026-07-15): the same colour dot the List-all-tabs window
@@ -1873,8 +1886,9 @@ class _TabsMixin {
             // to be told apart from). Falling through to the colour branch
             // painted pool colour 0 (blue) on "Window 1" in a one-window
             // session (MJT 2026-09-29).
-            if (!isReader && this._wvIsAnchorWindow(targetWin)) {
-                if (this._wvAnchorDecorVisible()) mi.classList.add("wv-mvwin-anchor");
+            const look = isReader ? "" : this._wvAnchorLook(targetWin);
+            if (look) {
+                if (look === "anchor") mi.classList.add("wv-mvwin-anchor");
                 return;
             }
             const color = WV_WIN_BADGE_COLORS[
@@ -1979,7 +1993,8 @@ class _TabsMixin {
             const body = edPanel.querySelector(".wv-tg-panel-body");
             while (body.firstChild) body.removeChild(body.firstChild);
             const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-            const isAnchor = !isReader && this._wvIsAnchorWindow(targetWin);
+            // No colour for a window drawn without one (the ⚓, or a lone window).
+            const isAnchor = !isReader && this._wvAnchorLook(targetWin) !== "";
             const lastMain = !isReader && (Zotero.getMainWindows() || []).length < 2;
             const refreshPanel = () => {
                 try {
@@ -2017,7 +2032,7 @@ class _TabsMixin {
                     : null;
                 const info = wvHtmlEl(doc, "div");
                 info.className = "wv-tg-info";
-                info.textContent = (isReader ? "Reader window" : (isAnchor ? "Main window (anchor)" : "Main window"))
+                info.textContent = (isReader ? "Reader window" : (this._wvAnchorLook(targetWin) === "anchor" ? "Main window (anchor)" : "Main window"))
                     + " · Active · " + count + " tab" + (count === 1 ? "" : "s")
                     + (sess ? " · " + (sess.name || "Session") : "");
                 body.appendChild(info);
@@ -2288,7 +2303,8 @@ class _TabsMixin {
             const defName = this._wvWindowDefaultName(targetWin);
             const wt = wvWinType(targetWin);
             const isReader = wt === "zotero:reader";
-            const isAnchor = !isReader && this._wvIsAnchorWindow(targetWin);
+            // No colour for a window drawn without one (the ⚓, or a lone window).
+            const isAnchor = !isReader && this._wvAnchorLook(targetWin) !== "";
             const curIdx = (targetWin as any)._wvTitleGlyphIdx != null
                 ? ((targetWin as any)._wvTitleGlyphIdx % WV_WIN_BADGE_COLORS.length) : -1;
             const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
@@ -2330,7 +2346,8 @@ class _TabsMixin {
             const doc = menuWin.document;
             const wt = wvWinType(targetWin);
             const isReader = wt === "zotero:reader";
-            const isAnchor = !isReader && this._wvIsAnchorWindow(targetWin);
+            // No colour for a window drawn without one (the ⚓, or a lone window).
+            const isAnchor = !isReader && this._wvAnchorLook(targetWin) !== "";
             const lastMain = !isReader && (Zotero.getMainWindows() || []).length < 2;
             const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
             const sx = e.screenX, sy = e.screenY;
@@ -2442,9 +2459,8 @@ class _TabsMixin {
             }
             const mains = Zotero.getMainWindows() || [];
             if (win && mains.includes(win)) {
-                if (this._wvIsAnchorWindow(win)) {
-                    return this._wvAnchorDecorVisible() ? WV_TITLE_GLYPH_ANCHOR : "";
-                }
+                const look = this._wvAnchorLook(win);
+                if (look) return look === "anchor" ? WV_TITLE_GLYPH_ANCHOR : "";
                 return WV_TITLE_GLYPHS_MAIN[
                     this._wvTitleGlyphIdx(win, false) % WV_TITLE_GLYPHS_MAIN.length];
             }
@@ -2781,8 +2797,9 @@ class _TabsMixin {
             // glyph + colour, on the native artwork); other mains a
             // square badge, readers a round badge. A LONE window shows
             // no anchor decoration at all (native icon restored).
-            const isAnchor = !isReader && this._wvIsAnchorWindow(win);
-            if (isAnchor && !this._wvAnchorDecorVisible()) {
+            const look = isReader ? "" : this._wvAnchorLook(win);
+            const isAnchor = look === "anchor";
+            if (look === "none") {
                 if (win._wvWinIconName) {
                     try { this._wvRestoreWindowIcon(win); } catch (e) {}
                     win._wvWinIconName = null;
@@ -3063,10 +3080,9 @@ class _TabsMixin {
             const isReader = wt === "zotero:reader";
             const isMain = !isReader && (Zotero.getMainWindows() || []).includes(win);
             if (!isReader && !isMain) return null;
-            if (isMain && this._wvIsAnchorWindow(win)) {
-                // Lone window → no anchor badge (matches the icon/mark rule).
-                return this._wvAnchorDecorVisible() ? "anchor" : null;
-            }
+            const look = isMain ? this._wvAnchorLook(win) : "";
+            // Lone window → no badge (matches the icon/mark rule).
+            if (look) return look === "anchor" ? "anchor" : null;
             const idx = this._wvTitleGlyphIdx(win, isReader);
             return (isReader ? "reader-" : "main-") + ((idx % 6) + 1);
         } catch (e) { return null; }
@@ -3771,7 +3787,7 @@ class _TabsMixin {
         // title glyph and the Open-in / Move menus follow (2026-09-29).
         if (winRef && iconType !== "anchor"
             && (iconType === "main" || iconType === "reader" || iconType === "window")
-            && !(iconType !== "reader" && this._wvIsAnchorWindow(winRef))) {
+            && !(iconType !== "reader" && this._wvAnchorLook(winRef) !== "")) {
             try {
                 const isReader = iconType === "reader";
                 const color = WV_WIN_BADGE_COLORS[
@@ -4085,7 +4101,7 @@ class _TabsMixin {
             // all-windows list (reader windows count too) -- one main window
             // plus a reader window had neither dot nor anchor here
             // (pre-release review 2026-10-05).
-            const isAnchor = this._wvIsAnchorWindow(w) && this._wvAnchorDecorVisible();
+            const isAnchor = this._wvAnchorLook(w) === "anchor";
             const collapseKey = "live|current";
             if (this._wvTabsMenuIsWindowCollapsed(collapseKey)) wrap.classList.add("wv-win-collapsed");
             const hdr = this._wvTabsMenuWindowHeader(doc, this._wvWindowName(w), count, "wv-curwin-header", isAnchor ? "anchor" : "main", "", collapseKey, panel, w);
@@ -4370,6 +4386,47 @@ class _TabsMixin {
         } catch (e) { return null; }
     }
 
+    /** Tab `tab` is pinned: a library tab by its own flag (a Zotero with its own
+     *  windows), else as the last apply published it (the designated pins, one
+     *  per pinned item), else by its item key before the first publish. */
+    _wvTabIsPinned(win: any, tab: any): boolean {
+        if (!tab) return false;
+        if (wvLibraryTabPinned(tab)) return true;
+        try {
+            const set = win && (win as any)._wvPinnedTabIDs;
+            if (set instanceof Set) return set.has(tab.id);
+            const k = this._tabPinKey(tab);
+            return !!(k && this._pinnedTabsHas(k.libraryID, k.itemKey));
+        } catch (e) { return false; }
+    }
+
+    /** Set or clear a library tab's pin flag (a Zotero with its own windows).
+     *  The flag lives in `tab.data`, which Zotero saves with the session. */
+    _wvSetLibraryTabPinnedFlag(tab: any, on: boolean) {
+        if (!tab || wvIsFixedLibraryTab(tab.id) || !wvIsLibraryTabID(tab.id)) return;
+        if (on) { if (!tab.data) tab.data = {}; tab.data.wvPinned = true; }
+        else if (tab.data) { try { delete tab.data.wvPinned; } catch (e) { tab.data.wvPinned = undefined; } }
+    }
+
+    /** Pin Tab / Unpin Tab on a library tab (a Zotero with its own windows,
+     *  MJT 2026-11-10: "I just want to be able to pin the My Library tab to first
+     *  position if I want to"). Pinning puts it first, ahead of the other
+     *  pins, as an icon like them; unpinning leaves it to the order pass,
+     *  which moves it just right of the remaining pins (Firefox). */
+    _wvSetLibraryTabPinned(win: any, tabID: any, on: boolean) {
+        try {
+            const Z: any = win && win.Zotero_Tabs;
+            const tab = Z && Z._tabs.find((t: any) => t && t.id === tabID);
+            if (!tab) return;
+            this._wvSetLibraryTabPinnedFlag(tab, on);
+            if (on && Z._tabs.indexOf(tab) > 0 && typeof Z.move === "function") {
+                try { Z.move(tab.id, wvFirstMovableIndex(Z)); } catch (e) {}
+            }
+            this._applyPinnedTabs(win);
+            try { (this as any)._applyTabGroups(win); } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvSetLibraryTabPinned err: " + e); }
+    }
+
     /** Reconcile the tab strip with the persisted pin list. THIS RUNS ON
      *  EVERY TAB-BAR MUTATION (the observer above), so it MUST NOT force
      *  positions — Zotero's tab order is the source of truth for ordering
@@ -4393,7 +4450,13 @@ class _TabsMixin {
             const Z_Tabs: any = (win as any).Zotero_Tabs;
             if (!Z_Tabs || !Z_Tabs._tabs) return;
             const pinPref = this._pinnedTabsGet();
-            if (!pinPref.length) {
+            // Library tabs pinned by their own flag (a Zotero with its own
+            // windows). Pinned like the rest: ordered among the pins like any,
+            // drawn as icons like every pin (MJT 2026-11-10: "The pinned library
+            // tab does not have the same size as the others").
+            const libPinIDs = new Set<string>();
+            for (const t of Z_Tabs._tabs) { if (wvLibraryTabPinned(t)) libPinIDs.add(t.id); }
+            if (!pinPref.length && !libPinIDs.size) {
                 // Publish the (empty) designated-pin set too: the stabilizer
                 // reads it, and a stale set from the last apply kept treating
                 // the just-unpinned follower of a two-pin drag as a loose pin,
@@ -4430,6 +4493,11 @@ class _TabsMixin {
             for (let i = wvFirstDocTab(Z_Tabs._tabs); i < Z_Tabs._tabs.length; i++) {
                 const tab = Z_Tabs._tabs[i];
                 if (!tab) continue;
+                if (libPinIDs.has(tab.id)) {
+                    pinnedTabIDs.add(tab.id);
+                    if (!liveStamp(tab)) stickyByTabID.set(tab.id, stickyByTabID.size);
+                    continue;
+                }
                 const k = this._tabPinKey(tab);
                 if (!k) {
                     // `_tabPinKey` returns null when the underlying item
@@ -4480,7 +4548,7 @@ class _TabsMixin {
             // surfaces (tabs-menu pin glyphs) can mark only these — the pin
             // store is item-keyed, and key-matching marked every duplicate
             // copy of a pinned item as pinned ("why do I see so many pinned
-            // tabs when there are only 2?", 2026-07-04).
+            // tabs when there are only 2?", 2026-07-04). Pinned library tabs too.
             (win as any)._wvPinnedTabIDs = pinnedTabIDs;
 
             // Rebuild the pref array: pinned tabs that are OPEN go first
@@ -4613,7 +4681,18 @@ class _TabsMixin {
             // altogether (MJT 2026-08-21). Never assume an upstream
             // container is visible: measure it.
             let rowC: any = pinnedC.querySelector(":scope > .tabs") || pinnedC;
-            try {
+            // A Zotero with its own windows has no pinned tab of its own, so
+            // its `.pinned-tabs` row stays empty and hidden -- and the mirrors
+            // fell into the scrolling strip, right of the scroll-back arrow,
+            // scrolling away with the tabs (MJT 2026-11-10: "The arrow should
+            // be on the right side of the pinned tabs. See Firefox"). Firefox
+            // keeps pinned tabs in their own #pinned-tabs-container before the
+            // scrolling box (tabs.mjs): the mirrors live in Zotero's pinned row,
+            // which _ensurePinnedTabStyles shows while it holds them. The loose
+            // pins lead Zotero's order there (the order pass), so the row
+            // matches it.
+            const ownRow = wvNativeWindows() && rowC !== pinnedC;
+            if (!ownRow) try {
                 const vis = (el: any) => {
                     if (!el) return false;
                     const cs = win.getComputedStyle(el);
@@ -4631,9 +4710,8 @@ class _TabsMixin {
             // In the main strip the mirrors belong just right of the library
             // tab (Firefox's pinned region); in the dedicated row, append.
             const placeCont = (c: any) => {
-                const lib = rowC.querySelector(':scope > .tab[data-id="zotero-pane"]');
+                const lib = ownRow ? null : rowC.querySelector(':scope > .tab[data-id="zotero-pane"]');
                 if (lib && lib.nextSibling) rowC.insertBefore(c, lib.nextSibling);
-                else if (lib) rowC.appendChild(c);
                 else rowC.appendChild(c);
             };
             if (!cont) {
@@ -4718,12 +4796,23 @@ class _TabsMixin {
                 }
                 // Keep icon / tooltip / selection in sync on every pass.
                 try {
-                    const iid = tab.data && tab.data.itemID;
-                    const it: any = iid && Zotero.Items.get(iid);
-                    const icon = m.querySelector(".icon-item-type");
-                    if (icon && it && it.getItemTypeIconName) {
-                        const t = it.getItemTypeIconName(true);
-                        if (icon.getAttribute("data-item-type") !== t) icon.setAttribute("data-item-type", t);
+                    const icon = m.querySelector(".tab-icon");
+                    if (icon && wvIsLibraryTabID(tid)) {
+                        // A pinned library tab (a Zotero with its own windows)
+                        // shows its own tab's icon (My Library or a group).
+                        const real = doc.querySelector('#tab-bar-container .tab[data-id="' + tid + '"] .tab-icon');
+                        const cls = (real && real.className) || "icon icon-css icon-library tab-icon";
+                        if (icon.className !== cls) icon.className = cls;
+                        if (icon.hasAttribute("data-item-type")) icon.removeAttribute("data-item-type");
+                    } else if (icon) {
+                        const iid = tab.data && tab.data.itemID;
+                        const it: any = iid && Zotero.Items.get(iid);
+                        if (it && it.getItemTypeIconName) {
+                            const ic = "icon icon-css tab-icon icon-item-type";
+                            if (icon.className !== ic) icon.className = ic;
+                            const t = it.getItemTypeIconName(true);
+                            if (icon.getAttribute("data-item-type") !== t) icon.setAttribute("data-item-type", t);
+                        }
                     }
                 } catch (e) {}
                 if (m.getAttribute("title") !== (tab.title || "")) m.setAttribute("title", tab.title || "");
@@ -5183,7 +5272,7 @@ class _TabsMixin {
             if (Z && Z._tabs && typeof Z.move === "function") {
                 const tab = Z._tabs.find((t: any) => t && t.id === donorTabId);
                 if (tab) {
-                    const clamped = Math.max(1, Math.min(targetIndex, Z._tabs.length - 1));
+                    const clamped = Math.max(wvFirstMovableIndex(Z), Math.min(targetIndex, Z._tabs.length - 1));
                     Z.move(donorTabId, clamped);
                     const curIdx = Z._tabs.indexOf(tab);
                     if (curIdx <= maxOtherPinned && curIdx > 0) {
@@ -5478,7 +5567,7 @@ class _TabsMixin {
                         // Position the new tab at the drop slot.
                         try {
                             if (typeof Z_Tabs.move === "function") {
-                                const clamped = Math.max(1, Math.min(targetIndex, Z_Tabs._tabs.length - 1));
+                                const clamped = Math.max(wvFirstMovableIndex(Z_Tabs), Math.min(targetIndex, Z_Tabs._tabs.length - 1));
                                 Z_Tabs.move(tab.id, clamped);
                             }
                         } catch (e) {}
@@ -5522,7 +5611,7 @@ class _TabsMixin {
                             } catch (e) {}
                             try {
                                 if (typeof Z_Tabs.move === "function") {
-                                    const clamped = Math.max(1, Math.min(targetIndex, Z_Tabs._tabs.length - 1));
+                                    const clamped = Math.max(wvFirstMovableIndex(Z_Tabs), Math.min(targetIndex, Z_Tabs._tabs.length - 1));
                                     Z_Tabs.move(nid, clamped);
                                 }
                             } catch (e) {}
@@ -5887,8 +5976,11 @@ class _TabsMixin {
                     const res = (win as any)._wvGapResult;
                     if (!drag || !res || typeof res.slot !== "number") return "";
                     const regionEnd = typeof res.firstNonPinnedZIdx === "number" ? res.firstNonPinnedZIdx : 1;
-                    if (!drag.wasPinned && res.slot < regionEnd) return "pin";
-                    if (drag.wasPinned && !res.joinGroupId && res.slot > regionEnd) return "unpin";
+                    // Pins in a row of their own: the row under the cursor decides.
+                    const pinHere = res.rows ? !!res.inPins : res.slot < regionEnd;
+                    const unpinHere = res.rows ? !res.inPins : res.slot > regionEnd;
+                    if (!drag.wasPinned && pinHere) return "pin";
+                    if (drag.wasPinned && !res.joinGroupId && unpinHere) return "unpin";
                     return "";
                 } catch (er) { return ""; }
             };
@@ -6115,6 +6207,14 @@ class _TabsMixin {
                             // the preview and its neighbours come out equal: a few
                             // damped steps, each a forced layout, once per entry
                             // into the unpin preview.
+                            // A pin in Zotero's own pinned row (a Zotero with its
+                            // own windows) grows there: the row gives the growth
+                            // back (tab-groups.ts _wvPinRowHold) BEFORE each
+                            // measure, or the strip's tabs are read squeezed and
+                            // the preview settles narrower than they are (132 vs
+                            // 167 px, pinned-drag.spec.js, 2026-11-10).
+                            const hold = () => { try { (self as any)._wvPinRowHold((win as any)._wvDragGeom); } catch (eH) {} };
+                            hold();
                             const regs = Array.from(doc.querySelectorAll("#tab-bar-container .tabs > .tab:not(.wv-pinned-tab):not(:first-child)"))
                                 .filter((t: any) => t !== target && !t.hasAttribute("data-wv-pin-preview") && t.getBoundingClientRect().width > 1) as any[];
                             const avg = () => regs.reduce((s: number, t: any) => s + t.getBoundingClientRect().width, 0) / regs.length;
@@ -6122,6 +6222,7 @@ class _TabsMixin {
                                 let W = avg();
                                 for (let i = 0; i < 5; i++) {
                                     target.style.setProperty("--wv-unpin-w", Math.round(W) + "px");
+                                    hold();
                                     void target.offsetWidth;
                                     const now = avg();
                                     if (Math.abs(now - W) <= 1) break;
@@ -6244,7 +6345,7 @@ class _TabsMixin {
                             }
                             try {
                                 if (typeof Z_Tabs.move === "function") {
-                                    const clamped = Math.max(1, Math.min(targetIndex, Z_Tabs._tabs.length - 1));
+                                    const clamped = Math.max(wvFirstMovableIndex(Z_Tabs), Math.min(targetIndex, Z_Tabs._tabs.length - 1));
                                     Z_Tabs.move(tab.id, clamped);
                                 }
                             } catch (er) {}
@@ -6671,7 +6772,7 @@ class _TabsMixin {
                 const r = tabEls[i].getBoundingClientRect();
                 if (clientX < r.left + r.width / 2) { idx = i; break; }
             }
-            return Math.max(1, idx);
+            return Math.max(wvFirstMovableIndex(win.Zotero_Tabs), idx);
         } catch (e) { return null; }
     }
 
@@ -6727,13 +6828,14 @@ class _TabsMixin {
             // Find the highest index occupied by a currently-pinned tab
             // OTHER than the one we just added — that's where we want to
             // land just after.
-            let lastOtherPinnedIdx = 0;   // library
+            // Start just before the first index that takes part: an older
+            // Zotero's fixed library tab sits at 0; on a Zotero with its own
+            // windows a fresh pin with no other pin lands at the far left.
+            let lastOtherPinnedIdx = wvFirstDocTab(Z_Tabs._tabs) - 1;
             for (let i = wvFirstDocTab(Z_Tabs._tabs); i < Z_Tabs._tabs.length; i++) {
                 const t = Z_Tabs._tabs[i];
                 if (!t || t.id === tab.id) continue;
-                const k = this._tabPinKey(t);
-                if (!k) continue;
-                if ((win as any)._wvPinnedTabIDs instanceof Set ? (win as any)._wvPinnedTabIDs.has(t.id) : this._pinnedTabsHas(k.libraryID, k.itemKey)) lastOtherPinnedIdx = i;
+                if (this._wvTabIsPinned(win, t)) lastOtherPinnedIdx = i;
             }
             const targetSlot = lastOtherPinnedIdx + 1;
             const curIdx = Z_Tabs._tabs.indexOf(tab);
@@ -6894,7 +6996,21 @@ class _TabsMixin {
                 "  display: flex;",
                 "  align-items: stretch;",
                 "}",
+                // Zotero shows its pinned row only while it holds a pinned tab
+                // of its own and the bar scrolls (_tabBar.scss); on a Zotero with
+                // its own windows the row holds Weavero's pins instead
+                // (_wvSyncPinnedMirrors), left of the scroll-back arrow.
+                "#tab-bar-container .pinned-tabs:has(> .tabs > #wv-pinned-mirrors) {",
+                "  display: block !important;",
+                "}",
+                // A tab's height (Zotero's `.tab`, _tabBar.scss). In the strip
+                // a mirror stretched to the tabs beside it; in Zotero's pinned
+                // row it has none beside it and shrank to its 16px icon, drawn
+                // 6px above the tabs' middle (MJT 2026-11-10: "Wrong position
+                // of the pinned tabs").
                 "#tab-bar-container .wv-pinned-mirror {",
+                "  height: 28px;",
+                "  box-sizing: border-box;",
                 "  width: 36px;",
                 "  display: flex;",
                 "  align-items: center;",
@@ -6904,6 +7020,12 @@ class _TabsMixin {
                 // The tab bar doubles as the window-drag region — without
                 // no-drag the OS eats real clicks on the mirror.
                 "  -moz-window-dragging: no-drag;",
+                "}",
+                // Zotero sizes a tab's icon inside `.tab` only; an item-type
+                // icon brings its own size, a library icon does not (a pinned
+                // My Library's mirror drew a 0x0 icon, 2026-11-10).
+                "#tab-bar-container .wv-pinned-mirror .tab-icon {",
+                "  width: 16px; height: 16px; flex: none;",
                 "}",
                 "#tab-bar-container .wv-pinned-mirror:hover {",
                 "  background-color: var(--fill-quinary);",
@@ -6927,7 +7049,10 @@ class _TabsMixin {
         const out: any[] = [];
         try {
             const Z: any = win && win.Zotero_Tabs;
-            if (!Z || !tabID || wvIsLibraryTabID(tabID)) return out;
+            // Item tabs only (a library tab's pin is its own flag:
+            // _wvPinLibTargetsFor); a library context tab of a Zotero with its
+            // own windows still brings the selected item tabs along.
+            if (!Z || !tabID || wvIsFixedLibraryTab(tabID)) return out;
             let ids: any[] = [tabID];
             try {
                 const tg = this._wvTabMultiSelTargets && this._wvTabMultiSelTargets(win, tabID);
@@ -6946,6 +7071,30 @@ class _TabsMixin {
             }
         } catch (e) {}
         return out;
+    }
+
+    /** The library tabs a Pin/Unpin command acts on (a Zotero with its own
+     *  windows): among the multi-selection when the context tab is part of one,
+     *  else the context tab itself when it is a library tab. None on an older
+     *  Zotero, whose library tab is fixed. */
+    _wvPinLibTargetsFor(win: any, tabID: any): string[] {
+        try {
+            if (!win || !tabID || !wvNativeWindows()) return [];
+            let ids: any[] = [tabID];
+            try {
+                const tg = this._wvTabMultiSelTargets && this._wvTabMultiSelTargets(win, tabID);
+                if (tg && tg.length) ids = tg;
+            } catch (e) {}
+            return ids.filter((id: any) => id && wvIsLibraryTabID(id));
+        } catch (e) { return []; }
+    }
+
+    /** Library tab `tabID` of `win` carries the pin flag. */
+    _wvLibTabPinnedByID(win: any, tabID: any): boolean {
+        try {
+            const t = win && win.Zotero_Tabs && win.Zotero_Tabs._tabs.find((x: any) => x && x.id === tabID);
+            return wvLibraryTabPinned(t);
+        } catch (e) { return false; }
     }
 
     /** Register the Pin/Unpin entry via Zotero's MenuManager plugin API
@@ -6969,19 +7118,23 @@ class _TabsMixin {
                     menuType: "menuitem",
                     onShowing: (_ev, ctx) => {
                         try {
-                            // Library tab can't be pinned/unpinned.
-                            if (wvIsLibraryTabID(ctx.tabID)) { ctx.setVisible(false); return; }
-                            const item = ctx.items && ctx.items[0];
-                            if (!item || !item.libraryID || !item.key) { ctx.setVisible(false); return; }
-                            ctx.setVisible(true);
+                            // An older Zotero's fixed library tab can't be
+                            // pinned; on a Zotero with its own windows a library
+                            // tab pins like any tab (MJT 2026-11-10).
+                            if (wvIsFixedLibraryTab(ctx.tabID)) { ctx.setVisible(false); return; }
                             const winPin: any = ctx.menuElem.ownerDocument
                                 && ctx.menuElem.ownerDocument.defaultView;
+                            const libIDs = self._wvPinLibTargetsFor(winPin, ctx.tabID);
+                            const item = ctx.items && ctx.items[0];
+                            if (!libIDs.length && (!item || !item.libraryID || !item.key)) { ctx.setVisible(false); return; }
+                            ctx.setVisible(true);
                             const tgts = self._wvPinTargetsFor(winPin, ctx.tabID);
-                            const nPin = tgts.length || 1;
+                            const nPin = (tgts.length + libIDs.length) || 1;
                             // Mixed selection pins: only an all-pinned selection
                             // offers Unpin (Firefox's rule).
-                            const pinned = tgts.length
+                            const pinned = (tgts.length || libIDs.length)
                                 ? tgts.every((t: any) => self._pinnedTabsHas(t.libraryID, t.itemKey))
+                                    && libIDs.every((id: any) => self._wvLibTabPinnedByID(winPin, id))
                                 : self._pinnedTabsHas(item.libraryID, item.key);
                             ctx.menuElem.setAttribute("label",
                                 (pinned ? "Unpin" : "Pin")
@@ -7012,7 +7165,7 @@ class _TabsMixin {
                                 try {
                                     const win2: any = ctx.menuElem.ownerDocument && ctx.menuElem.ownerDocument.defaultView;
                                     const tabID2 = ctx.tabID;
-                                    if (win2 && tabID2 && !wvIsLibraryTabID(tabID2) && self._wvTabMultiSelTargets) {
+                                    if (win2 && tabID2 && !wvIsFixedLibraryTab(tabID2) && self._wvTabMultiSelTargets) {
                                         const tg = self._wvTabMultiSelTargets(win2, tabID2);
                                         // "Group Tabs" -- for ANY selection, single tab
                                         // included, so it is injected outside the
@@ -7036,7 +7189,8 @@ class _TabsMixin {
                             const winPin: any = ctx.menuElem && ctx.menuElem.ownerDocument
                                 && ctx.menuElem.ownerDocument.defaultView;
                             let tgts = self._wvPinTargetsFor(winPin, ctx.tabID);
-                            if (!tgts.length) {
+                            const libIDs = self._wvPinLibTargetsFor(winPin, ctx.tabID);
+                            if (!tgts.length && !libIDs.length) {
                                 const item0 = ctx.items && ctx.items[0];
                                 if (!item0) return;
                                 tgts = [{ libraryID: item0.libraryID, itemKey: item0.key, item: item0 }];
@@ -7045,7 +7199,11 @@ class _TabsMixin {
                             // every target is pinned, otherwise pin the ones that
                             // are not (already-pinned tabs are left alone).
                             const allPinned = tgts.every((t: any) =>
-                                self._pinnedTabsHas(t.libraryID, t.itemKey));
+                                self._pinnedTabsHas(t.libraryID, t.itemKey))
+                                && libIDs.every((id: any) => self._wvLibTabPinnedByID(winPin, id));
+                            for (const id of libIDs) {
+                                if (allPinned || !self._wvLibTabPinnedByID(winPin, id)) self._wvSetLibraryTabPinned(winPin, id, !allPinned);
+                            }
                             for (const t of tgts) {
                                 if (allPinned) {
                                     self._pinnedTabsRemove(t.libraryID, t.itemKey);
@@ -7249,7 +7407,7 @@ class _TabsMixin {
                             const popup = ctx.menuElem && ctx.menuElem.parentNode;
                             const win: any = ctx.menuElem && ctx.menuElem.ownerDocument && ctx.menuElem.ownerDocument.defaultView;
                             const tabID = ctx.tabID;
-                            if (!popup || !win || !tabID || wvIsLibraryTabID(tabID)) return;
+                            if (!popup || !win || !tabID || wvIsFixedLibraryTab(tabID)) return;
                             const targets = self._wvTabMultiSelTargets ? self._wvTabMultiSelTargets(win, tabID) : [tabID];
                             if (!targets || targets.length <= 1) return;   // single → leave native
                             self._wvMakeMoveTabMenuMulti(win, popup, targets);
@@ -7322,7 +7480,7 @@ class _TabsMixin {
             if (this._getEnableTabGroups && !this._getEnableTabGroups()) return;
             const doc = popup.ownerDocument;
             for (const el of Array.from(popup.querySelectorAll(".wv-grouptabs")) as any[]) el.remove();
-            const ids = (targets || []).filter((t: any) => t && !wvIsLibraryTabID(t));
+            const ids = (targets || []).filter((t: any) => t && !wvIsFixedLibraryTab(t));
             if (!ids.length) return;
             // A tab already in a group has nothing to gain here: this entry
             // only ever makes a NEW group, so offering it for grouped tabs
@@ -7477,10 +7635,11 @@ class _TabsMixin {
     }
 
     /** True if a tab can be duplicated — i.e. its content type registers a
-     *  `duplicate` hook (reader / note tabs do; the library tab does not). */
+     *  `duplicate` hook (reader / note tabs do; an older Zotero's fixed library
+     *  tab does not; a library tab of a Zotero with its own windows does). */
     _wvTabIsDuplicatable(ZT: any, id: any): boolean {
         try {
-            if (!ZT || !id || wvIsLibraryTabID(id)) return false;
+            if (!ZT || !id || wvIsFixedLibraryTab(id)) return false;
             const got = ZT._getTab(id);
             const tab = got && got.tab;
             if (!tab) return false;
@@ -7522,7 +7681,7 @@ class _TabsMixin {
             if (!ZT) return;
             const ordered = (ids || [])
                 .map((id: any) => { const g = ZT._getTab(id); return { id, idx: g ? g.tabIndex : -1 }; })
-                .filter((o: any) => o.idx > 0)
+                .filter((o: any) => o.idx >= 0)
                 .sort((a: any, b: any) => a.idx - b.idx)
                 .map((o: any) => o.id);
             for (const id of ordered) {
@@ -7530,7 +7689,7 @@ class _TabsMixin {
                     const got = ZT._getTab(id);
                     const tab = got && got.tab;
                     const tabIndex = got && got.tabIndex;
-                    if (!tab || wvIsLibraryTabID(tab.id)) continue;
+                    if (!tab || wvIsFixedLibraryTab(tab.id)) continue;
                     const { tabContentType } = ZT.parseTabType(tab.type);
                     if (typeof ZT._hasHook !== "function" || !ZT._hasHook(tabContentType, "duplicate")) continue;
                     const hook = ZT._getHook(tabContentType, "duplicate");
@@ -7548,16 +7707,20 @@ class _TabsMixin {
         try {
             const ZT: any = win && (win as any).Zotero_Tabs;
             if (!ZT || !ZT._tabs || typeof ZT.move !== "function") return;
+            // Skip not-found tabs and an older Zotero's fixed library tab; on a
+            // Zotero with its own windows a library tab moves with the rest,
+            // and the start is the far left.
+            const first = wvFirstMovableIndex(ZT);
             const ordered = (ids || [])
                 .map((id: any) => ({ id, idx: ZT._tabs.findIndex((t: any) => t && t.id === id) }))
-                .filter((o: any) => o.idx > 0)             // skip not-found + the library tab
+                .filter((o: any) => o.idx >= 0 && !wvIsFixedLibraryTab(o.id))
                 .sort((a: any, b: any) => a.idx - b.idx)
                 .map((o: any) => o.id);
             if (!ordered.length) return;
             if (toEnd) {
                 for (const id of ordered) { try { ZT.move(id, ZT._tabs.length); } catch (e) {} }
             } else {
-                for (let i = ordered.length - 1; i >= 0; i--) { try { ZT.move(ordered[i], 1); } catch (e) {} }
+                for (let i = ordered.length - 1; i >= 0; i--) { try { ZT.move(ordered[i], first); } catch (e) {} }
             }
         } catch (e) { Zotero.debug("[Weavero] _wvMoveSelectedTabsToEdge err: " + e); }
     }
@@ -8513,7 +8676,7 @@ class _TabsMixin {
                 forget();
                 if (entry.glyph == null && !entry.named) return;
                 const newMain: any = await this._wvSpawnMainWindowWait(s, { wait: "managed", timeoutMs: 12000 });
-                if (newMain && entry.glyph != null && !this._wvIsAnchorWindow(newMain)) {
+                if (newMain && entry.glyph != null && this._wvAnchorLook(newMain) !== "anchor") {
                     this._wvStampGlyphIdx(newMain, entry.glyph);   // skip on colour collision
                     await sleep(600);
                     try { (this as any)._wvCarryGlyphRefresh(newMain, false); } catch (e) {}
@@ -11845,7 +12008,10 @@ class _TabsMixin {
             // window has no "which is the main one?" ambiguity.
             let multi = false;
             try { multi = this._wvAnchorDecorVisible(); } catch (e) {}
-            const isAnchor = this._wvIsAnchorWindow(win);
+            // The ⚓ only where it is still drawn (_wvAnchorLook: an older
+            // Zotero); on a Zotero with its own windows the oldest takes a
+            // colour dot like the others.
+            const isAnchor = this._wvAnchorLook(win) === "anchor";
             d.documentElement.classList.toggle("wv-anchor-window", multi && isAnchor);
             // NON-anchor mains: the same spacer spot shows the window's badge
             // COLOUR as a small square — the in-window twin of the taskbar

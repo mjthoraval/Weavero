@@ -15489,7 +15489,7 @@ class _ReaderMixin {
             // a fresh one from the shared pool (_wvTitleGlyphIdx returns
             // the cached property first).
             try {
-                if (glyph != null && !(this as any)._wvIsAnchorWindow(newMain)) {
+                if (glyph != null && (this as any)._wvAnchorLook(newMain) !== "anchor") {
                     // Guarded stamp: the SOURCE window (still open, closes
                     // below) legitimately holds this colour — ignore it;
                     // any OTHER window holding it means a duplicate, so
@@ -15512,7 +15512,7 @@ class _ReaderMixin {
                 }
             } catch (e) {}
             try {
-                if (glyph != null && !(this as any)._wvIsAnchorWindow(newMain)) {
+                if (glyph != null && (this as any)._wvAnchorLook(newMain) !== "anchor") {
                     this._wvCarryGlyphRefresh(newMain, false);
                 }
             } catch (e) {}

@@ -368,7 +368,9 @@ describe("Weavero — native windows (zotero#6035)", () => {
             const w = await wvT.waitFor(() => (r._window !== src ? r._window : null), 15000);
             assert.isOk(w, "a window with the reader alone");
             assert.strictEqual(lib.wvFirstDocTab(w.Zotero_Tabs._tabs), 0, "its first tab is the document");
-            assert.strictEqual(lib.wvFirstDocTab(src.Zotero_Tabs._tabs), 1, "past the library tab");
+            // Every tab takes part, the library tab too (MJT 2026-11-10: a library
+            // tab moves, groups and pins like any tab, library-tab-native.spec.js).
+            assert.strictEqual(lib.wvFirstDocTab(src.Zotero_Tabs._tabs), 0, "the library tab is a tab like the others");
             const g = wv._tabGroupCreate("wv-native-window-group", wv._wvTabGroupNextColor());
             try {
                 wv._wvTabGroupAddTab(w, r.tabID, g.id);

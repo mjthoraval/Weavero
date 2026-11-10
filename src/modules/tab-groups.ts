@@ -27,7 +27,7 @@ import { wvInjectStyle, wvRemoveStyle } from "../lib/style";
 import { wvSleep, wvTimeout } from "../lib/timers";
 import { wvMenuItem } from "../lib/menu";
 import { wvStoreWrite, wvStoreRead } from "../lib/store";
-import { wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvWinType } from "../lib/windows";
+import { wvFirstDocTab, wvFirstMovableIndex, wvIsFixedLibraryTab, wvIsLibraryTabID, wvLibraryTabPinned, wvMainWins, wvNativeWindows, wvWinType } from "../lib/windows";
 import { wvAccelAny } from "../lib/keys";
 
 /** A surface the tab multi-select runs on: the main window's tab bar
@@ -56,7 +56,7 @@ const WV_TABSEL_MAIN: WvTabSelModel = {
         // The pinned mirrors too (a loose pin's visible face).
         ...Array.from(win.document.querySelectorAll("#wv-pinned-mirrors .wv-pinned-mirror[data-tab-id]"), (el: any) => [el, el.getAttribute("data-tab-id")] as [any, string]),
     ],
-    groupable: (id) => !wvIsLibraryTabID(id),   // the library tab can't be grouped
+    groupable: (id) => !wvIsFixedLibraryTab(id),   // only an older Zotero's fixed library tab is out
     // The press ring (dev.22 / dev.28 diagnostics for MJT's multi-drag delay).
     trace: (p, win, hit, e, accel) => {
         try { p._wvTGDbg("press " + (accel ? "accel" : e.shiftKey ? "shift" : "plain") + " on " + String(hit.el.className).split(" ")[0] + " id=" + hit.id + " sel=" + (win._wvSelTabIDs ? win._wvSelTabIDs.size : 0)); } catch (eL) {}
@@ -112,7 +112,7 @@ const WV_SURFACE_MAIN: WvTabSurface = {
     tabs: (win) => { const Z = win && win.Zotero_Tabs; return (Z && Z._tabs && typeof Z.move === "function") ? Z._tabs : null; },
     id: (t) => t && t.id,
     find: (win, id) => { const Z = win && win.Zotero_Tabs; return (Z && Z._tabs && Z._tabs.find((t: any) => t && t.id === id)) || null; },
-    groupable: (t) => !!t && !wvIsLibraryTabID(t.id),
+    groupable: (t) => !!t && !wvIsFixedLibraryTab(t.id),
     elements: (win) => Array.from(win.document.querySelectorAll("#tab-bar-container .tab[data-id]"), (el: any) => ({ id: el.getAttribute("data-id"), rect: () => el.getBoundingClientRect() })),
     // Never before the library tab, never before a pinned tab, never inside
     // another group's run.
@@ -131,7 +131,7 @@ const WV_SURFACE_MAIN: WvTabSurface = {
     // contiguous run so the tab lands where the user aimed WITHOUT splitting
     // the group; else directly after the last member.
     place: (p, win, tab, groupID, desiredIndex) => {
-        const Z_Tabs = win.Zotero_Tabs, tabID = tab.id, key = p._wvTabGroupDeckKey(tab);
+        const Z_Tabs = win.Zotero_Tabs, tabID = tab.id;
         let firstIdx = -1, lastIdx = -1, curIdx = -1, lastPinnedInGroup = -1;
         for (let i = wvFirstDocTab(Z_Tabs._tabs); i < Z_Tabs._tabs.length; i++) {
             const t = Z_Tabs._tabs[i];
@@ -139,8 +139,7 @@ const WV_SURFACE_MAIN: WvTabSurface = {
             if (p._wvTabGroupStamp(t) === groupID) {
                 if (firstIdx < 0) firstIdx = i;
                 lastIdx = i;
-                const k2 = p._tabPinKey(t);
-                if (k2 && p._pinnedTabsHas(k2.libraryID, k2.itemKey)) lastPinnedInGroup = i;
+                if (p._wvTabIsPinned(win, t)) lastPinnedInGroup = i;
             }
         }
         if (lastIdx < 0 || typeof Z_Tabs.move !== "function") return;
@@ -154,7 +153,7 @@ const WV_SURFACE_MAIN: WvTabSurface = {
         // Pinned-first invariant: an UNPINNED tab can't land before a pinned
         // member of the same group (Zotero forbids an unpinned tab left of a
         // pinned one).
-        const dragPinned = !!(key && p._pinnedTabsHas(key.libraryID, key.itemKey));
+        const dragPinned = p._wvTabIsPinned(win, tab);
         if (!dragPinned && lastPinnedInGroup >= 0) target = Math.max(target, lastPinnedInGroup + 1);
         // No removal shift here: Zotero_Tabs.move steps a rightward index back
         // itself (tabs.js: `if (newIndex > tabIndex) newIndex--`). The old
@@ -898,6 +897,14 @@ class _TabGroupsMixin {
                 // !important rule on a custom property, so Zotero's per-render
                 // inline rewrite of the dragged tab's transform cannot undo it.
                 "#tab-bar-container [data-wv-lifted] { transform: var(--wv-lift) !important; }",
+                // The fixed copy of a strip tab dragged over the pinned row
+                // (_wvDragFloat); the real tab keeps its slot, unseen.
+                "#tab-bar-container .wv-drag-float {",
+                "  position: fixed !important; z-index: 20 !important; margin: 0 !important;",
+                "  pointer-events: none !important; transition: none !important;",
+                "  max-width: none !important; min-width: 0 !important; flex: none !important;",
+                "}",
+                "#tab-bar-container [data-wv-floated] { visibility: hidden !important; }",
                 // DRAG PREVIEW: while dragging a tab over a group (release = join),
                 // the lifted tab carries that group's underline so it reads as a
                 // member-to-be. Keyed on a DATA ATTRIBUTE (not a class): React
@@ -2113,6 +2120,14 @@ class _TabGroupsMixin {
                 return;
             }
 
+            // A library tab of a Zotero with its own windows has no item: within
+            // its window, Move Tab > a group files it into that group by its
+            // stamp, as for any tab (MJT 2026-11-10: "Moving a library pinned
+            // tab to a group does not work" -- the item lookup below returned).
+            if (!srcIsReader && wvIsLibraryTabID(tabId) && !wvIsFixedLibraryTab(tabId)) {
+                if (groupId && this._wvTabGroupHomeWin(groupId) === srcWin) this._wvTabGroupAddTab(srcWin, tabId, groupId, target.index);
+                return;
+            }
             // Resolve the item + note-ness from the source tab.
             let itemID: any = null, isNote = false;
             if (srcIsReader) {
@@ -2625,6 +2640,20 @@ class _TabGroupsMixin {
 
     /** Remember which native tab a drag started from (independently of
      *  tabs.ts's `_wvTabDrag`, which its own dragend nulls before we run). */
+    /** The tab bar drag of tab `id` runs through Weavero's gap drag. Not an
+     *  older Zotero's fixed library tab; a library tab on a Zotero with its own
+     *  windows only while Zotero lets it move (a tab Zotero refuses to drag
+     *  never fires dragend, and an armed flag would then stick). */
+    _wvWeaveroDragsTab(win: any, id: any): boolean {
+        if (!id) return false;
+        if (!wvIsLibraryTabID(id)) return true;
+        if (wvIsFixedLibraryTab(id)) return false;
+        try {
+            const t = win && win.Zotero_Tabs && win.Zotero_Tabs._tabs.find((x: any) => x && x.id === id);
+            return !!(t && t.movable !== false);
+        } catch (e) { return false; }
+    }
+
     _wvTabGroupDnDDragStart(win: any, e: any) {
         try {
             // Ring timings (MJT 2026-10-16: "just after dragging multiple tabs
@@ -2641,11 +2670,15 @@ class _TabGroupsMixin {
                 const m = e.target && e.target.closest && e.target.closest(".wv-pinned-mirror[data-tab-id]");
                 if (m) { tabNode = m; did = m.getAttribute("data-tab-id"); }
             }
-            // Never arm drag-state for the library ("zotero-pane") tab: it is not
-            // groupable/reorderable, and a cancelled drag-gesture on it can end
-            // without firing dragend -- which left the flag stuck at "zotero-pane"
-            // and permanently froze the chip renderer's drag guard (2026-07-23).
-            win._wvTabGroupDragTabID = (did && !wvIsLibraryTabID(did)) ? did : null;
+            // Never arm drag-state for an older Zotero's fixed library tab: it is
+            // not groupable/reorderable, and a cancelled drag-gesture on it can
+            // end without firing dragend -- which left the flag stuck at
+            // "zotero-pane" and permanently froze the chip renderer's drag guard
+            // (2026-07-23). On a Zotero with its own windows a library tab drags
+            // like any tab (MJT 2026-11-10), through this same gap drag: Zotero's
+            // own drag reads DOM children as tab indices, and Weavero's mirrors
+            // and chips in the strip put it one off.
+            win._wvTabGroupDragTabID = this._wvWeaveroDragsTab(win, did) ? did : null;
             // Timestamp for the renderer's stale-flag self-heal (see _applyTabGroups).
             win._wvTabGroupDragStartAt = Date.now();
             // Firefox-style sliding gap. We never reorder during the drag (that
@@ -2656,7 +2689,7 @@ class _TabGroupsMixin {
             // stow below, so stowed followers are excluded from the geometry).
             win._wvDragGrab = null;
             win._wvDragWidth = null;
-            if (tabNode && win._wvTabGroupDragTabID && !wvIsLibraryTabID(win._wvTabGroupDragTabID)) {
+            if (tabNode && win._wvTabGroupDragTabID) {
                 try {
                     const r = tabNode.getBoundingClientRect();
                     win._wvDragGrab = e.clientX - r.left;
@@ -2671,7 +2704,7 @@ class _TabGroupsMixin {
             try {
                 const id = win._wvTabGroupDragTabID;
                 const sel = win._wvSelTabIDs;
-                if (id && !wvIsLibraryTabID(id) && sel && sel.size > 1 && sel.has(id)) {
+                if (id && sel && sel.size > 1 && sel.has(id)) {
                     const Z: any = win.Zotero_Tabs;
                     const others = (((Z && Z._tabs) || []).map((t: any) => t && t.id))
                         .filter((x: any) => x && x !== id && sel.has(x));
@@ -2691,7 +2724,7 @@ class _TabGroupsMixin {
             // cursor), then collapse the dragged slot and snapshot the bar so
             // dragover can slide a gap open. Done after the multi-drag stow so
             // followers (now zero-width) are excluded from the geometry.
-            if (tabNode && win._wvTabGroupDragTabID && !wvIsLibraryTabID(win._wvTabGroupDragTabID)) {
+            if (tabNode && win._wvTabGroupDragTabID) {
                 try { this._wvSuppressOSGhost(win, e); } catch (erI) {}
                 try { this._wvDragCacheGeom(win, win._wvTabGroupDragTabID, win._wvDragGrab, win._wvDragWidth); } catch (erC) {}
             }
@@ -2740,7 +2773,7 @@ class _TabGroupsMixin {
         const node = e.target && e.target.closest && e.target.closest("#tab-bar-container .tab[data-id]");
         if (!node) { this._wvTabGroupDwellClear(win); return; }
         const id = node.getAttribute("data-id");
-        if (!id || id === dragID || wvIsLibraryTabID(id)) { this._wvTabGroupDwellClear(win); return; }
+        if (!id || id === dragID || wvIsFixedLibraryTab(id)) { this._wvTabGroupDwellClear(win); return; }
         // Center band only — the edges stay reorder territory.
         const r = node.getBoundingClientRect();
         if (!r.width || e.clientX < r.left + r.width * 0.15 || e.clientX > r.left + r.width * 0.85) {
@@ -2748,10 +2781,11 @@ class _TabGroupsMixin {
         }
         const Z: any = win.Zotero_Tabs;
         const t = Z && Z._tabs.find((x: any) => x && x.id === id);
-        const k = t && (this as any)._tabPinKey(t);
+        // A tab with an item, or a library tab on a Zotero with its own windows.
+        const k = t && ((this as any)._tabPinKey(t) || (wvIsLibraryTabID(id) ? { library: true } : null));
         // Pinned tabs can't be grouped; grouped targets are handled by the
         // geometric JOIN rule already.
-        if (!k || (this as any)._pinnedTabsHas(k.libraryID, k.itemKey)
+        if (!k || (this as any)._wvTabIsPinned(win, t)
                 || this._wvTabGroupStamp(t)) {   // per-tab: a duplicate whose twin is grouped is itself groupable
             this._wvTabGroupDwellClear(win); return;
         }
@@ -2786,9 +2820,10 @@ class _TabGroupsMixin {
             const Z: any = win.Zotero_Tabs;
             const tt = Z && Z._tabs.find((x: any) => x && x.id === targetID);
             const dt = Z && Z._tabs.find((x: any) => x && x.id === draggedID);
-            const tk = tt && (this as any)._tabPinKey(tt);
-            const dk = dt && (this as any)._tabPinKey(dt);
-            if (!tk || !dk) return;
+            // Both tabs need an item -- or be a library tab on a Zotero with
+            // its own windows, grouped by its stamp alone (it has no item key).
+            const groupableTab = (t: any) => !!(t && ((this as any)._tabPinKey(t) || (wvIsLibraryTabID(t.id) && !wvIsFixedLibraryTab(t.id))));
+            if (!groupableTab(tt) || !groupableTab(dt)) return;
             const groups = this._tabGroupsGet();
             const color = WV_GROUP_COLORS[groups.length % WV_GROUP_COLORS.length].id;
             const g = this._tabGroupCreate("", color);
@@ -3096,7 +3131,7 @@ class _TabGroupsMixin {
             this._wvTGDbg("dragend tabID=" + tabID + " clientX=" + (e && e.clientX)
                 + " lastX=" + win._wvTabDragLastX + " multi=" + (multi ? multi.length : 0)
                 + " createTarget=" + createTarget);
-            if (!tabID || wvIsLibraryTabID(tabID)) {
+            if (!tabID || wvIsFixedLibraryTab(tabID)) {
                 try { this._wvClearGap(win); } catch (eG) {}
                 if (multi) this._wvMultiDragUnstow(win);
                 return;
@@ -3155,6 +3190,11 @@ class _TabGroupsMixin {
             const doc = win.document;
             const tabsBox = doc.querySelector("#tab-bar-container .tabs-wrapper .tabs")
                 || doc.querySelector("#tab-bar-container .tabs");
+            // A re-cache mid-drag starts the float over (_wvDragFloat).
+            try {
+                const old = win._wvDragGeom;
+                if (old && old.float) { old.float.remove(); if (old.draggedEl) old.draggedEl.removeAttribute("data-wv-floated"); }
+            } catch (e) {}
             if (!Z || !Z._tabs || !tabsBox) { win._wvDragGeom = null; return; }
             // A loose pin's real tab is display:none behind its mirror (tabs.ts
             // _applyPinnedTabs): the MIRROR is then the element that lifts and
@@ -3162,12 +3202,23 @@ class _TabGroupsMixin {
             // them a pin dropped left of another pin computed the slot right
             // after itself, a no-op for Zotero_Tabs.move, so pins could never
             // be reordered (MJT, 2026-10-15).
-            const mirrorOf = (id: any) => tabsBox.querySelector('#wv-pinned-mirrors .wv-pinned-mirror[data-tab-id="' + id + '"]');
+            // The mirrors sit in the strip, or in Zotero's pinned row left of
+            // the scroll-back arrow (a Zotero with its own windows, Firefox's
+            // layout; tabs.ts _wvSyncPinnedMirrors). Out of the strip they are
+            // a ROW OF THEIR OWN: a slot opened or closed in one row never
+            // shifts the other (ZONES below).
+            const mirrorsC = doc.querySelector("#tab-bar-container #wv-pinned-mirrors");
+            const mirrorsOutside = !!(mirrorsC && !tabsBox.contains(mirrorsC));
+            const zoneOf = (el: any) => (mirrorsOutside && el && el.classList && el.classList.contains("wv-pinned-mirror")) ? "pins" : "strip";
+            const mirrorOf = (id: any) => mirrorsC && mirrorsC.querySelector('.wv-pinned-mirror[data-tab-id="' + id + '"]');
             let draggedEl = tabsBox.querySelector('.tab[data-id="' + tabID + '"]');
             if (!draggedEl || draggedEl.getBoundingClientRect().width < 1) draggedEl = mirrorOf(tabID) || draggedEl;
             if (!draggedEl) { win._wvDragGeom = null; return; }
             const draggedMirror = draggedEl.classList.contains("wv-pinned-mirror");
             const dr = draggedEl.getBoundingClientRect();
+            // A pin's own width before any preview grew it (_wvPinRowHold); kept
+            // across a re-cache mid-drag, cleared by _wvClearGap.
+            if (draggedMirror && draggedEl._wvW0 == null) draggedEl._wvW0 = dr.width;
             const gapWidth = (typeof width === "number" && width) || dr.width;
             // Lift the dragged tab: floats above, follows the cursor instantly
             // (no transition), and doesn't intercept dragover hit-testing.
@@ -3192,27 +3243,37 @@ class _TabGroupsMixin {
             const groupById: any = {};
             for (const g of groups) groupById[g.id] = g;
             // First open-member Z._tabs index per group (where its chip sits).
+            // The dragged tab counts: slot = its own index is "stay put", which
+            // is "before the rest of the group" too. Skipped, the group whose
+            // ONLY tab is dragged had no index, and a drop before its chip fell
+            // back to the end of the bar (MJT 2026-11-10: "Dragging out the
+            // last tab of a tab group makes it jump to the end instead of going
+            // to the drop position"; ring: "gapDrop: -> idx 24 (from 6)").
             const firstZIdxOf: any = {};
             for (let i = wvFirstDocTab(Z._tabs); i < Z._tabs.length; i++) {
-                const t = Z._tabs[i]; if (!t || t.id === tabID) continue;
+                const t = Z._tabs[i]; if (!t) continue;
                 const g = groupOf(t); if (g && firstZIdxOf[g.id] === undefined) firstZIdxOf[g.id] = i;
             }
-            // First non-pinned slot (a normal tab can't land before the pinned region).
-            let firstNonPinnedZIdx = 1;
+            // First non-pinned slot: the pinned region runs from where the tabs
+            // that take part start (past an older Zotero's fixed library tab; the
+            // far left on a Zotero with its own windows, MJT 2026-11-10) through
+            // the leading pinned tabs, a pinned library tab included.
+            let firstNonPinnedZIdx = wvFirstDocTab(Z._tabs);
             while (firstNonPinnedZIdx < Z._tabs.length) {
                 const t = Z._tabs[firstNonPinnedZIdx];
                 const el = t && tabsBox.querySelector('.tab[data-id="' + t.id + '"]');
-                if (el && el.classList.contains("wv-pinned-tab")) firstNonPinnedZIdx++; else break;
+                if ((el && el.classList.contains("wv-pinned-tab")) || wvLibraryTabPinned(t)) firstNonPinnedZIdx++; else break;
             }
             // Sliding elements (transforms) + Firefox-style drop elements (cursor
             // hit-test), in DOM order, excluding the dragged tab + hidden members.
             // Chips are first-class drop targets — a group "label" (Firefox's
             // dragAndDropElements). "After a chip" = first position INSIDE its group.
-            const elems: Array<{ el: any; left: number }> = [];
+            const elems: Array<{ el: any; left: number; zone: string }> = [];
             const dropEls: any[] = [];
             // Children in strip order; the mirrors container contributes its
             // mirrors (one per loose pin, in tab order) in its place.
             const strip: any[] = [];
+            if (mirrorsOutside) strip.push(...Array.prototype.slice.call(mirrorsC.querySelectorAll(".wv-pinned-mirror[data-tab-id]")));
             for (const el of Array.prototype.slice.call(tabsBox.children)) {
                 if (el.id === "wv-pinned-mirrors") strip.push(...Array.prototype.slice.call(el.querySelectorAll(".wv-pinned-mirror[data-tab-id]")));
                 else strip.push(el);
@@ -3227,23 +3288,33 @@ class _TabGroupsMixin {
                 if (isTabEl && id === tabID) continue;          // the dragged tab's other face
                 const r = el.getBoundingClientRect();
                 if (isTabEl && r.width < 1) continue;       // hidden collapsed member / mirrored pin
-                elems.push({ el, left: r.left });
+                const zone = zoneOf(el);
+                elems.push({ el, left: r.left, zone });
                 if (isTabEl) {
                     const zi = Z._tabs.findIndex((t: any) => t && t.id === id);
                     const t = zi >= 0 ? Z._tabs[zi] : null;
                     const g = t && groupOf(t);
-                    dropEls.push({ el, left: r.left, right: r.right, mid: (r.left + r.right) / 2, kind: "tab", zIdx: zi, groupId: g ? g.id : null, pinned: isMirrorEl || el.classList.contains("wv-pinned-tab") });
+                    dropEls.push({ el, left: r.left, right: r.right, mid: (r.left + r.right) / 2, kind: "tab", zIdx: zi, groupId: g ? g.id : null, pinned: isMirrorEl || el.classList.contains("wv-pinned-tab"), zone });
                 } else {
                     const gid = el.getAttribute("data-wv-group");
                     const g = groupById[gid];
-                    dropEls.push({ el, left: r.left, right: r.right, mid: (r.left + r.right) / 2, kind: "chip", groupId: gid, collapsed: !!(g && g.collapsed), firstZIdx: firstZIdxOf[gid] });
+                    dropEls.push({ el, left: r.left, right: r.right, mid: (r.left + r.right) / 2, kind: "chip", groupId: gid, collapsed: !!(g && g.collapsed), firstZIdx: firstZIdxOf[gid], zone });
                 }
             }
             for (const e of elems) e.el.style.transition = "transform 0.12s ease";
+            const draggedZone = zoneOf(draggedEl);
             win._wvDragGeom = {
                 gapWidth, grab: (typeof grab === "number" ? grab : gapWidth / 2), width: gapWidth,
                 originLeft: dr.left, originRight: dr.right, elems, dropEls, draggedEl,
-                endSlot: Z._tabs.length, draggedPinned: draggedMirror || draggedEl.classList.contains("wv-pinned-tab"), firstNonPinnedZIdx,
+                endSlot: Z._tabs.length, firstNonPinnedZIdx,
+                draggedPinned: draggedMirror || draggedEl.classList.contains("wv-pinned-tab") || wvLibraryTabPinned(Z._tabs.find((t: any) => t && t.id === tabID)),
+                draggedZone,
+                rows: mirrorsOutside,
+                mirrorsC: mirrorsOutside ? mirrorsC : null,
+                // A strip tab dragged over the pinned row would vanish under the
+                // strip's clip (overflow: hidden); _wvDragFloat carries it there.
+                floatHost: (mirrorsOutside && draggedZone === "strip") ? mirrorsC.parentElement : null,
+                stripLeft: tabsBox.getBoundingClientRect().left,
             };
             win._wvGapResult = null;
         } catch (e) { win._wvDragGeom = null; }
@@ -3260,16 +3331,27 @@ class _TabGroupsMixin {
     _wvComputeDrop(win: any, clientX: number) {
         const g = win._wvDragGeom;
         if (!g) return null;
-        const eff = (d: any) => { const sh = (d.left >= g.originRight - 1) ? g.gapWidth : 0; return { left: d.left - sh, right: d.right - sh, mid: d.mid - sh }; };
+        // The origin slot closes in the dragged element's own row only.
+        const eff = (d: any) => { const sh = (d.zone === g.draggedZone && d.left >= g.originRight - 1) ? g.gapWidth : 0; return { left: d.left - sh, right: d.right - sh, mid: d.mid - sh }; };
+        // With the pins in a row of their own, the ROW under the cursor decides
+        // the pin verdict (Firefox: a drop on #pinned-tabs-container pins, on
+        // the scrolling box unpins): anywhere left of the scrolling strip pins.
+        // The slot rule alone could never pin a tab at the LAST pinned place --
+        // "after the last pin" and "before the first tab" are one slot, which
+        // kept the dragged tab's state (MJT 2026-11-10: "It does not seem
+        // possible to pin a tab at the last pinned position").
+        const rows = !!g.rows;
+        const inPins = rows && clientX < g.stripLeft;
         // A collapsed group's chip stands for the whole group: cursor over its
         // left half drops before it (outside), over its right half joins it.
         for (const d of g.dropEls) {
+            if (inPins) break;   // a chip scrolled out of the strip lies under the pins
             if (d.kind !== "chip" || !d.collapsed) continue;
             const e = eff(d);
             if (clientX >= e.left && clientX <= e.right) {
                 const slot = (d.firstZIdx != null ? d.firstZIdx : g.endSlot);
-                if (clientX < e.mid) return { slot, joinGroupId: null, collapsedJoin: false, insertionX: d.left, firstNonPinnedZIdx: g.firstNonPinnedZIdx, draggedPinned: !!g.draggedPinned };
-                return { slot, joinGroupId: d.groupId, collapsedJoin: true, insertionX: d.left, firstNonPinnedZIdx: g.firstNonPinnedZIdx, draggedPinned: !!g.draggedPinned };
+                if (clientX < e.mid) return { slot, joinGroupId: null, collapsedJoin: false, insertionX: d.left, insertionZone: d.zone, firstNonPinnedZIdx: g.firstNonPinnedZIdx, draggedPinned: !!g.draggedPinned, rows, inPins };
+                return { slot, joinGroupId: d.groupId, collapsedJoin: true, insertionX: d.left, insertionZone: d.zone, firstNonPinnedZIdx: g.firstNonPinnedZIdx, draggedPinned: !!g.draggedPinned, rows, inPins };
             }
         }
         // Insertion index = number of element-middles left of the cursor.
@@ -3292,8 +3374,21 @@ class _TabGroupsMixin {
         if (nextEl && nextEl.kind === "tab" && nextEl.groupId) {
             if (prevEl && prevEl.groupId === nextEl.groupId) joinGroupId = nextEl.groupId;
         }
-        const insertionX = nextEl ? nextEl.left : (g.dropEls.length ? g.dropEls[g.dropEls.length - 1].right : -1);
-        return { slot, joinGroupId, collapsedJoin: false, insertionX, firstNonPinnedZIdx: g.firstNonPinnedZIdx, draggedPinned: !!g.draggedPinned };
+        let insertionX = nextEl ? nextEl.left : (g.dropEls.length ? g.dropEls[g.dropEls.length - 1].right : -1);
+        // The landing gap opens in the row the insertion point is in.
+        let insertionZone = nextEl ? nextEl.zone : (prevEl ? prevEl.zone : g.draggedZone);
+        if (inPins) {
+            // Past the last pin, still over the pinned row (or the arrow): the
+            // end of the pins. Strip tabs scrolled out of view lie under the
+            // pinned row too; never land among them.
+            if (!nextEl || nextEl.zone !== "pins") {
+                if (slot > g.firstNonPinnedZIdx) slot = g.firstNonPinnedZIdx;
+                insertionX = g.stripLeft;    // after every pin: none slides
+            }
+            insertionZone = "pins";
+            joinGroupId = null;
+        }
+        return { slot, joinGroupId, collapsedJoin: false, insertionX, insertionZone, firstNonPinnedZIdx: g.firstNonPinnedZIdx, draggedPinned: !!g.draggedPinned, rows, inPins };
     }
 
     /** dragover: lift the dragged tab to the cursor and slide the others to open
@@ -3347,6 +3442,7 @@ class _TabGroupsMixin {
             const doc = win.document;
             // The preview (tabs.ts dragover, same event, earlier listener)
             // may just have resized the dragged element: re-measure first.
+            this._wvPinRowHold(geom);
             try {
                 if (geom.draggedEl && Math.abs(geom.draggedEl.getBoundingClientRect().width - geom.gapWidth) > 1) this._wvDragRecache(win);
             } catch (er) {}
@@ -3368,6 +3464,7 @@ class _TabGroupsMixin {
                 const dEl = geom.draggedEl;
                 if (dEl.style.getPropertyValue("--wv-lift") !== tf) dEl.style.setProperty("--wv-lift", tf);
                 if (!dEl.hasAttribute("data-wv-lifted")) dEl.setAttribute("data-wv-lifted", "1");
+                if (geom.floatHost) this._wvDragFloat(win, geom, tf);
                 if (!win._wvTGFirstLift) {
                     win._wvTGFirstLift = Date.now();
                     this._wvTGDbg("first lift +" + (win._wvTGFirstLift - (win._wvTabGroupDragStartAt || 0)) + "ms tx=" + tx);
@@ -3400,16 +3497,79 @@ class _TabGroupsMixin {
             // unless we're merging into a COLLAPSED group (no in-line gap then).
             const openLanding = !res.collapsedJoin && res.insertionX >= 0;
             for (const e of geom.elems) {
-                // The Library tab is pinned at index 0 — never slide it (the drop
-                // slot is already clamped past it in _wvComputeDrop, but the gap
-                // preview would otherwise shove it right when the cursor goes far left).
-                try { if (e.el && e.el.getAttribute && e.el.getAttribute("data-id") === "zotero-pane") continue; } catch (er) {}
+                // An older Zotero's library tab is fixed at index 0 — never slide
+                // it (the drop slot is clamped past it on commit, but the gap
+                // preview would otherwise shove it right when the cursor goes far
+                // left). A Zotero with its own windows slides it like any tab.
+                try { if (!wvNativeWindows() && e.el && e.el.getAttribute && e.el.getAttribute("data-id") === "zotero-pane") continue; } catch (er) {}
+                // Rows: the pinned row and the strip each close or open only
+                // their own slot (one row, as before, when the pins are in the strip).
                 let dx = 0;
-                if (e.left >= geom.originRight - 1) dx -= geom.gapWidth;                 // fill the origin slot
-                if (openLanding && e.left >= res.insertionX - 1) dx += geom.gapWidth;    // open the landing gap
+                if (e.zone === geom.draggedZone && e.left >= geom.originRight - 1) dx -= geom.gapWidth;            // fill the origin slot
+                if (openLanding && e.zone === res.insertionZone && e.left >= res.insertionX - 1) dx += geom.gapWidth;  // open the landing gap
                 const tf = dx ? ("translateX(" + dx + "px)") : "";
                 if (e.el.style.transform !== tf) e.el.style.transform = tf;
             }
+        } catch (e) {}
+    }
+
+    /** A pin dragged out of Zotero's pinned row grows into a tab (the unpin
+     *  preview), in flow: the row widened and pushed the whole strip right
+     *  under the cursor (a pin aimed just after a group's chip landed on the
+     *  chip, pinned-drag.spec.js, 2026-11-10). The pins' container gives the
+     *  growth back as a negative end margin, so the row keeps its width. */
+    _wvPinRowHold(geom: any) {
+        try {
+            const mc = geom && geom.rows && geom.draggedZone === "pins" ? geom.mirrorsC : null;
+            const d = geom && geom.draggedEl;
+            if (!mc || !d || d._wvW0 == null) return;
+            const delta = d.getBoundingClientRect().width - d._wvW0;
+            const want = delta > 0.5 ? (-Math.round(delta)) + "px" : "";
+            if (mc.style.marginInlineEnd !== want) mc.style.marginInlineEnd = want;
+        } catch (e) {}
+    }
+
+    /** A strip tab dragged toward the pins when they sit in Zotero's pinned row
+     *  (a Zotero with its own windows): the strip clips its content
+     *  (overflow: hidden), so the lifted tab vanished as it left the strip.
+     *  Once it reaches the strip's left edge, a fixed-position COPY carries the
+     *  picture to the end of the drag (the pin preview, the stack and the
+     *  group underline copied on every move) while the real tab, hidden, keeps
+     *  its slot for the geometry. Firefox lifts its dragged tabs out of their
+     *  containers for the same reason (drag-and-drop.mjs _updateTabStylesOnDrag). */
+    _wvDragFloat(win: any, geom: any, tf: string) {
+        try {
+            const d = geom.draggedEl;
+            if (!d || !geom.floatHost) return;
+            const r = d.getBoundingClientRect();
+            let fl = geom.float;
+            if (!fl) {
+                if (r.left >= geom.stripLeft - 1) return;
+                fl = d.cloneNode(true);
+                fl.removeAttribute("data-id");
+                fl.removeAttribute("draggable");
+                fl.removeAttribute("id");
+                geom.floatHost.appendChild(fl);
+                geom.float = fl;
+                d.setAttribute("data-wv-floated", "1");
+            }
+            const cls = d.className + " wv-drag-float";
+            if (fl.className !== cls) fl.className = cls;
+            for (const a of ["data-wv-pin-preview", "data-wv-stack", "data-wv-drag-join"]) {
+                const v = d.getAttribute(a);
+                if (v == null) { if (fl.hasAttribute(a)) fl.removeAttribute(a); }
+                else if (fl.getAttribute(a) !== v) fl.setAttribute(a, v);
+            }
+            for (const p of ["--wv-group-color", "--wv-unpin-w"]) {
+                const v = d.style.getPropertyValue(p);
+                if (v) fl.style.setProperty(p, v); else fl.style.removeProperty(p);
+            }
+            fl.setAttribute("data-wv-lifted", "1");
+            fl.style.setProperty("--wv-lift", tf);
+            fl.style.left = Math.round(geom.originLeft) + "px";
+            fl.style.top = Math.round(r.top) + "px";
+            fl.style.width = Math.round(r.width) + "px";
+            fl.style.height = Math.round(r.height) + "px";
         } catch (e) {}
     }
 
@@ -3419,6 +3579,10 @@ class _TabGroupsMixin {
         try {
             const geom = win._wvDragGeom;
             if (geom) {
+                try { if (geom.float) geom.float.remove(); } catch (er) {}
+                try { if (geom.draggedEl) geom.draggedEl.removeAttribute("data-wv-floated"); } catch (er) {}
+                try { if (geom.mirrorsC) geom.mirrorsC.style.marginInlineEnd = ""; } catch (er) {}
+                try { if (geom.draggedEl) delete geom.draggedEl._wvW0; } catch (er) {}
                 for (const e of geom.elems) { try { e.el.style.transform = ""; e.el.style.transition = ""; } catch (er) {} }
                 if (geom.draggedEl) {
                     try {
@@ -3459,7 +3623,7 @@ class _TabGroupsMixin {
             if (!Z || !Z._tabs || typeof Z.move !== "function" || !res) return;
             const di = Z._tabs.findIndex((t: any) => t && t.id === tabID);
             if (di < 0) return;
-            const target = Math.max(1, Math.min(res.slot, Z._tabs.length));
+            const target = Math.max(wvFirstMovableIndex(Z), Math.min(res.slot, Z._tabs.length));
             if (target !== di) Z.move(tabID, target);
             // Membership straight from the previewed result (the gap already
             // showed it): join res.joinGroupId, else leave any current group.
@@ -3486,8 +3650,20 @@ class _TabGroupsMixin {
                 try {
                     const regionEnd = typeof res.firstNonPinnedZIdx === "number" ? res.firstNonPinnedZIdx : 1;
                     const k = (this as any)._tabPinKey(t);
-                    if (k && !res.draggedPinned && res.slot < regionEnd) { (this as any)._pinnedTabsAdd(k.libraryID, k.itemKey); pin = "pin"; }
-                    else if (k && res.draggedPinned && !res.joinGroupId && res.slot > regionEnd) { (this as any)._pinnedTabsRemove(k.libraryID, k.itemKey); pin = "unpin"; }
+                    // A library tab on a Zotero with its own windows pins and
+                    // unpins by the same drop rule (its flag rides in its data).
+                    const libTab = !k && wvIsLibraryTabID(t.id) && !wvIsFixedLibraryTab(t.id);
+                    // Pins in a row of their own: the row decides (_wvComputeDrop).
+                    const pinHere = res.rows ? !!res.inPins : res.slot < regionEnd;
+                    const unpinHere = res.rows ? !res.inPins : res.slot > regionEnd;
+                    if (!res.draggedPinned && pinHere) {
+                        if (k) { (this as any)._pinnedTabsAdd(k.libraryID, k.itemKey); pin = "pin"; }
+                        else if (libTab) { (this as any)._wvSetLibraryTabPinnedFlag(t, true); pin = "pin"; }
+                    }
+                    else if (res.draggedPinned && !res.joinGroupId && unpinHere) {
+                        if (k) { (this as any)._pinnedTabsRemove(k.libraryID, k.itemKey); pin = "unpin"; }
+                        else if (libTab) { (this as any)._wvSetLibraryTabPinnedFlag(t, false); pin = "unpin"; }
+                    }
                 } catch (eP) { this._wvTGDbg("gapDrop pin ERR=" + eP); }
                 // Mirrors (loose pins) are Weavero's own DOM: reorder them NOW,
                 // from the moved tab array and the UPDATED pin set, instead of
@@ -3556,12 +3732,19 @@ class _TabGroupsMixin {
             // take the dragged tab's pin state (pinned → pin, unpinned → unpin).
             try {
                 const dk = (this as any)._tabPinKey(dragged);
-                const dragPinned = !!(dk && (this as any)._pinnedTabsHas(dk.libraryID, dk.itemKey));
+                const dragPinned = !!(dk && (this as any)._pinnedTabsHas(dk.libraryID, dk.itemKey)) || wvLibraryTabPinned(dragged);
                 let changed = false;
                 const seen: string[] = [];
                 for (const oid of others) {
                     const t = Z._tabs.find((x: any) => x && x.id === oid);
                     const k = t && (this as any)._tabPinKey(t);
+                    // A library tab (a Zotero with its own windows) follows by its flag.
+                    if (!k && t && wvIsLibraryTabID(t.id) && !wvIsFixedLibraryTab(t.id)) {
+                        const isLP = wvLibraryTabPinned(t);
+                        seen.push(oid + ":lib-" + (isLP ? "pinned" : "loose"));
+                        if (dragPinned !== isLP) { (this as any)._wvSetLibraryTabPinnedFlag(t, dragPinned); changed = true; }
+                        continue;
+                    }
                     if (!k) { seen.push(oid + ":nokey"); continue; }
                     const isP = (this as any)._pinnedTabsHas(k.libraryID, k.itemKey);
                     seen.push(oid + ":" + (isP ? "pinned" : "loose"));
@@ -3616,7 +3799,7 @@ class _TabGroupsMixin {
             // by its own stamp, NOT its item key — so a DUPLICATE tab whose twin is
             // in a group is itself ungrouped until dropped in, and can be dropped in.
             const groupOfTab = (t: any) => {
-                if (!t || wvIsLibraryTabID(t.id)) return null;
+                if (!t || wvIsFixedLibraryTab(t.id)) return null;
                 const gid = this._wvTabGroupStamp(t);
                 return gid ? groups2.find((x: any) => x.id === gid && !(x as any).saved) : null;
             };
@@ -3746,14 +3929,19 @@ class _TabGroupsMixin {
     _wvTabGroupAddTabOn(win: any, tabID: any, groupID: any, desiredIndex: number | undefined, s: WvTabSurface) {
         try {
             const tab = s.find(win, tabID);
-            const key = tab && this._wvTabGroupDeckKey(tab);
-            if (!key) return;
+            if (!tab || !s.groupable(tab)) return;
+            // An item key for the shadow; a library tab of a Zotero with its own
+            // windows has none and joins by its stamp alone (MJT 2026-11-10).
+            const key = this._wvTabGroupDeckKey(tab);
+            if (!key && !(wvIsLibraryTabID(s.id(tab)) && !wvIsFixedLibraryTab(s.id(tab)))) return;
             // Firefox model for a SAVED (parked) group (tabbrowser.js
             // `addTabsToSavedGroup`): file the tab into the group's stored members
             // and CLOSE it -- the group stays parked. The tab returns only when the
-            // whole group is reopened; we never reopen the group on add.
+            // whole group is reopened; we never reopen the group on add. A tab
+            // with no item cannot be filed (the group reopens by item): it stays.
             const savedGrp = this._tabGroupsGet().find((x: any) => x.id === groupID);
             if (savedGrp && (savedGrp as any).saved) {
+                if (!key) return;
                 this._tabGroupAddKey(groupID, key);
                 try { s.close(this, win, tabID); } catch (e) {}
                 try { this._wvTabGroupApplyEverywhere(); } catch (e) {}
@@ -3766,7 +3954,7 @@ class _TabGroupsMixin {
             // reliance left the tab ungrouped whenever a duplicate copy of the
             // item existed or the home guard misfired.
             this._wvTabGroupSetStamp(tab, groupID);
-            this._tabGroupAddKey(groupID, key);
+            if (key) this._tabGroupAddKey(groupID, key);
             try { s.place(this, win, tab, groupID, desiredIndex); } catch (e) {}
             this._wvTabGroupApplyEverywhere();
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupAddTabOn(" + s.kind + ") err: " + e); }
@@ -3784,13 +3972,15 @@ class _TabGroupsMixin {
      *  after the library tab AND after every pinned tab — groups can't sit
      *  before pinned tabs (Firefox rule; pins cluster at the left edge). */
     _wvTabGroupMinSlot(win: any, nonMembers: string[]) {
-        let min = 1;
+        // Past an older Zotero's fixed library tab (nonMembers[0]); from the far
+        // left on a Zotero with its own windows, where a library tab is a tab.
+        const start = wvNativeWindows() ? 0 : 1;
+        let min = start;
         try {
             const Z_Tabs: any = win.Zotero_Tabs;
-            for (let j = 1; j < nonMembers.length; j++) {
+            for (let j = start; j < nonMembers.length; j++) {
                 const t = Z_Tabs._tabs.find((x: any) => x && x.id === nonMembers[j]);
-                const k = t && (this as any)._tabPinKey(t);
-                const pinned = !!(k && (this as any)._pinnedTabsHas(k.libraryID, k.itemKey));
+                const pinned = !!(t && (this as any)._wvTabIsPinned(win, t));
                 // Only LOOSE pinned tabs form the leftmost boundary a moving group
                 // can't cross. A GROUPED pinned tab (pinned-in-group is allowed)
                 // travels with its own group, so it must NOT clamp another group's
@@ -3843,27 +4033,28 @@ class _TabGroupsMixin {
             // legally sit inside the pinned cluster ("another tab between 2
             // pinned tabs", 2026-07-04). Fallback to key-matching only before
             // the first _applyPinnedTabs publish.
-            const desPins = (win as any)._wvPinnedTabIDs;
-            const isPinned = (t: any) => {
-                try {
-                    if (desPins instanceof Set) return desPins.has(t.id);
-                    const k = (this as any)._tabPinKey(t);
-                    return !!(k && this._pinnedTabsHas(k.libraryID, k.itemKey));
-                } catch (e) { return false; }
-            };
+            const isPinned = (t: any) => (this as any)._wvTabIsPinned(win, t);
             const isLoosePinned = (t: any) => isPinned(t) && !groupAt(t);
             // CANONICAL tab order (this function is the single source of truth,
             // called on the common _applyTabGroups path so no operation can leave
-            // a violating order):
-            //   0. library (index 0, untouched)
+            // a violating order), from `start`:
+            //   0. an older Zotero's library tab (index 0, untouched, before start)
             //   1. LOOSE pinned tabs (pinned + ungrouped) — the leftmost pinned
-            //      cluster (a pin done anywhere else drifts here)
+            //      cluster (a pin done anywhere else drifts here), in their own
+            //      order -- a pinned library tab of a Zotero with its own windows
+            //      among them like any pin. (1.0.3-dev.1 to dev.7 put pinned
+            //      library tabs first, which undid every reorder of the pins:
+            //      MJT 2026-11-10, "I cannot reorder pinned tabs". Pin Tab on a
+            //      library tab still puts it first, tabs.ts _wvSetLibraryTabPinned.)
             //   2. the rest in place: each group as ONE contiguous run with its
-            //      PINNED members first; loose unpinned tabs where they are
+            //      PINNED members first; loose unpinned tabs where they are --
+            //      an unpinned library tab of a Zotero with its own windows too
+            const start = wvFirstDocTab(Z_Tabs._tabs);
             const emitted = new Set<string>();
             const desired: string[] = [];
-            for (let i = wvFirstDocTab(Z_Tabs._tabs); i < Z_Tabs._tabs.length; i++) {
+            for (let i = start; i < Z_Tabs._tabs.length; i++) {
                 const t = Z_Tabs._tabs[i];
+                if (!t || emitted.has(t.id)) continue;
                 if (isLoosePinned(t)) { desired.push(t.id); emitted.add(t.id); }
             }
             const membersOf = (gid: string) => {
@@ -3882,10 +4073,14 @@ class _TabGroupsMixin {
                 else { desired.push(t.id); emitted.add(t.id); }
             }
             // Only reorder if the current order already differs — keeps this a
-            // cheap O(n) no-op on the frequent _applyTabGroups path.
+            // cheap O(n) no-op on the frequent _applyTabGroups path. Indices from
+            // `start`: until 1.0.2 a fixed +1 assumed the library tab at 0, so on a
+            // Zotero with its own windows with My Library moved every pass "differed"
+            // and re-moved every tab in place, a redraw loop only the breaker below
+            // stopped (24 moves in 3 s, MJT's window 2026-11-10).
             let differs = false;
             for (let i = 0; i < desired.length; i++) {
-                if (!Z_Tabs._tabs[i + 1] || Z_Tabs._tabs[i + 1].id !== desired[i]) { differs = true; break; }
+                if (!Z_Tabs._tabs[start + i] || Z_Tabs._tabs[start + i].id !== desired[i]) { differs = true; break; }
             }
             if (!differs) return;
             // CIRCUIT BREAKER. Every move here re-renders the tab bar, the
@@ -3915,7 +4110,7 @@ class _TabGroupsMixin {
             this._wvTGDbg("stabilize: reordering (loose-pin left / group contiguity / pin-first)");
             for (let i = 0; i < desired.length; i++) {
                 const cur = Z_Tabs._tabs.findIndex((t: any) => t && t.id === desired[i]);
-                if (cur >= 0 && cur !== i + 1) { try { Z_Tabs.move(desired[i], i + 1); } catch (e) {} }
+                if (cur >= 0 && cur !== start + i) { try { Z_Tabs.move(desired[i], start + i); } catch (e) {} }
             }
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupStabilize err: " + e); }
     }
@@ -5019,7 +5214,13 @@ class _TabGroupsMixin {
                     const ids: string[] = [];
                     for (let i = wvFirstDocTab(((Z && Z._tabs) || [])); i < ((Z && Z._tabs) || []).length; i++) {
                         const t = Z._tabs[i];
-                        if (this._wvTabGroupStamp(t) === g.id) ids.push(t.id);
+                        if (this._wvTabGroupStamp(t) !== g.id) continue;
+                        // A library tab (a Zotero with its own windows) stays open
+                        // and leaves the group: a parked group reopens its members
+                        // by item, and a library tab has none -- closing it here
+                        // would lose it for good.
+                        if (wvIsLibraryTabID(t.id)) { this._wvTabGroupSetStamp(t, null); continue; }
+                        ids.push(t.id);
                     }
                     for (const id of ids) { try { Z.close(id); } catch (e) {} }
                 } catch (e) {}
@@ -6568,7 +6769,7 @@ class _TabGroupsMixin {
                                 const winI = ctx.menuElem.ownerDocument.defaultView;
                                 const popupI = ctx.menuElem.parentNode;
                                 const tabIDI = ctx.tabID;
-                                if (popupI && winI && tabIDI && !wvIsLibraryTabID(tabIDI)
+                                if (popupI && winI && tabIDI && !wvIsFixedLibraryTab(tabIDI)
                                         && typeof (self as any)._wvInjectMoveTargetsIntoNativeMoveMenu === "function") {
                                     const tgts = self._wvTabMultiSelTargets ? self._wvTabMultiSelTargets(winI, tabIDI) : [tabIDI];
                                     (self as any)._wvInjectMoveTargetsIntoNativeMoveMenu(winI, popupI, tgts);
@@ -6581,7 +6782,7 @@ class _TabGroupsMixin {
                         menuType: "menuitem",
                         onShowing: (_ev: any, ctx: any) => {
                             try {
-                                if (!self._getEnableTabGroups() || wvIsLibraryTabID(ctx.tabID)) {
+                                if (!self._getEnableTabGroups() || wvIsFixedLibraryTab(ctx.tabID)) {
                                     ctx.setVisible(false); return;
                                 }
                                 const win = ctx.menuElem.ownerDocument.defaultView;

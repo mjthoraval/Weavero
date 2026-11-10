@@ -21,6 +21,21 @@ describe("Weavero — tab-group operations: one implementation per pair over the
     });
     after(async function () { try { if (item) await item.eraseTx(); } catch (e) {} });
 
+    /** Run `fn` as on an older Zotero (native false: the library tab fixed at 0,
+     *  out of every group) or on one with its own windows (native true: a library
+     *  tab is a tab like any other, MJT 2026-11-10). The two signs Weavero reads
+     *  (lib/windows.ts wvNativeWindows) are set or hidden for the synchronous
+     *  body only, so both rule sets are guarded on every Zotero the suite runs on. */
+    function asZotero(native, fn) {
+        const Z = /** @type {any} */ (Zotero);
+        const saved = [{ o: Z.Prefs, k: "setForWindow" }, { o: Z.Session, k: "addClosedWindow" }]
+            .map((s) => ({ o: s.o, k: s.k, own: Object.prototype.hasOwnProperty.call(s.o, s.k), v: s.o[s.k] }));
+        try {
+            for (const s of saved) s.o[s.k] = native ? (typeof s.v === "function" ? s.v : () => {}) : undefined;
+            return fn();
+        }
+        finally { for (const s of saved) { if (s.own) s.o[s.k] = s.v; else delete s.o[s.k]; } }
+    }
     function withStubs(stubs, fn) {
         const saved = Object.keys(stubs).map((name) => {
             const own = Object.prototype.hasOwnProperty.call(wv, name);
@@ -72,7 +87,7 @@ describe("Weavero — tab-group operations: one implementation per pair over the
 
     it("move a group to the slot under x: the main bar settles through Zotero_Tabs.move after the library tab and outside other groups; the reader deck is reordered, re-rendered and persisted", () => {
         const s = store([{ id: "g1", members: [] }, { id: "g2", members: [] }]);
-        withStubs(s.stubs, () => {
+        withStubs(s.stubs, () => asZotero(false, () => {
             const m = mainRig(["zotero-pane", "a", "b", "c", "d", "e"], { b: "g1", c: "g1", d: "g2", e: "g2" });
             assert.strictEqual(wv._wvTabGroupMoveGroupTo(m.win, "g1", 120), 1, "x in the first half of 'a': slot 1");
             assert.deepEqual(m.ids(), ["zotero-pane", "b", "c", "a", "d", "e"], "the member block moved before 'a', the library tab stays first");
@@ -98,12 +113,12 @@ describe("Weavero — tab-group operations: one implementation per pair over the
             // Order 2 3 1(200-300) 4(300-400); x=380 = the second half of '4' -> the end (2).
             assert.strictEqual(wv._wvTabGroupReaderMoveGroupTo(r.win, "g1", 380), 2);
             assert.deepEqual(r.ids(), [1, 4, 2, 3]);
-        });
+        }));
     });
 
     it("a new group from tabs: created with the next colour, the tabs joined (the library tab never), the editor opened on its chip after a tick; the reader deck also clusters the members at the first one's slot and drops the strip selection", () => {
         const s = store([]);
-        withStubs(s.stubs, () => {
+        withStubs(s.stubs, () => asZotero(false, () => {
             const m = mainRig(["zotero-pane", "a", "b", "c"], {});
             wv._wvGroupTabsIntoNewGroup(m.win, ["zotero-pane", "a", "c"]);
             const g = s.groups().find(x => x.id === "gN");
@@ -126,12 +141,29 @@ describe("Weavero — tab-group operations: one implementation per pair over the
             assert.strictEqual(s.calls[4], "editor:gN:wv-tgchip-gN");
             wv._wvTabGroupNewFromDeckTabs(r.win, []);
             assert.strictEqual(s.calls.length, 5, "no tabs: nothing");
-        });
+        }));
+    });
+
+    it("on a Zotero with its own windows a library tab is a tab like any other: it joins a new group, and a group can move before it", () => {
+        const s = store([]);
+        withStubs(s.stubs, () => asZotero(true, () => {
+            const m = mainRig(["zotero-pane", "a", "b", "c"], {});
+            wv._wvGroupTabsIntoNewGroup(m.win, ["zotero-pane", "a"]);
+            assert.strictEqual(m.Z._tabs[0].data.wvGroupId, "gN", "the library tab joins");
+            assert.strictEqual(m.Z._tabs[1].data.wvGroupId, "gN");
+            assert.isUndefined(m.Z._tabs[2].data.wvGroupId);
+        }));
+        const s2 = store([{ id: "g1", members: [] }]);
+        withStubs(s2.stubs, () => asZotero(true, () => {
+            const m = mainRig(["zotero-pane", "a", "b"], { b: "g1" });
+            assert.strictEqual(wv._wvTabGroupMoveGroupTo(m.win, "g1", 20), 0, "x before the library tab: the first place");
+            assert.deepEqual(m.ids(), ["b", "zotero-pane", "a"]);
+        }));
     });
 
     it("add a tab to a group: a saved group files the key and closes the tab; a group living elsewhere sends the tab there; otherwise the tab is stamped, shadowed and placed after the group's last member (the main bar through move, the deck through its placer)", () => {
         const s = store([{ id: "g1", members: [] }, { id: "gS", members: [], saved: true }]);
-        withStubs(s.stubs, () => {
+        withStubs(s.stubs, () => asZotero(false, () => {
             const m = mainRig(["zotero-pane", "a", "b", "c", "d"], { b: "g1", c: "g1" });
             wv._wvTabGroupAddTab(m.win, "a", "g1");
             assert.strictEqual(m.Z._tabs.find(t => t.id === "a").data.wvGroupId, "g1", "stamped");
@@ -164,7 +196,7 @@ describe("Weavero — tab-group operations: one implementation per pair over the
                 wv._wvTabGroupAddDeckTab(r.win, 1, "g1");
                 assert.deepEqual(s.calls, ["sendDeck:1:g1"]);
             });
-        });
+        }));
     });
 
     it("the six surface methods are wrappers and the shared ones know no surface", () => {

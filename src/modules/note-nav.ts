@@ -159,9 +159,14 @@ const NOTE_OUTLINE_KEYS: any = {
         p._wvNoteOutlineRender(st.ne, st.iframe);
     },
     setSelectionOpen: (p: any, st: any, doc: any, open: boolean) => {
+        // Close only what has something to close: a leaf marked closed would
+        // come up closed the day it gets a sub-heading.
+        const parents = new Set([...st.ne.querySelectorAll(".wv-note-outline-row")]
+            .filter((r: any) => r.querySelector(".wv-note-outline-twisty.wv-nn-kids"))
+            .map((r: any) => r.getAttribute("data-key")));
         for (const k of st.sel) {
             if (open) st.shut.delete(k);
-            else st.shut.add(k);
+            else if (parents.has(k)) st.shut.add(k);
         }
         p._wvNoteOutlineRender(st.ne, st.iframe);
     },
@@ -535,7 +540,8 @@ class _NoteNavMixin {
     }
 
     /** The heading's two copy entries at the top of the note's own menu when
-     *  the right-click was in a heading; Fold All / Unfold All at its end. */
+     *  the right-click was in a heading; at its end, that heading's Fold /
+     *  Unfold Section, then Fold All / Unfold All. */
     _wvNnOnMenuShowing(e: any, ne: any, iframe: any, menu: any) {
         try {
             if (e.target !== menu) return;   // a submenu opening bubbles here
@@ -570,6 +576,24 @@ class _NoteNavMixin {
             if (!c || !c.foldable) return;
             const doc = menu.ownerDocument;
             wvMenuSeparator(doc, menu).id = "wv-note-fold-sep";
+            // The right-clicked heading's own section, as its arrow does
+            // (MJT 2026-11-10: "A right-click on a section only offers to
+            // expand/collapse all. I want a menu option to fold or expand as
+            // relevant"). Moved here from the outline's menu, which now acts on
+            // the outline.
+            const st = this._wvNnState(ne);
+            if (st.ctxOrd >= 0 && Date.now() - st.ctxAt <= 3000) {
+                const ord = st.ctxOrd;
+                const h = this._wvNnHeadings(iframe)[ord];
+                if (h && h.foldable) {
+                    wvMenuItem(doc, { label: h.folded ? "Unfold Section" : "Fold Section", attrs: { id: "wv-note-fold-section" },
+                        onCommand: () => {
+                            const p = wvLivePlugin();
+                            const pj = p && p._wvNnPage(p._wvNnIframe(ne));
+                            if (pj && typeof pj.__wvFoldToggle === "function") pj.__wvFoldToggle(ord);
+                        } }, menu);
+                }
+            }
             const run = (fold: boolean) => {
                 const p = wvLivePlugin();
                 if (p) p._wvNoteFoldAll(ne, fold);
@@ -1075,10 +1099,11 @@ class _NoteNavMixin {
      *  reader, +/- (open / close every row) and Ctrl/Cmd+F (the search box).
      *  Navigation only (MJT 2026-11-04, "I do not want to do outline edition
      *  directly in the outline pane"): the reader's multi-selection keys
-     *  (Shift / Ctrl+arrows, Space, Ctrl+A) and its undo / redo, which exist
-     *  for editing there, do nothing here; Enter puts the caret at the
-     *  heading in the note (the reader renames), Delete does nothing.
-     *  Escape goes back to the note. */
+     *  (Shift / Ctrl+arrows, Space) and its undo / redo, which exist for
+     *  editing there, do nothing here -- except Ctrl+A, for opening or
+     *  closing everything with Right / Left (MJT 2026-11-10). Enter puts the
+     *  caret at the heading in the note (the reader renames), Delete does
+     *  nothing. Escape goes back to the note. */
     _wvNoteOutlineKey(e: any, ne: any, iframe: any) {
         try {
             if (wvIsTextEntry(e.target)) return;   // the search box has its own keys
@@ -1095,6 +1120,22 @@ class _NoteNavMixin {
                 if (lk === "f" && !e.shiftKey) {
                     e.preventDefault(); e.stopPropagation();
                     this._wvNoteOutlineSearchShow(panel, true);
+                    return;
+                }
+                // Ctrl+A: every heading -- those inside a closed one too, so
+                // that Right / Left then open or close them all, at every
+                // level (MJT 2026-11-10: "I still want the CTRL+A in the
+                // Outline of a note to select all, so that I can expand all or
+                // collapse all"). While searching, the headings shown.
+                if (lk === "a" && !e.shiftKey) {
+                    e.preventDefault(); e.stopPropagation();
+                    const searching = !!String(st.query || "").trim();
+                    st.sel.clear();
+                    for (const r of list.querySelectorAll(".wv-note-outline-row")) {
+                        if (searching && r.hidden) continue;
+                        st.sel.add(r.getAttribute("data-key"));
+                        r.classList.add("wv-note-outline-selected");
+                    }
                     return;
                 }
             }
@@ -1115,8 +1156,17 @@ class _NoteNavMixin {
                     if (wj && typeof wj.__wvEditorFocus === "function") wj.__wvEditorFocus();
                     return;
                 }
+                // After Ctrl+A: Right / Left open / close every selected heading
+                // (the items list's model), hidden ones included -- the shared
+                // handler counts only the rows on screen, and once everything
+                // is closed under a single top heading that is one row.
+                if ((k === "ArrowRight" || k === "ArrowLeft") && !e.shiftKey && st.sel.size > 1) {
+                    e.preventDefault(); e.stopPropagation();
+                    NOTE_OUTLINE_KEYS.setSelectionOpen(this, st, ne.ownerDocument, k === "ArrowRight");
+                    return;
+                }
             }
-            // The selection keys are the reader's editing tools: left out.
+            // The other selection keys are the reader's editing tools: left out.
             if (e.shiftKey || wvAccelAny(e) || e.altKey || k === " ") return;
             const rows: any[] = [...list.querySelectorAll(".wv-note-outline-row")].filter((r: any) => !r.hidden);
             if (!rows.length) return;
@@ -1196,22 +1246,44 @@ class _NoteNavMixin {
             if (old) old.remove();
             const menu = doc.createXULElement("menupopup");
             menu.id = "wv-note-outline-menu";
+            // In the document BEFORE its items: a menuitem's acceltext set
+            // before it is placed is lost (memory: XUL acceltext lost on move).
+            wvPopupHost(doc).appendChild(menu);
+            menu.addEventListener("popuphidden", (ev: any) => { if (ev.target === menu) menu.remove(); });
             if (this._wvNoteHeadingLinksOn()) {
                 for (const kind of ["select", "open"]) menu.appendChild(this._wvNnLinkMenuItem(doc, ne, heads, h, kind));
             }
-            if (h.foldable && this._wvNoteFoldOn()) {
+            // The outline's own menu acts on the OUTLINE, as its twisties and
+            // +/- do (MJT 2026-11-10: "The fold option on a right-click in the
+            // Outline actually folds the section in the reader. This is
+            // counterintuitive"); folding the note's section moved to the
+            // note's own menu (_wvNnFoldMenuAdd).
+            const st = this._wvNnState(ne);
+            st.ne = ne;
+            st.iframe = iframe;
+            const list = row.parentElement;
+            const parents = list ? [...list.querySelectorAll(".wv-note-outline-row")]
+                .filter((r: any) => r.querySelector(".wv-note-outline-twisty.wv-nn-kids")) : [];
+            if (parents.length) {
                 if (menu.firstChild) wvMenuSeparator(doc, menu);
-                wvMenuItem(doc, {
-                    label: h.folded ? "Unfold Section" : "Fold Section",
-                    onCommand: () => {
-                        const wj = this._wvNnPage(iframe);
-                        if (wj && typeof wj.__wvFoldToggle === "function") wj.__wvFoldToggle(ord);
-                    },
-                }, menu);
+                const key = row.getAttribute("data-key");
+                if (row.querySelector(".wv-note-outline-twisty.wv-nn-kids")) {
+                    const shut = st.shut.has(key);
+                    wvMenuItem(doc, { label: shut ? "Expand" : "Collapse", attrs: { id: "wv-note-outline-toggle" },
+                        onCommand: () => NOTE_OUTLINE_KEYS.setOpen(this, st, doc, row, shut) }, menu);
+                }
+                const setAll = (open: boolean) => {
+                    st.shut.clear();
+                    if (!open) for (const r of parents) st.shut.add(r.getAttribute("data-key"));
+                    this._wvNoteOutlineRender(ne, iframe);
+                };
+                const shutN = parents.filter((r: any) => st.shut.has(r.getAttribute("data-key"))).length;
+                wvMenuItem(doc, { label: "Expand All", acceltext: "+", attrs: { id: "wv-note-outline-expand-all" },
+                    disabled: !shutN, onCommand: () => setAll(true) }, menu);
+                wvMenuItem(doc, { label: "Collapse All", acceltext: "−", attrs: { id: "wv-note-outline-collapse-all" },
+                    disabled: shutN >= parents.length, onCommand: () => setAll(false) }, menu);
             }
-            if (!menu.firstChild) return;
-            wvPopupHost(doc).appendChild(menu);
-            menu.addEventListener("popuphidden", (ev: any) => { if (ev.target === menu) menu.remove(); });
+            if (!menu.firstChild) { menu.remove(); return; }
             menu.openPopupAtScreen(e.screenX, e.screenY, true);
         }
         catch (er) { Zotero.debug("[Weavero] outline menu err: " + er); }

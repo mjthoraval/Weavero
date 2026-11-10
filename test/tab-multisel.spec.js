@@ -43,7 +43,7 @@ describe("Weavero — tab multi-select: one behaviour for the main window and th
         return { tabs, w };
     }
 
-    it("main window: accel toggles with the active tab implied, a mirror selects its pin, the library tab never joins, shift takes the range from the active tab, a plain press keeps a selected tab and clears on another, a plain click clears, right button and modifier clicks are inert", () => {
+    it("main window: accel toggles with the active tab implied, a mirror selects its pin, an older Zotero's library tab never joins (one of a Zotero with its own windows does), shift takes the range from the active tab, a plain press keeps a selected tab and clears on another, a plain click clears, right button and modifier clicks are inert", () => {
         const { tabs, w } = mainRig();
         wv._wvTabMultiSelMouseDown(w, ev(tabs.t2, { ctrlKey: true }));
         assert.deepEqual([...w._wvSelTabIDs].sort(), ["t1", "t2"], "accel adds the active tab and the clicked one");
@@ -59,8 +59,12 @@ describe("Weavero — tab multi-select: one behaviour for the main window and th
         assert.deepEqual(marked(tabs), ["t1", "t4"], "the mirror is marked");
         const lib = ev(tabs["zotero-pane"], { ctrlKey: true });
         wv._wvTabMultiSelMouseDown(w, lib);
-        assert.isFalse(w._wvSelTabIDs.has("zotero-pane"), "the library tab never joins");
-        assert.strictEqual(lib.sp, 1, "but the press is still swallowed");
+        // An older Zotero's library tab is fixed and never joins; on a Zotero
+        // with its own windows it is a tab like any other (MJT 2026-11-10).
+        const native = wvT.lib().wvNativeWindows();
+        assert.strictEqual(w._wvSelTabIDs.has("zotero-pane"), native, native ? "a library tab joins like any tab" : "the library tab never joins");
+        assert.strictEqual(lib.sp, 1, "the press is swallowed");
+        if (native) w._wvSelTabIDs.delete("zotero-pane");
         const right = ev(tabs.t3, { button: 2, ctrlKey: true });
         wv._wvTabMultiSelMouseDown(w, right);
         assert.isFalse(w._wvSelTabIDs.has("t3"), "the right button keeps the selection for the menu");

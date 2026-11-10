@@ -14,9 +14,21 @@
 // Zotero was still initializing it -- its context pane and tab observers
 // stayed registered on the dead window, and the next item erase never
 // finished (the after hook timed out; pre-fix A/B runs, 2026-10-14).
+//
+// On a Zotero with its own windows the oldest window shows a colour dot like
+// any window instead of the ⚓ (MJT 2026-11-10: "drop the ⚓"): the same rule
+// for the dot, and never the anchor class.
 describe("Weavero — the anchor mark follows the window count when a window closes", () => {
 	let wv, win, parent, pdf;
-	const anchored = () => win.document.documentElement.classList.contains("wv-anchor-window");
+	const anchorClass = () => win.document.documentElement.classList.contains("wv-anchor-window");
+	const dotted = () => { const st = win.document.getElementById("wv-window-badge-dot-style"); return !!(st && st.textContent); };
+	// The oldest window's mark: the ⚓ on an older Zotero, the colour dot on a
+	// Zotero with its own windows (which never carries the anchor class).
+	const anchored = () => {
+		if (!wvT.nativeWindows()) return anchorClass();
+		if (anchorClass()) throw new Error("the anchor class on a Zotero with its own windows");
+		return dotted();
+	};
 
 	before(async function () {
 		this.timeout(30000);

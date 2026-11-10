@@ -27,11 +27,11 @@
     "note": "0.9.0 added opt-in (default off) Markdown rendering in the reader's in-page annotation popup, where Weavero renders its own comment preview; 0.10.0 adds a floating outline there. Bumped from 0.7.1 on 2026-09-25. Bumped from 0.10.0 on 2026-11-05 (npm run test:compat:bump)."
   },
   "better-notes": {
-    "file": "better-notes-3.3.3.xpi",
-    "version": "3.3.3",
+    "file": "better-notes-3.3.5.xpi",
+    "version": "3.3.5",
     "addonID": "Knowledge4Zotero@windingwind.com",
-    "sha256": "48d426018338becd78c71f85159c36c03bbe3f6299ab5a564099e23790b01c1e",
-    "source": "https://github.com/windingwind/zotero-better-notes/releases/tag/v3.3.3",
+    "sha256": "7dbe38c994608c5864ac76a33c500315db3361904b9f6f92bd5f78565c32c390",
+    "source": "https://github.com/windingwind/zotero-better-notes/releases/tag/v3.3.5",
     "repo": "windingwind/zotero-better-notes"
   }
 }

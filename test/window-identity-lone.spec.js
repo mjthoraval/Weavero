@@ -27,15 +27,31 @@ describe("Weavero — no identity colour on a lone (anchor) window", () => {
         assert.equal(mi.style.getPropertyValue("--wv-win-color"), "", "no colour");
     });
 
-    it("with 2+ windows the anchor gets its mark, never a colour", () => {
+    // On a Zotero with its own windows no window is special: the oldest takes
+    // a colour like the others (MJT 2026-11-10: "drop the ⚓"). An older
+    // Zotero keeps its anchor mark.
+    it("with 2+ windows the oldest gets the anchor mark on an older Zotero, a colour on a Zotero with its own windows", () => {
         const orig = wv._wvAnchorDecorVisible;
         wv._wvAnchorDecorVisible = () => true;
         try {
             const mi = menuitem();
             wv._wvDecorateWindowTargetMenuitem(doc, mi, win, false);
-            assert.isTrue(mi.classList.contains("wv-mvwin-anchor"));
-            assert.isFalse(mi.classList.contains("wv-mvwin-main"));
+            if (wvT.nativeWindows()) {
+                assert.equal(wv._wvAnchorLook(win), "", "no anchor look");
+                assert.isFalse(mi.classList.contains("wv-mvwin-anchor"), "no anchor mark");
+                assert.isTrue(mi.classList.contains("wv-mvwin-main"), "a colour like any window");
+                assert.notEqual(mi.style.getPropertyValue("--wv-win-color"), "");
+                assert.notEqual(wv._wvBadgeIconNameFor(win), "anchor", "no anchor taskbar badge");
+            } else {
+                assert.equal(wv._wvAnchorLook(win), "anchor");
+                assert.isTrue(mi.classList.contains("wv-mvwin-anchor"));
+                assert.isFalse(mi.classList.contains("wv-mvwin-main"));
+            }
         } finally { wv._wvAnchorDecorVisible = orig; }
+    });
+
+    it("alone, the oldest window has no mark on any Zotero", () => {
+        assert.equal(wv._wvAnchorLook(win), "none");
     });
 
     it("a reader-kind target still gets its colour (a reader is never alone)", () => {

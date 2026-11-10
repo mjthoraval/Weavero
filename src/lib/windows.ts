@@ -342,6 +342,34 @@ export function wvIsLibraryTabID(id: any): boolean {
     });
 }
 
+/** A library tab Weavero keeps out of the tab behaviours (drag, groups, pins,
+ *  the multi-tab menus): only on an older Zotero, where the library tab is fixed
+ *  at index 0. On a Zotero with its own windows a library tab is a tab like any
+ *  other (MJT 2026-11-10: "the My Library tab should behave the same as the other
+ *  tabs. No need for special treatment"). Identity checks -- which tab shows the
+ *  library, its icon, its tooltip -- keep `wvIsLibraryTabID`. */
+export function wvIsFixedLibraryTab(id: any): boolean {
+    return !wvNativeWindows() && wvIsLibraryTabID(id);
+}
+
+/** The first index a tab may be moved to: past the fixed library tab on an older
+ *  Zotero; on a Zotero with its own windows, past the tabs Zotero itself holds
+ *  pinned (none today -- Weavero's pins are its own), so the first place. */
+export function wvFirstMovableIndex(Z: any): number {
+    if (!wvNativeWindows()) return 1;
+    try { if (Z && typeof Z._getFirstUnpinnedIndex === "function") return Z._getFirstUnpinnedIndex(); } catch (e) {}
+    return 0;
+}
+
+/** A library tab Weavero pinned on a Zotero with its own windows: the flag rides
+ *  in the tab's data, which Zotero saves with the session and restores
+ *  (tabs.js getState / restoreState), so the pin survives a restart and a
+ *  Zotero without Weavero ignores it. Item tabs pin through the item-keyed store
+ *  (`weavero.pinnedTabs`); a library tab has no item. */
+export function wvLibraryTabPinned(tab: any): boolean {
+    return !!(tab && wvNativeWindows() && tab.data && tab.data.wvPinned && wvIsLibraryTabID(tab.id));
+}
+
 /** An element of the library view on screen, by its base id. A Zotero with its own
  *  windows suffixes the ids in every library tab but the first, so a plain lookup
  *  found the first tab's element, or nothing once that tab had closed. */
@@ -456,13 +484,15 @@ export function wvViewEls(doc: any, id: string): any[] {
     return out;
 }
 
-/** Where a window's document tabs start: past the library tab, which an older
- *  Zotero always has at 0. A Zotero with its own windows may hold a document
- *  there (a window with only a reader, a window whose library tab closed), and a
- *  loop from 1 skipped it: its group chip never showed. */
+/** Where the tabs that take part in the tab behaviours (order, pins, groups)
+ *  start: past the library tab, which an older Zotero always has at 0. On a
+ *  Zotero with its own windows every tab takes part, the library tabs included
+ *  (MJT 2026-11-10: a library tab moves, groups and pins like any tab), so 0.
+ *  Until 1.0.2 the native case skipped a library tab at 0, which kept the pins
+ *  after it and made the order pass loop once it had moved (24 moves in 3 s). */
 export function wvFirstDocTab(tabs: any[]): number {
-    if (!wvNativeWindows()) return 1;
-    return tabs && tabs[0] && wvIsLibraryTabID(tabs[0].id) ? 1 : 0;
+    void tabs;
+    return wvNativeWindows() ? 0 : 1;
 }
 
 /** Show `win`'s library tab. `Zotero_Tabs.select` throws on an id the window does

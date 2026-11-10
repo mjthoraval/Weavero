@@ -26,7 +26,12 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
     const tabOf = (it) => ZT._tabs.find(t => t && t.data && t.data.itemID === it.id) || null;
     const node = (id) => doc.querySelector('#tab-bar-container .tab[data-id="' + id + '"]');
     const mirror = (id) => doc.querySelector('#wv-pinned-mirrors .wv-pinned-mirror[data-tab-id="' + id + '"]');
-    const order = () => ZT._tabs.slice(1).map(t => [a, b, c, d, e].find(it => it.id === (t.data && t.data.itemID))).map(it => it ? names.get(it) : "?");
+    // The tabs after the library tab on an older Zotero; every tab but the
+    // library tabs on a Zotero with its own windows, where the pins lead and
+    // My Library is a tab like any other (MJT 2026-11-10). F = the first index
+    // that takes part in the order (lib/windows.ts wvFirstDocTab).
+    let F = 1;
+    const order = () => ZT._tabs.filter(t => !wvT.lib().wvIsLibraryTabID(t.id)).map(t => [a, b, c, d, e].find(it => it.id === (t.data && t.data.itemID))).map(it => it ? names.get(it) : "?");
     const pinned = (it) => wv._pinnedTabsHas(it.libraryID, it.key);
     const isMirrored = (it) => { const t = tabOf(it); const n = t && node(t.id); return !!(t && mirror(t.id) && n && n.getBoundingClientRect().width < 1); };
     const rect = (el) => el.getBoundingClientRect();
@@ -126,6 +131,7 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
             if (typeof wv[m] !== "function") wvT.absent("plugin." + m);
         }
         win = Zotero.getMainWindow(); doc = win.document; ZT = win.Zotero_Tabs;
+        F = wvT.lib().wvFirstDocTab(ZT._tabs);
         cont = doc.getElementById("tab-bar-container");
         if (!cont || typeof win.DragEvent !== "function" || typeof win.DataTransfer !== "function") this.skip();
         prevGroups = Zotero.Prefs.get("weavero.enableTabGroups");
@@ -234,7 +240,7 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
         const ms = Array.from(doc.querySelectorAll("#wv-pinned-mirrors .wv-pinned-mirror")).map(m => m.getAttribute("data-tab-id"));
         assert.deepEqual(ms, [tabOf(b).id, tabOf(a).id], "mirrors follow the tab order");
         // Back to A, B for the next tests.
-        ZT.move(tabOf(a).id, 1); apply(); await sleep(300);
+        ZT.move(tabOf(a).id, F); apply(); await sleep(300);
         assert.deepEqual(order(), ["A", "B", "C", "D", "E"]);
     });
 
@@ -245,7 +251,7 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
         await waitFor(() => ZT.selectedID === tabOf(a).id, 10000, "A selected");
         await sleep(500);
         // A is first; move it second so there is a pin to its left to drop before.
-        ZT.move(tabOf(a).id, 3); apply(); await sleep(400);
+        ZT.move(tabOf(a).id, F + 2); apply(); await sleep(400);
         assert.deepEqual(order(), ["B", "A", "C", "D", "E"]);
         const mA = mirror(tabOf(a).id), mB = mirror(tabOf(b).id);
         assert.ok(mA && mA.classList.contains("selected"), "A's mirror is the selected one");
@@ -258,7 +264,7 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
         const rA = rect(mirror(tabOf(a).id));
         await gesture(mirror(tabOf(b).id), [Math.round(rA.right - 4), Math.round(rA.left + 4), Math.round(rA.left + 2)], { label: "pin left of the selected pin" });
         assert.deepEqual(order(), ["B", "A", "C", "D", "E"]);
-        ZT.move(tabOf(a).id, 1); apply(); await sleep(300);
+        ZT.move(tabOf(a).id, F); apply(); await sleep(300);
         try { ZT.select("zotero-pane"); } catch (er) {}
         await sleep(300);
         assert.deepEqual(order(), ["A", "B", "C", "D", "E"]);
@@ -300,7 +306,7 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
             } catch (er) {}
             try { ZT.rename(tD.id, oldTitle); } catch (er) {}
             try { const tC = tabOf(c); const s = wv._wvTabGroupStamp(tC); if (s) wv._wvTabGroupStampLeave(tC, s); } catch (er) {}
-            ZT.move(tabOf(c).id, 3); apply(); await sleep(300);
+            ZT.move(tabOf(c).id, F + 2); apply(); await sleep(300);
         }
         assert.match(ours, /^matrix\(1, 0, 0, 1, -?[1-9]/, "lifted by the gap: " + seen.join(" | "));
         const after = seen[seen.length - 1].slice("renamed:".length).split(" inline=")[0];
@@ -317,7 +323,7 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
         try {
             assert.ok(isMirrored(b), "a pin with a dead stamp is a loose pin: mirrored");
             // And the loose cluster keeps it left of everything unpinned.
-            ZT.move(tB.id, 4); apply(); await sleep(300);
+            ZT.move(tB.id, F + 3); apply(); await sleep(300);
             assert.deepEqual(order(), ["A", "B", "C", "D", "E"], "stabilize clusters it back with the pins");
         } finally {
             wv._wvTabGroupSetStamp(tB, null); apply(); await sleep(200);
@@ -346,7 +352,7 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
             assert.deepEqual(order(), ["A", "B", "D", "E", "C"], "order unchanged");
         } finally {
             wv._wvTabGroupStampLeave(tB, group.id); apply(); await sleep(200);
-            ZT.move(tabOf(c).id, 3); apply(); await sleep(300);
+            ZT.move(tabOf(c).id, F + 2); apply(); await sleep(300);
         }
         assert.deepEqual(order(), ["A", "B", "C", "D", "E"]);
     });
@@ -372,7 +378,7 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
             const g = wv._tabGroupsGet().find(x => x.id === group.id);
             if (g && g.collapsed) wv._wvTabGroupToggleCollapse(win, group.id);
             wv._wvTabGroupStampLeave(tB, group.id); apply(); await sleep(200);
-            ZT.move(tabOf(c).id, 3); apply(); await sleep(300);
+            ZT.move(tabOf(c).id, F + 2); apply(); await sleep(300);
         }
         assert.deepEqual(order(), ["A", "B", "C", "D", "E"]);
     });
@@ -437,7 +443,7 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
         } finally {
             // Whatever failed above, leave the fixture as the next tests expect it.
             try { const tC = tabOf(c); const s = wv._wvTabGroupStamp(tC); if (s) wv._wvTabGroupStampLeave(tC, s); if (pinned(c)) wv._pinnedTabsRemove(c.libraryID, c.key); } catch (er) {}
-            ZT.move(tabOf(c).id, 3); apply(); await sleep(300);
+            ZT.move(tabOf(c).id, F + 2); apply(); await sleep(300);
         }
         assert.deepEqual(order(), ["A", "B", "C", "D", "E"]);
     });
@@ -447,8 +453,13 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
         // handlers only knew .tab nodes; a loose pin's visible face is its
         // mirror.
         const tA = tabOf(a), tB = tabOf(b);
-        try { ZT.select("zotero-pane"); } catch (er) {}
-        await waitFor(() => ZT.selectedID === "zotero-pane", 5000, "library selected");
+        // The active tab joins a fresh selection (Firefox). On an older Zotero
+        // the library tab, fixed, never does; on a Zotero with its own windows
+        // it would (a tab like any other), so there the presses start from pin
+        // A itself -- the selection is the two pins either way.
+        const lead = F === 0 ? tA.id : "zotero-pane";
+        try { ZT.select(lead); } catch (er) {}
+        await waitFor(() => ZT.selectedID === lead, 5000, "lead tab selected");
         win._wvSelTabIDs = new Set(); wv._wvTabMultiSelSync(win);
         const press = (el) => { el.dispatchEvent(new win.MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, ctrlKey: true })); el.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true, button: 0, ctrlKey: true })); };
         try {
@@ -456,7 +467,7 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
             await sleep(100);
             assert.ok(win._wvSelTabIDs.has(tA.id) && win._wvSelTabIDs.has(tB.id), "both pins in the selection: " + Array.from(win._wvSelTabIDs));
             assert.ok(mirror(tA.id).classList.contains("wv-multisel") && mirror(tB.id).classList.contains("wv-multisel"), "both mirrors highlighted");
-            assert.strictEqual(ZT.selectedID, "zotero-pane", "a Ctrl-press does not switch tabs");
+            assert.strictEqual(ZT.selectedID, lead, "a Ctrl-press does not switch tabs");
             // Drag A's mirror (B follows) past the last tab: both unpin.
             const last = node(tabOf(e).id); const rL = rect(last); const mA = mirror(tA.id);
             // The press that starts the drag is a PLAIN press on a selected pin:
@@ -488,7 +499,7 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
         } finally {
             try { win._wvSelTabIDs = new Set(); wv._wvTabMultiSelSync(win); } catch (er) {}
             for (const it of [a, b]) { try { wv._pinnedTabsAdd(it.libraryID, it.key); } catch (er) {} }
-            ZT.move(tA.id, 1); ZT.move(tB.id, 2); apply(); await sleep(300);
+            ZT.move(tA.id, F); ZT.move(tB.id, F + 1); apply(); await sleep(300);
         }
         assert.deepEqual(order(), ["A", "B", "C", "D", "E"]);
         assert.ok(isMirrored(a) && isMirrored(b));
@@ -525,7 +536,7 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
             try { win._wvSelTabIDs = new Set(); wv._wvTabMultiSelSync(win); } catch (er) {}
             for (const it of [c, d]) { try { wv._pinnedTabsRemove(it.libraryID, it.key); } catch (er) {} }
             apply(); await sleep(200);
-            ZT.move(tC.id, 3); ZT.move(tD.id, 4); apply(); await sleep(200);
+            ZT.move(tC.id, F + 2); ZT.move(tD.id, F + 3); apply(); await sleep(200);
             wv._wvTabGroupStampJoin(tD, group.id); wv._tabGroupAddKey(group.id, { libraryID: d.libraryID, itemKey: d.key }); apply(); await sleep(300);
         }
         assert.deepEqual(order(), ["A", "B", "C", "D", "E"]);
@@ -545,7 +556,7 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
             assert.ok(!isMirrored(b) && rect(node(tB.id)).width > 1, "a grouped pin is a real tab, not a mirror");
         } finally {
             wv._wvTabGroupStampLeave(tB, group.id); apply(); await sleep(200);
-            ZT.move(tB.id, 2); apply(); await sleep(300);
+            ZT.move(tB.id, F + 1); apply(); await sleep(300);
         }
         assert.deepEqual(order(), ["A", "B", "C", "D", "E"]);
         await settle("after leave");

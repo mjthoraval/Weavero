@@ -330,7 +330,15 @@
                 try { n += Math.max(0, Zotero.getMainWindows().filter(w => !w.closed).length - 1); } catch (e) {}
                 return n;
             };
-            const anchored = () => { try { return Zotero.getMainWindow().document.documentElement.classList.contains("wv-anchor-window"); } catch (e) { return false; } };
+            // The oldest window's mark: the ⚓ class, or (a Zotero with its own
+            // windows, no ⚓ since 1.0.3-dev.10) its colour dot's sheet.
+            const anchored = () => {
+                try {
+                    const d = Zotero.getMainWindow().document;
+                    const st = d.getElementById("wv-window-badge-dot-style");
+                    return d.documentElement.classList.contains("wv-anchor-window") || !!(st && st.textContent);
+                } catch (e) { return false; }
+            };
             for (let i = 0; i < 80 && open(); i++) await wvT.sleep(100);
             for (let i = 0; i < 50 && anchored(); i++) await wvT.sleep(100);
             await wvT.sleep(1000);
@@ -480,6 +488,7 @@
             { re: /^Weavero — saved windows and group moves on Zotero's windows \(zotero#6035\) on a real native build/, why: "version: needs a Zotero with its own windows" },
             { re: /^Weavero — named sessions on Zotero's windows \(zotero#6035\)/, why: "version: needs a Zotero with its own windows" },
             { re: /^Weavero — the filter in every library tab \(zotero#6035\)/, why: "version: needs a Zotero with its own windows" },
+            { re: /^Weavero — a library tab is a tab like any other on a Zotero with its own windows /, why: "version: needs a Zotero with its own windows (an older Zotero's library tab is fixed first)" },
             // Nested suites: a full title starts with the OUTER describe's.
             { re: /^Weavero — context-menu handlers ignore bubbled submenu events /, why: "popups do not open in this runner window, or no bookmarkable row is selected" },
             { re: /^Weavero — items-list header contributes no intrinsic width its max-content width/, why: "the desktop keeps the runner's window hidden (measured on CI)" },

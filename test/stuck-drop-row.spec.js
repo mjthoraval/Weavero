@@ -125,6 +125,29 @@ describe("Weavero — a drop highlight left by a lost drag clears (WV-TEMP-13303
         assert.strictEqual(greyRows(iv), 0);
     });
 
+    // Main's full suite 2026-11-12 (1.0.5-dev.13): the "dev.54" replay below failed
+    // after the split specs, which open library tabs -- each new library view wires
+    // this fix again under the same instance (window-wiring.ts `views`). wvListen
+    // refused its own key, so the FIRST wiring's listeners stayed live while the
+    // teardown's watchdog cancel was the SECOND wiring's: a watchdog the live
+    // listeners armed outlived the teardown and cleared a row 250 ms later.
+    it("a second wiring (a library view wired anew) leaves the teardown in charge of the live watchdog", async function () {
+        const iv = ZP.itemsView;
+        const row = iv.getRowIndexByID(item.id);
+        wv._wvWireStuckDropRowFix(win);
+        wv._wvWireStuckDropRowFix(win);   // as for a library view wired anew
+        leave(iv, row);
+        drag("dragover", iv.domEl);       // arms the watchdog (no drag session in a test: it would clear in 250 ms)
+        wv._wvTeardownStuckDropRowFix();
+        await wvT.sleep(800);
+        try { assert.strictEqual(iv._dropRow, row, "the teardown cancelled the armed watchdog: the row stays"); }
+        finally {
+            iv._dropRow = null;
+            iv.tree.invalidateRow(row);
+            wv._wvWireStuckDropRowFix(win);
+        }
+    });
+
     it("a drag over the tree itself, or a leave within the window, keeps the row", async function () {
         const iv = ZP.itemsView;
         const row = iv.getRowIndexByID(item.id);

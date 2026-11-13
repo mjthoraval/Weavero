@@ -277,6 +277,9 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     { id: "items-list-context-menu", on: "load", wire: (p) => p._setupItemsListContextMenu() },
     { id: "collections-context-menu", on: "load", wire: (p) => p._setupCollectionsContextMenu() },
     { id: "tab-external-repositioner", on: "both", wire: (p, win) => p._setupTabExternalRepositioner(win) },
+    // Split view: two tabs side by side (tab-split.ts): the style, the layer,
+    // Zotero's unload check and context-pane handler, the splits of a restart.
+    { id: "tab-split", on: "both", wire: (p, win) => p._wvTabSplitWire(win) },
     { id: "multi-open-consolidation", on: "both", wire: (p, win) => p._wvSetupMultiOpenConsolidation(win) },
     { id: "bookmarks-toolbar-button", on: "both", wire: (p, win) => {
         if (p._getEnableLibraryBookmarks()) p._setupBookmarksToolbarButton(win);
@@ -299,6 +302,9 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     { id: "compact-title-bar", on: "both", wire: (p, win) => {
         if (p._getCompactTitleBarMain()) p._applyCompactTitleBar(win);
     } },
+    // Right-click on the maximize button: maximize across monitors
+    // (modules/max-span.ts). Zotero's caption buttons, wherever they sit.
+    { id: "max-span", on: "both", wire: (p, win) => p._wvMaxSpanWire(win) },
     // Refresh sidebar icons across any open readers. The
     // renderSidebarAnnotationHeader event won't re-fire for rows that were
     // already mounted before the plugin (re-)started.
@@ -385,6 +391,12 @@ export interface WvReaderWire {
 }
 
 export const WV_READER_WIRES: WvReaderWire[] = [
+    // weavero.ftl into the window: Zotero's MenuManager labels Weavero's
+    // reader/menubar/file entries by data-l10n-id there (pane.ts
+    // _wvRegisterMenubarWindowEntries). Elements Weavero labels itself link
+    // the file on demand (lib/l10n.ts wvL10n); destroy() unlinks it from
+    // every window (_wvBlDestroy).
+    { id: "ftl", on: ["render", "init"], anyReader: true, wire: (p, win) => p._wvBlEnsureFtl(win) },
     // Splice this window's dead readers out of Zotero.Reader._readers when it
     // closes (a dead entry wedges Reader.open and Session.save).
     { id: "readers-cleanup", on: ["render", "init"], anyReader: true, wire: (p, win) => p._wvWireReaderWindowReadersCleanup(win) },

@@ -46,6 +46,7 @@ import { wvTimeout, wvClearTimeout } from "../lib/timers";
 import { wvLinkGlyphEl, wvRefMarkGlyphEl } from "../lib/link-glyph";
 import { WV_SCOPE_CELLS, wvScopeDefaults, wvScopeDefaultNamedCells } from "../lib/pane-scope-defaults";
 import { wvBlBodyRefreshIn } from "./backlinks";
+import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
 
 declare const Zotero: any;
 
@@ -592,7 +593,7 @@ class _PaneScopeMixin {
                 item = doc.createXULElement("menuitem");
                 item.className = MENU_RESET;
                 item.setAttribute("data-wv-owned", "true");
-                item.setAttribute("label", "Reset Filters to Default");
+                wvL10n(item, "weavero-menu-section-reset-filters");
                 item.addEventListener("command", () => { const lp: any = wvLivePlugin(); if (lp) lp._wvScopeFilterRestore(sec, kind); });
                 menu.appendChild(sep);
                 menu.appendChild(item);

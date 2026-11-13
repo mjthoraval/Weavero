@@ -57,7 +57,7 @@ describe("Weavero — a bounced deliberate filter apply is retried", () => {
 	});
 
 	it("the tree observer's plain apply is still dropped, not retried", async function () {
-		wv._wvRetryCascade = false;
+		if (wv._wvCascadeRetryWins) wv._wvCascadeRetryWins.clear();
 		if (wv._wvCascadeRetryTimer) { try { Zotero.Weavero.lib.wvClearTimeout(wv._wvCascadeRetryTimer); } catch (e) {} wv._wvCascadeRetryTimer = null; }
 		wv._suppressTreeObserverUntil = Date.now() + 400;
 		try {
@@ -65,7 +65,8 @@ describe("Weavero — a bounced deliberate filter apply is retried", () => {
 			assert.notOk(wv._wvCascadeRetryTimer, "no retry scheduled for a plain (observer) apply");
 			wv._applyItemsListFilter({ deliberate: true });
 			assert.isOk(wv._wvCascadeRetryTimer, "a deliberate one schedules the retry");
-			assert.isFalse(!!wv._wvRetryCascade, "a plain deliberate apply does not turn the retry into a cascade");
+			// The pending request is kept per window (2026-11-11, per-window-state.spec.js).
+			assert.strictEqual(wv._wvCascadeRetryWins && wv._wvCascadeRetryWins.get(wvT.win()), false, "a plain deliberate apply does not turn its window's retry into a cascade");
 		}
 		finally {
 			await wvT.sleep(800);   // let the scheduled retry run against an empty filter

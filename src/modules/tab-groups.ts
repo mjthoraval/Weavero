@@ -27,8 +27,9 @@ import { wvInjectStyle, wvRemoveStyle } from "../lib/style";
 import { wvSleep, wvTimeout } from "../lib/timers";
 import { wvMenuItem } from "../lib/menu";
 import { wvStoreWrite, wvStoreRead } from "../lib/store";
-import { wvFirstDocTab, wvFirstMovableIndex, wvIsFixedLibraryTab, wvIsLibraryTabID, wvLibraryTabPinned, wvMainWins, wvNativeWindows, wvWinType, wvZoteroPinsLibraryTabs } from "../lib/windows";
+import { wvFirstDocTab, wvFirstMovableIndex, wvIsFixedLibraryTab, wvIsLibraryTabID, wvLibraryTabPinned, wvMainWins, wvNativeWindows, wvWinType, wvZoteroPinsLibraryTabs, wvZoteroPinsTabs } from "../lib/windows";
 import { wvAccelAny } from "../lib/keys";
+import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
 
 /** A surface the tab multi-select runs on: the main window's tab bar
  *  (Zotero's `.tab` nodes + the pinned mirrors, Zotero_Tabs for the active
@@ -840,8 +841,10 @@ class _TabGroupsMixin {
                         const inner = bar.querySelector(".tab-bar-inner-container");
                         narrow = !!(inner && inner.classList.contains("scrollable"));
                         if (!narrow) {
+                            // Not a split's half: a pair is one tab wide, half a tab each
+                            // (tab-split.ts), and would put the whole strip in this mode.
                             const t = Array.from(bar.querySelectorAll(".tabs > .tab") as any[]).find((x: any) =>
-                                !wvIsLibraryTabID(x.dataset.id) && !x.classList.contains("wv-pinned-tab") && x.getBoundingClientRect().width > 0);
+                                !wvIsLibraryTabID(x.dataset.id) && !x.classList.contains("wv-pinned-tab") && !x.hasAttribute("data-wv-tsplit") && x.getBoundingClientRect().width > 0);
                             narrow = !!t && t.getBoundingClientRect().width <= CLIP;
                         }
                     }
@@ -2118,7 +2121,9 @@ class _TabGroupsMixin {
                 // A tab Zotero won't move (a library tab it holds pinned) stays:
                 // moveToWindow recreates it there, then fails to close it here.
                 const t0 = srcWin.Zotero_Tabs && srcWin.Zotero_Tabs._tabs.find((x: any) => x && x.id === tabId);
-                if (t0 && t0.movable === false) return;
+                // Since b08cc35a50 a pinned tab stays in its window (moveToWindow
+                // returns null for it): no move, nothing to file.
+                if (t0 && (t0.movable === false || t0.pinned)) return;
                 const newID = await srcWin.Zotero_Tabs.moveToWindow(tabId, tgtWin);
                 if (newID && groupId) this._wvTabGroupAddTab(tgtWin, newID, groupId);
                 return;
@@ -2341,7 +2346,8 @@ class _TabGroupsMixin {
                 // Window row (icon + name). Source = disabled header; others move here.
                 const wi = doc.createXULElement("menuitem");
                 wi.classList.add("menuitem-iconic");
-                wi.setAttribute("label", t.name + (isSrc ? "  (here)" : ""));
+                if (isSrc) wvL10n(wi, "weavero-menu-move-target-here", { name: t.name });
+                else wvDataLabel(wi, t.name);
                 try { if (t.isReader ? readerIcon : mainIcon) wi.setAttribute("image", t.isReader ? readerIcon : mainIcon); } catch (e) {}
                 // Window-identity colour glyph on the RIGHT, like the
                 // list-all-tabs headers (user request 2026-07-15).
@@ -2361,7 +2367,8 @@ class _TabGroupsMixin {
                         for (const g of winGroups) {
                             const gi = doc.createXULElement("menuitem");
                             gi.classList.add("menuitem-iconic");
-                            gi.setAttribute("label", g.name || "Group");
+                            if (g.name) wvDataLabel(gi, g.name);
+                            else wvL10n(gi, "weavero-menu-group-unnamed");
                             gi.setAttribute("style", INDENT);
                             try { gi.setAttribute("image", this._wvGroupColorDotURI(this._tabGroupColorHex(g.color))); } catch (e) {}
                             const gid = g.id;
@@ -2372,7 +2379,7 @@ class _TabGroupsMixin {
                     const isRdr = t.isReader;
                     const ng = doc.createXULElement("menuitem");
                     ng.classList.add("menuitem-iconic");
-                    ng.setAttribute("label", "New Group");
+                    wvL10n(ng, "weavero-menu-new-group");
                     ng.setAttribute("style", INDENT);
                     try { if (plusIcon) ng.setAttribute("image", plusIcon); } catch (e) {}
                     ng.addEventListener("command", () => { try { onPick({ win: w, isReader: isRdr, newGroup: true }); } catch (e) {} });
@@ -3627,12 +3634,41 @@ class _TabGroupsMixin {
             if (!Z || !Z._tabs || typeof Z.move !== "function" || !res) return;
             const di = Z._tabs.findIndex((t: any) => t && t.id === tabID);
             if (di < 0) return;
-            const target = Math.max(wvFirstMovableIndex(Z), Math.min(res.slot, Z._tabs.length));
-            if (target !== di) Z.move(tabID, target);
+            let pin = "";
+            let target = -1;
+            const zp = wvZoteroPinsTabs();
+            if (zp) {
+                // Zotero pins any tab (b08cc35a50) and keeps each run apart: move()
+                // clamps a pinned tab among the pins and any other tab after them,
+                // and setPinned() puts the tab at the end of the pins / right after
+                // them. So the pin verdict comes FIRST, then the move to the drop
+                // boundary -- named by the tab dropped before (the array is still
+                // the pre-drag one here), so it survives setPinned's own move.
+                // Clamping the slot past the pins first (as below) sent every
+                // reordered pin to the end of the pins.
+                const t0 = Z._tabs[di];
+                let beforeID: any = null;
+                for (let i = Math.max(0, Math.min(res.slot, Z._tabs.length)); i < Z._tabs.length; i++) {
+                    if (Z._tabs[i] && Z._tabs[i].id !== tabID) { beforeID = Z._tabs[i].id; break; }
+                }
+                const regionEnd = typeof res.firstNonPinnedZIdx === "number" ? res.firstNonPinnedZIdx : wvFirstMovableIndex(Z);
+                const pinHere = res.rows ? !!res.inPins : res.slot < regionEnd;
+                const unpinHere = res.rows ? !res.inPins : res.slot > regionEnd;
+                try {
+                    if (!t0.pinned && pinHere && !res.joinGroupId) { if ((this as any)._wvSetTabPinned(win, t0, true)) pin = "pin"; }
+                    else if (t0.pinned && (res.joinGroupId || unpinHere)) { if ((this as any)._wvSetTabPinned(win, t0, false)) pin = "unpin"; }
+                } catch (eP) { this._wvTGDbg("gapDrop zpin ERR=" + eP); }
+                target = beforeID ? Z._tabs.findIndex((x: any) => x && x.id === beforeID) : Z._tabs.length;
+                const now = Z._tabs.findIndex((x: any) => x && x.id === tabID);
+                if (target >= 0 && target !== now && target !== now + 1) { try { Z.move(tabID, target); } catch (eM) {} }
+            }
+            else {
+                target = Math.max(wvFirstMovableIndex(Z), Math.min(res.slot, Z._tabs.length));
+                if (target !== di) Z.move(tabID, target);
+            }
             // Membership straight from the previewed result (the gap already
             // showed it): join res.joinGroupId, else leave any current group.
             const t = Z._tabs.find((x: any) => x && x.id === tabID);
-            let pin = "";
             if (t) {
                 // STAMP-based current group (per-tab) so a DUPLICATE tab can join a
                 // group that already contains its item via a twin.
@@ -3651,7 +3687,7 @@ class _TabGroupsMixin {
                 // inside the pinned region pins; a pin dropped past it unpins,
                 // unless it joined a group (grouped pins stay pinned, first in
                 // their group). Slot and region end share the pre-move numbering.
-                try {
+                if (!zp) try {
                     const regionEnd = typeof res.firstNonPinnedZIdx === "number" ? res.firstNonPinnedZIdx : 1;
                     const k = (this as any)._tabPinKey(t);
                     // A library tab on a Zotero with its own windows pins and
@@ -3705,6 +3741,16 @@ class _TabGroupsMixin {
             if (!Z || !Z._tabs) return;
             const dragged = Z._tabs.find((t: any) => t && t.id === tabID);
             if (!dragged) return;                      // moved to another window
+            // Zotero pins any tab (b08cc35a50) and moves a tab only within its run
+            // (pins / the rest): followers take the dragged tab's pin state FIRST,
+            // so the moves below can put them beside it.
+            const zp = wvZoteroPinsTabs();
+            if (zp) {
+                for (const oid of others) {
+                    const t = Z._tabs.find((x: any) => x && x.id === oid);
+                    if (t && !!t.pinned !== !!dragged.pinned) { try { (this as any)._wvSetTabPinned(win, t, !!dragged.pinned); } catch (e) {} }
+                }
+            }
             let anchorID = tabID;
             for (const oid of others) {
                 const t = Z._tabs.find((x: any) => x && x.id === oid);
@@ -3734,7 +3780,7 @@ class _TabGroupsMixin {
             // only the dragged tab, the followers landed beside it unpinned
             // and the stabilizer pushed them out (MJT 2026-10-16). Followers
             // take the dragged tab's pin state (pinned → pin, unpinned → unpin).
-            try {
+            if (!zp) try {
                 const dk = (this as any)._tabPinKey(dragged);
                 const dragPinned = !!(dk && (this as any)._pinnedTabsHas(dk.libraryID, dk.itemKey)) || wvLibraryTabPinned(dragged);
                 let changed = false;
@@ -4262,8 +4308,9 @@ class _TabGroupsMixin {
         // group, as in Firefox (tabgroup.mjs addTabs: "if (tab.pinned) unpinTab";
         // MJT 2026-11-10: "Same as Firefox"): Zotero's pinned tab can't move, so
         // it could never sit in the group's run. Every join path stamps here.
-        if (groupID && wvZoteroPinsLibraryTabs() && tab.pinned && tab.id && wvIsLibraryTabID(tab.id)) {
-            try { (this as any)._wvSetLibraryTabPinnedFlag(tab, false); } catch (e) {}
+        // Since zotero b08cc35a50 Zotero pins any tab: the same for every tab.
+        if (groupID && wvZoteroPinsTabs() && tab.pinned === true && tab.id) {
+            try { (this as any)._wvSetTabPinned(null, tab, false); } catch (e) {}
         }
         if (tab.data) {
             if (groupID) tab.data.wvGroupId = groupID; else { try { delete tab.data.wvGroupId; } catch (e) { tab.data.wvGroupId = undefined; } }
@@ -5614,10 +5661,12 @@ class _TabGroupsMixin {
             const dark = !!(this._detectUIDark && this._detectUIDark());
             const mainIcon = this._wvMainWindowIconURI ? this._wvMainWindowIconURI(dark) : "";
             const readerIcon = this._wvWindowIconURI ? this._wvWindowIconURI(dark) : "";
-            const mkTarget = (label: string, icon: string, disabled: boolean, fn: (p: any) => void) => {
+            // `label`: a weavero.ftl id (+ args), or { data } for a window's name.
+            const mkTarget = (label: { id?: string, args?: any, data?: string }, icon: string, disabled: boolean, fn: (p: any) => void) => {
                 const mi = doc.createXULElement("menuitem");
                 mi.classList.add("menuitem-iconic");
-                mi.setAttribute("label", label);
+                if (label.id) wvL10n(mi, label.id, label.args);
+                else wvDataLabel(mi, label.data || "");
                 try { if (icon) mi.setAttribute("image", icon); } catch (er) {}
                 if (disabled) wvSetBoolAttr(mi, "disabled", true);
                 else mi.addEventListener("command", (ev: any) => {
@@ -5636,8 +5685,9 @@ class _TabGroupsMixin {
                 // window the menu was invoked FROM is flagged "(this window)"
                 // so "Open Group in" makes clear which target is the current
                 // window (2026-07-04).
-                const suffix = t.isHome ? "  (group is here)" : (t.win === win ? "  (this window)" : "");
-                const mi = mkTarget(t.name + suffix, t.isReader ? readerIcon : mainIcon, t.isHome,
+                const where = t.isHome ? "group-home" : (t.win === win ? "this-window" : null);
+                const mi = mkTarget(where ? { id: "weavero-menu-group-target-window", args: { name: t.name, where } } : { data: t.name },
+                    t.isReader ? readerIcon : mainIcon, t.isHome,
                     (p: any) => p._wvMoveGroupToWindowAt(groupID, t.win, t.isReader, null));
                 // Window-identity colour glyph on the RIGHT, like the
                 // list-all-tabs headers (user request 2026-07-15).
@@ -5646,7 +5696,7 @@ class _TabGroupsMixin {
             subPop.appendChild(doc.createXULElement("menuseparator"));
             // One kind of window there: a window that holds what moves to it.
             if (wvNativeWindows()) {
-                mkTarget("New Window", mainIcon, false, (p: any) => p._wvTabGroupMoveToNewWindow(win, groupID));
+                mkTarget({ id: "weavero-menu-move-new-window" }, mainIcon, false, (p: any) => p._wvTabGroupMoveToNewWindow(win, groupID));
                 return;
             }
             // Brand-new-window targets as the shared icon-only row (a group
@@ -5677,15 +5727,15 @@ class _TabGroupsMixin {
             pop = doc.createXULElement("menupopup");
             pop.id = "wv-tgmenu-context";
             const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-            const mk = (label: string, fn: (p: any) => void) => {
-                wvMenuItem(doc, { label, onCommand: (ev: any) => {
+            const mk = (l10nID: string, fn: (p: any) => void) => {
+                wvMenuItem(doc, { l10n: { id: l10nID }, onCommand: (ev: any) => {
                     ev.stopPropagation();
                     try { panel.hidePopup(); } catch (er) {}
                     const p: any = live();
                     if (p) fn(p);
                 } }, pop);
             };
-            mk("Rename Group…", (p: any) => p._wvTabGroupPromptRename(win, groupID));
+            mk("weavero-menu-group-rename", (p: any) => p._wvTabGroupPromptRename(win, groupID));
             pop.appendChild(doc.createXULElement("menuseparator"));
             // Verb by state: SAVED → "Open Group in ▸" (it reopens); OPEN →
             // "Move Group to ▸" (it relocates). The submenu mirrors the tabs'
@@ -5694,7 +5744,7 @@ class _TabGroupsMixin {
             const gRec: any = this._tabGroupsGet().find((x: any) => x.id === groupID);
             const isSaved = !!(gRec && gRec.saved) || this._wvTabGroupOpenCount(groupID) === 0;
             const sub = doc.createXULElement("menu");
-            sub.setAttribute("label", isSaved ? "Open Group in" : "Move Group to");
+            wvL10n(sub, "weavero-menu-group-move-to", { saved: isSaved ? "yes" : "no" });
             const subPop = doc.createXULElement("menupopup");
             sub.appendChild(subPop);
             this._wvFillGroupMoveTargetPopup(win, subPop, groupID, () => { try { panel.hidePopup(); } catch (er) {} });
@@ -5703,9 +5753,9 @@ class _TabGroupsMixin {
             // Save-and-close: park the group (tabs close, group stays reopenable).
             // Only meaningful for an OPEN group — a saved one is already closed.
             if (!isSaved) {
-                mk("Save and Close Group", (p: any) => p._wvTabGroupSaveAndClose(win, groupID));
+                mk("weavero-menu-group-save-close", (p: any) => p._wvTabGroupSaveAndClose(win, groupID));
             }
-            mk("Delete Group", (p: any) => p._wvTabGroupCloseTabs(win, groupID));
+            mk("weavero-menu-group-delete", (p: any) => p._wvTabGroupCloseTabs(win, groupID));
             // Colour swatches inline (user request 2026-07-16) — the same
             // recolour the chip editor offers, without leaving the menu.
             // The shared row helper marks the current colour selected.
@@ -6350,7 +6400,7 @@ class _TabGroupsMixin {
                 mvRow.style.display = "flex";
                 mvRow.style.justifyContent = "space-between";
                 mvRow.style.alignItems = "center";
-                const mvLabel = wvHtmlEl(doc, "span", undefined, "Move group to");
+                const mvLabel = wvHtmlEl(doc, "span", undefined, wvStr("weavero-menu-groupeditor-move-to"));
                 const mvArrow = wvHtmlEl(doc, "span", undefined, "▸");
                 mvArrow.style.opacity = "0.6";
                 mvRow.appendChild(mvLabel); mvRow.appendChild(mvArrow);
@@ -6407,16 +6457,16 @@ class _TabGroupsMixin {
                     } catch (e) {}
                 }
                 if (memberItems.length) {
-                    mkItem("Copy " + memberItems.length + " link" + (memberItems.length === 1 ? "" : "s") + " in group",
+                    mkItem(wvStr("weavero-menu-groupeditor-copy-links", { count: memberItems.length }),
                         () => { try { (this as any)._copyItemLinks(memberItems, "open"); } catch (e) {} });
                 }
             }
-            mkItem("Save and close group",
+            mkItem(wvStr("weavero-menu-groupeditor-save-close"),
                 () => this._wvTabGroupSaveAndClose(win, groupID));
-            mkItem("Ungroup tabs",
+            mkItem(wvStr("weavero-menu-groupeditor-ungroup"),
                 () => { this._tabGroupDelete(groupID); this._wvTabGroupApplyEverywhere(); });
             mkSep();
-            mkItem("Delete group",
+            mkItem(wvStr("weavero-menu-groupeditor-delete"),
                 () => this._wvTabGroupCloseTabs(win, groupID), true);
 
             // Footer: status, tab count, owning window -- information, so it
@@ -6741,17 +6791,13 @@ class _TabGroupsMixin {
     }
 
     /** Move our menuitem just above the native "Move Tab" submenu (found by
-     *  its localized label). No-op when Move Tab isn't in this popup. */
+     *  its key: Zotero's own label, or Weavero's "Move Tabs" relabel --
+     *  tabs.ts _wvTabMenuItemKey). No-op when Move Tab isn't in this popup. */
     _wvTabGroupRepositionBeforeMove(menuElem: any) {
         try {
             const popup = menuElem && menuElem.parentNode;
             if (!popup) return;
-            let moveLabel = "Move Tab";
-            try { moveLabel = Zotero.getString("tabs.move"); } catch (e) {}
-            let moveEl: any = null;
-            for (const ch of popup.querySelectorAll("menu, menuitem")) {
-                if (ch.getAttribute && ch.getAttribute("label") === moveLabel) { moveEl = ch; break; }
-            }
+            const moveEl: any = (this as any)._wvTabMenuFind(popup, "moveTab");
             if (moveEl && menuElem.nextSibling !== moveEl) {
                 popup.insertBefore(menuElem, moveEl);
             }
@@ -6809,9 +6855,7 @@ class _TabGroupsMixin {
                                 if (!grouped) { ctx.setVisible(false); return; }
                                 ctx.setVisible(true);
                                 const n = self._wvTabMultiSelTargets(win, ctx.tabID).length;
-                                ctx.menuElem.setAttribute("label", n > 1
-                                    ? "Remove " + n + " Tabs from Group"
-                                    : "Remove from Tab Group");
+                                wvL10n(ctx.menuElem, "weavero-menu-tab-remove-from-group", { count: n });
                                 // Sits directly under "Add to Tab Group…" (that
                                 // item repositions first, so inserting before
                                 // Move Tab lands this one right after it).

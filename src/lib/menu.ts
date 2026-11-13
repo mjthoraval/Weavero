@@ -5,9 +5,14 @@
 // propagation, hide the popup first, resolve the live plugin) stay in the
 // caller's handler; what every item shares is here.
 
+import { wvL10n } from "./l10n";
+
 export interface WvMenuItemSpec {
+    /** A label that is DATA (a name, a title): Weavero's own words go in
+     *  `l10n` (weavero.ftl; test/menus-l10n.spec.js). */
     label?: string;
-    /** Fluent id (+ args) instead of a literal label, when the document has l10n. */
+    /** Fluent id (+ args): weavero.ftl's, linked into the document first, or
+     *  one of Zotero's (lib/l10n.ts wvL10n). */
     l10n?: { id: string; args?: any };
     /** Classes to add, as one string of space-separated names or a list. */
     cls?: string | string[];
@@ -28,8 +33,8 @@ export interface WvMenuItemSpec {
 /** A XUL `menuitem` from `spec`, appended to `parent` when given. */
 export function wvMenuItem(doc: any, spec: WvMenuItemSpec, parent?: any): any {
     const mi: any = doc.createXULElement("menuitem");
-    if (spec.l10n && doc.l10n) doc.l10n.setAttributes(mi, spec.l10n.id, spec.l10n.args || {});
-    else if (spec.label != null) mi.setAttribute("label", spec.label);
+    if (spec.label != null) mi.setAttribute("label", spec.label);
+    if (spec.l10n) wvL10n(mi, spec.l10n.id, spec.l10n.args);
     const classes: string[] = [];
     if (spec.cls) classes.push(...(Array.isArray(spec.cls) ? spec.cls : String(spec.cls).split(/\s+/)).filter(Boolean));
     if (spec.image) { mi.setAttribute("image", spec.image); classes.push("menuitem-iconic"); }
@@ -51,6 +56,21 @@ export function wvMenuItem(doc: any, spec: WvMenuItemSpec, parent?: any): any {
     }
     if (parent) parent.appendChild(mi);
     return mi;
+}
+
+/** The menuitem of `popup` whose label is exactly `label`. For the entries
+ *  Zotero renders from a plugin's plain-text label (the reader's context
+ *  menus: xpcom/reader.js _openContextMenu gives them nothing else), the
+ *  label Weavero passed -- from weavero.ftl, in any language -- is the only
+ *  handle. Compared as a string: a CSS selector built from it broke on a
+ *  translation's quote (test/menus-l10n.spec.js). */
+export function wvMenuItemByLabel(popup: any, label: string): any {
+    try {
+        for (const el of (popup && popup.querySelectorAll ? popup.querySelectorAll("menuitem") : [])) {
+            if (el.getAttribute("label") === label) return el;
+        }
+    } catch (e) {}
+    return null;
 }
 
 /** A XUL `menuseparator`, appended to `parent` when given. */

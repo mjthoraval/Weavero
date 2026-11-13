@@ -60,14 +60,25 @@ export function wvStorePath(name: string): string {
     return PathUtils.join(wvStoreDir(), name);
 }
 
+// The table lives only while a write is pending: the last write of a path
+// removes its entry, the last entry the table (a disable leaves nothing on the
+// Zotero global once its final writes land; zzz-disable-leftovers.spec.js).
+function wvStoreChainsIf(): Record<string, Promise<void>> | null {
+    let c = (Zotero as any)._wvStoreChains;
+    // Left by an instance whose scope Zotero has since destroyed (zotero#6080
+    // nukes it 10 s after unload; an update keeps the chains): start afresh.
+    try { if (c && (Components as any).utils.isDeadWrapper(c)) c = null; } catch (e) { c = null; }
+    return c || null;
+}
+
 function wvStoreChains(): Record<string, Promise<void>> {
-    const Z: any = Zotero as any;
-    return Z._wvStoreChains || (Z._wvStoreChains = Object.create(null));
+    return wvStoreChainsIf() || ((Zotero as any)._wvStoreChains = Object.create(null));
 }
 
 /** The pending writes of `path` (resolved when there are none). */
 export function wvStoreChain(path: string): Promise<void> {
-    const c = wvStoreChains()[path];
+    const t = wvStoreChainsIf();
+    const c = t && t[path];
     return c ? c.catch(() => {}) : Promise.resolve();
 }
 
@@ -90,7 +101,16 @@ export function wvStoreWrite(path: string, doc: any, opts?: WvStoreWriteOptions)
             }
             await IOUtils.writeUTF8(path, snapshot, { tmpPath: path + ".tmp" });
         })
-        .catch((e: any) => { try { Zotero.debug("[Weavero] store write failed (" + path + "): " + e); } catch (_) {} });
+        .catch((e: any) => { try { Zotero.debug("[Weavero] store write failed (" + path + "): " + e); } catch (_) {} })
+        .then(() => {
+            try {
+                const t = wvStoreChainsIf();
+                if (t && t[path] === next) {
+                    delete t[path];
+                    if (!Object.keys(t).length) delete (Zotero as any)._wvStoreChains;
+                }
+            } catch (_) {}
+        });
     chains[path] = next;
     return next;
 }

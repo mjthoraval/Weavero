@@ -3,7 +3,8 @@ import { wvStoreWrite, wvStoreRead } from "../lib/store";
 import { wvTimeout } from "../lib/timers";
 import { wvMenuItem } from "../lib/menu";
 import { wvHtmlEl } from "../lib/dom";
-import { wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvOpenLibraryView, wvSelectLibraryTab } from "../lib/windows";
+import { wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvOpenLibraryView, wvSelectLibraryTab, wvZoteroPinsTabs } from "../lib/windows";
+import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
 
 // Module: named TAB SESSIONS — capture the set of open tabs across all main
 // windows into a NAMED session, and switch between sessions (close the current
@@ -63,10 +64,10 @@ const WV_TABSESSION_AUTOSAVE_ID = "__wv_autosave__";
 /** Orders for the saved-session list (pref `weavero.sessionSort`, MJT
  *  2026-09-29). "created" is the default: the stored (creation) order, newest
  *  first -- the list was oldest first, the bare stored order, until then. */
-const WV_TABSESSION_SORTS: Array<{ id: string; label: string }> = [
-    { id: "created", label: "Created" },
-    { id: "name", label: "Name" },
-    { id: "lastUsed", label: "Last used" },
+const WV_TABSESSION_SORTS: Array<{ id: string }> = [
+    { id: "created" },
+    { id: "name" },
+    { id: "lastUsed" },
 ];
 const WV_TABSESSION_SORT_DEFAULT = "created";
 
@@ -164,9 +165,10 @@ class _TabSessionsMixin {
         return WV_TABSESSION_SORTS.some(o => o.id === v) ? v : WV_TABSESSION_SORT_DEFAULT;
     }
 
+    /** A sort's name (weavero.ftl weavero-menu-session-sort, $sort). */
     _wvTabSessionSortLabel(mode: string): string {
         const o = WV_TABSESSION_SORTS.find(x => x.id === mode);
-        return o ? o.label : String(mode);
+        return o ? wvStr("weavero-menu-session-sort", { sort: o.id }) : String(mode);
     }
 
     /** A kind starts in its natural direction; changing kind clears the flag
@@ -330,8 +332,14 @@ class _TabSessionsMixin {
             // Pinned too: main-window pins live in the global pin list, and a session
             // recorded none, so a switch away and back lost them (transition test
             // 2026-11-07, on 11.0-beta.3 and on zotero#6035 alike).
+            // Where Zotero pins any tab (b08cc35a50) the pin is the tab's own; the
+            // restore puts it back through Weavero's store, which the next apply
+            // hands to Zotero (_wvApplyZoteroPins).
             let pinned = false;
-            try { pinned = !!(this as any)._pinnedTabsHas(item.libraryID, item.key); } catch (e) {}
+            try {
+                pinned = (typeof t.pinned === "boolean" && wvZoteroPinsTabs())
+                    ? t.pinned : !!(this as any)._pinnedTabsHas(item.libraryID, item.key);
+            } catch (e) {}
             return this._wvTabSessionMakeRecord(base, t.title, item,
                 selID != null && t.id === selID, pinned, this._wvTabSessionTabGroupId(t));
         } catch (e) { return null; }
@@ -469,7 +477,10 @@ class _TabSessionsMixin {
                 if (tabs.length || wi === 0) {
                     let geom: any = null;
                     try { geom = this._wvWindowGeom(w); } catch (e) {}
-                    windows.push({ kind: "main", tabs, geom, ...this._wvTabSessionCaptureMainState(w), ...this._wvTabSessionLibraryFields(w) });
+                    // Its split views (tab-split.ts), by what each side shows.
+                    let splits: any[] = [];
+                    try { splits = (this as any)._wvTabSplitRecords(w) || []; } catch (e) {}
+                    windows.push({ kind: "main", tabs, geom, ...this._wvTabSessionCaptureMainState(w), ...this._wvTabSessionLibraryFields(w), ...(splits.length ? { splits } : {}) });
                 }
             }
             const en = Services.wm.getEnumerator("zotero:reader");
@@ -1097,6 +1108,19 @@ class _TabSessionsMixin {
         } finally {
             this._wvTabSessionSwitching = false;
         }
+        // The session's split views, once its tabs are back (tab-split.ts).
+        try {
+            // Each with its window's fingerprint, so it goes back into that window
+            // only (tab-split.ts fingerprintOf); a session saved before 1.0.5-dev.4
+            // gets it from its window's record.
+            const recs = targetWindows.filter((w: any) => w && w.kind === "main").flatMap((w: any) => {
+                if (!Array.isArray(w.splits) || !w.splits.length) return [];
+                let fp: string[] | null = null;
+                return w.splits.map((s: any) => (Array.isArray(s && s.w) && s.w.length) ? s
+                    : Object.assign({}, s, { w: fp || (fp = (this as any)._wvTabSplitFingerprintOfRecord(w)) }));
+            });
+            (this as any)._wvTabSplitSessionAdopt(recs);
+        } catch (e) {}
         // The target — whatever it is, including the auto slot — becomes the
         // active (tracked) session, so the dropdown always marks where you are.
         await this._wvTabSessionSetActiveId(id);
@@ -1715,9 +1739,9 @@ class _TabSessionsMixin {
                                 if (pop) pop.remove();
                                 pop = doc.createXULElement("menupopup");
                                 pop.id = "wv-sesswin-context";
-                                const mk = (lbl: string, fn: any) => { wvMenuItem(doc, { label: lbl, onCommand: () => fn() }, pop); };
+                                const mk = (l10nID: string, fn: any) => { wvMenuItem(doc, { l10n: { id: l10nID }, onCommand: () => fn() }, pop); };
                                 const rec: any = sec.wvRec;
-                                mk("Rename Window…", () => {
+                                mk("weavero-menu-window-rename", () => {
                                     lp._wvShowRenameDialog(doc.defaultView, {
                                         title: "Rename Window",
                                         name: rec.name || "",
@@ -1738,11 +1762,12 @@ class _TabSessionsMixin {
                                         .filter((s: any) => s && s.id !== sess.id);
                                     if (others.length) {
                                         const mv = doc.createXULElement("menu");
-                                        mv.setAttribute("label", "Move Window to");
+                                        wvL10n(mv, "weavero-menu-window-move-to");
                                         const mvPop = doc.createXULElement("menupopup");
                                         for (const s of others) {
                                             const mi = doc.createXULElement("menuitem");
-                                            mi.setAttribute("label", s.name || "Session");
+                                            if (s.name) wvDataLabel(mi, s.name);
+                                            else wvL10n(mi, "weavero-menu-session-unnamed");
                                             const target = s;
                                             mi.addEventListener("command", async () => {
                                                 try {
@@ -1802,7 +1827,7 @@ class _TabSessionsMixin {
                                         pop.appendChild(mv);
                                     }
                                 } catch (er2) {}
-                                mk("Delete Window from Session", () => {
+                                mk("weavero-menu-window-delete-from-session", () => {
                                     try {
                                         const n = (rec.tabs || []).length;
                                         const ok = Services.prompt.confirm(doc.defaultView, "Weavero",
@@ -1856,8 +1881,8 @@ class _TabSessionsMixin {
             pop = doc.createXULElement("menupopup");
             pop.id = "wv-sessmenu-context";
             const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-            const mk = (label: string, fn: (p: any) => void) => {
-                wvMenuItem(doc, { label, onCommand: (ev: any) => {
+            const mk = (l10nID: string, fn: (p: any) => void) => {
+                wvMenuItem(doc, { l10n: { id: l10nID }, onCommand: (ev: any) => {
                     ev.stopPropagation();
                     try { panel.hidePopup(); } catch (er) {}
                     const p: any = live();
@@ -1865,13 +1890,13 @@ class _TabSessionsMixin {
                 } }, pop);
             };
             if (!isActive) {
-                mk("Switch to This Session", (p: any) => p._wvTabSessionConfirmSwitch(win, id));
+                mk("weavero-menu-session-switch", (p: any) => p._wvTabSessionConfirmSwitch(win, id));
             }
             if (!autoSlot) {
-                mk("Rename…", (p: any) => p._wvTabSessionPromptRename(win, id));
+                mk("weavero-menu-session-rename", (p: any) => p._wvTabSessionPromptRename(win, id));
             }
             pop.appendChild(doc.createXULElement("menuseparator"));
-            mk("Delete", (p: any) => p._wvTabSessionConfirmDelete(win, id));
+            mk("weavero-menu-session-delete", (p: any) => p._wvTabSessionConfirmDelete(win, id));
             (doc.querySelector("popupset") || doc.documentElement).appendChild(pop);
             pop.openPopupAtScreen(e.screenX, e.screenY, true);
         } catch (er) { Zotero.debug("[Weavero] _wvTabSessionsMenuContext err: " + er); }
@@ -1890,8 +1915,8 @@ class _TabSessionsMixin {
             pop = doc.createXULElement("menupopup");
             pop.id = "wv-cursess-context";
             const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-            const mk = (label: string, fn: (p: any) => void) => {
-                wvMenuItem(doc, { label, onCommand: (ev: any) => {
+            const mk = (l10nID: string, fn: (p: any) => void) => {
+                wvMenuItem(doc, { l10n: { id: l10nID }, onCommand: (ev: any) => {
                     ev.stopPropagation();
                     try { panel.hidePopup(); } catch (er) {}
                     const p: any = live();
@@ -1899,7 +1924,7 @@ class _TabSessionsMixin {
                 } }, pop);
             };
             if (activeId) {
-                mk("Rename Session…", (p: any) => p._wvTabSessionPromptRename(win, activeId));
+                mk("weavero-menu-session-rename-current", (p: any) => p._wvTabSessionPromptRename(win, activeId));
             }
             if (!pop.childElementCount) return;   // nothing to offer: no empty menu
             (doc.querySelector("popupset") || doc.documentElement).appendChild(pop);
@@ -1923,9 +1948,9 @@ class _TabSessionsMixin {
             const mi = doc.createXULElement("menuitem");
             mi.setAttribute("type", "radio");
             mi.setAttribute("name", "wv-sessmenu-sort");
-            mi.setAttribute("label", o.label);
+            wvL10n(mi, "weavero-menu-session-sort", { sort: o.id });
             mi.setAttribute("data-wv-sort", o.id);
-            if (o.id === WV_TABSESSION_SORT_DEFAULT) mi.setAttribute("acceltext", "(default)");
+            if (o.id === WV_TABSESSION_SORT_DEFAULT) mi.setAttribute("acceltext", wvStr("weavero-menu-default-hint", null, null));
             if (o.id === cur) mi.setAttribute("checked", "true");
             mi.addEventListener("command", (ev: any) => {
                 try {

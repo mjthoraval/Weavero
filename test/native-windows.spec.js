@@ -360,6 +360,32 @@ describe("Weavero — native windows (zotero#6035)", () => {
             assert.isOk(await wvT.waitFor(() => w.Zotero_Tabs.isLibraryTab(w.Zotero_Tabs.selectedID), 8000), "a library tab there");
         });
 
+        // Zotero's "main window unload" hook also comes when a window's LAST library tab
+        // closes and the window stays open (zoteroPane.js unregisterLibraryView). Until
+        // 1.0.5-dev.6 Weavero tore that open window down: its tab-bar observer went, and
+        // pins, group chips and split marks stopped there (alignment review 2026-11-11,
+        // seen live on 11.0-beta.4).
+        it("closing a window's last library tab keeps Weavero's wiring; its real close tears it down", async function () {
+            this.timeout(45000);
+            const w = await wvT.openMainWindow();
+            const T = w.Zotero_Tabs;
+            await Zotero.Reader.open(att.id, null, /** @type {any} */ ({ window: w }));
+            await wvT.waitFor(() => Zotero.Reader._readers.find(x => x.itemID === att.id && x._window === w), 10000);
+            assert.isOk(await wvT.waitFor(() => !!w._wvTabBarDecoMo, 8000), "fixture: the tab-bar observer");
+            for (const t of T._tabs.filter(x => x.type.startsWith("library"))) T.close(t.id);
+            await wvT.waitFor(() => !T._tabs.some(t => t.type.startsWith("library")), 5000);
+            await wvT.sleep(1500);   // Zotero calls the hook after an await
+            assert.isFalse(w.closed, "the window stays, with its document");
+            assert.isOk(w._wvTabBarDecoMo, "still wired");
+            assert.isOk(lib.wvListenKeys(w).some(k => k.key === "lazy:wvMainWindowCloseTeardown"), "its real close is watched");
+            w.close();
+            await wvT.waitFor(() => w.closed, 8000);
+            await wvT.sleep(300);
+            let left = null;
+            try { left = w._wvTabBarDecoMo || null; } catch (e) {}
+            assert.isNotOk(left, "torn down at the real close");
+        });
+
         it("a tab group in a window with no library tab shows its chip", async function () {
             this.timeout(45000);
             const r = await wvT.openReaderTab(att.id);

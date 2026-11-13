@@ -50,7 +50,10 @@ describe("Weavero — Copy As: one entry list for the main window's and the read
         for (const en of wv._wvCopyAsEntries()) {
             const set = en.cite ? cites : items;
             if (!en.visible(wv, set)) continue;
-            out.push(en.sep ? "-" : en.label(wv, set));
+            if (en.sep) { out.push("-"); continue; }
+            // Each entry names its weavero.ftl message (localisation slice 2).
+            const l = en.l10n(wv, set);
+            out.push(Zotero.Weavero.lib.wvStr(l.id, l.args));
         }
         return out;
     }

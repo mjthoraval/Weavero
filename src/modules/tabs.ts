@@ -25,10 +25,11 @@ import { wvListen, wvListener, wvUnlisten } from "../lib/listen";
 import { wvStoreWrite, wvStoreRead, wvStoreRemove } from "../lib/store";
 import { wvTimeout } from "../lib/timers";
 import { wvMenuItem } from "../lib/menu";
-import { wvFirstDocTab, wvFirstMovableIndex, wvIsFixedLibraryTab, wvIsLibraryTabID, wvLibraryTabPinned, wvMainWins, wvNativeWindows, wvSelectLibraryTab, wvStoredFromSaved, wvWinType, wvZoteroPinsLibraryTabs } from "../lib/windows";
+import { wvFirstDocTab, wvFirstMovableIndex, wvIsFixedLibraryTab, wvIsLibraryTabID, wvLibraryTabPinned, wvMainWins, wvNativeWindows, wvSelectLibraryTab, wvStoredFromSaved, wvWinType, wvZoteroPinsLibraryTabs, wvZoteroPinsTabs } from "../lib/windows";
 import { wvAccel } from "../lib/keys";
 import { wvSvgEl } from "../lib/svg";
 import { WV_FUNNEL_DATA_URI } from "./constants";
+import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
 
 /** The three entries both tab menus add for the clicked tab's item -- "View
  *  Online", "Show File" / "Show in Finder", "Open in External Viewer" --
@@ -40,7 +41,8 @@ import { WV_FUNNEL_DATA_URI } from "./constants";
 export interface WvTabMenuEntry {
     key: string;
     marker: string;
-    label: (p: any) => string;
+    /** The entry's weavero.ftl message (+ args). */
+    l10n: (p: any) => { id: string, args?: any };
     /** The icon URL for `item` (null = the entry's default). */
     icon: (p: any, item: any) => string | null;
     visible: (p: any, item: any) => boolean;
@@ -50,7 +52,7 @@ export interface WvTabMenuEntry {
 export const WV_TAB_MENU_ENTRIES: WvTabMenuEntry[] = [
     {
         key: "viewOnline", marker: "data-wv-tab-viewonline",
-        label: () => "View Online",
+        l10n: () => ({ id: "weavero-menu-tab-view-online" }),
         // The items-list menu's glyphs (scss/components/_menu: view-online ->
         // globe, show-file -> folder-open).
         icon: () => "chrome://zotero/skin/16/universal/globe.svg",
@@ -63,7 +65,7 @@ export const WV_TAB_MENU_ENTRIES: WvTabMenuEntry[] = [
     },
     {
         key: "showFile", marker: "data-wv-tab-showfile",
-        label: () => ((Zotero as any).isMac ? "Show in Finder" : "Show File"),
+        l10n: () => ({ id: "weavero-menu-tab-show-file", args: { platform: (Zotero as any).isMac ? "mac" : "other" } }),
         icon: () => "chrome://zotero/skin/16/universal/folder-open.svg",
         visible: (p, item) => { const att = item && p._wvTabItemParts(item).att; return !!(att && att.isFileAttachment && att.isFileAttachment()); },
         run: async (p, item) => {
@@ -74,7 +76,7 @@ export const WV_TAB_MENU_ENTRIES: WvTabMenuEntry[] = [
     },
     {
         key: "externalViewer", marker: "data-wv-tab-external",
-        label: () => "Open in External Viewer",
+        l10n: () => ({ id: "weavero-menu-open-external-viewer" }),
         // The attachment-type glyph Zotero's "Open PDF in New Tab" would target
         // (same order as getBestAttachments), so the entry reads as "file of
         // type X"; the entry's default (the Weavero link icon) without one.
@@ -2118,11 +2120,11 @@ class _TabsMixin {
 
             if (!lastMain) {
                 mkSep();
-                if (!wvNativeWindows()) mkItem(isReader ? "Convert to Main Window" : "Convert to Reader Window", (p: any) => {
+                if (!wvNativeWindows()) mkItem(wvStr("weavero-menu-window-convert", { to: isReader ? "main" : "reader" }), (p: any) => {
                     if (isReader) p._wvConvertReaderWindowToMain(targetWin);
                     else p._wvConvertMainWindowToReader(targetWin);
                 });
-                mkItem("Save and Close Window", (p: any) => p._wvSaveAndCloseWindow(targetWin, isReader));
+                mkItem(wvStr("weavero-menu-window-save-close"), (p: any) => p._wvSaveAndCloseWindow(targetWin, isReader));
                 // Move Window to ▸ — flyout with the OTHER sessions, the
                 // same pattern (and native hover timing) as the group
                 // editor's "Move group to ▸".
@@ -2137,7 +2139,7 @@ class _TabsMixin {
                         (mvRow as any).style.display = "flex";
                         (mvRow as any).style.justifyContent = "space-between";
                         (mvRow as any).style.alignItems = "center";
-                        const mvLabel = wvHtmlEl(doc, "span", undefined, "Move Window to");
+                        const mvLabel = wvHtmlEl(doc, "span", undefined, wvStr("weavero-menu-window-move-to"));
                         const mvArrow = wvHtmlEl(doc, "span", undefined, "▸");
                         (mvArrow as any).style.opacity = "0.6";
                         mvRow.appendChild(mvLabel);
@@ -2148,7 +2150,8 @@ class _TabsMixin {
                         mvPop.id = "wv-winedit-move-targets";
                         for (const s of others) {
                             const mi: any = doc.createXULElement("menuitem");
-                            mi.setAttribute("label", s.name || "Session");
+                            if (s.name) wvDataLabel(mi, s.name);
+                            else wvL10n(mi, "weavero-menu-session-unnamed");
                             const sid = s.id;
                             mi.addEventListener("command", () => {
                                 try { edPanel.hidePopup(); } catch (er) {}
@@ -2355,8 +2358,8 @@ class _TabsMixin {
             if (pop) pop.remove();                       // rebuild fresh each time
             pop = doc.createXULElement("menupopup");
             pop.id = "wv-winhdr-context";
-            const mk = (label: string, fn: (p: any) => void) => {
-                wvMenuItem(doc, { label, onCommand: (ev: any) => {
+            const mk = (l10nID: string, args: any, fn: (p: any) => void) => {
+                wvMenuItem(doc, { l10n: { id: l10nID, args }, onCommand: (ev: any) => {
                     ev.stopPropagation();
                     const p: any = live();
                     if (p) fn(p);
@@ -2366,14 +2369,14 @@ class _TabsMixin {
             // the tab-group and session rename prompts in this menu (user
             // decision 2026-07-16; the card stays on the title-bar glyph
             // right-click only).
-            mk("Rename Window…", (p: any) => p._wvWindowPromptRename(menuWin, targetWin, panel));
+            mk("weavero-menu-window-rename", null, (p: any) => p._wvWindowPromptRename(menuWin, targetWin, panel));
             if (!lastMain) {
                 pop.appendChild(doc.createXULElement("menuseparator"));
-                if (!wvNativeWindows()) mk(isReader ? "Convert to Main Window" : "Convert to Reader Window", (p: any) => {
+                if (!wvNativeWindows()) mk("weavero-menu-window-convert", { to: isReader ? "main" : "reader" }, (p: any) => {
                     if (isReader) p._wvConvertReaderWindowToMain(targetWin);
                     else p._wvConvertMainWindowToReader(targetWin);
                 });
-                mk("Save and Close Window", (p: any) => p._wvSaveAndCloseWindow(targetWin, isReader));
+                mk("weavero-menu-window-save-close", null, (p: any) => p._wvSaveAndCloseWindow(targetWin, isReader));
                 try {
                     const activeId = (this as any)._wvTabSessionGetActiveId
                         ? (this as any)._wvTabSessionGetActiveId() : null;
@@ -2382,11 +2385,12 @@ class _TabsMixin {
                         .filter((s: any) => s && s.id !== activeId);
                     if (others.length) {
                         const mv: any = doc.createXULElement("menu");
-                        mv.setAttribute("label", "Move Window to");
+                        wvL10n(mv, "weavero-menu-window-move-to");
                         const mvPop: any = doc.createXULElement("menupopup");
                         for (const s of others) {
                             const mi: any = doc.createXULElement("menuitem");
-                            mi.setAttribute("label", s.name || "Session");
+                            if (s.name) wvDataLabel(mi, s.name);
+                            else wvL10n(mi, "weavero-menu-session-unnamed");
                             const sid = s.id;
                             mi.addEventListener("command", () => {
                                 try { const p: any = live(); if (p) p._wvMoveWindowToSession(targetWin, isReader, sid); } catch (er) {}
@@ -4314,6 +4318,9 @@ class _TabsMixin {
             try { if (this._getEnableGroupLibraryGlyph()) this._decorateTabBar(win); } catch (e) {}
             try { this._applyPinnedTabs(win); } catch (e) {}
             try { this._applyTabGroups(win); } catch (e) {}
+            // A split's two tabs drawn as a pair (tab-split.ts); its attribute is
+            // outside the filter below, so the marking never re-fires this.
+            try { (this as any)._wvTabSplitMarkStrip(win); } catch (e) {}
             // Self-heal the Ctrl/Shift+click multi-select wiring: a session
             // switch / window rebuild can drop it (the listeners live on the
             // tab-bar container). Keyed listeners (lib/listen.ts) make this a
@@ -4392,6 +4399,11 @@ class _TabsMixin {
     _wvTabIsPinned(win: any, tab: any): boolean {
         if (!tab) return false;
         if (wvLibraryTabPinned(tab)) return true;
+        // Where Zotero pins tabs itself, every main-window tab's pin is Zotero's
+        // (zotero b08cc35a50: Zotero_Tabs.add sets a boolean `pinned` on each
+        // tab record). Weavero's reader-window tabs carry no such field and keep
+        // Weavero's own pins below.
+        if (typeof tab.pinned === "boolean" && wvZoteroPinsTabs()) return tab.pinned;
         // A library tab pins by its own flag or Zotero's pin only (above): the
         // published set may still list one just unpinned -- a pinned My Library
         // joining a group unpins, and the order pass then kept it first in the
@@ -4428,9 +4440,11 @@ class _TabsMixin {
 
     /** Pin Tab / Unpin Tab on a library tab (a Zotero with its own windows,
      *  MJT 2026-11-10: "I just want to be able to pin the My Library tab to first
-     *  position if I want to"). Pinning puts it first, ahead of the other
-     *  pins, as an icon like them; unpinning leaves it to the order pass,
-     *  which moves it just right of the remaining pins (Firefox). */
+     *  position if I want to" -- by dragging it there: the pins reorder).
+     *  Pinning puts it at the END of the pinned tabs, as an icon like them,
+     *  as Firefox's pinTab and Zotero's own setPinned do; unpinning leaves it
+     *  to the order pass, which moves it just right of the remaining pins
+     *  (Firefox). */
     _wvSetLibraryTabPinned(win: any, tabID: any, on: boolean) {
         try {
             const Z: any = win && win.Zotero_Tabs;
@@ -4438,12 +4452,56 @@ class _TabsMixin {
             if (!tab) return;
             this._wvSetLibraryTabPinnedFlag(tab, on);
             // Zotero's own pin places the tab itself (end of its pinned run).
-            if (on && !wvZoteroPinsLibraryTabs() && Z._tabs.indexOf(tab) > 0 && typeof Z.move === "function") {
-                try { Z.move(tab.id, wvFirstMovableIndex(Z)); } catch (e) {}
+            // Weavero's own: right after the last OTHER pinned tab (MJT
+            // 2026-11-11: "In Firefox, pin tab moves it to the end of the
+            // pinned tabs. Weavero moves it first." -- first since 2026-11-10).
+            // `move` takes the slot in the array before the tab leaves it.
+            // Guard: test/library-tab-native.spec.js.
+            if (on && !wvZoteroPinsLibraryTabs() && typeof Z.move === "function") {
+                let lastPinned = wvFirstMovableIndex(Z) - 1;
+                for (let i = 0; i < Z._tabs.length; i++) {
+                    const t = Z._tabs[i];
+                    if (t && t !== tab && this._wvTabIsPinned(win, t)) lastPinned = i;
+                }
+                const slot = lastPinned + 1;
+                const cur = Z._tabs.indexOf(tab);
+                if (cur !== slot) { try { Z.move(tab.id, slot); } catch (e) {} }
             }
             this._applyPinnedTabs(win);
             try { (this as any)._applyTabGroups(win); } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvSetLibraryTabPinned err: " + e); }
+    }
+
+    /** Pin or unpin ANY main-window tab. Where Zotero pins tabs itself
+     *  (wvZoteroPinsTabs), through Zotero's own `setPinned`, after dropping any
+     *  Weavero record of that pin (the item-keyed store, a library tab's flag) so
+     *  the next apply does not hand it back. Elsewhere Weavero's own: a library
+     *  tab's flag, an item tab's entry in the item-keyed store (`weavero.pinnedTabs`;
+     *  the caller positions it, as _pinTabByCommand does). Returns whether the
+     *  tab's pin is now `on`. */
+    _wvSetTabPinned(win: any, tab: any, on: boolean): boolean {
+        try {
+            if (!tab) return false;
+            if (wvIsLibraryTabID(tab.id)) {
+                if (wvIsFixedLibraryTab(tab.id)) return false;
+                this._wvSetLibraryTabPinnedFlag(tab, on);
+                return wvLibraryTabPinned(tab) === !!on;
+            }
+            const k = this._tabPinKey(tab);
+            if (wvZoteroPinsTabs()) {
+                if (k && this._pinnedTabsHas(k.libraryID, k.itemKey)) this._pinnedTabsRemove(k.libraryID, k.itemKey);
+                if (!!tab.pinned === !!on) return true;
+                for (const w of [win, ...wvMainWins()]) {
+                    const Z: any = w && (w as any).Zotero_Tabs;
+                    if (Z && Z._tabs && Z._tabs.includes(tab)) { try { Z.setPinned(tab.id, !!on); } catch (e) {} break; }
+                }
+                return !!tab.pinned === !!on;
+            }
+            if (!k) return false;
+            if (on) this._pinnedTabsAdd(k.libraryID, k.itemKey);
+            else this._pinnedTabsRemove(k.libraryID, k.itemKey);
+            return true;
+        } catch (e) { Zotero.debug("[Weavero] _wvSetTabPinned err: " + e); return false; }
     }
 
     /** Reconcile the tab strip with the persisted pin list. THIS RUNS ON
@@ -4468,6 +4526,8 @@ class _TabsMixin {
             const doc = win.document;
             const Z_Tabs: any = (win as any).Zotero_Tabs;
             if (!Z_Tabs || !Z_Tabs._tabs) return;
+            // Zotero pins any tab itself (b08cc35a50): its pins are the pins.
+            if (wvZoteroPinsTabs()) { this._wvApplyZoteroPins(win); return; }
             const pinPref = this._pinnedTabsGet();
             // Library tabs pinned by their own flag (a Zotero with its own
             // windows). Pinned like the rest: ordered among the pins like any,
@@ -4677,6 +4737,93 @@ class _TabsMixin {
         } catch (e) { Zotero.debug("[Weavero] _applyPinnedTabs err: " + e); }
     }
 
+    /** `_applyPinnedTabs` where Zotero pins tabs itself (wvZoteroPinsTabs; zotero
+     *  b08cc35a50, the 11.0 beta after beta.4). Zotero's pins ARE the pins: they
+     *  sit at the start of Zotero's order, stay in their window and can't be
+     *  closed by the user (Zotero blocks them through `tab.pinned`). Weavero
+     *  keeps its look -- each pin drawn as an icon in Zotero's pinned row (the
+     *  real tab hidden), MJT 2026-11-10 "The pinned library tab does not have the
+     *  same size as the others" -- and hands over what it pinned itself:
+     *    - a library tab's 1.0.3 flag (`data.wvPinned`) and an open tab of an
+     *      item in Weavero's store (`weavero.pinnedTabs`, 1.0.4 and before; also
+     *      what a session switch, a stored window or a transfer still records
+     *      there) become Zotero's pin, once, and leave Weavero's records;
+     *    - a pinned tab in a Weavero tab group leaves the group (Firefox's
+     *      pinTab moves the tab out of its group into the pinned container).
+     *  Store entries for items not open in this window stay: another main
+     *  window, or a Weavero reader window (Weavero's own pins), may hold them.
+     *  Runs on every tab-bar mutation: idempotent, writes only on change. */
+    _wvApplyZoteroPins(win: any) {
+        try {
+            const doc = win.document;
+            const Z: any = win.Zotero_Tabs;
+            for (const t of Z._tabs.slice()) {
+                if (t && t.data && t.data.wvPinned && wvIsLibraryTabID(t.id)) this._wvSetLibraryTabPinnedFlag(t, true);
+            }
+            const pref = this._pinnedTabsGet();
+            if (pref.length) {
+                const want = new Set<string>(pref.map((p: any) => p.libraryID + ":" + p.itemKey));
+                const seen = new Set<string>();
+                const handed = new Set<string>();
+                for (const t of Z._tabs.slice()) {
+                    if (!t || wvIsLibraryTabID(t.id)) continue;
+                    const k = this._tabPinKey(t);
+                    if (!k) {
+                        // Item not cached yet (a restored note tab): apply again once it is.
+                        const iid = t.data && t.data.itemID;
+                        if (iid) {
+                            const pending: Set<number> = (this as any)._wvPinPendingIIDs || ((this as any)._wvPinPendingIIDs = new Set<number>());
+                            if (!pending.has(iid)) {
+                                pending.add(iid);
+                                Zotero.Items.getAsync(iid).then(() => { pending.delete(iid); try { this._applyPinnedTabs(win); } catch (_) {} })
+                                    .catch(() => { pending.delete(iid); });
+                            }
+                        }
+                        continue;
+                    }
+                    const kk = k.libraryID + ":" + k.itemKey;
+                    // One pin per pinned item: the first open copy (as before).
+                    if (!want.has(kk) || seen.has(kk)) continue;
+                    seen.add(kk);
+                    if (!t.pinned) { try { Z.setPinned(t.id, true); } catch (e) {} }
+                    if (t.pinned) handed.add(kk);
+                }
+                if (handed.size) this._pinnedTabsSet(this._pinnedTabsGet().filter((p: any) => !handed.has(p.libraryID + ":" + p.itemKey)));
+            }
+            const pinnedIDs = new Set<string>();
+            const order: string[] = [];
+            for (const t of Z._tabs) {
+                if (!t || !t.pinned) continue;
+                pinnedIDs.add(t.id);
+                order.push(t.id);
+                let stamp: any = null;
+                try { stamp = (this as any)._wvTabGroupStamp(t); } catch (e) {}
+                if (stamp) { try { (this as any)._wvTabGroupStampLeave(t, stamp); } catch (e) {} }
+            }
+            win._wvPinnedTabIDs = pinnedIDs;
+            for (const node of doc.querySelectorAll("#tab-bar-container .tab[data-id]")) {
+                const id = node.getAttribute("data-id");
+                const on = pinnedIDs.has(id);
+                if (on !== node.classList.contains("wv-pinned-tab")) node.classList.toggle("wv-pinned-tab", on);
+                if (on !== node.hasAttribute("data-wv-pin-mirrored")) {
+                    if (on) node.setAttribute("data-wv-pin-mirrored", "1");
+                    else node.removeAttribute("data-wv-pin-mirrored");
+                }
+            }
+            if (order.length) {
+                try { (this as any)._wvSyncPinnedMirrors(win, order); } catch (e) {}
+            }
+            else {
+                try { const mc = doc.getElementById("wv-pinned-mirrors"); if (mc) mc.remove(); } catch (e) {}
+            }
+            if (!(this as any)._wvTabGroupRestoreGuard && !(this as any)._wvStabilizing && win._wvTabGroupDragTabID == null) {
+                (this as any)._wvStabilizing = true;
+                try { (this as any)._wvTabGroupStabilize(win); } catch (e) {}
+                (this as any)._wvStabilizing = false;
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvApplyZoteroPins err: " + e); }
+    }
+
     /** Render one mirror button per LOOSE pinned tab inside Zotero's native
      *  `.pinned-tabs` container (left of the scroll arrows — Firefox layout),
      *  while `_applyPinnedTabs` hides the real React tab in the scroller.
@@ -4803,6 +4950,11 @@ class _TabsMixin {
                             if (e.button !== 1) return;
                             const lp = Zotero.Weavero && Zotero.Weavero.plugin;
                             if (!lp) return;
+                            // Zotero's own pin (b08cc35a50): the user can't close a
+                            // pinned tab (its _isClosable reads `pinned`), while
+                            // close() itself would -- follow Zotero.
+                            const zt = win.Zotero_Tabs._tabs.find((x: any) => x && x.id === m.getAttribute("data-tab-id"));
+                            if (zt && zt.pinned === true && wvZoteroPinsTabs()) return;
                             win.Zotero_Tabs.close(m.getAttribute("data-tab-id"));
                         } catch (er) {}
                     });
@@ -5857,6 +6009,27 @@ class _TabsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvWrapMoveToNewWindowHook err: " + e); }
     }
 
+    /** Zotero 9/10: give the window's tab hook and context pane their own
+     *  functions back (destroy). Both stayed Weavero's after a disable until
+     *  1.0.5-dev.7 (alignment review 2026-11-11; zzz-disable-leftovers.spec.js
+     *  sweeps them on a Zotero without its own windows). */
+    _wvUnwrapMoveToNewWindowHook(win: any) {
+        try {
+            const hooks: any = win && win.Zotero_Tabs && win.Zotero_Tabs.tabHooks && win.Zotero_Tabs.tabHooks.moveToNewWindow;
+            if (hooks && hooks._wvOrigReader) hooks.reader = hooks._wvOrigReader;
+            if (hooks) { delete hooks._wvOrigReader; delete hooks._wvWrapped; }
+        } catch (e) {}
+    }
+
+    _wvUnguardContextPaneCrossWindow(win: any) {
+        try {
+            const cp: any = win && win.document && win.document.getElementById("zotero-context-pane-inner");
+            if (!cp) return;
+            wvUnwrap(cp, "_handleTabSelect", "crossWindowGuard");
+            delete cp._wvCrossWindowGuarded;   // the stamp before wvWrap
+        } catch (e) {}
+    }
+
     _wireTabBarDrag(win) {
         try {
             if (!win || !win.document) return;
@@ -5911,7 +6084,9 @@ class _TabsMixin {
                                 return (it && it.attachmentReaderType) || "";
                             } catch (e) { return ""; }
                         })(),
-                        wasPinned: self._pinnedTabsHas(k.libraryID, k.itemKey),
+                        // Zotero's own pin where Zotero pins any tab (b08cc35a50),
+                        // else Weavero's item-keyed store.
+                        wasPinned: (typeof zotTab.pinned === "boolean" && wvZoteroPinsTabs()) ? zotTab.pinned : self._pinnedTabsHas(k.libraryID, k.itemKey),
                         initialIndex: Z_Tabs._tabs.indexOf(zotTab),
                     };
                     // Cross-main-window move: stamp the drag so ANOTHER main
@@ -6221,6 +6396,15 @@ class _TabsMixin {
                     const verdict = computePreview(drag);
                     const cur = target.getAttribute("data-wv-pin-preview") || "";
                     if (verdict === cur) return;
+                    // Each preview change goes to the drag ring (Zotero._wvGroupDnDLog):
+                    // MJT's "a pin dragged past a normal tab stays an icon" (2026-11-11)
+                    // did not reproduce in the runner, so a real drag records its why.
+                    try {
+                        const g = (win as any)._wvGapResult;
+                        (self as any)._wvTGDbg("pin-preview " + (cur || "-") + "->" + (verdict || "-") + " tab=" + drag.tabID
+                            + " wasPinned=" + !!drag.wasPinned + " el=" + (target.classList.contains("wv-pinned-mirror") ? "mirror" : "tab")
+                            + (g ? " slot=" + g.slot + " end=" + g.firstNonPinnedZIdx + " rows=" + !!g.rows + " inPins=" + !!g.inPins + " join=" + (g.joinGroupId || "-") : " gap=none"));
+                    } catch (eT) {}
                     // The UNPIN preview takes the width a normal tab has in this
                     // strip right now (tabs shrink as the bar fills), so it shows
                     // what the drop gives -- not its own title-driven width (a
@@ -6244,8 +6428,16 @@ class _TabsMixin {
                             // 167 px, pinned-drag.spec.js, 2026-11-10).
                             const hold = () => { try { (self as any)._wvPinRowHold((win as any)._wvDragGeom); } catch (eH) {} };
                             hold();
-                            const regs = Array.from(doc.querySelectorAll("#tab-bar-container .tabs > .tab:not(.wv-pinned-tab):not(:first-child)"))
-                                .filter((t: any) => t !== target && !t.hasAttribute("data-wv-pin-preview") && t.getBoundingClientRect().width > 1) as any[];
+                            // The reference tabs: the scrolling strip's unpinned ones.
+                            // Not `:first-child` -- that was an older Zotero's fixed
+                            // library tab; with its own windows the strip's first
+                            // child is a tab like any other, and Zotero's pinned row
+                            // (`.pinned-tabs > .tabs`) also matched `.tabs > .tab`.
+                            const strip = doc.querySelector("#tab-bar-container .tabs-wrapper .tabs") || doc.querySelector("#tab-bar-container .tabs");
+                            const regs = Array.from(strip ? strip.querySelectorAll(":scope > .tab:not(.wv-pinned-tab)") : [])
+                                .filter((t: any) => t !== target && !t.hasAttribute("data-wv-pin-preview") && !wvIsFixedLibraryTab(t.getAttribute("data-id"))
+                                    && t.getBoundingClientRect().width > 1) as any[];
+                            try { (self as any)._wvTGDbg("pin-preview unpin refs=" + regs.length); } catch (eT) {}
                             const avg = () => regs.reduce((s: number, t: any) => s + t.getBoundingClientRect().width, 0) / regs.length;
                             if (regs.length) {
                                 let W = avg();
@@ -7164,7 +7356,11 @@ class _TabsMixin {
                             // entry, which pins its library tabs through Zotero.
                             // Hidden only: the rest of this handler (Group Tabs,
                             // the multi-tab menus) still runs.
-                            const zoteroLibOnly = wvZoteroPinsLibraryTabs() && libIDs.length > 0 && !tgts.length;
+                            // Since zotero b08cc35a50 Zotero pins ANY tab: its own
+                            // entry serves every tab, and a multi-selection gets it
+                            // relabelled below (_wvMakePinTabMenuMulti).
+                            const zoteroLibOnly = wvZoteroPinsTabs()
+                                || (wvZoteroPinsLibraryTabs() && libIDs.length > 0 && !tgts.length);
                             ctx.setVisible(!zoteroLibOnly);
                             if (!zoteroLibOnly) {
                                 const nPin = (tgts.length + libIDs.length) || 1;
@@ -7174,25 +7370,21 @@ class _TabsMixin {
                                     ? tgts.every((t: any) => self._pinnedTabsHas(t.libraryID, t.itemKey))
                                         && libIDs.every((id: any) => self._wvLibTabPinnedByID(winPin, id))
                                     : self._pinnedTabsHas(item.libraryID, item.key);
-                                ctx.menuElem.setAttribute("label",
-                                    (pinned ? "Unpin" : "Pin")
-                                    + (nPin > 1 ? " " + nPin + " Tabs" : " Tab"));
+                                wvL10n(ctx.menuElem, "weavero-menu-tab-pin", { action: pinned ? "unpin" : "pin", count: nPin });
+                                ctx.menuElem.setAttribute("data-wv-key", "pin");
                             }
                             // MenuManager appends custom items AFTER all built-ins
                             // (Show in Library / Move Tab / Duplicate Tab / Close /
                             // Close Other Tabs / Reopen Closed Tab). The user wants
-                            // Pin Tab right after Duplicate Tab — locate it by label
-                            // and reposition our menuitem there. (Falls through
+                            // Pin Tab right after Duplicate Tab — locate it by its
+                            // key (Zotero's label, or Weavero's relabel marker) and
+                            // reposition our menuitem there. (Falls through
                             // gracefully if Duplicate Tab isn't in this popup, e.g.
                             // for tab types that don't expose a `duplicate` hook.)
                             try {
                                 const popup = ctx.menuElem.parentNode;
                                 if (!popup) return;
-                                const dupLabel = Zotero.getString("tabs.duplicate");
-                                let dup = null;
-                                for (const ch of popup.querySelectorAll("menuitem")) {
-                                    if (ch.getAttribute && ch.getAttribute("label") === dupLabel) { dup = ch; break; }
-                                }
+                                const dup = self._wvTabMenuFind(popup, "duplicate", "menuitem");
                                 if (dup && dup.nextSibling !== ctx.menuElem) {
                                     popup.insertBefore(ctx.menuElem, dup.nextSibling);
                                 }
@@ -7211,6 +7403,7 @@ class _TabsMixin {
                                         // multi-select branch below.
                                         try { self._wvInjectGroupTabsMenuItem(win2, popup, (tg && tg.length ? tg : [tabID2])); } catch (e) {}
                                         if (tg && tg.length > 1) {
+                                            if (wvZoteroPinsTabs()) self._wvMakePinTabMenuMulti(win2, popup, tg);
                                             self._wvMakeMoveTabMenuMulti(win2, popup, tg);
                                             self._wvMakeCloseTabsMenuMulti(win2, popup, tg);
                                             self._wvMakeDuplicateTabMenuMulti(win2, popup, tg);
@@ -7338,7 +7531,8 @@ class _TabsMixin {
                     const item = ctx.items && ctx.items[0];
                     if (!en.visible(self, item)) { ctx.setVisible(false); return; }
                     ctx.setVisible(true);
-                    ctx.menuElem.setAttribute("label", en.label(self));
+                    const l = en.l10n(self);
+                    wvL10n(ctx.menuElem, l.id, l.args);
                     ctx.menuElem.setAttribute(en.marker, "1");   // the repositioner finds it by this
                     const img = en.icon(self, item);
                     if (img) {
@@ -7371,7 +7565,11 @@ class _TabsMixin {
         // document actions first (what the tab shows), then tab-management
         // actions (what the tab is), then the close cluster, then copies.
         // Item actions were previously interleaved between Move Tab and
-        // Duplicate Tab.
+        // Duplicate Tab. The split-view entries (tab-split.ts) follow the group
+        // entries, as Firefox keeps them contiguous right after its group
+        // entries (tab-context-menu.js MENU_SECTIONS "priority-items"; MJT
+        // 2026-11-11: "Open in Split View should be together with the other
+        // Open options") -- MenuManager had put them at the end of the menu.
         return [
             "showInLibrary",
             "viewOnline",
@@ -7380,6 +7578,10 @@ class _TabsMixin {
             "openNotes",
             "removeFromGroup",
             "groupTab",
+            "splitAdd",
+            "splitOpen",
+            "splitSeparate",
+            "splitReverse",
             "moveTab",
             "duplicate",
             "pin",
@@ -7395,9 +7597,14 @@ class _TabsMixin {
 
     /** Resolve a tab context-menu child element to a canonical key from
      *  `_wvTabMenuOrder()`, or null if it isn't one of the ordered items.
-     *  Checks Weavero markers first (data-wv-*), then falls back to the native
-     *  Zotero labels so the SAME mapping works for the native main-window menu
-     *  and Weavero's custom reader/note menus. */
+     *  Checks Weavero markers first (data-wv-*: Weavero's own entries, and
+     *  Zotero's entries Weavero relabels -- Move Tabs, Duplicate N Tabs, Close
+     *  N Tabs, Pin N Tabs), then Zotero's own entries by the string Zotero
+     *  itself labels them with (tabs.js _openMenu: Zotero.getString; Pin Tab
+     *  by its Fluent id), so the SAME mapping works for the native main-window
+     *  menu and Weavero's custom reader/note menus, in any language. Until
+     *  localisation slice 2 the relabels were matched by their English
+     *  ("Move Tabs", /^Close \d+ Tabs$/): test/menus-l10n.spec.js. */
     _wvTabMenuItemKey(el: any): string | null {
         try {
             if (!el || !el.getAttribute) return null;
@@ -7407,16 +7614,30 @@ class _TabsMixin {
             if (el.getAttribute("data-wv-tab-showfile") === "1") return "showFile";
             if (el.getAttribute("data-wv-tab-external") === "1") return "externalViewer";
             if (el.classList && el.classList.contains("wv-grouptabs")) return "groupTab";
+            const l10n = el.getAttribute("data-l10n-id");
+            if (l10n === "tabs-pin" || l10n === "tabs-unpin") return "pin";
             const label = el.getAttribute("label") || "";
-            const S = (k: string, fb: string) => { try { return Zotero.getString(k); } catch (e) { return fb; } };
-            if (label === S("general.showInLibrary", "Show in Library")) return "showInLibrary";
-            if (label === S("tabs.move", "Move Tab") || label === "Move Tabs") return "moveTab";
-            if (label === S("tabs.duplicate", "Duplicate Tab") || /^Duplicate \d+ Tabs$/.test(label)) return "duplicate";
-            if (/^(Pin|Unpin)( \d+)? Tabs?$/.test(label || "")) return "pin";
-            if (label === S("general.close", "Close") || /^Close \d+ Tabs$/.test(label)) return "close";
-            if (label === S("tabs.closeOther", "Close Other Tabs")) return "closeOther";
+            if (!label) return null;
+            const S = (k: string) => { try { return Zotero.getString(k); } catch (e) { return null; } };
+            if (label === S("general.showInLibrary")) return "showInLibrary";
+            if (label === S("tabs.move")) return "moveTab";
+            if (label === S("tabs.duplicate")) return "duplicate";
+            if (label === S("general.close")) return "close";
+            if (label === S("tabs.closeOther")) return "closeOther";
             return null;
         } catch (e) { return null; }
+    }
+
+    /** The first child of a tab menu `popup` with canonical `key`
+     *  (`_wvTabMenuItemKey`), optionally of one element name. */
+    _wvTabMenuFind(popup: any, key: string, localName?: string): any {
+        try {
+            for (const el of Array.from(popup.children) as any[]) {
+                if (localName && el.localName !== localName) continue;
+                if (this._wvTabMenuItemKey(el) === key) return el;
+            }
+        } catch (e) {}
+        return null;
     }
 
     /** Make the native tab context menu's "Move Tab" submenu multi-select aware.
@@ -7476,13 +7697,11 @@ class _TabsMixin {
     _wvMakeMoveTabMenuMulti(win: any, popup: any, targets: any[]) {
         try {
             const self = this;
-            const moveLabel = Zotero.getString("tabs.move");
-            let moveMenu: any = null;
-            for (const m of popup.querySelectorAll("menu")) {
-                if (m.getAttribute && m.getAttribute("label") === moveLabel) { moveMenu = m; break; }
-            }
+            const moveMenu: any = this._wvTabMenuFind(popup, "moveTab", "menu");
             if (!moveMenu) return;
-            moveMenu.setAttribute("label", "Move Tabs");
+            // Found again by its key, whatever language the relabel reads in.
+            moveMenu.setAttribute("data-wv-key", "moveTab");
+            wvL10n(moveMenu, "weavero-menu-tab-move-tabs");
             const submenu = moveMenu.querySelector("menupopup");
             if (!submenu) return;
             const startLabel = Zotero.getString("tabs.moveToStart");
@@ -7537,23 +7756,21 @@ class _TabsMixin {
             } catch (e) {}
             // Anchor on the move menu so the two related actions read as a
             // pair; fall back to the popup's head if it is absent.
-            const moveLabel = Zotero.getString("tabs.move");
-            const findMove = () => {
-                for (const m of popup.querySelectorAll("menu")) {
-                    const l = m.getAttribute && m.getAttribute("label");
-                    if (l === moveLabel || l === "Move Tabs" || l === "Move Tab") return m;
-                }
-                return null;
-            };
+            const findMove = () => this._wvTabMenuFind(popup, "moveTab", "menu");
             const mi = doc.createXULElement("menuitem");
             mi.classList.add("wv-grouptabs");
-            mi.setAttribute("label", ids.length > 1 ? "Group Tabs" : "Group Tab");
+            wvL10n(mi, "weavero-menu-tab-group-tabs", { count: ids.length });
             mi.addEventListener("command", () => {
                 try { this._wvGroupTabsIntoNewGroup(win, ids.slice()); } catch (e) {}
             });
+            // Before the split-view entries when the menu has them: the canonical
+            // order (_wvTabMenuOrder) puts them between the group entries and
+            // Move Tab, as Firefox's tab menu does (MJT 2026-11-11).
             const place = () => {
+                const sv = popup.querySelector(":scope > [data-wv-key^='split']");
                 const mv = findMove();
-                if (mv && mv.parentNode === popup) popup.insertBefore(mi, mv);
+                const before = (sv && (!mv || (sv.compareDocumentPosition(mv) & 4))) ? sv : mv;
+                if (before && before.parentNode === popup) popup.insertBefore(mi, before);
                 else popup.appendChild(mi);
             };
             place();
@@ -7569,12 +7786,7 @@ class _TabsMixin {
     _wvInjectMoveTargetsIntoNativeMoveMenu(win: any, popup: any, targets: any[]) {
         try {
             const doc = popup.ownerDocument;
-            const moveLabel = Zotero.getString("tabs.move");
-            let moveMenu: any = null;
-            for (const m of popup.querySelectorAll("menu")) {
-                const l = m.getAttribute && m.getAttribute("label");
-                if (l === moveLabel || l === "Move Tabs") { moveMenu = m; break; }
-            }
+            const moveMenu: any = this._wvTabMenuFind(popup, "moveTab", "menu");
             if (!moveMenu) return;
             const submenu = moveMenu.querySelector("menupopup");
             if (!submenu) return;
@@ -7592,9 +7804,11 @@ class _TabsMixin {
             // failed to close it here -- a pinned My Library in both windows
             // (Zotero main 49b48f5d08, tabs.js moveToWindow).
             const Zm: any = win && (win as any).Zotero_Tabs;
+            // Since zotero b08cc35a50 a pinned tab stays movable (among the pins) but
+            // never leaves its window (moveToWindow returns null for it).
             const tids = ((targets && targets.length) ? targets.slice() : []).filter((id: any) => {
                 const t = Zm && Zm._tabs && Zm._tabs.find((x: any) => x && x.id === id);
-                return !(t && t.movable === false);
+                return !(t && (t.movable === false || t.pinned));
             });
             if (!tids.length) { try { sep.remove(); } catch (e) {} return; }
             const onPick = (target: any) => {
@@ -7667,22 +7881,59 @@ class _TabsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvMakeShowInLibraryMenuMulti err: " + e); }
     }
 
+    /** Multi-select: Zotero's own Pin Tab / Unpin Tab (zotero b08cc35a50, any tab)
+     *  acts on the right-clicked tab alone. Relabel it "Pin N Tabs" / "Unpin N
+     *  Tabs" and make it act on the whole selection, as Weavero does for Close N
+     *  Tabs and Firefox does for its Pin Tabs: Unpin only when every selected tab
+     *  is pinned, else pin the ones that are not. The clone drops Zotero's
+     *  single-tab listener and its Fluent id (Fluent would rewrite the label). */
+    _wvMakePinTabMenuMulti(win: any, popup: any, targets: any[]) {
+        try {
+            const Z: any = win && (win as any).Zotero_Tabs;
+            if (!Z || !popup) return;
+            const mi = Array.from(popup.querySelectorAll(":scope > menuitem")).find((x: any) => {
+                const l10n = x.getAttribute("data-l10n-id");
+                return l10n === "tabs-pin" || l10n === "tabs-unpin";
+            }) as any;
+            if (!mi) return;
+            const tabs = targets.map((id: any) => Z._tabs.find((x: any) => x && x.id === id)).filter(Boolean);
+            if (tabs.length < 2) return;
+            const allPinned = tabs.every((t: any) => t.pinned);
+            const clone = mi.cloneNode(true);
+            clone.setAttribute("data-wv-key", "pin");
+            wvL10n(clone, "weavero-menu-tab-pin", { action: allPinned ? "unpin" : "pin", count: tabs.length });
+            mi.replaceWith(clone);
+            clone.addEventListener("command", () => {
+                try {
+                    for (const t of tabs) {
+                        if (allPinned || !t.pinned) this._wvSetTabPinned(win, t, !allPinned);
+                    }
+                    this._applyPinnedTabs(win);
+                } catch (e) { Zotero.debug("[Weavero] pin N tabs err: " + e); }
+            });
+        } catch (e) { Zotero.debug("[Weavero] _wvMakePinTabMenuMulti err: " + e); }
+    }
+
     _wvMakeCloseTabsMenuMulti(win: any, popup: any, targets: any[]) {
         try {
             // Tabs Zotero won't close (a library tab it holds pinned, closable
             // false) stay: Zotero_Tabs.close() checks every id first and throws
             // on the first one, which closed NOTHING (Zotero main 49b48f5d08).
+            // Since b08cc35a50 a pinned tab keeps closable TRUE and Zotero refuses
+            // only the user's close (`_isClosable` reads `pinned`), while close()
+            // itself would close it: leave pinned tabs out explicitly.
             const ZT0: any = win && (win as any).Zotero_Tabs;
             const closable = targets.filter((id: any) => {
                 const t = ZT0 && ZT0._tabs && ZT0._tabs.find((x: any) => x && x.id === id);
-                return !(t && t.closable === false);
+                return !(t && (t.closable === false || t.pinned));
             });
             if (!closable.length) return;
             const closeLabel = Zotero.getString("general.close");
             for (const mi of Array.from(popup.querySelectorAll("menuitem")) as any[]) {
                 if (!mi.getAttribute || mi.getAttribute("label") !== closeLabel) continue;
                 const clone = mi.cloneNode(true);   // drops the native single-tab command listener
-                clone.setAttribute("label", closable.length > 1 ? "Close " + closable.length + " Tabs" : "Close Tab");
+                clone.setAttribute("data-wv-key", "close");
+                wvL10n(clone, "weavero-menu-tab-close", { count: closable.length });
                 mi.replaceWith(clone);
                 clone.addEventListener("command", () => {
                     try { const ZT: any = win && (win as any).Zotero_Tabs; if (ZT && typeof ZT.close === "function") ZT.close(closable.slice()); } catch (e) {}
@@ -7719,7 +7970,8 @@ class _TabsMixin {
             for (const mi of Array.from(popup.querySelectorAll("menuitem")) as any[]) {
                 if (!mi.getAttribute || mi.getAttribute("label") !== dupLabel) continue;
                 const clone = mi.cloneNode(true);   // drops the native single-tab command listener
-                clone.setAttribute("label", "Duplicate " + dupable.length + " Tabs");
+                clone.setAttribute("data-wv-key", "duplicate");
+                wvL10n(clone, "weavero-menu-tab-duplicate", { count: dupable.length });
                 mi.replaceWith(clone);
                 clone.addEventListener("command", () => {
                     try { this._wvDuplicateTabs(win, dupable); } catch (e) {}
@@ -7805,6 +8057,7 @@ class _TabsMixin {
                 target: "main/tab",
                 menus: [{
                     menuType: "menuitem",
+                    l10nID: "weavero-menu-file-new-main-window",
                     onShowing: (_ev, ctx) => {
                         try {
                             let on = false;
@@ -7819,7 +8072,6 @@ class _TabsMixin {
                                 ctx.setVisible(false); return;
                             }
                             ctx.setVisible(true);
-                            ctx.menuElem.setAttribute("label", "New Main Window");
                         } catch (e) {
                             try { ctx.setVisible(false); } catch (e2) {}
                         }
@@ -7868,10 +8120,10 @@ class _TabsMixin {
                     menuType: "menuitem",
                     onShowing: (_ev: any, ctx: any) => {
                         try {
-                            const label = this._wvClosedTopLabel();
-                            if (!label) { ctx.setVisible(false); return; }
+                            const l = this._wvClosedTopL10n();
+                            if (!l) { ctx.setVisible(false); return; }
                             ctx.setVisible(true);
-                            ctx.menuElem.setAttribute("label", label);
+                            wvL10n(ctx.menuElem, l.id, l.args);
                         } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
                     },
                     onCommand: (_ev: any, ctx: any) => {
@@ -8533,7 +8785,11 @@ class _TabsMixin {
         // it came back at another window's place (MJT 2026-11-08, "Fix").
         let anchorGeom: any;
         try { const a0: any = (Zotero.getMainWindows() || [])[0]; anchorGeom = (a0 && (this as any)._wvWindowGeom(a0)) || undefined; } catch (e) {}
-        return { version: 4, windows, focused: this._wvWindowStoreFocusDescriptor(), anchorHidden, anchorTitle, anchorTagsAuto, anchorPaneSizes, anchorGeom };
+        // And its span across monitors (max-span.ts): the geometry brings the
+        // size back, this the restore glyph and the place before the span.
+        let anchorSpan: any;
+        try { const a0: any = (Zotero.getMainWindows() || [])[0]; anchorSpan = (a0 && (this as any)._wvMaxSpanCapture(a0)) || undefined; } catch (e) {}
+        return { version: 4, windows, focused: this._wvWindowStoreFocusDescriptor(), anchorHidden, anchorTitle, anchorTagsAuto, anchorPaneSizes, anchorGeom, anchorSpan };
     }
 
     _wvWindowStoreSaveSync() {
@@ -9109,11 +9365,11 @@ class _TabsMixin {
                         if (pop) pop.remove();
                         pop = doc.createXULElement("menupopup");
                         pop.id = "wv-savedwin-context";
-                        const mk = (lbl: string, fn: any) => { wvMenuItem(doc, { label: lbl, onCommand: () => fn() }, pop); };
-                        mk("Rename Window…", () => {
+                        const mk = (l10nID: string, fn: any) => { wvMenuItem(doc, { l10n: { id: l10nID }, onCommand: () => fn() }, pop); };
+                        mk("weavero-menu-window-rename", () => {
                             try { lp._wvSavedWindowPromptRename(doc.defaultView, sec.savedId); } catch (er2) {}
                         });
-                        mk("Reopen Window", () => {
+                        mk("weavero-menu-window-reopen", () => {
                             try { (panel as any).hidePopup && (panel as any).hidePopup(); } catch (er2) {}
                             lp._wvSavedWindowReopen(sec.savedId);
                         });
@@ -9128,11 +9384,12 @@ class _TabsMixin {
                                 .filter((s: any) => s && (s.id || null) !== ownerId);
                             if (named.length) {
                                 const mv = doc.createXULElement("menu");
-                                mv.setAttribute("label", "Move Window to");
+                                wvL10n(mv, "weavero-menu-window-move-to");
                                 const mvPop = doc.createXULElement("menupopup");
                                 for (const s of named) {
                                     const mi = doc.createXULElement("menuitem");
-                                    mi.setAttribute("label", s.name || "Session");
+                                    if (s.name) wvDataLabel(mi, s.name);
+                                    else wvL10n(mi, "weavero-menu-session-unnamed");
                                     const sid = s.id;
                                     mi.addEventListener("command", () => {
                                         try { lp._wvSavedWindowMoveToSession(sec.savedId, sid); } catch (er2) {}
@@ -9143,7 +9400,7 @@ class _TabsMixin {
                                 pop.appendChild(mv);
                             }
                         } catch (er2) {}
-                        mk("Delete Saved Window", async () => {
+                        mk("weavero-menu-window-delete-saved", async () => {
                             await lp._wvSavedWindowDelete(sec.savedId);
                             refresh();
                         });
@@ -9273,8 +9530,9 @@ class _TabsMixin {
         return PathUtils.join(PathUtils.join(Zotero.DataDirectory.dir, "weavero"), "disable-closed.json");
     }
 
-    /** DISABLE path: close every reader window and every managed main window
-     *  (the untagged anchor stays). Runs AFTER destroy's final store capture +
+    /** DISABLE path: close every reader window that holds Weavero's tabs and
+     *  every managed main window (the untagged anchor and Zotero's own
+     *  single-document reader windows stay). Runs AFTER destroy's final store capture +
      *  freeze, so the closes cannot clobber the snapshot. Reader-window closes
      *  park the groups homed there — recorded in the marker so enable un-parks
      *  exactly those (they'll be live again once their windows restore). */
@@ -9297,11 +9555,32 @@ class _TabsMixin {
                     const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                     if (live) return;   // reload, not a disable — keep the windows
                     let closedReaders = 0, closedMains = 0;
+                    const keptReaders: number[] = [];
+                    // Only the reader windows Weavero made what they are: one with a
+                    // tab Weavero mounted, or with no Zotero document left (a deck
+                    // whose native tab closed, a note deck). A window holding only
+                    // Zotero's own document is Zotero's and works without Weavero:
+                    // closing it too (until 2026-11-11, MJT's call) lost it for good
+                    // when Weavero stayed off. Read from the window, not a plugin
+                    // instance: this runs after the instance is gone.
+                    // Guard: test/zzz-disable-leftovers.spec.js (Zotero 9/10 cases).
+                    const zoterosOwnItem = (w: any): number | null => {
+                        try {
+                            const tabs: any[] = (w && w._wvWT && w._wvWT.tabs) || [];
+                            if (tabs.length) return (tabs.length === 1 && tabs[0].native && tabs[0].itemID != null) ? tabs[0].itemID : null;
+                            const r = (((Zotero as any).Reader && (Zotero as any).Reader._readers) || []).find((x: any) => x && x._window === w);
+                            return (r && r.itemID != null) ? r.itemID : null;
+                        } catch (e) { return null; }
+                    };
                     try {
                         const rws: any[] = [];
                         const en = Services.wm.getEnumerator("zotero:reader");
                         while (en.hasMoreElements()) rws.push(en.getNext());
-                        for (const w of rws) { try { w.close(); closedReaders++; } catch (e) {} }
+                        for (const w of rws) {
+                            const own = zoterosOwnItem(w);
+                            if (own != null) { keptReaders.push(own); continue; }
+                            try { w.close(); closedReaders++; } catch (e) {}
+                        }
                     } catch (e) {}
                     try {
                         const mains = wvMainWins();
@@ -9310,9 +9589,9 @@ class _TabsMixin {
                         }
                     } catch (e) {}
                     try {
-                        wvStoreWrite(markerPath, { version: 1, closedReaders, closedMains, unpark: liveGroups }, { pretty: null });
+                        wvStoreWrite(markerPath, { version: 1, closedReaders, closedMains, keptReaders, unpark: liveGroups }, { pretty: null });
                     } catch (e) {}
-                    Zotero.debug("[Weavero] disable-close: " + closedReaders + " reader + " + closedMains + " managed main window(s) saved+closed");
+                    Zotero.debug("[Weavero] disable-close: " + closedReaders + " reader + " + closedMains + " managed main window(s) saved+closed; " + keptReaders.length + " reader window(s) of Zotero's own kept");
                 } catch (e) { Zotero.debug("[Weavero] disable-close deferred err: " + e); }
             }, 1500);
         } catch (e) { Zotero.debug("[Weavero] _wvDisableCloseExtraWindows err: " + e); }
@@ -9331,6 +9610,10 @@ class _TabsMixin {
             await wvStoreRemove(path);
             const marker: any = r.doc;
             if (!marker) return;
+            // The reader windows the disable LEFT OPEN (Zotero's own): the frozen
+            // store still lists them, so the unclaimed-window check would reopen
+            // one the user closed while Weavero was off. It skips these.
+            try { (this as any)._wvDisableKeptReaderIDs = new Set(marker.keptReaders || []); } catch (e) {}
             // Un-park the groups that the reader-window closes parked at
             // disable-time — their windows are about to come back.
             try {
@@ -9859,6 +10142,14 @@ class _TabsMixin {
                 // own field, else Zotero's one saved geometry, the last window
                 // closed (2026-11-08). With an entry, the entry's below.
                 if (hw && doc && !entry && doc.anchorGeom) (this as any)._wvApplyWindowGeom(hw, doc.anchorGeom);
+                // Spanned across monitors at the quit (max-span.ts): spanned again
+                // once the geometry above (or the entry's, below) has moved it.
+                if (hw && doc && doc.anchorSpan) {
+                    const span = doc.anchorSpan;
+                    wvTimeout(() => {
+                        try { const lp: any = wvLivePlugin(); if (lp && !hw.closed) lp._wvMaxSpanReapply(hw, span); } catch (e) {}
+                    }, 1500);
+                }
             } catch (e) {}
             if (!entry) return;   // pre-takeover store → Zotero restored natively
             const win: any = (this as any)._wvAnchorWindow();
@@ -10089,11 +10380,22 @@ class _TabsMixin {
                 if (Z.tabHooks && Z.parseTabType && Z._getHook) {
                     const itemIDs: any[] = [];
                     const failed: Array<{ tab: any; i: number }> = [];
+                    // What Zotero's own loop does around each hook, kept in this
+                    // copy (tabs.js restoreState): one `context` shared by the
+                    // tabs, a tab saved as pinned pinned again where Zotero pins
+                    // tabs, a tab selected at the end. Without the pin a closed
+                    // window reopened through Zotero lost its pins (alignment
+                    // review 2026-11-11, reproduced on Zotero main d569d42f5;
+                    // guard: zotero-pin-any-tab.spec.js).
+                    const context: any = {};
                     const runOne = async (tab: any, i: number) => {
                         const { tabContentType } = Z.parseTabType(tab.type);
                         const hook = Z._getHook(tabContentType, "restoreState");
-                        const r = await hook(tab, i);
+                        const r = await hook(tab, i, context);
                         if (r && r.itemID) itemIDs.push(r.itemID);
+                        if (r && r.id && tab && tab.pinned && typeof Z.setPinned === "function") {
+                            try { Z.setPinned(r.id, true); } catch (e) {}
+                        }
                         // A tab that CARRIES an item but produced none was silently
                         // skipped by the hook — during early startup that's usually
                         // `Zotero.Items.exists()` returning false because the item
@@ -10125,6 +10427,10 @@ class _TabsMixin {
                             catch (e) { trace("restoreState[" + name() + "] retry FAILED (" + tab.type + "): " + e); }
                         }
                     }
+                    try {
+                        const sel = Z._getTab && Z._getTab(Z._selectedID);
+                        if (!(sel && sel.tab) && Z._tabs.length) Z.select(Z._tabs[0].id);
+                    } catch (e) {}
                     Z._prevSelectedID = null;
                     try {
                         const items = await Zotero.Items.getAsync(itemIDs.filter((x: any) => x));
@@ -11509,13 +11815,15 @@ class _TabsMixin {
     }
 
     /** Menu label for the top entry, or null if nothing of ours to reopen. */
-    _wvClosedTopLabel(): string | null {
+    /** The reopen entry's weavero.ftl message for the top of the closed
+     *  stack, or null when there is nothing of Weavero's to reopen. */
+    _wvClosedTopL10n(): { id: string, args?: any } | null {
         const top = this._wvClosedPeek();
         if (!top) return null;
-        if (top.kind === "group") return "Reopen Closed Group";
+        if (top.kind === "group") return { id: "weavero-menu-tab-reopen-closed-group" };
         if (top.kind === "readerWindow") {
             const n = (top.tabs || []).filter((t: any) => { try { return Zotero.Items.exists(t.itemID); } catch (e) { return false; } }).length;
-            return n > 1 ? "Reopen Closed Window (" + n + " Tabs)" : "Reopen Closed Window";
+            return { id: "weavero-menu-tab-reopen-closed-window", args: { count: n } };
         }
         return null;
     }
@@ -11666,14 +11974,18 @@ class _TabsMixin {
         return self._wvColStoreDocPromise;
     }
 
+    // Copies in and out: a window's `_columnPrefs` is an object of the
+    // window's own scope, and kept in the document it kept the closed window
+    // alive (test/reader-leak.spec.js, 2026-11-12). The file holds data only.
     async _wvColStoreGet(key: string) {
         const doc = await this._wvColStoreLoad();
-        return doc ? doc[key] : undefined;
+        const v = doc ? doc[key] : undefined;
+        return v && typeof v === "object" ? JSON.parse(JSON.stringify(v)) : v;
     }
 
     async _wvColStoreSet(key: string, prefs: any) {
         const doc = await this._wvColStoreLoad();
-        doc[key] = prefs;
+        doc[key] = prefs && typeof prefs === "object" ? JSON.parse(JSON.stringify(prefs)) : prefs;
         if ((this as any)._wvColStoreReadOnly) { Zotero.debug("[Weavero] colstore persist skipped: store is read-only (unreadable at load)"); return; }
         return wvStoreWrite(this._wvColStorePath(), doc);
     }
@@ -11901,9 +12213,10 @@ class _TabsMixin {
             const cp: any = win.document.getElementById("zotero-context-pane-inner");
             // Install the guard ONCE per window: ignore tab events for tabs that
             // aren't this window's own (the cross-window leak source).
-            if (cp && !cp._wvCrossWindowGuarded && typeof cp._handleTabSelect === "function") {
-                const orig = cp._handleTabSelect.bind(cp);
-                cp._handleTabSelect = async function (action, type, ids, extraData) {
+            // A wvWrap layer since 1.0.5-dev.7, beside the split view's
+            // (tab-split.ts): each is given back on its own at destroy.
+            if (cp && typeof cp._handleTabSelect === "function") {
+                wvWrap(cp, "_handleTabSelect", "crossWindowGuard", (this as any)._wvWireTag(), (origFn: any) => async function (this: any, _action: any, _type: any, ids: any) {
                     try {
                         const tabID = ids && ids[0];
                         // Only react to events about THIS window's CURRENTLY-selected
@@ -11917,9 +12230,8 @@ class _TabsMixin {
                         // destination window's pane).
                         if (tabID && win.Zotero_Tabs && win.Zotero_Tabs.selectedID !== tabID) return;
                     } catch (e) {}
-                    return orig(action, type, ids, extraData);
-                };
-                cp._wvCrossWindowGuarded = true;
+                    return origFn.apply(cp, arguments as any);
+                });
             }
             // Re-assert (every call): if this window is on its library tab, make
             // sure the context pane is collapsed — clears a stale pane left
@@ -11993,6 +12305,21 @@ class _TabsMixin {
                 return orig(action, type, ids, extraData);
             };
         } catch (e) { Zotero.debug("[Weavero] _wvGuardCollectionSelectCrossWindow err: " + e); }
+    }
+
+    /** Give the window's collectionsView its own notify back (destroy). Left
+     *  wrapped until 1.0.5-dev.7: the wrapper names nothing of Weavero's, so
+     *  only the sweep's by-global check saw it (zzz-disable-leftovers.spec.js). */
+    _wvUnguardCollectionSelectCrossWindow(win: any) {
+        try {
+            const cv: any = win && win.ZoteroPane && win.ZoteroPane.collectionsView;
+            if (!cv || !cv._wvOrigNotifyForSelectGuard) return;
+            const orig = cv._wvOrigNotifyForSelectGuard;
+            const p = Object.getPrototypeOf(cv);
+            if (p && p.notify === orig) delete cv.notify;
+            else cv.notify = orig;
+            delete cv._wvOrigNotifyForSelectGuard;
+        } catch (e) {}
     }
 
     /** Guard + re-assert the context pane on EVERY open main window. Needed
@@ -12681,10 +13008,14 @@ class _TabsMixin {
         // Non-tab hover or Library tab: fall back to plain-title
         // behavior so we don't suppress the standard tooltips for
         // window-control / non-tab descendants of #zotero-title-bar.
+        // A split's side reads Firefox's "{label}, Split view left|right" (tab-split.ts).
+        const splitLabel = (id: any, t: string) => {
+            try { return (this as any)._wvTabSplitTooltip(win, id, t); } catch (e) { return t; }
+        };
         if (!tab || wvIsLibraryTabID(tab.dataset.id)) {
             const t = findTitle();
             if (t) {
-                renderPlainLabel(t);
+                renderPlainLabel(tab ? splitLabel(tab.dataset.id, t) : t);
                 return true;
             }
             return false;
@@ -12720,7 +13051,7 @@ class _TabsMixin {
                 || findTitle()
                 || null;
             if (t) {
-                renderPlainLabel(t);
+                renderPlainLabel(splitLabel(tabId, t));
                 return true;
             }
             return false;

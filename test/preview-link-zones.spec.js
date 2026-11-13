@@ -63,7 +63,7 @@ describe("Weavero — overlay-popup re-hover guard", () => {
     it("closing the popup (null) clears the stale hover guard", () => {
         const { reader, pv } = stubReader();
         wv._wvWirePreviewLinkZones(reader);
-        assert.isOk(pv._wvPrevZonesWired, "wrapper installed");
+        assert.isOk(pv._wvWraps && pv._wvWraps._onSetOverlayPopup, "wrapper installed");
         pv._onSetOverlayPopup(null);
         assert.isNull(pv._selectedOverlay);
     });
@@ -74,5 +74,26 @@ describe("Weavero — overlay-popup re-hover guard", () => {
         wv._wvWirePreviewLinkZones(reader);
         pv._onSetOverlayPopup({ type: "citation" });
         assert.equal(pv._selectedOverlay, marker);
+    });
+
+    // A disable gives the view its own callback back (1.0.5-dev.7,
+    // zzz-disable-leftovers.spec.js), also on a view an older build wired
+    // (its own `_wvPrevZonesOrig`, outside the wrap table).
+    it("the reader teardown gives the native callback back", () => {
+        for (const legacy of [false, true]) {
+            const { reader, pv } = stubReader();
+            const native = pv._onSetOverlayPopup;
+            if (legacy) {
+                pv._wvPrevZonesOrig = native;
+                pv._wvPrevZonesWired = "old-build";
+                pv._onSetOverlayPopup = function () { return "old _wvPreviewInjectZones wrapper"; };
+            }
+            wv._wvWirePreviewLinkZones(reader);
+            assert.notStrictEqual(pv._onSetOverlayPopup, native, "wrapped");
+            assert.notOk(pv._wvPrevZonesOrig, "the old build's saved original is taken in");
+            wv._wvReaderUnwireInternals(reader);
+            assert.strictEqual(pv._onSetOverlayPopup, native, "native back (legacy: " + legacy + ")");
+            assert.notOk(pv._wvWraps, "no wrap table left");
+        }
     });
 });

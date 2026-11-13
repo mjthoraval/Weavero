@@ -24,6 +24,7 @@ import { wvMenuItem, wvMenuSeparator } from "../lib/menu";
 import { wvItemsTreeEls, wvMainWins } from "../lib/windows";
 import { wvLinkGlyphUri } from "../lib/link-glyph";
 import { WvSectionDesc, WvLkRow, WvBlEnd, WV_BL_CARD_FOOT, wvBlBodyRegister, wvBlBodyForget, wvBlCardHide, wvBlCardHost, wvBlHtmlToText, wvBlAttOf, wvBlAnnText, wvBlTargetHl } from "./backlinks";
+import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
 
 /** A note citation node and a quoted annotation node, as the note editor
  *  draws them (its node views set the class alone) or as a note's stored
@@ -541,13 +542,14 @@ class _LinksMixin {
             }
             while (menu.firstChild) menu.removeChild(menu.firstChild);
             const t = r.target;
-            wvMenuItem(doc, { label: "Show in Library", disabled: !t, onCommand: () => self._wvBlOpenItem(t, "select") }, menu);
+            // Zotero's own "Show in Library" (backlinks.ts _wvBlOpenMenu).
+            wvZoteroLabel(wvMenuItem(doc, { disabled: !t, onCommand: () => self._wvBlOpenItem(t, "select") }, menu), wvZoteroText("general-show-in-library"));
             wvMenuItem(doc, {
-                label: "Copy Link",
+                l10n: { id: "weavero-menu-ref-copy-link" },
                 onCommand: () => { const link = this._wvLkLinkOf(r); if (link) Zotero.Utilities.Internal.copyTextToClipboard(link); },
             }, menu);
             wvMenuItem(doc, {
-                label: "Show in Source",
+                l10n: { id: "weavero-menu-ref-show-in-source" },
                 onCommand: () => { try { const p = self._wvBlOpenSource(r.src, r.entry); if (p && typeof p.catch === "function") p.catch(() => {}); } catch (e) {} },
             }, menu);
             const owner = self._wvBlOwnerOf(r.src) || r.src;
@@ -555,7 +557,7 @@ class _LinksMixin {
             const canRelate = !!(t && owner && owner.id !== t.id && owner.libraryID === t.libraryID && !isAnn(owner)
                 && (self._wvBlOwnerOf(t) || t).id !== owner.id);
             wvMenuSeparator(doc, menu);
-            wvMenuItem(doc, { label: "Add as Related", disabled: !canRelate, onCommand: () => self._wvBlAddRelated(owner, t) }, menu);
+            wvMenuItem(doc, { l10n: { id: "weavero-menu-ref-add-related" }, disabled: !canRelate, onCommand: () => self._wvBlAddRelated(owner, t) }, menu);
             menu.openPopupAtScreen(ev.screenX, ev.screenY, true);
         } catch (e) { Zotero.debug("[Weavero] links menu err: " + e); }
     }

@@ -29,6 +29,10 @@ describe("Weavero — tab-order stabilizer backs off from a reorder storm", func
         }
         win = Zotero.getMainWindow();
         ZT = win.Zotero_Tabs;
+        // The scenario is a Weavero pin among unpinned tabs; where Zotero pins any
+        // tab (zotero b08cc35a50) the pins are Zotero's and Zotero orders them, so
+        // there is none. The breaker is the same code everywhere (beta.4, Zotero 10).
+        if (wvT.lib().wvZoteroPinsTabs && wvT.lib().wvZoteroPinsTabs()) this.skip();
         a = await wvT.createTestPDFItem("wv-burst-a");
         b = await wvT.createTestPDFItem("wv-burst-b");
         await wvT.openReaderTab(a.id);

@@ -48,6 +48,13 @@ manifest changed, their rules files carry the extra checks.
 - Verify the actual change via the bridge: DOM state, row counts, computed
   styles, screenshots. Keep evals short; store results on a `Zotero._wv*`
   global before heavy async work so a bridge hiccup doesn't lose them.
+- No bridge (the test runner, or the user's instance off limits): a temporary
+  probe spec, never committed, screenshots the runner's window itself --
+  `win.browsingContext.currentWindowGlobal.drawSnapshot(rect|null, 1,
+  "white")` onto a canvas, `IOUtils.write` the PNG -- and
+  `Services.prefs.setIntPref("ui.systemUsesDarkTheme", 0|1)` switches light
+  and dark live for a shot of each (split-view cards, 2026-11-11). Move the
+  probe out before `npm run build`: the typecheck covers test/.
 - Timing measurements: beware sampling inside a CSS transition or debounce
   window — a wrong first read cost a false "dimming is broken" alarm once.
 - **A hidden or occluded window suspends `requestAnimationFrame`**, and
@@ -72,6 +79,12 @@ manifest changed, their rules files carry the extra checks.
   checks, never blind waits, and answer the user immediately if they check in.
 - Afterwards kill any orphaned temp-profile `zotero.exe` (the one launched
   with `--profile …/.scaffold/test/profile`) — never the user's instance.
+- A run that fails at once with `"before all" hook in "{root}"` (the 90 s
+  Zotero-readiness wait in 000-helpers) proves nothing about the code: look
+  for another clone's runner (`--profile …\<clone>\.scaffold\test\profile`
+  in the process list) and rerun when it is gone. Two such failures in a row
+  on 2026-11-11 (api2 branch, another clone's runner up); the same code ran
+  normally once that runner had finished.
 - Frequency: popups specs after touching popup code; targeted specs for
   suite-covered machinery; the FULL suite only pre-release or on request.
 - A symptom seen ONLY in the runner is the runner's until a normal Zotero

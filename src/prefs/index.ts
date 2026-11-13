@@ -67,18 +67,33 @@ import { wvNativeWindows } from "../lib/windows";
         rg.addEventListener("command", write);
     }
 
-    /** A number <input> <-> int pref, clamped to [min, max]. */
-    function bindIntInput(inp, key, min, max, dflt) {
+    /** New Fluent arguments for a pane element, keeping its id (weavero.ftl;
+     *  the pane links the file). The pane's strings are Fluent messages, so
+     *  a label that follows a setting is re-pointed, never overwritten: an
+     *  English label written here would race the pane's own translation. */
+    function setL10n(el, id, args) {
+        if (!el) return;
+        try {
+            const l10n = el.ownerDocument && el.ownerDocument.l10n;
+            if (l10n) l10n.setAttributes(el, id || el.getAttribute("data-l10n-id"), args);
+        } catch (e) { dbg("l10n set err: " + e); }
+    }
+
+    /** A number <input> <-> int pref, clamped to [min, max]. `unit` is the
+     *  span after the box ("lines", "levels"): its plural follows the number. */
+    function bindIntInput(inp, key, min, max, dflt, unit?) {
         if (!inp || inp._wvBound) return;
         inp._wvBound = true;
         let v = dflt;
         try { const p = parseInt(String(Zotero.Prefs.get(key)), 10); if (p >= min && p <= max) v = p; } catch (e) {}
         inp.value = String(v);
+        setL10n(unit, null, { count: v });
         const write = () => {
             let n = parseInt(inp.value, 10);
             if (!(n >= min)) n = min;
             if (n > max) n = max;
             inp.value = String(n);
+            setL10n(unit, null, { count: n });
             try { Zotero.Prefs.set(key, n); } catch (e) { dbg(key + " write err: " + e); }
         };
         inp.addEventListener("change", write);
@@ -497,13 +512,13 @@ import { wvNativeWindows } from "../lib/windows";
         let v = "zotero";
         try { v = String(Zotero.Prefs.get("weavero.outlineTextSize") || "zotero"); } catch (e) {}
         try { if (plugin && plugin._wvOutlineTextSizeNorm) v = plugin._wvOutlineTextSizeNorm(v) || "zotero"; } catch (e) {}
-        // Current sizes in the two Zotero labels.
+        // Current sizes in the two Zotero labels (weavero.ftl's -px messages).
         try {
             if (plugin && plugin._wvOutlineSizePx) {
                 for (const r of Array.from(rg.querySelectorAll("radio")) as any[]) {
                     const m = r.getAttribute("value");
-                    if (m === "zotero") r.setAttribute("label", "Zotero Outline, " + plugin._wvOutlineSizePx("zotero") + " px (default)");
-                    if (m === "itemPane") r.setAttribute("label", "Zotero Item Pane, " + plugin._wvOutlineSizePx("itemPane") + " px");
+                    if (m === "zotero") setL10n(r, "weavero-pref-outline-size-zotero-px", { px: plugin._wvOutlineSizePx("zotero") });
+                    if (m === "itemPane") setL10n(r, "weavero-pref-outline-size-item-pane-px", { px: plugin._wvOutlineSizePx("itemPane") });
                 }
             }
         } catch (e) {}
@@ -576,13 +591,13 @@ import { wvNativeWindows } from "../lib/windows";
     // read by pane-scope.ts, at their table defaults.
 
     /** "Up to 2 lines" reads wrong under Fixed height, which is exactly that many
-     *  (MJT 2026-11-06). */
+     *  (MJT 2026-11-06): the lead's message selects on the mode. */
     function bindTitleLinesLead(doc) {
         const rg = doc.getElementById("wv-title-lines");
         const lead = doc.getElementById("wv-title-lines-lead");
         if (!rg || !lead || lead._wvBound) return;
         lead._wvBound = true;
-        const show = () => { lead.textContent = rg.value === "fixed" ? "Height of" : "Up to"; };
+        const show = () => { setL10n(lead, null, { mode: rg.value === "fixed" ? "fixed" : "other" }); };
         rg.addEventListener("select", show);
         rg.addEventListener("command", show);
         show();
@@ -598,9 +613,9 @@ import { wvNativeWindows } from "../lib/windows";
         // Fixed + a px size. One pref: "zotero" | "itemPane" | "<px>".
         try { bindOutlineTextSize(doc); } catch (e) { dbg("bindOutlineTextSize err: " + e); }
         try { bindOutlineKeys(doc); } catch (e) { dbg("bindOutlineKeys err: " + e); }
-        try { bindIntInput(doc.getElementById("wv-coll-sticky-max"), "weavero.collectionsStickyMax", 1, 10, 7); } catch (e) { dbg("bindCollStickyMax err: " + e); }
+        try { bindIntInput(doc.getElementById("wv-coll-sticky-max"), "weavero.collectionsStickyMax", 1, 10, 7, doc.getElementById("wv-coll-sticky-unit")); } catch (e) { dbg("bindCollStickyMax err: " + e); }
         try { bindCharRadio(doc.getElementById("wv-title-lines"), "weavero.titleLinesMode", ["off", "fixed", "adaptive"], "off"); } catch (e) { dbg("bindTitleLines err: " + e); }
-        try { bindIntInput(doc.getElementById("wv-title-lines-count"), "weavero.titleLinesCount", 2, 10, 2); } catch (e) { dbg("bindTitleLinesCount err: " + e); }
+        try { bindIntInput(doc.getElementById("wv-title-lines-count"), "weavero.titleLinesCount", 2, 10, 2, doc.getElementById("wv-title-lines-unit")); } catch (e) { dbg("bindTitleLinesCount err: " + e); }
         try { bindTitleLinesLead(doc); } catch (e) { dbg("bindTitleLinesLead err: " + e); }
         // Native windows first: it re-gates rows bindMasterDisable reads.
         try { bindNativeWindows(doc); } catch (e) { dbg("bindNativeWindows err: " + e); }

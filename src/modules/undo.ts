@@ -94,7 +94,11 @@ class _UndoMixin {
 
     /** The stacks, on the Zotero object so they outlive the plugin instance. */
     _wvUndoStacks(): Map<string, WvUndoScopeState> {
-        return Zotero._wvUndoState || (Zotero._wvUndoState = new Map());
+        let s = Zotero._wvUndoState;
+        // An update keeps the stacks (destroy's _wvReleaseGlobalState); under
+        // zotero#6080 the old instance's Map dies with its scope: start afresh.
+        try { if (s && (Components as any).utils.isDeadWrapper(s)) s = null; } catch (e) { s = null; }
+        return s || (Zotero._wvUndoState = new Map());
     }
 
     _wvUndoScopeState(scope: string): WvUndoScopeState {

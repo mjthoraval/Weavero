@@ -27,7 +27,7 @@
 
 import {
     BTN_CLASS, BTN_PANE_CLASS, BTN_TREE_CLASS, BTN_POPUP_CLASS,
-    BTN_SIDEBAR_CLASS, MENU_LABEL_PREFIXES, SCHEME_SVG_TEMPLATE,
+    BTN_SIDEBAR_CLASS, SCHEME_SVG_TEMPLATE,
     WV_COUNT_COL_MIN, WV_GUIDE_COLOR,
 } from "./constants";
 import { BBT_BIBTEX_TRANSLATOR_ID, BBT_BIBLATEX_TRANSLATOR_ID } from "./url";
@@ -39,6 +39,7 @@ import { wvLinkGlyphEl, WV_LINK_MENU_ICON } from "../lib/link-glyph";
 import { wvInjectStyle, wvRemoveStyle } from "../lib/style";
 import { wvTimeout } from "../lib/timers";
 import { wvMenuItem } from "../lib/menu";
+import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
 import { wvListen, wvUnlisten } from "../lib/listen";
 import { wvLivePlugin } from "../lib/live";
 import { wvWrap, wvUnwrap } from "../lib/wrap";
@@ -345,13 +346,14 @@ class _PaneMixin {
     /** Internal helper to create a XUL menuitem with consistent styling. */
     _createXULMenuItem(doc: Document, options: {
         id: string,
-        label: string,
+        /** weavero.ftl message (+ args). */
+        l10n: { id: string, args?: any },
         image?: string,
         classList?: string[]
     }): any {
         const mi = doc.createXULElement("menuitem");
         mi.id = options.id;
-        mi.setAttribute("label", options.label);
+        wvL10n(mi, options.l10n.id, options.l10n.args);
         if (options.image) {
             mi.classList.add("menuitem-iconic");
             mi.setAttribute("image", options.image);
@@ -431,9 +433,15 @@ class _PaneMixin {
             const SEP_ID = "wv-itemmenu-separator";
             const EXTV_ID = "wv-itemmenu-open-external";               // "Open in External Viewer"
             const OPEN_IN_ID = "wv-itemmenu-open-in";                  // "Open <type> in ▸" (windows / groups)
+            // "Open PDF in Split View" (tab-split.ts) goes on popuphidden too: left
+            // between two right-clicks it sits among Zotero's Open entries, and
+            // Zotero's next build (zoteroPane.js buildItemContextMenu) clears those
+            // only from the top while each is `zotero-locate` -- it stopped there, and
+            // "Show File" and its separator doubled at every right-click on a PDF.
+            const SPLIT_ID = "wv-itemmenu-split";
             const ALL_IDS = [ADD_REL_ID, COPY_AS_ID, COPY_CITATION_ID, COPY_BIB_ID,
                 COPY_CITEKEY_ID, COPY_SELECT_ID, COPY_SELECT_SEP_ID, COPY_OPEN_ID,
-                COPY_WEB_ID, COPY_BIBTEX_ID, COPY_BIBLATEX_ID, SEP_ID, EXTV_ID, OPEN_IN_ID];
+                COPY_WEB_ID, COPY_BIBTEX_ID, COPY_BIBLATEX_ID, SEP_ID, EXTV_ID, OPEN_IN_ID, SPLIT_ID];
             // Include any item type that has an `addRelatedItem`
             // method — annotations, attachments, regular items, and
             // notes all support the dc:relation predicate. Excludes
@@ -457,6 +465,8 @@ class _PaneMixin {
 
                     this._appendExternalViewerToItemsMenu(doc, menu, selected, win);
                     this._appendOpenInToItemsMenu(doc, menu, selected, win);
+                    // "Open PDF in Split View" (tab-split.ts).
+                    try { (this as any)._wvTabSplitItemsMenu(doc, menu, selected, win); } catch (e) {}
 
                     const targets = selected.filter(isRelatable);
                     if (!targets.length) return;
@@ -496,7 +506,7 @@ class _PaneMixin {
                     // icon; children are text-only for a clean list.
                     const copyAs = doc.createXULElement("menu");
                     copyAs.id = COPY_AS_ID;
-                    copyAs.setAttribute("label", "Copy As");
+                    wvL10n(copyAs, "weavero-menu-copy-as");
                     if (menuIcon) {
                         copyAs.classList.add("menu-iconic");
                         copyAs.setAttribute("image", menuIcon);
@@ -515,10 +525,10 @@ class _PaneMixin {
                     } else {
                         menu.appendChild(copyAs);
                     }
-                    const addEntry = (id, label, action, keyId?) => {
+                    const addEntry = (id, l10nID: string, l10nArgs: any, action, keyId?) => {
                         const cl = doc.createXULElement("menuitem");
                         cl.id = id;
-                        cl.setAttribute("label", label);
+                        wvL10n(cl, l10nID, l10nArgs);
                         // Show the matching Zotero shortcut (read live so it
                         // tracks the user's Settings → Shortcuts binding).
                         if (keyId) {
@@ -547,49 +557,47 @@ class _PaneMixin {
                     // along. (Resolved at popupshowing time; right-
                     // clicking an item doesn't change the collection
                     // selection.) Open links never carry a collection.
-                    const collSuffix = this._currentCollectionScope(win)
-                        ? " (include Collection)" : "";
+                    const collection = this._currentCollectionScope(win) ? "yes" : "no";
                     const multi = targets.length > 1;
                     const openTargets = targets.filter((it) => !!this._buildOpenLink(it));
-                    const openExtSuffix = openTargets.length === 1
-                        && this._isExternalOpenTarget(openTargets[0]) ? " (external app)" : "";
+                    const external = openTargets.length === 1
+                        && this._isExternalOpenTarget(openTargets[0]) ? "yes" : "no";
 
                     // --- Citation / Bibliography (user's QuickCopy cite style) ---
                     // Accel hints mirror Zotero's own shortcuts:
                     //   Citation     → key_copyCitation     (default Ctrl+Shift+A)
                     //   Bibliography → key_copyBibliography (default Ctrl+Shift+C)
-                    addEntry(COPY_CITATION_ID, "Citation",
+                    addEntry(COPY_CITATION_ID, "weavero-menu-copy-as-citation", null,
                         (fresh) => this._copyCitationOrBibliography(fresh, true), "key_copyCitation");
-                    addEntry(COPY_BIB_ID, "Bibliography",
+                    addEntry(COPY_BIB_ID, "weavero-menu-copy-as-bibliography", null,
                         (fresh) => this._copyCitationOrBibliography(fresh, false), "key_copyBibliography");
                     // Citation Key — native Zotero field 9 (Better BibTeX fills
                     // it when active). Shown only when the selection actually
                     // has one, since Zotero doesn't auto-generate keys.
                     if (this._anyHasCitationKey(targets)) {
-                        addEntry(COPY_CITEKEY_ID, "Citation Key",
+                        addEntry(COPY_CITEKEY_ID, "weavero-menu-copy-as-citation-key", null,
                             (fresh) => this._copyCitationKeys(fresh));
                     }
                     addSubSep();
 
                     // --- Select / Open links (moved in from the flat menu) ---
-                    addEntry(COPY_SELECT_ID, "Select Link" + collSuffix,
+                    addEntry(COPY_SELECT_ID, "weavero-menu-copy-as-select-link", { collection },
                         (fresh) => this._copyCombinedSelectLink(fresh, collScopeNow()));
                     if (multi) {
-                        addEntry(COPY_SELECT_SEP_ID,
-                            "Select Links (Separate Links per Item)" + collSuffix,
+                        addEntry(COPY_SELECT_SEP_ID, "weavero-menu-copy-as-select-links-separate", { collection },
                             (fresh) => this._copyItemLinks(fresh, "select", collScopeNow()));
                         if (openTargets.length) {
-                            addEntry(COPY_OPEN_ID, "Open Links (Separate Links per Item)",
+                            addEntry(COPY_OPEN_ID, "weavero-menu-copy-as-open-links-separate", null,
                                 (fresh) => this._copyItemLinks(fresh, "open"));
                         }
                     } else if (openTargets.length) {
-                        addEntry(COPY_OPEN_ID, "Open Link" + openExtSuffix,
+                        addEntry(COPY_OPEN_ID, "weavero-menu-copy-as-open-link", { external },
                             (fresh) => this._copyItemLinks(fresh, "open"));
                     }
 
                     // --- Online (web) library link (zotero/zotero#2917) ---
                     if (this._anyHasWebURL(targets)) {
-                        addEntry(COPY_WEB_ID, "Online Library Link",
+                        addEntry(COPY_WEB_ID, "weavero-menu-copy-as-online-link", null,
                             (fresh) => this._copyOnlineLibraryLinks(fresh));
                     }
 
@@ -598,9 +606,9 @@ class _PaneMixin {
                     // Better BibTeX plugin, not native Zotero.
                     if (this._isBetterBibTeXActive()) {
                         addSubSep();
-                        addEntry(COPY_BIBTEX_ID, "[BBT] BibTeX",
+                        addEntry(COPY_BIBTEX_ID, "weavero-menu-copy-as-bbt-bibtex", null,
                             (fresh) => this._copyExportToClipboard(fresh, BBT_BIBTEX_TRANSLATOR_ID));
-                        addEntry(COPY_BIBLATEX_ID, "[BBT] BibLaTeX",
+                        addEntry(COPY_BIBLATEX_ID, "weavero-menu-copy-as-bbt-biblatex", null,
                             (fresh) => this._copyExportToClipboard(fresh, BBT_BIBLATEX_TRANSLATOR_ID));
                     }
                     }   // /wantCopy
@@ -612,9 +620,7 @@ class _PaneMixin {
                     this._appendSeparatorIfMissing(doc, menu, SEP_ID);
                     const mi = doc.createXULElement("menuitem");
                     mi.id = ADD_REL_ID;
-                    mi.setAttribute("label", targets.length > 1
-                        ? "Add Related…  (" + targets.length + " items)"
-                        : "Add Related…");
+                    wvL10n(mi, "weavero-menu-items-add-related", { count: targets.length });
                     // Chain icon — semantic match for "Add Related…".
                     // Pick the theme-baked amber data URL so the icon
                     // matches the sidebar's `.wv-btn-relations` color
@@ -739,7 +745,7 @@ class _PaneMixin {
                 const EXTV_ID = "wv-itemmenu-open-external";
                 const mi = this._createXULMenuItem(doc, {
                     id: EXTV_ID,
-                    label: "Open in External Viewer",
+                    l10n: { id: "weavero-menu-open-external-viewer" },
                     image: this._wvAttachmentIconURL(repAtt) || undefined
                 });
 
@@ -768,20 +774,20 @@ class _PaneMixin {
         }
     }
 
-    /** File-type word for the "Open <X> in" label, from an attachment's content
-     *  type (PDF / EPUB / Snapshot / Image / …). */
-    _wvAttachmentTypeLabel(att: any): string {
+    /** The file kind for the "Open <X> in" label (weavero.ftl
+     *  weavero-menu-items-open-in's $type), from an attachment's content type. */
+    _wvAttachmentTypeKey(att: any): string {
         try {
             const ct = (att && att.attachmentContentType) || "";
-            if (ct === "application/pdf") return "PDF";
-            if (ct === "application/epub+zip") return "EPUB";
-            if (ct === "text/html") return "Snapshot";
-            if (ct.indexOf("image/") === 0) return "Image";
-            if (ct.indexOf("video/") === 0) return "Video";
-            if (ct.indexOf("audio/") === 0) return "Audio";
-            if (ct === "text/plain") return "Text";
-            return "File";
-        } catch (e) { return "File"; }
+            if (ct === "application/pdf") return "pdf";
+            if (ct === "application/epub+zip") return "epub";
+            if (ct === "text/html") return "snapshot";
+            if (ct.indexOf("image/") === 0) return "image";
+            if (ct.indexOf("video/") === 0) return "video";
+            if (ct.indexOf("audio/") === 0) return "audio";
+            if (ct === "text/plain") return "text";
+            return "file";
+        } catch (e) { return "file"; }
     }
 
     /** A group's palette-colour chip for menu rows — a filled ROUNDED
@@ -909,11 +915,11 @@ class _PaneMixin {
             for (const it of selected) {
                 let t: string | null = null;
                 if (it && typeof it.isNote === "function" && it.isNote()) {
-                    t = "Note";
+                    t = "note";
                     if (!repNote) repNote = it;
                 } else {
                     const att = this._wvGetBestAttachmentSync(it);
-                    if (att) { if (!repAtt) repAtt = att; t = this._wvAttachmentTypeLabel(att); }
+                    if (att) { if (!repAtt) repAtt = att; t = this._wvAttachmentTypeKey(att); }
                 }
                 if (t) {
                     openableCount++;
@@ -933,16 +939,12 @@ class _PaneMixin {
                 .filter((g: any) => g && !g.saved && this._wvTabGroupHomeWin(g.id));
             // Always shown — "New Window" is always a valid destination.
 
-            // Pluralize the type word for multi-item selections, matching the
-            // native menu ("Open Notes in New Tab"): Note→Notes, PDF→PDFs, …
-            // "Audio"/"Text" work as mass nouns and stay singular.
-            const plural = openableCount > 1 && typeWord !== "Audio" && typeWord !== "Text";
-            const label = (typeWord && !mixedType)
-                ? ("Open " + typeWord + (plural ? "s" : "") + " in")
-                : "Open in";
+            // The type word is plural for several items, matching the native
+            // menu ("Open Notes in New Tab"); weavero.ftl spells each.
             const parent = doc.createXULElement("menu");
             parent.id = "wv-itemmenu-open-in";
-            parent.setAttribute("label", label);
+            wvL10n(parent, "weavero-menu-items-open-in",
+                { type: (typeWord && !mixedType) ? typeWord : "mixed", count: openableCount });
             const icon = repAtt ? this._wvAttachmentIconURL(repAtt)
                 : "chrome://zotero/skin/16/universal/note.svg";
             if (icon) { parent.classList.add("menu-iconic"); parent.setAttribute("image", icon); }
@@ -960,7 +962,7 @@ class _PaneMixin {
             for (const t of targets) {
                 const w = t.win;
                 const wi = doc.createXULElement("menuitem");
-                wi.setAttribute("label", t.name);
+                wvDataLabel(wi, t.name);
                 wi.classList.add("menuitem-iconic");
                 wi.setAttribute("image", t.isReader ? readerIcon : mainIcon);
                 // Window-identity colour glyph on the RIGHT, like the
@@ -976,7 +978,8 @@ class _PaneMixin {
                     const winGroups = groups.filter((g: any) => this._wvTabGroupHomeWin(g.id) === w);
                     for (const g of winGroups) {
                         const gItem = doc.createXULElement("menuitem");
-                        gItem.setAttribute("label", g.name || "Group");
+                        if (g.name) wvDataLabel(gItem, g.name);
+                        else wvL10n(gItem, "weavero-menu-group-unnamed");
                         gItem.classList.add("menuitem-iconic");
                         gItem.setAttribute("style", INDENT);
                         try { gItem.setAttribute("image", this._wvGroupColorDotURI(this._tabGroupColorHex(g.color))); } catch (e) {}
@@ -987,7 +990,7 @@ class _PaneMixin {
                 }
                 if (groupsOn) {
                     const ng = doc.createXULElement("menuitem");
-                    ng.setAttribute("label", "New Group");
+                    wvL10n(ng, "weavero-menu-new-group");
                     ng.classList.add("menuitem-iconic");
                     ng.setAttribute("style", INDENT);
                     ng.setAttribute("image", plusIcon);
@@ -1888,16 +1891,18 @@ class _PaneMixin {
             // Zotero's own "new window" glyph, the one Weavero's other
             // open-in-new-window rows already carry (annotation menus).
             const ICON_NEW_WINDOW = "chrome://zotero/skin/16/universal/new-window.svg";
+            // Not Zotero's collections-menu-open-in-new-window: 11 only.
+            const L10N = "weavero-menu-collection-open-new-window";
             const menus = [{
                 menuType: "menuitem",
+                l10nID: L10N,
                 icon: ICON_NEW_WINDOW,
                 darkIcon: ICON_NEW_WINDOW,
                 onShowing: (_ev: any, ctx: any) => {
                     try {
                         const el = ctx.menuElem, visible = shown(ctx);
                         placeFirstOfPlugins(el, visible);
-                        el.setAttribute("label", "Open in New Window");
-                        el.setAttribute("acceltext", "Middle-click");
+                        el.setAttribute("acceltext", wvAttr(L10N, "acceltext") || "");
                         el.setAttribute("data-wv-collection-open", "true");
                         ctx.setVisible(visible);
                     } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
@@ -2187,15 +2192,16 @@ class _PaneMixin {
                     if (ref !== el) popup.insertBefore(el, ref);
                 } catch (e) {}
             };
-            const entry = (key: string, label: string, accel: string | null, index: number,
+            // The label is a weavero.ftl id, MenuManager's l10nID.
+            const entry = (key: string, l10nID: string, accel: string | null, index: number,
                            shown: (win: any) => boolean, run: (win: any, p: any) => void) => ({
                 menuType: "menuitem",
+                l10nID,
                 onShowing: (_ev: any, ctx: any) => {
                     try {
                         const el = ctx.menuElem;
                         place(el, index);
                         el.dataset.wvMenubar = key;
-                        el.setAttribute("label", label);
                         if (accel) el.setAttribute("acceltext", accel);
                         ctx.setVisible(shown(el.ownerDocument.defaultView) && !inHamburger(el));
                     } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
@@ -2218,12 +2224,12 @@ class _PaneMixin {
                     } catch (e) {}
                 },
             });
-            const newReaderWin = () => entry("newreaderwin", "New Reader Window\u2026", null, 1, fileMaster,
+            const newReaderWin = () => entry("newreaderwin", "weavero-menu-file-new-reader-window", null, 1, fileMaster,
                 (win, p) => p._wvNewReaderWindowPicker(win));
-            const newMainWin = () => entry("newmainwin", "New Main Window", ACCEL + "N", 2, newMain,
+            const newMainWin = () => entry("newmainwin", "weavero-menu-file-new-main-window", ACCEL + "N", 2, newMain,
                 (_win, p) => p._wvOpenEmptyMainWindow());
             const fileMenus = [
-                entry("newtab", "New Tab\u2026", ACCEL + "T", 0, fileMaster,
+                entry("newtab", "weavero-menu-file-new-tab", ACCEL + "T", 0, fileMaster,
                     (win, p) => p._wvMainNewTabPicker(win)),
                 newReaderWin(),
                 newMainWin(),
@@ -2232,7 +2238,7 @@ class _PaneMixin {
             // Reader window: New Tab is the strip's + button (the hamburger's
             // own route), present only with the strip.
             const readerFileMenus = [
-                entry("newtab", "New Tab\u2026", ACCEL + "T", 0,
+                entry("newtab", "weavero-menu-file-new-tab", ACCEL + "T", 0,
                     (win) => master() && !!(win && win._wvWT),
                     (win, _p) => {
                         const b = win && win.document && win.document.querySelector(".wv-window-newtab-btn");
@@ -2242,8 +2248,10 @@ class _PaneMixin {
                 newMainWin(),
                 sep(),
             ];
+            const ADV_L10N = "weavero-menu-edit-advanced-search-new-window";
             const editMenus = [{
                 menuType: "menuitem",
+                l10nID: ADV_L10N,
                 onShowing: (_ev: any, ctx: any) => {
                     try {
                         const el = ctx.menuElem;
@@ -2251,7 +2259,6 @@ class _PaneMixin {
                         const anchor = doc.getElementById("menu_advancedSearch");
                         if (anchor) place(el, -1, anchor);
                         el.dataset.wvMenubar = "advsearchwin";
-                        el.setAttribute("label", "Advanced Search in New Window");
                         // With the shortcut remapped (Settings), it is ours to
                         // show and Zotero's line loses it. Its acceltext is
                         // rebuilt from the `key` attribute and cannot be
@@ -2259,7 +2266,7 @@ class _PaneMixin {
                         // attribute itself moves; teardown puts it back.
                         const lp = liveP();
                         const remap = !!(lp && lp._getAdvSearchShortcutNewWindow && lp._getAdvSearchShortcutNewWindow());
-                        el.setAttribute("acceltext", remap ? SHORTCUT_F : "Shift+Click");
+                        el.setAttribute("acceltext", remap ? SHORTCUT_F : (wvAttr(ADV_L10N, "acceltext") || ""));
                         if (anchor) {
                             if (remap) { anchor.removeAttribute("key"); anchor.removeAttribute("acceltext"); }
                             else if (!anchor.hasAttribute("key")) anchor.setAttribute("key", "key_advancedSearch");
@@ -2469,20 +2476,24 @@ class _PaneMixin {
             if (!popup) {
                 popup = doc.createXULElement("menupopup");
                 popup.id = "wv-advsearch-context";
-                const mk = (label: string, hint: string | null, onCmd: () => void) => wvMenuItem(doc, { label, acceltext: hint || undefined, onCommand: () => onCmd() }, popup);
+                // The gesture hint is the message's .acceltext (weavero.ftl).
+                const mk = (l10nID: string, onCmd: () => void) => {
+                    const args = { platform: Zotero.isMac ? "mac" : "other" };
+                    return wvMenuItem(doc, { l10n: { id: l10nID, args }, acceltext: wvAttr(l10nID, "acceltext", args) || undefined, onCommand: () => onCmd() }, popup);
+                };
                 // The library tab whose funnel was right-clicked (a Zotero with
                 // its own windows has one per tab), read at command time.
                 const target = () => popup._wvView || win.ZoteroPane;
-                mk("Open Advanced Search", null, () => {
+                mk("weavero-menu-advsearch-open", () => {
                     try { target().toggleAdvancedSearchState("open"); } catch (_) {}
                 });
-                mk("Open in New Window", "Shift+Click / Middle-click", () => {
+                mk("weavero-menu-advsearch-open-new-window", () => {
                     const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                     if (live && !live._wvDestroyed) live._wvAdvSearchOpenNewWindow(win, popup._wvView || null);
                 });
                 // Zotero's own Ctrl+click on the funnel there (quickSearchTextbox.js).
                 if (wvNativeWindows()) {
-                    mk("Open in New Tab", Zotero.isMac ? "⌘Click" : "Ctrl+Click", () => {
+                    mk("weavero-menu-advsearch-open-new-tab", () => {
                         try {
                             const v = target();
                             const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
@@ -3656,8 +3667,15 @@ class _PaneMixin {
             // sweep of a reload strips wv- classes off a node that also has
             // Zotero's (menuitem-iconic, the Hide icon class), the attribute
             // stays, and the strip and the clear find it by that.
-            const mk = (label: string, fn: () => void, cls = true, icon?: string) =>
-                wvMenuItem(doc, { label, cls: cls ? "wv-hid-entry" : undefined, iconClass: icon ? "wv-hid-icon-" + icon : undefined, attrs: WV_HID_OWNED_ATTR, onCommand: () => fn() });
+            // `what`: a weavero.ftl id, or { data } for a name (a collection's,
+            // a feed's, a group's, Zotero's own word for a special row).
+            const mk = (what: string | { id?: string, args?: any, data?: string, zotero?: string }, fn: () => void, cls = true, icon?: string) => {
+                const w = typeof what === "string" ? { id: what } : what;
+                const mi = wvMenuItem(doc, { l10n: w.id ? { id: w.id, args: w.args } : undefined, cls: cls ? "wv-hid-entry" : undefined, iconClass: icon ? "wv-hid-icon-" + icon : undefined, attrs: WV_HID_OWNED_ATTR, onCommand: () => fn() });
+                if (w.zotero) wvZoteroLabel(mi, w.zotero);
+                else if (!w.id) wvDataLabel(mi, w.data || "");
+                return mi;
+            };
             // Weavero's entries may sit among Zotero's own: the build wrap (3b
             // in _wvHidApply) steps them out before Zotero's positional pass
             // (`menu.childNodes[i]` <- option i; a node inside it once turned
@@ -3678,35 +3696,37 @@ class _PaneMixin {
             // Duplicates / Recently Read, MJT 2026-10-05): its localized
             // "Hide" label and its crossed-eye icon class (scss _menu.scss,
             // hide-collection: "hide"). Several rows keep a count.
-            let hideLabel = "";
-            const hideStr = wvHidHideLabel();
+            // One row: Zotero's own word; several: weavero.ftl's, with $what.
+            let hideLabel: any = null;
+            const hideOne = { zotero: wvHidHideLabel() };
+            const several = (what: string, count: number) => ({ id: "weavero-menu-hid-hide-several", args: { what, count } });
             if (rows.every((r: any) => r.isCollection() || r.isSearch() || P._wvHidVirtualOf(r))) {
                 // A special collection counts as a collection to the user.
                 const nc = rows.filter((r: any) => r.isCollection()).length + special, ns = rows.length - nc;
-                hideLabel = rows.length === 1 ? hideStr
-                    : !ns ? "Hide " + nc + " Collections"
-                    : !nc ? "Hide " + ns + " Saved Searches"
-                    : "Hide " + rows.length + " Collections and Saved Searches";
+                hideLabel = rows.length === 1 ? hideOne
+                    : !ns ? several("collections", nc)
+                    : !nc ? several("searches", ns)
+                    : several("collections-searches", rows.length);
             }
             else if (rows.every((r: any) => r.isFeed && r.isFeed())) {
                 // Feeds one by one (MJT 2026-10-21): the Feeds row stays to come
                 // back from, so any feed still shown can go.
                 if (rows.some((r: any) => !this._wvHidFeeds(this._wvHidState(win)).includes(r.ref.libraryID))) {
-                    hideLabel = rows.length === 1 ? hideStr : "Hide " + rows.length + " Feeds";
+                    hideLabel = rows.length === 1 ? hideOne : several("feeds", rows.length);
                 }
             }
             else if (rows.every((r: any) => r.isLibrary(true))) {
                 // Libraries, My Library included (MJT 2026-10-20): offered while
                 // at least one of them can go (never the last one shown).
                 if (rows.some((r: any) => P._wvHidCanHideLibrary(win, r.ref.libraryID))) {
-                    hideLabel = rows.length === 1 ? hideStr
-                        : rows.every((r: any) => r.isGroup()) ? "Hide " + rows.length + " Group Libraries" : "Hide " + rows.length + " Libraries";
+                    hideLabel = rows.length === 1 ? hideOne
+                        : several(rows.every((r: any) => r.isGroup()) ? "groups" : "libraries", rows.length);
                 }
             }
             else if (rows.length === 1 && P._wvHidSectionOfRow(rows[0]) === "feeds") {
                 // The Feeds row: the whole section, every feed with it (MJT
                 // 2026-10-20). A single feed has no Hide of its own.
-                if (P._wvHidCanHideSection(win, "feeds")) hideLabel = hideStr;
+                if (P._wvHidCanHideSection(win, "feeds")) hideLabel = hideOne;
             }
             let hideItem: any = null;
             if (hideLabel) {
@@ -3754,7 +3774,7 @@ class _PaneMixin {
                 // A feed's menu has no Show group and nothing of its own to show
                 // back: the manager's entry at the end; Hide stays above
                 // Unsubscribe (Zotero's Delete slot), as above Delete elsewhere.
-                const mi = mk("Manage Hidden…", () => P._wvHidOpenManager(win));
+                const mi = mk("weavero-menu-hid-manage", () => P._wvHidOpenManager(win));
                 mi.classList.add("menuitem-iconic", "wv-hid-show");
                 atEnd(mi);
             }
@@ -3770,16 +3790,16 @@ class _PaneMixin {
                     node = doc.createXULElement("menu");
                     node.classList.add("wv-hid-entry", "menu-iconic", "wv-hid-show");
                     node.setAttribute("data-wv-owned", "hid");
-                    node.setAttribute("label", "Show Hidden Feeds");
+                    wvL10n(node, "weavero-menu-hid-show", { what: "feeds" });
                     const pp = doc.createXULElement("menupopup");
-                    pp.appendChild(mk("Manage Hidden…", () => P._wvHidOpenManager(win), false));
-                    pp.appendChild(mk("Show All (" + feeds.length + ")", () => P._wvHidShow(win, null, null, null, null, null, feeds.map((f: any) => f.libraryID)), false));
+                    pp.appendChild(mk("weavero-menu-hid-manage", () => P._wvHidOpenManager(win), false));
+                    pp.appendChild(mk({ id: "weavero-menu-hid-show-all", args: { count: feeds.length } }, () => P._wvHidShow(win, null, null, null, null, null, feeds.map((f: any) => f.libraryID)), false));
                     pp.appendChild(doc.createXULElement("menuseparator"));
-                    for (const f of feeds) pp.appendChild(mk(f.label, () => P._wvHidShow(win, null, null, null, null, null, [f.libraryID]), false, "feed"));
+                    for (const f of feeds) pp.appendChild(mk({ data: f.label }, () => P._wvHidShow(win, null, null, null, null, null, [f.libraryID]), false, "feed"));
                     node.appendChild(pp);
                 }
                 else {
-                    node = mk("Manage Hidden…", () => P._wvHidOpenManager(win));
+                    node = mk("weavero-menu-hid-manage", () => P._wvHidOpenManager(win));
                     node.classList.add("menuitem-iconic", "wv-hid-show");
                 }
                 atEnd(node);
@@ -3818,15 +3838,15 @@ class _PaneMixin {
                     // (MJT 2026-10-16: "Show Hidden Collections also includes
                     // hidden Libraries"). Same shape as the Hide labels.
                     const libsHere = groups.length + sections.length;
-                    sm.setAttribute("label", (hidden.length || everywhere.length) && libsHere ? "Show Hidden Collections and Libraries"
-                        : sections.some((s: any) => s.which === "feeds") ? "Show Hidden Libraries"
-                        : libsHere ? "Show Hidden Group Libraries" : "Show Hidden Collections");
+                    wvL10n(sm, "weavero-menu-hid-show", { what: (hidden.length || everywhere.length) && libsHere ? "collections-libraries"
+                        : sections.some((s: any) => s.which === "feeds") ? "libraries"
+                        : libsHere ? "groups" : "collections" });
                     const pp = doc.createXULElement("menupopup");
                     const total = hidden.length + groups.length + everywhere.length + sections.length;
                     // Several at once, both ways: the manager card (MJT
                     // 2026-10-16; it replaced the dev.39 checklist panel).
-                    pp.appendChild(mk("Manage Hidden…", () => P._wvHidOpenManager(win), false));
-                    pp.appendChild(mk("Show All (" + total + ")", () => {
+                    pp.appendChild(mk("weavero-menu-hid-manage", () => P._wvHidOpenManager(win), false));
+                    pp.appendChild(mk({ id: "weavero-menu-hid-show-all", args: { count: total } }, () => {
                         P._wvHidShow(win, libID, null, groups.map((g: any) => g.libraryID), null, sections.map((s: any) => s.which));
                         for (const z of everywhere) P._wvHidShowZotero(win, libID, z.type);
                     }, false));
@@ -3837,21 +3857,22 @@ class _PaneMixin {
                     const entries: any[] = [
                         ...hidden.map((h: any) => ({ rank: h.rank, names: h.names, item: () => {
                             const icon = h.key[0] === "S" ? "search" : h.key[0] === "V" ? h.key.slice(1) : "collection";
-                            return mk(h.key[0] === "S" ? h.label + " (saved search)" : h.label, () => P._wvHidShow(win, libID, [h.key]), false, icon);
+                            return mk(h.key[0] === "S" ? { id: "weavero-menu-hid-saved-search", args: { name: h.label } } : { data: h.label }, () => P._wvHidShow(win, libID, [h.key]), false, icon);
                         } })),
                         ...everywhere.map((z: any) => ({ rank: this._wvHidPaneRank(z.type), names: [z.label], item: () =>
-                            mk(z.label + " (all windows)", () => P._wvHidShowZotero(win, libID, z.type), false, z.type) })),
+                            mk({ id: "weavero-menu-hid-all-windows", args: { name: z.label } }, () => P._wvHidShowZotero(win, libID, z.type), false, z.type) })),
                     ].sort((a, b) => this._wvHidPaneCompare(a, b));
                     for (const e of entries) pp.appendChild(e.item());
                     if (groups.length) {
                         if (hidden.length) pp.appendChild(doc.createXULElement("menuseparator"));
-                        const hd = mk("Group Libraries", () => {}, false); hd.setAttribute("disabled", "true");
+                        // Zotero's own heading for the section (pane.collections.groupLibraries).
+                        const hd = mk({ zotero: this._wvHidSectionLabel("groups") }, () => {}, false); hd.setAttribute("disabled", "true");
                         pp.appendChild(hd);
-                        for (const g of groups) pp.appendChild(mk(g.label, () => P._wvHidShow(win, null, null, [g.libraryID]), false, "group"));
+                        for (const g of groups) pp.appendChild(mk({ data: g.label }, () => P._wvHidShow(win, null, null, [g.libraryID]), false, "group"));
                     }
                     if (sections.length) {
                         if (hidden.length || everywhere.length || groups.length) pp.appendChild(doc.createXULElement("menuseparator"));
-                        for (const s of sections) pp.appendChild(mk(s.label, () => P._wvHidShow(win, null, null, null, null, [s.which]), false, s.which));
+                        for (const s of sections) pp.appendChild(mk({ zotero: s.label }, () => P._wvHidShow(win, null, null, null, null, [s.which]), false, s.which));
                     }
                     sm.appendChild(pp);
                     placeInShowGroup(sm);
@@ -3864,7 +3885,7 @@ class _PaneMixin {
                     // hide several at once (MJT 2026-10-16: "should still be
                     // available in the menu at the top level") -- a plain
                     // item, same place, same icon.
-                    const mi = mk("Manage Hidden…", () => P._wvHidOpenManager(win));
+                    const mi = mk("weavero-menu-hid-manage", () => P._wvHidOpenManager(win));
                     mi.classList.add("menuitem-iconic", "wv-hid-show");
                     placeInShowGroup(mi);
                     if (hideItem) menu.insertBefore(hideItem, mi);
@@ -4678,7 +4699,7 @@ class _PaneMixin {
             popup.replaceChildren();
             const lib: any = Zotero.Libraries.get(cols[0].libraryID);
             const li: any = doc.createXULElement("menuitem");
-            li.setAttribute("label", lib.name); li.setAttribute("image", lib.treeViewImage); li.setAttribute("value", lib.treeViewID);
+            wvDataLabel(li, lib.name); li.setAttribute("image", lib.treeViewImage); li.setAttribute("value", lib.treeViewID);
             li.classList.add("menuitem-iconic");
             li.disabled = cols.every((c: any) => !c.parentID);
             li.addEventListener("command", (ev: any) => menuCmd(() => moveTo(cols, lib))(ev, lib));
@@ -4701,7 +4722,7 @@ class _PaneMixin {
             if (tops.length === 1) {
                 const lib = tops[0];
                 const li: any = doc.createXULElement("menuitem");
-                li.setAttribute("label", lib.name); li.setAttribute("image", lib.treeViewImage); li.setAttribute("value", lib.treeViewID);
+                wvDataLabel(li, lib.name); li.setAttribute("image", lib.treeViewImage); li.setAttribute("value", lib.treeViewID);
                 li.classList.add("menuitem-iconic");
                 li.addEventListener("command", (ev: any) => menuCmd(() => copyTo(t, col, lib))(ev, lib));
                 popup.appendChild(li);
@@ -4753,16 +4774,15 @@ class _PaneMixin {
                 const allSearches = rows.length > 0 && rows.every((r: any) => r.isSearch());
                 const pop: any = doc.createXULElement("menupopup");
                 pop.id = "wv-hid-mgr-menu";
-                const label = (el: any, l10n: any, fallback: string) => {
-                    if (l10n && doc.l10n) doc.l10n.setAttributes(el, l10n.id, l10n.args || {});
-                    else el.setAttribute("label", fallback);
-                };
-                const item = (cls: string, l10n: any, fallback: string, fn: () => any, enabled: boolean) =>
-                    wvMenuItem(doc, { cls, l10n: (l10n && doc.l10n) ? l10n : undefined, label: fallback, disabled: !enabled, onCommand: () => fn() }, pop);
-                const submenu = (cls: string, l10n: any, fallback: string, build: (popup: any) => void, enabled: boolean) => {
+                // Zotero's own ids where 9.0, 10 and 11 all have them (Move To,
+                // Copy To); weavero.ftl's where Zotero 9 lacks Zotero's
+                // (collections-menu-rename / -delete* / -export are 10+).
+                const item = (cls: string, l10n: any, fn: () => any, enabled: boolean) =>
+                    wvMenuItem(doc, { cls, l10n, disabled: !enabled, onCommand: () => fn() }, pop);
+                const submenu = (cls: string, l10n: any, build: (popup: any) => void, enabled: boolean) => {
                     const m: any = doc.createXULElement("menu");
                     m.className = cls;
-                    label(m, l10n, fallback);
+                    wvL10n(m, l10n.id, l10n.args);
                     if (!enabled) m.setAttribute("disabled", "true");
                     const mp: any = doc.createXULElement("menupopup");
                     mp.addEventListener("popupshowing", (ev: any) => { if (ev.target === mp) { try { build(mp); } catch (e) { Zotero.debug("[Weavero] manager submenu err: " + e); } } });
@@ -4772,24 +4792,24 @@ class _PaneMixin {
                 };
                 const sep = () => pop.appendChild(doc.createXULElement("menuseparator"));
                 if (one && one.isCollection()) {
-                    item("wv-hid-mgr-new", null, "New Subcollection…", () => newSubcollection(one), canEdit);
+                    item("wv-hid-mgr-new", { id: "weavero-menu-hidmgr-new-subcollection" }, () => newSubcollection(one), canEdit);
                     sep();
-                    item("wv-hid-mgr-rename", { id: "collections-menu-rename" }, "Rename", () => rename(t, one), canEdit);
+                    item("wv-hid-mgr-rename", { id: "weavero-menu-hidmgr-rename" }, () => rename(t, one), canEdit);
                 }
                 if (allCols && oneLib) {
-                    submenu("wv-hid-mgr-move", { id: "collections-menu-move-collection" }, "Move To", (mp) => buildMoveMenu(mp, cols), canEdit);
-                    if (one) submenu("wv-hid-mgr-copy", { id: "collections-menu-copy-collection" }, "Copy To", (mp) => buildCopyMenu(mp, t, cols[0]), true);
+                    submenu("wv-hid-mgr-move", { id: "collections-menu-move-collection" }, (mp) => buildMoveMenu(mp, cols), canEdit);
+                    if (one) submenu("wv-hid-mgr-copy", { id: "collections-menu-copy-collection" }, (mp) => buildCopyMenu(mp, t, cols[0]), true);
                 }
                 const n = rows.length;
-                item("wv-hid-mgr-hideshow", null, side === "left" ? (n > 1 ? "Hide " + n + " →" : "Hide →") : (n > 1 ? "← Show " + n : "← Show"),
+                item("wv-hid-mgr-hideshow", { id: side === "left" ? "weavero-menu-hidmgr-hide" : "weavero-menu-hidmgr-show", args: { count: n } },
                     () => { if (side === "left") hideSel(); else showSel(); }, n > 0);
                 if (allCols || allSearches) {
-                    item("wv-hid-mgr-delete", { id: allCols ? "collections-menu-delete" : "collections-menu-delete-search", args: { count: n } },
-                        allCols ? (n > 1 ? "Delete Collections…" : "Delete Collection…") : (n > 1 ? "Delete Searches…" : "Delete Search…"), () => del(t, rows, false), canEdit);
-                    if (allCols) item("wv-hid-mgr-delete-items", { id: "collections-menu-delete-with-items", args: { count: n } },
-                        n > 1 ? "Delete Collections and Items…" : "Delete Collection and Items…", () => del(t, rows, true), canEdit);
+                    item("wv-hid-mgr-delete", { id: allCols ? "weavero-menu-hidmgr-delete-collections" : "weavero-menu-hidmgr-delete-searches", args: { count: n } },
+                        () => del(t, rows, false), canEdit);
+                    if (allCols) item("wv-hid-mgr-delete-items", { id: "weavero-menu-hidmgr-delete-collections-items", args: { count: n } },
+                        () => del(t, rows, true), canEdit);
                 }
-                if (allCols) { sep(); item("wv-hid-mgr-export", { id: "collections-menu-export" }, "Export…", () => exportCols(cols), true); }
+                if (allCols) { sep(); item("wv-hid-mgr-export", { id: "weavero-menu-hidmgr-export" }, () => exportCols(cols), true); }
                 pop.addEventListener("popuphidden", (ev: any) => { if (ev.target === pop) pop.remove(); });
                 (doc.querySelector("popupset") || doc.documentElement).appendChild(pop);
                 pop.openPopupAtScreen(x, y, true);
@@ -5192,13 +5212,18 @@ class _PaneMixin {
             const P: any = this;
             const pop = doc.createXULElement("menupopup");
             pop.id = "wv-hid-groups-menu";
-            const mk = (label: string, fn: () => void, icon?: string) =>
-                wvMenuItem(doc, { label, iconClass: icon ? "wv-hid-icon-" + icon : undefined, onCommand: () => fn() });
+            // `what`: a weavero.ftl id (+ args), or { data } / { zotero } text.
+            const mk = (what: { id?: string, args?: any, data?: string, zotero?: string }, fn: () => void, icon?: string) => {
+                const mi = wvMenuItem(doc, { l10n: what.id ? { id: what.id, args: what.args } : undefined, iconClass: icon ? "wv-hid-icon-" + icon : undefined, onCommand: () => fn() });
+                if (what.zotero) wvZoteroLabel(mi, what.zotero);
+                else if (!what.id) wvDataLabel(mi, what.data || "");
+                return mi;
+            };
             // Hide the whole section -- every group, the heading with them,
             // groups joined later too (MJT 2026-10-20) -- in Zotero's own Hide
             // look; only while My Library is shown, the row to come back from.
             if (P._wvHidCanHideSection(win, "groups")) {
-                const hi = mk(wvHidHideLabel(), () => P._wvHidHide([{ id: "group-libraries-header", libraryID: -1 }], win));
+                const hi = mk({ zotero: wvHidHideLabel() }, () => P._wvHidHide([{ id: "group-libraries-header", libraryID: -1 }], win));
                 hi.classList.add("menuitem-iconic", "zotero-menuitem-hide-collection");
                 pop.appendChild(hi);
                 pop.appendChild(doc.createXULElement("menuseparator"));
@@ -5207,21 +5232,21 @@ class _PaneMixin {
                 // Nothing hidden from here: the manager is still the way to
                 // hide several at once -- a plain item, as on a library row
                 // (MJT 2026-10-20: "should always show the Manage Hidden option").
-                const mi = mk("Manage Hidden…", () => P._wvHidOpenManager(win));
+                const mi = mk({ id: "weavero-menu-hid-manage" }, () => P._wvHidOpenManager(win));
                 mi.classList.add("menuitem-iconic", "wv-hid-show");
                 pop.appendChild(mi);
             }
             else {
                 const sm = doc.createXULElement("menu");
                 sm.classList.add("menu-iconic", "wv-hid-show");
-                sm.setAttribute("label", libs.length ? "Show Hidden Libraries" : "Show Hidden Group Libraries");
+                wvL10n(sm, "weavero-menu-hid-show", { what: libs.length ? "libraries" : "groups" });
                 const pp = doc.createXULElement("menupopup");
-                pp.appendChild(mk("Manage Hidden…", () => P._wvHidOpenManager(win)));
-                pp.appendChild(mk("Show All (" + (groups.length + libs.length) + ")",
+                pp.appendChild(mk({ id: "weavero-menu-hid-manage" }, () => P._wvHidOpenManager(win)));
+                pp.appendChild(mk({ id: "weavero-menu-hid-show-all", args: { count: groups.length + libs.length } },
                     () => P._wvHidShow(win, null, null, groups.map((g: any) => g.libraryID), libs.map((l: any) => l.libraryID))));
                 pp.appendChild(doc.createXULElement("menuseparator"));
-                for (const l of libs) pp.appendChild(mk(l.label, () => P._wvHidShow(win, null, null, null, [l.libraryID]), "library"));
-                for (const g of groups) pp.appendChild(mk(g.label, () => P._wvHidShow(win, null, null, [g.libraryID]), "group"));
+                for (const l of libs) pp.appendChild(mk({ data: l.label }, () => P._wvHidShow(win, null, null, null, [l.libraryID]), "library"));
+                for (const g of groups) pp.appendChild(mk({ data: g.label }, () => P._wvHidShow(win, null, null, [g.libraryID]), "group"));
                 sm.appendChild(pp);
                 pop.appendChild(sm);
             }
@@ -6382,7 +6407,17 @@ class _PaneMixin {
                     if (!leaving) arm();
                 } catch (_) {}
             };
-            for (const t of ["dragenter", "dragover", "dragleave", "dragexit", "drop", "dragend"]) wvListen(win, "stuckDropRow:" + t, t, onDragElsewhere, true, tag);
+            // This wiring's own listeners go live, always: a re-wire under the same
+            // instance tag (a library view wired anew, window-wiring.ts `views`) kept
+            // the first wiring's listeners (wvListen refuses its own key) while
+            // WV_DROP_WATCH took THIS wiring's watchdog cancel -- a watchdog the live
+            // (older) listeners armed then outlived the teardown and cleared a row
+            // 250 ms later (main's full suite 2026-11-12: stuck-drop-row "dev.54",
+            // after the split specs had opened library tabs).
+            for (const t of ["dragenter", "dragover", "dragleave", "dragexit", "drop", "dragend"]) {
+                wvUnlisten(win, "stuckDropRow:" + t);
+                wvListen(win, "stuckDropRow:" + t, t, onDragElsewhere, true, tag);
+            }
             for (const [name, tree] of [["items", ZP.itemsView], ["collections", ZP.collectionsView]] as Array<[string, any]>) {
                 if (!tree || !tree.domEl || typeof tree._clearDropIndicator === "function") continue;
                 wvListen(tree.domEl, "stuckDropRow:" + name, "mousemove", () => clear(tree, "mousemove"), { passive: true }, tag);
@@ -8740,6 +8775,7 @@ class _PaneMixin {
             const copyAsChildren: any[] = self._wvCopyAsMenuManagerEntries(tabItemsOf);
             const copyAsSubmenu = {
                 menuType: "submenu",
+                l10nID: "weavero-menu-copy-as",
                 icon: self._menuItemIconURLLight,
                 darkIcon: self._menuItemIconURLDark,
                 onShowing: (_ev, ctx) => {
@@ -8747,7 +8783,6 @@ class _PaneMixin {
                         if (!self._getEnableCopyItemLink()) { ctx.setVisible(false); return; }
                         if (!(ctx.items && ctx.items[0])) { ctx.setVisible(false); return; }
                         ctx.setVisible(true);
-                        ctx.menuElem.setAttribute("label", "Copy As");
                     } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
                 },
                 menus: copyAsChildren,
@@ -8830,10 +8865,13 @@ class _PaneMixin {
                     const popup = ev.target;
                     if (!popup || popup.localName !== "menupopup") return;
                     const first = popup.firstElementChild;
-                    if (!first || first.localName !== "menuitem") return;
-                    const firstLabel = first.getAttribute("label");
-                    if (showInLib ? (firstLabel !== showInLib)
-                                  : (firstLabel !== "Show in Library")) return;
+                    if (!first) return;
+                    const firstLabel = first.localName === "menuitem" ? first.getAttribute("label") : null;
+                    const showsInLib = showInLib ? (firstLabel === showInLib) : (firstLabel === "Show in Library");
+                    // A library tab's menu has no "Show in Library" (tabs.js
+                    // _openMenu): it is known by Weavero's split entries, which
+                    // every tab menu carries, keyed even while hidden (tab-split.ts).
+                    if (!showsInLib && !popup.querySelector(":scope > [data-wv-key^='split']")) return;
 
                     // Stamp the library-aware icon on "Show in Library"
                     // (only if no icon set yet, so we don't fight a future
@@ -8841,7 +8879,7 @@ class _PaneMixin {
                     // `ctxHandler` above; resolve to the tab's item and
                     // pass the libraryID to `_bmShowInLibraryIcon`.
                     try {
-                        if (tabState.id && (Date.now() - tabState.ts) <= 1500
+                        if (showsInLib && tabState.id && (Date.now() - tabState.ts) <= 1500
                             && !first.getAttribute("image")) {
                             const Z = win.Zotero_Tabs;
                             const info = Z && typeof Z._getTab === "function"
@@ -8887,12 +8925,14 @@ class _PaneMixin {
                     // window's tab menu (Move Tab above View Online, then Show File,
                     // External Viewer, …). One source of truth; native items below
                     // the cluster stay where Zotero put them.
-                    let anchor: any = first;
+                    // Without "Show in Library" the cluster leads the menu.
+                    let anchor: any = showsInLib ? first : null;
                     try {
                         const lp2: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                         const order: string[] = (lp2 && lp2._wvTabMenuOrder) ? lp2._wvTabMenuOrder() : [];
                         const TOP = new Set(["viewOnline", "showFile", "externalViewer",
                                              "openNotes", "removeFromGroup", "groupTab",
+                                             "splitAdd", "splitOpen", "splitSeparate", "splitReverse",
                                              "moveTab"]);
                         const found: any = {};
                         for (const ch of Array.from(popup.children) as any[]) {
@@ -8903,7 +8943,8 @@ class _PaneMixin {
                             if (!TOP.has(key)) continue;
                             const el = found[key];
                             if (!el || el.parentNode !== popup) continue;
-                            if (anchor.nextElementSibling !== el) anchor.after(el);
+                            if (!anchor) { if (popup.firstElementChild !== el) popup.insertBefore(el, popup.firstElementChild); }
+                            else if (anchor.nextElementSibling !== el) anchor.after(el);
                             anchor = el;
                         }
                     } catch (_) {}
@@ -9124,10 +9165,10 @@ class _PaneMixin {
             // Append a copy-link menuitem. `resolve()` re-reads the
             // selected object at click time (the selection may move
             // between popupshowing and the actual click).
-            const addEntry = (id, label, resolve, buildURI) => {
+            const addEntry = (id, l10nID: string, resolve, buildURI) => {
                 const cl = doc.createXULElement("menuitem");
                 cl.id = id;
-                cl.setAttribute("label", label);
+                wvL10n(cl, l10nID);
                 // The links glyph, like every copy-link entry (2026-10-23).
                 cl.classList.add("menuitem-iconic");
                 cl.setAttribute("image", WV_LINK_MENU_ICON);
@@ -9156,14 +9197,14 @@ class _PaneMixin {
                     // for both → no entry.
                     const col = this._wvSelectedCollection(win);
                     if (col && col.key) {
-                        addEntry(COPY_COLL_ID, "Copy Collection Link",
+                        addEntry(COPY_COLL_ID, "weavero-menu-collection-copy-link",
                             () => this._wvSelectedCollection(win),
                             buildCollectionURI);
                         return;
                     }
                     const search = this._wvSelectedSavedSearch(win);
                     if (search && search.key) {
-                        addEntry(COPY_SEARCH_ID, "Copy Saved Search Link",
+                        addEntry(COPY_SEARCH_ID, "weavero-menu-collection-copy-search-link",
                             () => this._wvSelectedSavedSearch(win),
                             buildSearchURI);
                     }
@@ -9639,6 +9680,14 @@ class _PaneMixin {
      *  reproduces Zotero's quick-search context-row behaviour:
      *  unticked kinds are dimmed AND skipped by Ctrl+A select-all. */
     _applySelectionTargetVisuals(winArg?: any) {
+        // Painted with the painted window's own filter and quick search: bound
+        // to `winArg`. Unbound, a call for a window that is not the filter's
+        // target (a row click, a timer) judged its rows with the target's --
+        // the focused window's -- state (2026-11-11, per-view apply state).
+        if (winArg && !winArg.closed && winArg !== (this as any)._wvFilterWinOverride
+            && typeof (this as any)._wvWithFilterWin === "function") {
+            return (this as any)._wvWithFilterWin(winArg, () => this._applySelectionTargetVisuals(winArg));
+        }
         try {
             // Per window (survey 2026-10-06 step 4): the tree painted is the
             // caller's window's, else the filter's target window -- the same
@@ -10178,7 +10227,8 @@ class _PaneMixin {
     _wvColPickTagsSubmenu(win: any, mi: any, col: any) {
         const doc = win.document;
         const menu = doc.createXULElement("menu");
-        menu.setAttribute("label", mi.getAttribute("label") || "Tags");
+        // The column's own name (its registration label).
+        wvDataLabel(menu, mi.getAttribute("label") || String(col.label || ""));
         // `menu-iconic` only while the column is shown: it opens the icon
         // slot, and an open slot with no image paints Zotero 11's empty
         // square (upstream register #16; MJT 2026-10-26: "Empty square when
@@ -10189,12 +10239,12 @@ class _PaneMixin {
         menu.appendChild(sub);
         mi.classList.remove("wv-colpick-ours");
         mi.classList.add("wv-colpick-tags-show");
-        mi.setAttribute("label", "Show Column");
+        wvL10n(mi, "weavero-menu-colpick-show-column");
         sub.appendChild(mi);
         sub.appendChild(doc.createXULElement("menuseparator"));
         const auto = doc.createXULElement("menuitem");
         auto.setAttribute("type", "checkbox");
-        auto.setAttribute("label", "Automatic-Tag Count");
+        wvL10n(auto, "weavero-menu-colpick-auto-tag-count");
         auto.className = "wv-colpick-tags-auto";
         const on = this._wvTagsAutoFor(win);
         if (on) auto.setAttribute("checked", "true");
@@ -11260,6 +11310,19 @@ class _PaneMixin {
                     hideMenu();
                 });
                 m.appendChild(item);
+                // Split view (tab-split.ts): a zotero:// link's target beside the
+                // tab on screen. Shown per link by onCtx.
+                const split = doc.createElement("div");
+                split.className = "wv-url-menu-item wv-url-menu-split";
+                split.textContent = "Open Link in Split View";
+                split.style.display = "none";
+                split.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    const url = ms.url;
+                    hideMenu();
+                    try { if (url) (this as any)._wvTabSplitOpenLink(win, url); } catch (err) {}
+                });
+                m.insertBefore(split, item);
                 doc.documentElement.appendChild(m);
                 ms.el = m;
                 return m;
@@ -11343,6 +11406,10 @@ class _PaneMixin {
                 ms.firstMoveHandler = onFirstMove;
                 doc.addEventListener("mousemove", onFirstMove, true);
                 const m = ensureMenu();
+                try {
+                    const sp2 = m.querySelector(".wv-url-menu-split");
+                    if (sp2) sp2.style.display = (typeof (this as any)._wvTabSplitLinkOK === "function" && (this as any)._wvTabSplitLinkOK(win, url)) ? "" : "none";
+                } catch (err) {}
                 // Position at cursor; clamp to viewport so the menu
                 // doesn't overflow the right / bottom edge.
                 //
@@ -11837,22 +11904,51 @@ class _PaneMixin {
     //  and the next pane block have been hoisted into modules/filter.ts.)
     // =====================================================================
 
+    /** Record a label Weavero gave a reader context-menu entry and the icon
+     *  it wears ("relations" | "link"), for `decorateContextMenu`. The last
+     *  few dozen labels are kept: a count makes each selection's its own. */
+    _wvReaderMenuIconNote(label: string, kind: string) {
+        const self: any = this;
+        const m: Map<string, string> = self._wvReaderMenuIcons || (self._wvReaderMenuIcons = new Map());
+        const k = String(label || "").replace(/\s+/g, " ").trim();
+        if (!k) return;
+        m.delete(k);
+        m.set(k, kind);
+        while (m.size > 64) m.delete(m.keys().next().value);
+    }
+
+    /** The icon kind of a reader context-menu row by its text: one Weavero
+     *  appended (`_wvReaderMenuIconNote`), or the one-annotation label of
+     *  each of the three entries, as weavero.ftl spells it now. */
+    _wvReaderMenuIconOf(text: string): string | null {
+        const k = String(text || "").replace(/\s+/g, " ").trim();
+        if (!k) return null;
+        const m: Map<string, string> | undefined = (this as any)._wvReaderMenuIcons;
+        if (m && m.has(k)) return m.get(k) || null;
+        const one = (id: string) => wvStr(id, { count: 1 }).replace(/\s+/g, " ").trim();
+        if (k === one("weavero-menu-reader-ann-add-related")) return "relations";
+        if (k === one("weavero-menu-reader-ann-copy-select-link") || k === one("weavero-menu-reader-ann-copy-open-link")) return "link";
+        return null;
+    }
+
+    /** Weavero's icons on its entries in the reader's own (React) context
+     *  menu: Zotero 10 routes every annotation context menu there
+     *  (`internal: true`, reader/src/common/context-menu.js), and its rows
+     *  (`<button class="row basic">`, components/context-menu.js) carry no
+     *  class or attribute of a plugin's -- only the label. The labels are the
+     *  ones `_contextHandlerImpl` appended, recorded with their icon
+     *  (`_wvReaderMenuIconOf`), so the match is on Weavero's own text in
+     *  whatever language weavero.ftl gave it; the English prefixes it matched
+     *  until localisation slice 2 (MENU_LABEL_PREFIXES) found nothing in
+     *  another language (test/menus-l10n.spec.js). */
     decorateContextMenu(idoc) {
         if (!idoc || !idoc.querySelectorAll) return 0;
-        // Per-prefix icon factory:
-        //   "Add Related"            → inline <svg> chain via
-        //                              _makeRelationsSvg (fill=
-        //                              currentColor → reads on light AND
-        //                              dark menu backgrounds).
-        //   "Copy Select/Open Link"  → the links glyph, inline <svg> in
-        //                              currentColor (the logo until
-        //                              2026-10-23), as every copy-link
-        //                              entry's icon.
-        const buildIconNode = (text) => {
-            if (text.startsWith("Add Related")) {
-                return this._makeRelationsSvg(idoc);
-            }
-            if (text.startsWith("Copy Select Link") || text.startsWith("Copy Open Link")) {
+        // "relations" -> the chain, _makeRelationsSvg (fill=currentColor:
+        // reads on light AND dark menus); "link" -> the links glyph, as every
+        // copy-link entry's icon (the logo until 2026-10-23).
+        const buildIconNode = (kind: string) => {
+            if (kind === "relations") return this._makeRelationsSvg(idoc);
+            if (kind === "link") {
                 const svg: any = wvLinkGlyphEl(idoc, { size: 16 });
                 svg.style.display = "block";
                 return svg;
@@ -11863,13 +11959,9 @@ class _PaneMixin {
         let touched = 0;
         for (const btn of buttons) {
             if (btn.dataset && btn.dataset.wvDecorated) continue;
-            const text = (btn.textContent || "").trim();
-            let match = false;
-            for (const prefix of MENU_LABEL_PREFIXES) {
-                if (text.startsWith(prefix)) { match = true; break; }
-            }
-            if (!match) continue;
-            const iconNode = buildIconNode(text);
+            const kind = this._wvReaderMenuIconOf((btn.textContent || "").trim());
+            if (!kind) continue;
+            const iconNode = buildIconNode(kind);
             if (!iconNode) continue;
             try {
                 const wrap = idoc.createElement("div");
@@ -12025,7 +12117,13 @@ class _PaneMixin {
         // Defensive: if a future Zotero version makes this editable, fall
         // back to URL-only marking which has edit-mode protections.
         let fresh;
-        if (commentEl.isContentEditable) {
+        if ((this as any)._wvApiCommentStandsDown("itemPane")) {
+            // A plugin that draws comments itself declared the item pane
+            // (Zotero.Weavero.api.declareCommentRenderer, plugin-api.ts):
+            // Zotero's text back, for that plugin to draw. The buttons below
+            // stay, as they do beside Annotation Markdown in the reader.
+            fresh = (this as any)._wvApiPaneCommentRestore(commentEl);
+        } else if (commentEl.isContentEditable) {
             fresh = this._markTextLinks(commentEl);
         } else {
             fresh = this._renderPaneCommentInline(commentEl);
@@ -12508,7 +12606,7 @@ class _PaneMixin {
     /** Resolve the Zotero.Item backing a `<div class="row">` inside the
      *  right-pane Related section. Upstream's relatedBox.js doesn't
      *  expose the id on the row DOM (it captures it in a click-handler
-     *  closure), so we pivot off the currently-selected item: the
+     *  closure), so we pivot off the section's own item: the
      *  related-box always shows ITS relations, so iterating
      *  `parent.relatedItems` and matching by display title resolves the
      *  row in O(N) where N is small (related-section size). Falls
@@ -12516,18 +12614,22 @@ class _PaneMixin {
     _resolveRelatedRowItem(row) {
         if (!row) return null;
         try {
-            const win = Zotero.getMainWindow();
-            const zp = win && win.ZoteroPane;
             const labelEl = row.querySelector(".label");
             const labelText = labelEl ? (labelEl.textContent || "").trim() : "";
-            if (!zp || !labelText) return null;
-            // Build a candidate set of "owning" items: every selected
-            // item AND every annotation child of every selected item
-            // (in case the related-box is for an attachment but a
-            // related annotation is what we right-clicked under it).
-            const selected = (typeof zp.getSelectedItems === "function")
-                ? zp.getSelectedItems() : [];
+            if (!labelText) return null;
+            // The owners: the item the row's own section is for (Zotero's
+            // related-box keeps it as `.item`), then the selection of the
+            // row's OWN window. The focused window's selection was read here,
+            // so a row in a background window matched nothing, or another
+            // window's relations (align review 2026-11-11; guard
+            // per-window-state.spec.js).
             const candidates = new Set();
+            const rb: any = row.closest && row.closest("related-box");
+            if (rb && rb.item) candidates.add(rb.item);
+            const win: any = winOf(row);
+            const zp = win && win.ZoteroPane;
+            const selected = (zp && typeof zp.getSelectedItems === "function")
+                ? zp.getSelectedItems() : [];
             for (const it of selected) {
                 if (it) candidates.add(it);
             }
@@ -13654,6 +13756,9 @@ class _PaneMixin {
             // 2026-10-05, Windows kept exactly as before.
             const restoreSize = (Zotero as any).isLinux ? this._wvPMKeepRestoreSize(win) : null;
             win._wvPMChrome = { toolbar, items, btn, iconBox, titleEl, dragFlex, dragSpacer, bb, titleObs, reserveObs, restoreSize };
+            // Right-click on its maximize button: maximize across monitors
+            // (max-span.ts), as in the main window.
+            try { this._wvMaxSpanWire(win); } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvPMSetupChrome err: " + e); }
     }
 
@@ -13797,6 +13902,8 @@ class _PaneMixin {
             if (win && win._wvPMRestoreOnly) { try { win._wvPMRestoreOnly(); } catch (e) {} win._wvPMRestoreOnly = null; }
             const c = win && win._wvPMChrome;
             if (!c) return;
+            // Its maximize button goes: the window keeps its size and place.
+            try { this._wvMaxSpanUnwire(win); this._wvMaxSpanForget(win); } catch (e) {}
             try { win.document.documentElement.removeAttribute("customtitlebar"); } catch (e) {}
             try { c.items.removeAttribute("wv-pm-hidden"); } catch (e) {}
             try { if (c.titleObs) c.titleObs.disconnect(); } catch (e) {}

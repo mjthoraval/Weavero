@@ -52,6 +52,10 @@ class _WindowStateMixin {
         // Its own pane sizes (_wvPaneSizesApply).
         const sizes = this._wvPaneSizesCapture(w);
         if (sizes) st.paneSizes = sizes;
+        // Spanned across monitors (max-span.ts): Zotero brings the window back
+        // on one monitor (both of its restores clamp to a screen).
+        const span = p._wvMaxSpanCapture ? p._wvMaxSpanCapture(w) : null;
+        if (span) st.span = span;
         return st;
     }
 
@@ -59,6 +63,15 @@ class _WindowStateMixin {
      *  its own windows; the one shown by default), else in its document. */
     _wvPaneSizesGetter(w: any, view?: any): (id: string) => any {
         const v = view || (w && w.ZoteroPane && w.ZoteroPane.libraryView);
+        // A split side's library view holds that side's own panes, not the window's
+        // (tab-split.ts, item 15): nothing to read from it; an older Zotero's one
+        // library pane, its normal panes set aside.
+        const P: any = this;
+        if (typeof P._wvTabSplitLibOwned === "function") {
+            if (v && typeof v.getElement === "function" && P._wvTabSplitLibOwned(w, v)) return () => null;
+            const snap = !wvNativeWindows() ? P._wvTabSplitLibOwned(w) : null;
+            if (snap) return (id: string) => ({ getAttribute: (a: string) => (snap[id] && snap[id][a] != null ? snap[id][a] : null) });
+        }
         if (v && typeof v.getElement === "function") return (id: string) => v.getElement(id);
         if (wvNativeWindows()) return () => null;   // a window with no library tab
         return (id: string) => w.document.getElementById(id);
@@ -78,11 +91,28 @@ class _WindowStateMixin {
     _wvPaneSizesApply(w: any, sizes: any) {
         if (!w || !sizes || typeof sizes !== "object") return;
         try {
+            const P: any = this;
+            const owned = (root?: any) => (typeof P._wvTabSplitLibOwned === "function" ? P._wvTabSplitLibOwned(w, root) : null);
             if (wvNativeWindows()) {
                 w._wvPaneSizes = Object.assign({}, sizes);
-                for (const v of wvLibraryViews(w)) wvPaneSizesWrite((id: string) => v.getElement(id), sizes);
+                // Not a split side's view: it holds the side's own (tab-split.ts).
+                for (const v of wvLibraryViews(w)) if (!owned(v)) wvPaneSizesWrite((id: string) => v.getElement(id), sizes);
             }
-            else wvPaneSizesWrite((id: string) => w.document.getElementById(id), sizes);
+            else {
+                // An older Zotero's one library pane, a split side: its normal panes
+                // set aside take them, given back when it is a normal tab again.
+                const snap = owned();
+                if (snap) {
+                    wvPaneSizesWrite((id: string) => {
+                        const rec = snap[id] || (snap[id] = {});
+                        return {
+                            setAttribute: (a: string, x: string) => { rec[a] = String(x); },
+                            style: { set width(x: string) { rec["style.width"] = String(x); }, set height(x: string) { rec["style.height"] = String(x); } },
+                        };
+                    }, sizes);
+                }
+                else wvPaneSizesWrite((id: string) => w.document.getElementById(id), sizes);
+            }
             try { w.ZoteroPane.updateLayoutConstraints(); } catch (e) {}
         }
         catch (e) { Zotero.debug("[Weavero] _wvPaneSizesApply err: " + e); }
@@ -138,7 +168,8 @@ class _WindowStateMixin {
                 const lp = live();
                 const own = lp && lp._wvPaneSizesOwn(w);
                 if (own) {
-                    const views = view ? [view] : wvLibraryViews(w);
+                    // Not a split side's view: it holds the side's own (tab-split.ts).
+                    const views = (view ? [view] : wvLibraryViews(w)).filter((v: any) => !(typeof lp._wvTabSplitLibOwned === "function" && lp._wvTabSplitLibOwned(w, v)));
                     for (const v of views) wvPaneSizesWrite((id: string) => v.getElement(id), own);
                 }
             }
@@ -200,6 +231,10 @@ class _WindowStateMixin {
                 if (st.paneSizes) this._wvPaneSizesApply(w, st.paneSizes);
                 if (st.title && w._wvWindowTitle == null) p._wvWindowSetCustomTitle(w, st.title);
                 if (typeof st.tagsAuto === "boolean") p._wvTagsAutoSet(w, st.tagsAuto, { save: false });
+                // Spanned across monitors when it was saved: span it again.
+                if (st.span && p._wvMaxSpanReapply) {
+                    Promise.resolve(p._wvMaxSpanReapply(w, st.span)).catch((e: any) => Zotero.debug("[Weavero] span reapply err: " + e));
+                }
                 // An Advanced Search window back from a restart or reopened:
                 // its panes hidden again, its size remembered from now on.
                 if (Array.isArray(st.advPanes) && st.advPanes.length && p._wvAdvSearchWindowsOn() && p._getAdvSearchWindowHidePanes()) {

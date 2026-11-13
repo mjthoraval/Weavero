@@ -19,11 +19,14 @@
 describe("Weavero — filter apply and clear without the walks that drew nothing", function () {
     this.timeout(60000);
     let wv, win, ZP, iv, rp, parent, attA, attB, rnd;
+    // Deliberate, as a chip click is: a plain apply that lands in the
+    // observer-suppression window of an apply the fixture's tree updates
+    // provoked is DROPPED, and the clear below then had nothing to clear.
     const applyChip = async (mutate, opts) => {
         const g = wv._emptyFilterGroup(); mutate(g);
         wv._filterState = { groups: [g], activeGroupIndex: 0 };
         wv._renderFilterBar();
-        await wv._applyItemsListFilter(opts || {});
+        await wv._applyItemsListFilter(opts || { deliberate: true });
     };
     const rowIndexOf = (id) => { for (let i = 0; i < rp._rows.length; i++) { const r = rp._rows[i]; if (r && r.ref && r.ref.id === id) return i; } return -1; };
 
@@ -48,14 +51,20 @@ describe("Weavero — filter apply and clear without the walks that drew nothing
     });
 
     it("a clear with nothing open skips the toggle walk and repaints once", async function () {
-        // Flaky, cause not found (2026-11-10): 0 repaints counted once on macOS
-        // CI and in 3 of 5 runs of this spec alone on 11.0-beta.4; an
-        // instrumented run saw the patch installed, removed by the clear, and
-        // one repaint. Green in every full suite. work/TODO.md has the runs.
+        // Flaky until 2026-11-11 (0 repaints: once on macOS CI, 3 of 5 runs
+        // alone on 11.0-beta.4, 1 of 5 on 10.0.8). The filter's trace ring
+        // (`Zotero._wvFilterTrace`) of a failing run: the fixture's tree updates
+        // provoked an observer apply 209 ms before the chip, whose plain apply
+        // bounced off that apply's 300 ms suppression window and was dropped
+        // ("bounce-suppress", not deliberate) -- the chip state was set, never
+        // applied, and the clear had no translation to take off, so it drew
+        // nothing. The chip applies deliberately now (retried on a bounce), and
+        // the translation is checked before the clear.
         wvT.ciRetries(this);
         await applyChip(g => { g.itemType = ["journalArticle"]; });
         await wvT.sleep(600);
         assert.isTrue(wv._isFilterActive(wv._filterState), "the chip is on");
+        assert.isOk(rp._wvFilterView, "and applied: the rows go through its translation");
         assert.isFalse(rp._rows.some(r => r && r.isOpen === true), "nothing is open in the view (collapsed library, parent-level chip)");
         let toggles = 0, invalidates = 0;
         const ownT = Object.prototype.hasOwnProperty.call(rp, "_toggleOpenState"); const origT = rp._toggleOpenState;

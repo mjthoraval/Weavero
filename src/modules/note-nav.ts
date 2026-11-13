@@ -34,6 +34,7 @@ import { wvStorePath, wvStoreRead, wvStoreWrite } from "../lib/store";
 import { wvAccel, wvAccelAny } from "../lib/keys";
 import { wvMainWins, wvWinType } from "../lib/windows";
 import { wvSvgEl } from "../lib/svg";
+import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
 
 const NV_FILE = "note-view.json";
 const HEADINGS = "h1, h2, h3, h4, h5, h6";
@@ -586,7 +587,7 @@ class _NoteNavMixin {
                 const ord = st.ctxOrd;
                 const h = this._wvNnHeadings(iframe)[ord];
                 if (h && h.foldable) {
-                    wvMenuItem(doc, { label: h.folded ? "Unfold Section" : "Fold Section", attrs: { id: "wv-note-fold-section" },
+                    wvMenuItem(doc, { l10n: { id: "weavero-menu-note-fold-section", args: { folded: h.folded ? "yes" : "no" } }, attrs: { id: "wv-note-fold-section" },
                         onCommand: () => {
                             const p = wvLivePlugin();
                             const pj = p && p._wvNnPage(p._wvNnIframe(ne));
@@ -598,9 +599,9 @@ class _NoteNavMixin {
                 const p = wvLivePlugin();
                 if (p) p._wvNoteFoldAll(ne, fold);
             };
-            wvMenuItem(doc, { label: "Fold All", attrs: { id: "wv-note-fold-all" },
+            wvMenuItem(doc, { l10n: { id: "weavero-menu-note-fold-all" }, attrs: { id: "wv-note-fold-all" },
                 disabled: c.folded >= c.foldable, onCommand: () => run(true) }, menu);
-            wvMenuItem(doc, { label: "Unfold All", attrs: { id: "wv-note-unfold-all" },
+            wvMenuItem(doc, { l10n: { id: "weavero-menu-note-unfold-all" }, attrs: { id: "wv-note-unfold-all" },
                 disabled: !c.folded, onCommand: () => run(false) }, menu);
         }
         catch (er) { Zotero.debug("[Weavero] fold menu err: " + er); }
@@ -634,8 +635,10 @@ class _NoteNavMixin {
         // unique one still links.
         const unique = !!h.id && heads.filter((x: any) => x.id === h.id).length === 1;
         const ro = ne.mode !== "edit";
+        // The read-only message carries the entry's tooltip too: Fluent
+        // removes a localizable attribute (tooltiptext) its message lacks.
         const mi = wvMenuItem(doc, {
-            label: kind === "open" ? "Copy Open Link to Heading" : "Copy Select Link to Heading",
+            l10n: { id: ro && !unique ? "weavero-menu-note-heading-link-readonly" : "weavero-menu-note-heading-link", args: { kind: kind === "open" ? "open" : "select" } },
             attrs: { id: kind === "open" ? "wv-note-heading-link-open" : "wv-note-heading-link" },
             disabled: ro && !unique,
             onCommand: () => {
@@ -643,7 +646,6 @@ class _NoteNavMixin {
                 if (p) p._wvNoteCopyHeadingLink(ne, h.ord, kind);
             },
         });
-        if (ro && !unique) mi.setAttribute("tooltiptext", "This note is read-only, and the heading has no link anchor yet.");
         return mi;
     }
 
@@ -1269,7 +1271,7 @@ class _NoteNavMixin {
                 const key = row.getAttribute("data-key");
                 if (row.querySelector(".wv-note-outline-twisty.wv-nn-kids")) {
                     const shut = st.shut.has(key);
-                    wvMenuItem(doc, { label: shut ? "Expand" : "Collapse", attrs: { id: "wv-note-outline-toggle" },
+                    wvMenuItem(doc, { l10n: { id: "weavero-menu-outline-toggle", args: { shut: shut ? "yes" : "no" } }, attrs: { id: "wv-note-outline-toggle" },
                         onCommand: () => NOTE_OUTLINE_KEYS.setOpen(this, st, doc, row, shut) }, menu);
                 }
                 const setAll = (open: boolean) => {
@@ -1278,9 +1280,9 @@ class _NoteNavMixin {
                     this._wvNoteOutlineRender(ne, iframe);
                 };
                 const shutN = parents.filter((r: any) => st.shut.has(r.getAttribute("data-key"))).length;
-                wvMenuItem(doc, { label: "Expand All", acceltext: "+", attrs: { id: "wv-note-outline-expand-all" },
+                wvMenuItem(doc, { l10n: { id: "weavero-menu-outline-expand-all" }, acceltext: "+", attrs: { id: "wv-note-outline-expand-all" },
                     disabled: !shutN, onCommand: () => setAll(true) }, menu);
-                wvMenuItem(doc, { label: "Collapse All", acceltext: "−", attrs: { id: "wv-note-outline-collapse-all" },
+                wvMenuItem(doc, { l10n: { id: "weavero-menu-outline-collapse-all" }, acceltext: "−", attrs: { id: "wv-note-outline-collapse-all" },
                     disabled: shutN >= parents.length, onCommand: () => setAll(false) }, menu);
             }
             if (!menu.firstChild) { menu.remove(); return; }

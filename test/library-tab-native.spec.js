@@ -4,7 +4,8 @@
 // other tabs. No need for special treatment", "Make sure that these changes only
 // apply to the new Zotero"): it moves anywhere, joins tab groups, and pins and
 // unpins -- by its menu or by a drag into or out of the pinned area, which now
-// starts at the far left. A pinned library tab leads the pinned tabs and draws as
+// starts at the far left. A library tab pins at the end of the pinned tabs, as any
+// tab does in Firefox (MJT 2026-11-11; it led them until then), and draws as
 // an icon like them ("The pinned library tab does not have the same size as the
 // others"). The pins sit in Zotero's pinned row, left of the scroll-back arrow
 // ("The arrow should be on the right side of the pinned tabs. See Firefox").
@@ -196,15 +197,27 @@ describe("Weavero — a library tab is a tab like any other on a Zotero with its
         await settle("My Library at the end");
     });
 
-    it("Pin Tab on My Library puts it first, an icon like the other pins", async function () {
+    // Pin Tab puts a tab at the END of the pinned tabs, as Firefox's pinTab
+    // (Tabbrowser.sys.mjs: insertBefore the pinned container's periphery) and
+    // Zotero's own setPinned (tabs.js: at _getFirstUnpinnedIndex) do -- MJT
+    // 2026-11-11: "In Firefox, pin tab moves it to the end of the pinned tabs.
+    // Weavero moves it first." Until then a library tab pinned first. It can
+    // still be dragged first: the pins reorder (next cases).
+    it("Pin Tab on My Library puts it at the end of the pins, an icon like the other pins", async function () {
         const mi = await menuItem(LIB, "Pin Tab");
         assert.ok(mi, "a Pin Tab entry on the library tab");
         mi.doCommand();
         closeMenus();
         await settle("pin My Library");
         assert.ok(libPinned(), "pinned");
-        assert.deepEqual(order(), ["LIB", "A", "B"], "first, then the other pins");
-        assert.deepEqual(screen(), ["pin:LIB", "pin:A", "B"], "on screen too");
+        assert.deepEqual(order(), ["A", "LIB", "B"], "after the pin already there, as in Firefox");
+        assert.deepEqual(screen(), ["pin:A", "pin:LIB", "B"], "on screen too");
+        // The fixture the next cases start from: My Library dragged first.
+        ZT.move(LIB, 0);
+        apply();
+        await settle("My Library moved first among the pins");
+        assert.deepEqual(order(), ["LIB", "A", "B"], "the pins reorder");
+        assert.deepEqual(screen(), ["pin:LIB", "pin:A", "B"]);
         const wl = rect(mirror(LIB)).width, wa = rect(mirror(tabOf(a).id)).width;
         assert.approximately(wl, wa, 1, "as wide as the other pin (" + wl + " vs " + wa + ")");
         const ic = mirror(LIB).querySelector(".tab-icon");

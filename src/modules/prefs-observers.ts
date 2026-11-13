@@ -297,6 +297,21 @@ export const WV_PREF_OBSERVERS: WvPrefObserver[] = [
         },
     },
     {
+        // Split view (tab-split.ts): redraw every window (self-gates; off shows
+        // Zotero's deck again, the splits kept for when it is back on).
+        keys: ["extensions.zotero.weavero.enableSplitView", "extensions.zotero.weavero.enableTabsAndWindows"],
+        run(p: any) {
+            try { for (const w of Zotero.getMainWindows()) p._wvTabSplitSync(w); } catch (e) {}
+        },
+    },
+    {
+        // The split view's footers: drawn again in every window.
+        keys: ["extensions.zotero.weavero.splitViewFooter"],
+        run(p: any) {
+            try { for (const w of Zotero.getMainWindows()) p._wvTabSplitDrawLayer(w); } catch (e) {}
+        },
+    },
+    {
         keys: ["extensions.zotero.weavero.enableTabGroups", "extensions.zotero.weavero.enableTabsAndWindows"],
         run(p: any, data: string) {
             // Tab groups — re-apply (self-gates; strips when off).

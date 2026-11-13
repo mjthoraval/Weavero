@@ -31,10 +31,116 @@ interface WvListenRec { type: string; fn: any; capture: boolean; tag: string }
 // removed nothing on reader frames (measured 2026-10-13: 46 chrome
 // listeners removed, all 9 keyed on a live PDF frame left; the next
 // instance's peel hid it, except on a page nothing re-wires -- a deck
-// window's anchor -- and on a disable). Weak, so a closed window is not
-// kept alive by its listener closures.
-interface WvWired { ref: any; key: string; tag: string; tableRef: any; recRef: any }
+// window's anchor -- and on a disable). Weak, meant so that a closed window
+// is not kept alive by its listener closures -- but see below.
+//
+// WEAK FOR THE GC, NOT FOR THE CYCLE COLLECTOR. Gecko's CC follows a WeakRef
+// to its target like a strong edge (its log lists `WeakRefObject::target`).
+// This registry is reached from the plugin, so for the CC every target it
+// names stayed in use -- a closed reader's document, window and pdf.js frame,
+// a closed main window -- and the GC kept their JS alive through their
+// wrappers: nothing of them was ever freed. Every reader tab opened and
+// closed stayed in memory (Zotero 10.0.8 full suite, 2026-11-12: the test
+// Zotero died at 4.5 GB; GC and CC logs showed `wired` -> WeakRef -> the
+// reader's document as the only path to each closed reader). So an entry
+// leaves the registry when its target's window goes: at that window's
+// unload, and by a prune of dead or detached targets as the registry grows.
+interface WvWired { ref: any; key: string; tag: string; tableRef: any; recRef: any; wid: number; stale?: boolean }
 const wired: WvWired[] = [];
+
+// One unload hook per window with entries, keyed by its inner-window id. The
+// record holds the window weakly, as the entries do, and goes with them at
+// the unload: the hook comes off through that reference.
+const hooks: Map<number, { fn: any; ref: any }> = new Map();
+let pruneAt = 256;
+
+/** The inner-window id of the window `target` lives in (0 if none). */
+function widOf(target: any): number {
+    try {
+        let w: any = winOf(target) || target;
+        try { w = (Components as any).utils.unwaiveXrays(w); } catch (e) {}
+        const g = w && w.windowGlobalChild;
+        if (g && g.innerWindowId) return Number(g.innerWindowId);
+        return Number(w.windowUtils.currentInnerWindowID) || 0;
+    }
+    catch (e) {
+        return 0;
+    }
+}
+
+/** Drop the entries of window `wid` (its unload). */
+function dropWindow(wid: number): void {
+    hooks.delete(wid);
+    let j = 0;
+    for (let i = 0; i < wired.length; i++) if (wired[i].wid !== wid) wired[j++] = wired[i];
+    wired.length = j;
+}
+
+function hookUnload(target: any, wid: number): void {
+    if (!wid || hooks.has(wid)) return;
+    try {
+        let w: any = winOf(target) || target;
+        try { w = (Components as any).utils.unwaiveXrays(w); } catch (e) {}
+        if (!w || typeof w.addEventListener !== "function") return;
+        // Off again as it runs: a new window's first unload is its initial
+        // about:blank's, the window object stays, and the next wiring hooks it
+        // again (the first listener then outlived its instance).
+        const fn = function (this: any, e: any) {
+            try { ((e && e.currentTarget) || w).removeEventListener("unload", fn, false); } catch (er) {}
+            dropWindow(wid);
+        };
+        w.addEventListener("unload", fn, false);
+        hooks.set(wid, { fn, ref: new WeakRef(w) });
+    }
+    catch (e) {}
+}
+
+/** Drop the entries whose target is gone: collected, a dead wrapper, in a
+ *  closed window, or a node out of its document at two prunes running (it
+ *  may be on its way in). */
+function prune(): void {
+    const Cu = (Components as any).utils;
+    let j = 0;
+    for (let i = 0; i < wired.length; i++) {
+        const w = wired[i];
+        let live = false;
+        try {
+            const t = w.ref.deref();
+            const rec = w.recRef.deref();
+            if (t && rec && !Cu.isDeadWrapper(t)) {
+                const win: any = winOf(t) || t;
+                if (win && !win.closed) {
+                    if (t.nodeType && t.nodeType !== 9 && t.isConnected === false) { live = !w.stale; w.stale = true; }
+                    else { live = true; w.stale = false; }
+                }
+            }
+        }
+        catch (e) {}
+        if (live) wired[j++] = w;
+    }
+    wired.length = j;
+    dropHooksWithoutEntries();
+}
+
+/** Remove the unload hooks of windows that have no entry left. */
+function dropHooksWithoutEntries(): void {
+    const used = new Set(wired.map((w) => w.wid));
+    for (const [wid, h] of [...hooks]) {
+        if (used.has(wid)) continue;
+        hooks.delete(wid);
+        try {
+            const w: any = h.ref.deref();
+            if (w) w.removeEventListener("unload", h.fn, false);
+        }
+        catch (e) {}
+    }
+}
+
+/** For tests: the inner-window id of every registry entry, and the windows
+ *  with an unload hook. */
+export function wvListenRegistry(): { wids: number[]; hooked: number[] } {
+    return { wids: wired.map((w) => w.wid), hooked: [...hooks.keys()] };
+}
 
 // Tags whose instance was destroyed. A timer or retry chain of that instance
 // can still fire after destroy() (sandbox timers are not cancelled), and a
@@ -84,15 +190,19 @@ export function wvListen(target: any, key: string, type: string, fn: any,
     target.addEventListener(type, fn, wvEventOpts(target, opts));
     const rec: WvListenRec = { type, fn, capture, tag };
     T[key] = rec;
-    try { wired.push({ ref: new WeakRef(target), key, tag, tableRef: new WeakRef(T), recRef: new WeakRef(rec) }); } catch (e) {}
     // Per-row listeners (related-box and annotation rows re-render all the
-    // time) would grow the registry for the whole session: drop the entries
-    // whose target is gone, now and then.
-    if (wired.length >= 2000 && wired.length % 500 === 0) {
-        const live = wired.filter((w) => { try { return !!w.ref.deref(); } catch (e) { return false; } });
-        wired.length = 0;
-        wired.push(...live);
+    // time) grow the registry: drop the gone targets now and then, and
+    // everything of a window when it unloads (see WEAK FOR THE GC above).
+    if (wired.length >= pruneAt) {
+        prune();
+        pruneAt = Math.max(256, wired.length + 256);
     }
+    try {
+        const wid = widOf(target);
+        wired.push({ ref: new WeakRef(target), key, tag, tableRef: new WeakRef(T), recRef: new WeakRef(rec), wid });
+        hookUnload(target, wid);
+    }
+    catch (e) {}
     return true;
 }
 
@@ -149,6 +259,7 @@ export function wvUnlistenAll(tag: string): number {
         catch (e) {}
     }
     wired.push(...keep);
+    dropHooksWithoutEntries();
     return n;
 }
 

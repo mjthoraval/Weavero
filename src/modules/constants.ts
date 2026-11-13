@@ -18,25 +18,6 @@ export const BTN_PANE_CLASS = "wv-btn-pane";
 export const BTN_POPUP_CLASS = "wv-btn-popup";
 export const BTN_SIDEBAR_CLASS = "wv-btn-sidebar";
 
-// Exact label prefixes we contribute to the reader annotation context
-// menu via Zotero.Reader's plugin event system. Used in
-// `decorateContextMenu` to identify our own menuitems and prepend the
-// plugin icon — upstream's iframe React renderer
-// (reader/src/common/components/context-menu.js) puts no class or data
-// attribute on plugin-contributed `<button class="row basic">` rows
-// that we could target by CSS, so we match by label text instead.
-//
-// In Zotero 10 every annotation context menu is `internal: true`
-// (see reader/src/common/context-menu.js: createAnnotationContextMenu),
-// which routes it through the in-iframe React menu rather than chrome
-// XUL — so decoration has to happen on the iframe DOM after React
-// mounts the buttons.
-//
-// String-prefix matching is robust against the chrome ↔ iframe
-// `cloneInto` boundary (which can normalize Unicode-format markers
-// like ZWSP away), at the small cost that another plugin using the
-// exact same label would also pick up our icon.
-
 // Globe icon for `http(s)://` web-link bookmarks. Stroke-based at
 // 16-unit so it inherits the row label's link colour via
 // `stroke="currentColor"` and renders pixel-sharp at the 16×16 row
@@ -185,14 +166,6 @@ export const WV_TAGS_COL_TWO = 48;
 /** The colour of Weavero's indent guides: the collections pane's
  *  (collectionsIndentGuides, pane.ts) and the count popups' (2026-10-29). */
 export const WV_GUIDE_COLOR = "color-mix(in srgb, currentColor 22%, transparent)";
-
-export const MENU_LABEL_PREFIXES = [
-    // Each prefix covers the single + multi-select label variants
-    // ("Copy Select Link" / "Copy Select Links  (N annotations)" etc.).
-    "Add Related",
-    "Copy Select Link",
-    "Copy Open Link",
-];
 
 export const PLUGIN_CSS = [
     "." + BTN_CLASS + " {",

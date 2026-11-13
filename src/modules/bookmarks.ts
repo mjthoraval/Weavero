@@ -45,6 +45,7 @@ import { wvMainWins, wvOpenLibraryView } from "../lib/windows";
 import { wvAccel, wvAccelAny } from "../lib/keys";
 import { wvSvgEl } from "../lib/svg";
 import { wvLinkColor, wvLinkClassRules } from "../lib/links";
+import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
 
 // Gecko globals — not in the project's TS lib set (cf. tabs.ts).
 declare const IOUtils: any;
@@ -3482,9 +3483,9 @@ class _BookmarksMixin {
                 try { srcAtt = await Zotero.Items.getAsync(sid); } catch (_) { return null; }
                 if (!srcAtt || !(srcAtt.isAttachment && srcAtt.isAttachment())) return null;
                 let tl: any = null;
-                if (srcAtt.isPDFAttachment && srcAtt.isPDFAttachment()) tl = "PDF";
-                else if (srcAtt.isEPUBAttachment && srcAtt.isEPUBAttachment()) tl = "EPUB";
-                else if (srcAtt.isSnapshotAttachment && srcAtt.isSnapshotAttachment()) tl = "Snapshot";
+                if (srcAtt.isPDFAttachment && srcAtt.isPDFAttachment()) tl = "pdf";
+                else if (srcAtt.isEPUBAttachment && srcAtt.isEPUBAttachment()) tl = "epub";
+                else if (srcAtt.isSnapshotAttachment && srcAtt.isSnapshotAttachment()) tl = "snapshot";
                 else return null;
                 // Whole-page bookmark: scroll to that page index (no rects).
                 let location: any = null;
@@ -3499,7 +3500,7 @@ class _BookmarksMixin {
                 else if (bm.position) {
                     location = { position: bm.position };
                 }
-                return { attachment: srcAtt, location, typeLabel: tl };
+                return { attachment: srcAtt, location, typeKey: tl };
             }
             const iid = Zotero.Items.getIDFromLibraryAndKey(bm.libraryID, bm.itemKey);
             if (!iid) return null;
@@ -3519,12 +3520,13 @@ class _BookmarksMixin {
                 attachment = await item.getBestAttachment();
             }
             if (!attachment) return null;
-            let typeLabel = null;
-            if (attachment.isPDFAttachment && attachment.isPDFAttachment()) typeLabel = "PDF";
-            else if (attachment.isEPUBAttachment && attachment.isEPUBAttachment()) typeLabel = "EPUB";
-            else if (attachment.isSnapshotAttachment && attachment.isSnapshotAttachment()) typeLabel = "Snapshot";
+            // The reader type, for the "Open <type> in ..." entries (weavero.ftl $type).
+            let typeKey = null;
+            if (attachment.isPDFAttachment && attachment.isPDFAttachment()) typeKey = "pdf";
+            else if (attachment.isEPUBAttachment && attachment.isEPUBAttachment()) typeKey = "epub";
+            else if (attachment.isSnapshotAttachment && attachment.isSnapshotAttachment()) typeKey = "snapshot";
             else return null; // not a reader type → no tab/window open
-            return { attachment, location, typeLabel };
+            return { attachment, location, typeKey };
         } catch (e) {
             Zotero.debug("[Weavero] _bmResolveOpenTarget err: " + e);
             return null;
@@ -4633,15 +4635,15 @@ class _BookmarksMixin {
             doc.getElementById(BM_ROW_MENU_ID)?.remove();
             const menu = doc.createXULElement("menupopup");
             menu.id = BM_ROW_MENU_ID;
-            const add = (label: string, fn: any, image?: string) => {
+            const add = (l10nID: string, fn: any, image?: string) => {
                 const mi = doc.createXULElement("menuitem");
-                mi.setAttribute("label", label);
+                wvL10n(mi, l10nID);
                 if (image) { mi.classList.add("menuitem-iconic"); mi.setAttribute("image", image); }
                 mi.addEventListener("command", fn);
                 menu.appendChild(mi);
             };
-            add("Pick item from library…", () => { this._bmHidePopup(win); this._bmAddBookmarksDialog(); }, BM_MENU_BOOKMARK_ICON);
-            add("Add Link…", () => { this._bmHidePopup(win); this._bmAddLinkDialog(win); }, BM_MENU_LINK_ICON);
+            add("weavero-menu-bm-pick-item", () => { this._bmHidePopup(win); this._bmAddBookmarksDialog(); }, BM_MENU_BOOKMARK_ICON);
+            add("weavero-menu-bm-add-link", () => { this._bmHidePopup(win); this._bmAddLinkDialog(win); }, BM_MENU_LINK_ICON);
             const host = wvPopupHost(doc);
             host.appendChild(menu);
             menu.addEventListener("popuphidden",
@@ -4676,22 +4678,22 @@ class _BookmarksMixin {
             const curField = this._wvReaderBmSortMode("library");
             const curDir = this._wvReaderBmSortDir("library");
             const apply = (field?: string, dir?: "asc" | "desc") => this._bmApplyLibrarySort(win, field, dir);
-            const add = (label: string, checked: boolean, fn: any, disabled?: boolean) => {
+            const add = (l10nID: string, checked: boolean, fn: any, disabled?: boolean) => {
                 const mi = doc.createXULElement("menuitem");
-                mi.setAttribute("label", label);
+                wvL10n(mi, l10nID);
                 mi.setAttribute("type", "radio");
                 wvSetBoolAttr(mi, "checked", !!checked);
                 wvSetBoolAttr(mi, "disabled", !!disabled);
                 mi.addEventListener("command", fn);
                 menu.appendChild(mi);
             };
-            add("Manual order", curField === "manual", () => apply("manual"));
-            add("Name", curField === "alpha", () => apply("alpha"));
-            add("Date added", curField === "date", () => apply("date"));
+            add("weavero-menu-bm-sort-manual", curField === "manual", () => apply("manual"));
+            add("weavero-menu-bm-sort-name", curField === "alpha", () => apply("alpha"));
+            add("weavero-menu-bm-sort-date", curField === "date", () => apply("date"));
             menu.appendChild(doc.createXULElement("menuseparator"));
             const manual = curField === "manual";
-            add("Ascending", !manual && curDir === "asc", () => apply(undefined, "asc"), manual);
-            add("Descending", !manual && curDir === "desc", () => apply(undefined, "desc"), manual);
+            add("weavero-menu-bm-sort-ascending", !manual && curDir === "asc", () => apply(undefined, "asc"), manual);
+            add("weavero-menu-bm-sort-descending", !manual && curDir === "desc", () => apply(undefined, "desc"), manual);
             const host = wvPopupHost(doc);
             host.appendChild(menu);
             menu.addEventListener("popuphidden",
@@ -4709,13 +4711,13 @@ class _BookmarksMixin {
      *  than as siblings of each other. Shared by the row / folder / empty menus. */
     _bmAppendAddBookmarkSubmenu(doc: any, menu: any, win: any) {
         const parent = doc.createXULElement("menu");
-        parent.setAttribute("label", "Add Bookmark");
+        wvL10n(parent, "weavero-menu-bm-add-bookmark");
         parent.classList.add("menu-iconic");
         parent.setAttribute("image", BM_MENU_ADD_ICON);
         const popup = doc.createXULElement("menupopup");
-        const mk = (label: string, fn: any, image: string) => { wvMenuItem(doc, { label, image, onCommand: fn }, popup); };
-        mk("Pick item from library…", () => { this._bmHidePopup(win); this._bmAddBookmarksDialog(); }, BM_MENU_BOOKMARK_ICON);
-        mk("Add Link…", () => { this._bmHidePopup(win); this._bmAddLinkDialog(win); }, BM_MENU_LINK_ICON);
+        const mk = (l10nID: string, fn: any, image: string) => { wvMenuItem(doc, { l10n: { id: l10nID }, image, onCommand: fn }, popup); };
+        mk("weavero-menu-bm-pick-item", () => { this._bmHidePopup(win); this._bmAddBookmarksDialog(); }, BM_MENU_BOOKMARK_ICON);
+        mk("weavero-menu-bm-add-link", () => { this._bmHidePopup(win); this._bmAddLinkDialog(win); }, BM_MENU_LINK_ICON);
         parent.appendChild(popup);
         menu.appendChild(parent);
     }
@@ -4727,9 +4729,12 @@ class _BookmarksMixin {
             doc.getElementById(BM_ROW_MENU_ID)?.remove();
             const menu = doc.createXULElement("menupopup");
             menu.id = BM_ROW_MENU_ID;
-            const add = (label: string, fn: any, image?: string) => {
+            // `what`: a weavero.ftl id, { id, args }, or { zotero } -- Zotero's own text.
+            const add = (what: any, fn: any, image?: string) => {
                 const mi = doc.createXULElement("menuitem");
-                mi.setAttribute("label", label);
+                const w = typeof what === "string" ? { id: what } : what;
+                if (w.zotero) wvZoteroLabel(mi, w.zotero);
+                else wvL10n(mi, w.id, w.args);
                 if (image) {
                     mi.classList.add("menuitem-iconic");
                     mi.setAttribute("image", image);
@@ -4741,21 +4746,22 @@ class _BookmarksMixin {
             if (target) {
                 let attIcon = "";
                 try { attIcon = target.attachment.getImageSrc(); } catch (e) {}
-                add("Open " + target.typeLabel + " in New Tab", () => {
+                add({ id: "weavero-menu-open-type-in", args: { type: target.typeKey, where: "tab" } }, () => {
                     this._bmOpenInReader(bm, false);
                     this._bmHidePopup(win);
                 }, attIcon);
-                add("Open " + target.typeLabel + " in New Window", () => {
+                add({ id: "weavero-menu-open-type-in", args: { type: target.typeKey, where: "window" } }, () => {
                     this._bmOpenInReader(bm, true);
                     this._bmHidePopup(win);
                 }, attIcon);
             }
-            add("Show in Library", () => {
+            // Zotero's own "Show in Library" (general-show-in-library, a value in 9.0, 10 and 11).
+            add({ zotero: wvZoteroText("general-show-in-library") }, () => {
                 this._bmShowInLibrary(bm);
                 this._bmHidePopup(win);
             }, this._bmShowInLibraryIcon(bm, win));
             menu.appendChild(doc.createXULElement("menuseparator"));
-            add("Edit Bookmark…", () => {
+            add("weavero-menu-bm-edit", () => {
                 this._bmEditBookmarkDialog(win, bm);
             }, BM_RENAME_ICON);
             // "Reset to Default Name" — only when the current title actually
@@ -4768,17 +4774,17 @@ class _BookmarksMixin {
             {
                 const orig = this._bmReaderOriginalLabel(bm);
                 if (orig && orig !== bm.label) {
-                    add("Reset to Default Name", () => {
+                    add("weavero-menu-bm-reset-name", () => {
                         this._bmResetBookmarkName(bm.id).then(() => this._bmRenderPopupList(win));
                     }, BM_RESET_ICON);
                 }
             }
-            add("Delete Bookmark", () => {
+            add("weavero-menu-bm-delete", () => {
                 this._bmRemove(bm.id).then(() => this._bmRenderPopupList(win));
             }, BM_DELETE_ICON);
             menu.appendChild(doc.createXULElement("menuseparator"));
             this._bmAppendAddBookmarkSubmenu(doc, menu, win);
-            add("New Folder…", () => {
+            add("weavero-menu-bm-new-folder", () => {
                 const name = this._bmPromptName(win, "New Folder", "New Folder");
                 if (name) this._bmAddFolder(name).then(() => this._bmRenderPopupList(win));
             }, BM_MENU_NEWFOLDER_ICON);
@@ -4802,9 +4808,12 @@ class _BookmarksMixin {
             doc.getElementById(BM_ROW_MENU_ID)?.remove();
             const menu = doc.createXULElement("menupopup");
             menu.id = BM_ROW_MENU_ID;
-            const add = (label: string, fn: any, image?: string) => {
+            // `what`: a weavero.ftl id, { id, args }, or { zotero } -- Zotero's own text.
+            const add = (what: any, fn: any, image?: string) => {
                 const mi = doc.createXULElement("menuitem");
-                mi.setAttribute("label", label);
+                const w = typeof what === "string" ? { id: what } : what;
+                if (w.zotero) wvZoteroLabel(mi, w.zotero);
+                else wvL10n(mi, w.id, w.args);
                 if (image) {
                     mi.classList.add("menuitem-iconic");
                     mi.setAttribute("image", image);
@@ -4812,18 +4821,18 @@ class _BookmarksMixin {
                 if (fn) mi.addEventListener("command", fn);
                 menu.appendChild(mi);
             };
-            add("Rename Folder…", () => {
+            add("weavero-menu-bm-rename-folder", () => {
                 const name = this._bmPromptName(win, "Rename Folder", bm.name || "");
                 if (name) this._bmRenameFolder(bm.id, name).then(() => this._bmRenderPopupList(win));
             }, BM_RENAME_ICON);
-            add("New Subfolder…", () => {
+            add("weavero-menu-bm-new-subfolder", () => {
                 const name = this._bmPromptName(win, "New Folder", "New Folder");
                 if (name) this._bmAddFolder(name, bm.id).then(() => this._bmRenderPopupList(win));
             }, BM_MENU_NEWFOLDER_ICON);
             menu.appendChild(doc.createXULElement("menuseparator"));
             // Destructive (folder + contents), but confirm when non-empty —
             // the confirmation stands in for the undo we don't have.
-            add("Delete Folder", () => {
+            add("weavero-menu-bm-delete-folder", () => {
                 const count = this._bmCountDescendants(bm);
                 if (count > 0) {
                     let ok = false;
@@ -4838,7 +4847,7 @@ class _BookmarksMixin {
             }, BM_DELETE_ICON);
             menu.appendChild(doc.createXULElement("menuseparator"));
             this._bmAppendAddBookmarkSubmenu(doc, menu, win);
-            add("New Folder…", () => {
+            add("weavero-menu-bm-new-folder", () => {
                 const name = this._bmPromptName(win, "New Folder", "New Folder");
                 if (name) this._bmAddFolder(name).then(() => this._bmRenderPopupList(win));
             }, BM_MENU_NEWFOLDER_ICON);
@@ -4860,15 +4869,15 @@ class _BookmarksMixin {
             doc.getElementById(BM_ROW_MENU_ID)?.remove();
             const menu = doc.createXULElement("menupopup");
             menu.id = BM_ROW_MENU_ID;
-            const add = (label: string, fn: any, image?: string) => {
+            const add = (l10nID: string, fn: any, image?: string) => {
                 const mi = doc.createXULElement("menuitem");
-                mi.setAttribute("label", label);
+                wvL10n(mi, l10nID);
                 if (image) { mi.classList.add("menuitem-iconic"); mi.setAttribute("image", image); }
                 mi.addEventListener("command", fn);
                 menu.appendChild(mi);
             };
             this._bmAppendAddBookmarkSubmenu(doc, menu, win);
-            add("New Folder…", () => {
+            add("weavero-menu-bm-new-folder", () => {
                 const name = this._bmPromptName(win, "New Folder", "New Folder");
                 if (name) this._bmAddFolder(name).then(() => this._bmRenderPopupList(win));
             }, BM_MENU_NEWFOLDER_ICON);
@@ -4917,11 +4926,11 @@ class _BookmarksMixin {
             if (!menu) return;
             this._teardownCollectionsBookmarkMenu(win);
             const ID = "wv-collectionmenu-bookmark";
-            const mkEntry = (label: string, fn: any) => {
+            const mkEntry = (l10n: { id: string, args?: any }, fn: any) => {
                 const mi = doc.createXULElement("menuitem");
                 mi.id = ID;
                 mi.classList.add("menuitem-iconic");
-                mi.setAttribute("label", label);
+                wvL10n(mi, l10n.id, l10n.args);
                 mi.setAttribute("image", BM_MENU_BOOKMARK_ICON);
                 mi.addEventListener("command", fn);
                 menu.appendChild(mi);
@@ -4940,7 +4949,7 @@ class _BookmarksMixin {
                     const col = this._wvSelectedCollection(win);
                     if (col && col.key) {
                         const bookmarked = this._bmHasCollection(col.libraryID, col.key);
-                        mkEntry(bookmarked ? "Remove Collection Bookmark" : "Bookmark Collection",
+                        mkEntry({ id: "weavero-menu-bm-collection", args: { what: "collection", bookmarked: bookmarked ? "yes" : "no" } },
                             () => {
                                 try {
                                     const c = this._wvSelectedCollection(win);
@@ -4965,7 +4974,7 @@ class _BookmarksMixin {
                             && typeof tr.ref.libraryID === "number") {
                         const libraryID = tr.ref.libraryID;
                         const bookmarked = this._bmHasLibrary(libraryID);
-                        mkEntry(bookmarked ? "Remove Library Bookmark" : "Bookmark Library",
+                        mkEntry({ id: "weavero-menu-bm-collection", args: { what: "library", bookmarked: bookmarked ? "yes" : "no" } },
                             () => {
                                 try {
                                     if (this._bmHasLibrary(libraryID)) {

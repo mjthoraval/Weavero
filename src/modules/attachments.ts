@@ -65,6 +65,7 @@
 // automatic tag; Zotero opens its usual best attachment. Nothing to repair.
 
 import { wvMainWins } from "../lib/windows";
+import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
 declare const Zotero: any;
 
 /** The marker tag: an EMOJI plus a single HYPHEN-JOINED slug.
@@ -1641,16 +1642,14 @@ class _AttachmentsMixin {
                     const glyph = lp._wvOpenByDefaultEmoji;
                     const mi = doc.createXULElement("menuitem");
                     mi.id = ID;
-                    mi.setAttribute(
-                        "label",
-                        // "Default Attachment" — deliberately DISTINCT from
-                        // upstream zotero#3333's pending "Primary Attachment":
-                        // "Default" signals a plugin tool and keeps the story
-                        // clean if users later migrate from Weavero's Default
-                        // Attachment to Zotero's native Primary Attachment
-                        // (user decision 2026-08-05, reversing same-day).
-                        (glyph ? glyph + " " : "") + (marked ? "Clear Default Attachment" : "Set as Default Attachment")
-                    );
+                    // "Default Attachment" — deliberately DISTINCT from
+                    // upstream zotero#3333's pending "Primary Attachment":
+                    // "Default" signals a plugin tool and keeps the story
+                    // clean if users later migrate from Weavero's Default
+                    // Attachment to Zotero's native Primary Attachment
+                    // (user decision 2026-08-05, reversing same-day).
+                    wvL10n(mi, "weavero-menu-items-default-attachment",
+                        { marked: marked ? "yes" : "no", glyph: glyph ? glyph + " " : "" });
                     mi.addEventListener("command", () => {
                         try {
                             // Re-resolve at click time: the selection can change

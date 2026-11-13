@@ -28,7 +28,11 @@ describe("Weavero — Settings pane: Windows-only settings are marked", () => {
             const note = block.querySelector(".wv-platform-note");
             assert.isOk(note, "it carries the note");
             assert.equal(note.getAttribute("hidden"), "true", "the note starts hidden (shown off Windows by prefs.js)");
-            assert.include(note.textContent, "Windows only");
+            // Its words are weavero.ftl's since localisation slice 1 (2026-11-11).
+            const id = note.getAttribute("data-l10n-id");
+            assert.equal(id, "weavero-pref-tabs-windows-only", "the note's message");
+            const L = Zotero.getMainWindow().Localization;
+            assert.include(new L(["weavero.ftl"], true).formatValueSync(id), "Windows only");
         });
     }
 

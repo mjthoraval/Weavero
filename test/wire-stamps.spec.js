@@ -138,11 +138,17 @@ describe("Weavero — wire stamps are build-keyed (hot-upgrade rewiring)", () =>
     });
 
     it("changeCollectionTreeRow wiring peels a foreign-build wrapper", () => {
+        // A build before 1.0.5-dev.12 wrapped the singular; this one wraps the
+        // plural where it exists (Zotero 10+). The stale singular goes either way.
         const stale = plantStale(iv, "changeCollectionTreeRow", "_wvCollChangeWrapped", true);
         replayPostShutdown();
         wv._setupItemsListFilterIn(win);
         assert.notStrictEqual(iv.changeCollectionTreeRow, stale);
         assert.strictEqual(iv._wvCollChangeWrapped, wv._wvWireTag());
+        if (typeof Object.getPrototypeOf(iv).changeCollectionTreeRows === "function") {
+            assert.isUndefined(Object.getOwnPropertyDescriptor(iv, "changeCollectionTreeRow"), "the old singular wrap is gone");
+            assert.isOk(Object.getOwnPropertyDescriptor(iv, "changeCollectionTreeRows"), "the plural is wrapped");
+        }
     });
 
     it("expand-match-parents re-sniffs Zotero's source, not our replacement", () => {
@@ -330,10 +336,11 @@ describe("Weavero — wire stamps are build-keyed (hot-upgrade rewiring)", () =>
 
     it("re-running the wiring under the CURRENT tag is a no-op (idempotent)", () => {
         wv._setupItemsListFilterIn(win);
-        const sf = iv.setFilter, cc = iv.changeCollectionTreeRow;
+        const sf = iv.setFilter, cc = iv.changeCollectionTreeRow, ccs = iv.changeCollectionTreeRows;
         wv._setupItemsListFilterIn(win);
         assert.strictEqual(iv.setFilter, sf, "same tag must not re-wrap");
         assert.strictEqual(iv.changeCollectionTreeRow, cc);
+        assert.strictEqual(iv.changeCollectionTreeRows, ccs);
     });
 
     it("no boolean wire stamps remain on the view after wiring", () => {

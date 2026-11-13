@@ -29,7 +29,7 @@ import { wvPopupHost, wvDismissTooltip, wvSetBoolAttr, wvBoolAttrOn, wvReaderMen
 import { wvLivePlugin } from "../lib/live";
 import { wvStoreWrite, wvStoreRead } from "../lib/store";
 import { wvTimeout, wvClearTimeout } from "../lib/timers";
-import { wvMenuItem } from "../lib/menu";
+import { wvMenuItem, wvMenuItemByLabel } from "../lib/menu";
 import { wvInjectStyle, wvRemoveStyle, wvFilterTileRules } from "../lib/style";
 import { wvListen, wvUnlisten, wvListenKeys } from "../lib/listen";
 import { wvMainWins, wvWinType } from "../lib/windows";
@@ -37,6 +37,7 @@ import { wvAccel, wvAccelAny } from "../lib/keys";
 import { wvCloneFor } from "../lib/xray";
 import { wvSvgEl } from "../lib/svg";
 import { wvLinkClassRules } from "../lib/links";
+import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
 
 declare const Components: any;
 declare const Services: any;
@@ -578,7 +579,7 @@ const RP_POPUP_CSS = [
 // ---- Feature B: Bookmarks sidebar tab ----------------------------------
 const RP_BM_TAB_CLASS = "wv-bm-reader-tab";
 const RP_BM_VIEW_CLASS = "wv-bm-reader-view";
-const RP_BM_TAB_ON = "wv-bm-tab-on";
+export const RP_BM_TAB_ON = "wv-bm-tab-on";
 // ---- Feature C: Outline takeover (Phase 2) -----------------------------
 // Weavero's own outline panel replaces the NATIVE outline view when the
 // Outline tab is active: same tab slot, but Weavero owns the DOM (robust --
@@ -588,7 +589,7 @@ const RP_BM_TAB_ON = "wv-bm-tab-on";
 // EPUB anchor by WADM selector (#34 taught the panel to read both).
 const RP_OUTLINE_VIEW_TYPES = new Set(["pdf", "snapshot", "epub"]);
 const RP_OUTLINE_VIEW_CLASS = "wv-outline-reader-view";
-const RP_OUTLINE_TAB_ON = "wv-outline-tab-on";
+export const RP_OUTLINE_TAB_ON = "wv-outline-tab-on";
 
 /** A keyboard-navigable row list of the reader sidebar -- the outline and the
  *  Bookmarks tab -- as the one key handler sees it (survey 2026-10-06 §4,
@@ -716,7 +717,7 @@ const RP_OUTLINE_X = '<svg viewBox="0 0 12 12" fill="currentColor"><path d="M2.4
 // edit in the annotations sidebar — which our tab has replaced). It's also not
 // any native view name, so no native tab activates and the PDF/EPUB views no-op
 // on it (they only special-case "outline").
-const RP_BM_SIDEBAR_VIEW = "wv-bookmarks";
+export const RP_BM_SIDEBAR_VIEW = "wv-bookmarks";
 
 // Solid-filled ribbon for "page" bookmark rows — just the outer half
 // of BOOKMARK_PATH (no inner cutout). Visually contrasts with the
@@ -2055,6 +2056,9 @@ class _ReaderPanelsMixin {
             this._wvEnsureReaderPanelStyles(idoc);
             this._wvReaderPrefetchIcons();
             this._wvReaderEnsureFilterButton(reader, idoc);
+            // After the filter button: the toolbar's overflow menu counts it
+            // (reader-toolbar-overflow.ts, WV-TEMP-4185).
+            try { this._wvTbOverflowEnsure(reader, idoc); } catch (_) {}
             this._wvReaderEnsureBookmarksTab(reader, idoc);
             this._wvReaderEnsureOutlinePanel(reader, idoc);
             // The merged undo (reader undo / redo take Weavero's newer steps,
@@ -3079,10 +3083,29 @@ class _ReaderPanelsMixin {
             if (iw && amRaw) {
                 iw.__wvAnnRank = null;
                 iw.__wvAM = amRaw;
+                // setFilter's wrap goes with render's: it only tells the render
+                // wrap which pass is Zotero's (left on until 1.0.5-dev.7,
+                // zzz-disable-leftovers.spec.js). A prototype method is given
+                // back by deleting the own property.
                 iw.eval("(function(){var m = window.__wvAM; delete window.__wvAM;"
-                    + "if (m.__wvOrigRender) { m.render = m.__wvOrigRender;"
+                    + "var back = function (k, o) { var p = Object.getPrototypeOf(m);"
+                    + " if (p && p[k] === o) delete m[k]; else m[k] = o; };"
+                    + "if (m.__wvOrigRender) { back('render', m.__wvOrigRender);"
                     + " delete m.__wvOrigRender; delete m.__wvAnnSortWireV; }"
-                    + " m.render();})()");
+                    + "if (m.__wvOrigSetFilter) { back('setFilter', m.__wvOrigSetFilter);"
+                    + " delete m.__wvOrigSetFilter; delete m.__wvNativePass; }"
+                    // Zotero's own order and verdict back: the sort left its
+                    // arrangement in the array, the pane filter its `_hidden`
+                    // marks (annotations it hid stayed out of the sidebar
+                    // after a disable until 1.0.5-dev.7). The manager's own
+                    // comparator (annotation-manager.js), then its own
+                    // setFilter, which re-marks `_hidden` and renders.
+                    + "var arr = m._annotations || [];"
+                    + "for (var j = 0; j < arr.length; j++) { delete arr[j]._wvListHidden; delete arr[j]._wvNativeHidden; }"
+                    + "try { arr.sort(function (a, b) { return (a.sortIndex > b.sortIndex) - (a.sortIndex < b.sortIndex); }); } catch (e) {}"
+                    + "var done = false;"
+                    + "try { if (m._filter && typeof m.setFilter === 'function') { m.setFilter(m._filter); done = true; } } catch (e) {}"
+                    + "if (!done) m.render();})()");
             }
         } catch (e) {}
         // The pane funnel's hiding rides the render wrapper just restored:
@@ -3134,6 +3157,19 @@ class _ReaderPanelsMixin {
      *  the panels.) Called from destroy() for every open reader. */
     _wvReaderTeardownPanels(reader: any, idoc: any) {
         try {
+            // An open Bookmarks pane holds the reader on Weavero's sentinel view
+            // (RP_BM_SIDEBAR_VIEW): deactivate it, which puts the prior native
+            // view back, and make sure a native one is set. A disable left the
+            // sentinel until 1.0.5-dev.7 (alignment review 2026-11-11).
+            try {
+                const sc0 = idoc.getElementById("sidebarContainer");
+                if (sc0 && sc0.classList.contains(RP_BM_TAB_ON)) this._wvReaderSetBmActive(reader, idoc, false);
+            } catch (_) {}
+            try {
+                const ir0 = reader && reader._internalReader;
+                if (ir0 && ir0._state && ir0._state.sidebarView === RP_BM_SIDEBAR_VIEW
+                        && typeof ir0.setSidebarView === "function") ir0.setSidebarView("annotations");
+            } catch (_) {}
             try { this._wvUnwatchNativeOutline(reader); } catch (_) {}
             this._wvReaderRewirePanels(reader, idoc);
             try { this._wvAnnSortTeardown(reader, idoc); } catch (_) {}
@@ -9372,8 +9408,8 @@ class _ReaderPanelsMixin {
     _wvPageAnchorChoices(page: any, current: string | null, onPick: (a: "top" | "bottom") => void): any[] {
         const chk = (v: string) => (current == null ? "" : ((current === "bottom") === (v === "bottom") ? " ✓" : ""));
         return [
-            { label: "Top of page " + page + chk("top"), icon: WV_PAGE_TOP_SVG, fn: () => onPick("top") },
-            { label: "Bottom of page " + page + chk("bottom"), icon: WV_PAGE_BOTTOM_SVG, fn: () => onPick("bottom") },
+            { label: wvStr("weavero-menu-reader-page-anchor", { anchor: "top", page: String(page) }) + chk("top"), icon: WV_PAGE_TOP_SVG, fn: () => onPick("top") },
+            { label: wvStr("weavero-menu-reader-page-anchor", { anchor: "bottom", page: String(page) }) + chk("bottom"), icon: WV_PAGE_BOTTOM_SVG, fn: () => onPick("bottom") },
         ];
     }
 
@@ -9395,10 +9431,10 @@ class _ReaderPanelsMixin {
             // mapper, so the stored entry still works in the base view. Only
             // the pin (a raw point in page space) has no reflow equivalent, so
             // it waits.
-            item("Select text…", RP_TEXT_SVG, () => (rmOn
+            item(wvStr("weavero-menu-ctx-select-text"), RP_TEXT_SVG, () => (rmOn
                 ? this._wvOutlineAddWithSelectionRm(reader, idoc)
                 : this._wvOutlineAddWithSelection(reader, idoc)), "selection");
-            if (!rmOn) item("Pin a spot…", WV_PIN_ICON_SVG, () => this._wvOutlineAddWithPin(reader, idoc), "pin");
+            if (!rmOn) item(wvStr("weavero-menu-ctx-pin-spot"), WV_PIN_ICON_SVG, () => this._wvOutlineAddWithPin(reader, idoc), "pin");
             // Page anchors are PDF-only BY NATURE (parity register): a
             // reflowable or scrolled DOM view has no stable page, so offering
             // Top/Bottom-of-page there creates entries that go nowhere.
@@ -12205,7 +12241,7 @@ class _ReaderPanelsMixin {
             // Open = a plain left-click on the entry: it becomes the cursor and
             // the sole selection, then the view jumps (2026-09-24; it used to
             // navigate with no row, which cleared the cursor altogether).
-            mk("Open", openIcon, () => {
+            mk(wvStr("weavero-menu-ctx-open"), openIcon, () => {
                 try {
                     const orow: any = [...idoc.querySelectorAll(".wv-outline-row")]
                         .find((r: any) => r._wvOl && r._wvOl.entry === entry);
@@ -12223,9 +12259,9 @@ class _ReaderPanelsMixin {
                     if (orow) { try { orow.focus(); } catch (_) {} }
                 } catch (_) {}
             });
-            mk("Open in New Window", openIcon, () => this._wvOutlineOpenInWindow(reader, entry));
+            mk(wvStr("weavero-menu-ctx-open-new-window"), openIcon, () => this._wvOutlineOpenInWindow(reader, entry));
             sep();
-            if (!multi) mk("Rename…", RP_RENAME_SVG, () => this._wvOutlineBeginRename(reader, idoc, entry, index, curatedView, { fromMenu: true }));
+            if (!multi) mk(wvStr("weavero-menu-ctx-rename"), RP_RENAME_SVG, () => this._wvOutlineBeginRename(reader, idoc, entry, index, curatedView, { fromMenu: true }));
             // Re-anchor to the selected text. ALWAYS listed and always live:
             // hiding it when nothing was selected made it undiscoverable, and a
             // permanently greyed row is just clutter. If it's used without a
@@ -12246,7 +12282,7 @@ class _ReaderPanelsMixin {
             // entries predating it fall back to the frozen original, which is
             // what the automatic recovery always used.
             if (!multi && this._wvOutlineRegionTitleStale(entry)) {
-                if (!rmLens) mk("Re-detect Region from Title", RP_REVERT_SVG,
+                if (!rmLens) mk(wvStr("weavero-menu-outline-redetect-region"), RP_REVERT_SVG,
                     () => this._wvOutlineRedetectRegion(reader, idoc, entry, index, curatedView));
             }
             // Bad-text-layer spacing repair. Shown when the title's spacing looks
@@ -12255,9 +12291,9 @@ class _ReaderPanelsMixin {
             // marked it correct. Since a stray space can't be told from a real
             // title automatically, we OFFER a best-effort fix plus a dismiss.
             if (this._wvTitleSpacingSuspect(entry)) {
-                mk("Fix Spacing", RP_TEXT_SVG,
+                mk(wvStr("weavero-menu-outline-fix-spacing"), RP_TEXT_SVG,
                     () => this._wvOutlineCleanSpacing(reader, idoc, entry, index, curatedView));
-                mk("Spacing is Correct", RP_CHECK_SVG,
+                mk(wvStr("weavero-menu-outline-spacing-correct"), RP_CHECK_SVG,
                     () => this._wvOutlineDismissSpacing(reader, idoc, entry, index, curatedView));
             }
             // Interactive handle-drag editor (text-snapping, like editing an
@@ -12272,14 +12308,14 @@ class _ReaderPanelsMixin {
                 const _isDom = (reader._type || "pdf") !== "pdf";
                 if (_anchor === "top" || _anchor === "bottom") {
                     // Page-anchor entry: Edit Position (manual page + top/bottom).
-                    if (!rmLens) mk("Edit Position…", RP_TEXT_SVG,
+                    if (!rmLens) mk(wvStr("weavero-menu-outline-edit-position-pages"), RP_TEXT_SVG,
                         () => this._wvOutlineEditPosition(reader, idoc, entry, index, curatedView));
                 } else if (_anchor === "point") {
                     // Pin entry: Edit Position shows a draggable pin. PDF uses
                     // the Done-committing editor; DOM views show the persistent
                     // pin whose drag commits to the outline store directly
                     // (the machinery shipped 2026-08-25).
-                    if (!rmLens) mk("Edit Position", RP_TEXT_SVG,
+                    if (!rmLens) mk(wvStr("weavero-menu-outline-edit-position"), RP_TEXT_SVG,
                         () => {
                             if (_isDom) {
                                 this._wvOutlineNavigate(reader, idoc, entry, null);
@@ -12296,7 +12332,7 @@ class _ReaderPanelsMixin {
                     // was the select-text re-anchor flow before, which the
                     // user read as "Edit Region does not work" — it now
                     // remains only as the fallback for a stale selector).
-                    if (!rmLens) mk("Edit Region…", RP_TEXT_SVG,
+                    if (!rmLens) mk(wvStr("weavero-menu-ctx-edit-region"), RP_TEXT_SVG,
                         () => this._wvOutlineEditRegion(reader, idoc, entry, index, curatedView));
                 }
             }
@@ -12304,7 +12340,7 @@ class _ReaderPanelsMixin {
             // its frozen original (curated entries carry `source.title`).
             if (!multi && curatedView && entry && entry.source && typeof entry.source.title === "string"
                     && entry.title !== entry.source.title) {
-                mk("Reset to Original Name and Region", RP_REVERT_SVG, () => this._wvOutlineDoResetName(reader, idoc, entry.id));
+                mk(wvStr("weavero-menu-outline-reset-original"), RP_REVERT_SVG, () => this._wvOutlineDoResetName(reader, idoc, entry.id));
                 // Say what the reset brings back BEFORE it is clicked (MJT
                 // 2026-09-24): the frozen original name, on a dimmed second line.
                 // The region is not stored -- it is re-detected from that name.
@@ -12333,16 +12369,16 @@ class _ReaderPanelsMixin {
             // equations will join this list in a later phase.)
             sep();
             if (entry && entry.kind === "box") {
-                mk("Not a Box (Section)", RP_TEXT_SVG, () => this._wvOutlineSetKind(reader, idoc, entry, index, curatedView, null));
+                mk(wvStr("weavero-menu-outline-not-box"), RP_TEXT_SVG, () => this._wvOutlineSetKind(reader, idoc, entry, index, curatedView, null));
             } else {
-                mk("Mark as Box / Sidebar", RP_BOX_SVG, () => this._wvOutlineSetKind(reader, idoc, entry, index, curatedView, "box"));
+                mk(wvStr("weavero-menu-outline-mark-box"), RP_BOX_SVG, () => this._wvOutlineSetKind(reader, idoc, entry, index, curatedView, "box"));
             }
             sep();
             if (multi && multiItems) {
                 const items = multiItems;
-                mk("Delete " + items.length + " Entries", RP_DELETE_SVG, () => this._wvOutlineDeleteSelected(reader, idoc, items), true);
+                mk(wvStr("weavero-menu-outline-delete-entries", { count: items.length }), RP_DELETE_SVG, () => this._wvOutlineDeleteSelected(reader, idoc, items), true);
             } else {
-                mk("Delete", RP_DELETE_SVG, () => this._wvOutlineDoDelete(reader, idoc, entry, index, curatedView), true);
+                mk(wvStr("weavero-menu-ctx-delete"), RP_DELETE_SVG, () => this._wvOutlineDoDelete(reader, idoc, entry, index, curatedView), true);
             }
             (idoc.body || idoc.documentElement).appendChild(menu);
             const vw = (idoc.documentElement && idoc.documentElement.clientWidth) || 9999;
@@ -12537,10 +12573,10 @@ class _ReaderPanelsMixin {
             const tag = (v: string) => (cur && cur.verdict === v ? " ✓" : "");
             const mk = (label: string, icon: string, fn: () => void) =>
                 this._wvCtxItem(idoc, menu, { label, icon, close, onClick: fn });
-            mk("Eval: Not marked" + (cur ? "" : " ✓"), "🧪", async () => { await P._wvOeUnmark(reader, idoc); if (onDone) onDone(); });
-            mk("Eval: extraction Good" + tag("good"), "👍", async () => { await P._wvOeMark(reader, idoc, "good"); if (onDone) onDone(); });
-            mk("Eval: extraction Bad" + tag("bad"), "👎", async () => { await P._wvOeMark(reader, idoc, "bad"); if (onDone) onDone(); });
-            mk("Eval: Scan (no text layer)" + tag("scan"), "🖼", async () => { await P._wvOeMark(reader, idoc, "scan"); if (onDone) onDone(); });
+            mk(wvStr("weavero-menu-oe-verdict", { verdict: "none" }) + (cur ? "" : " ✓"), "🧪", async () => { await P._wvOeUnmark(reader, idoc); if (onDone) onDone(); });
+            mk(wvStr("weavero-menu-oe-verdict", { verdict: "good" }) + tag("good"), "👍", async () => { await P._wvOeMark(reader, idoc, "good"); if (onDone) onDone(); });
+            mk(wvStr("weavero-menu-oe-verdict", { verdict: "bad" }) + tag("bad"), "👎", async () => { await P._wvOeMark(reader, idoc, "bad"); if (onDone) onDone(); });
+            mk(wvStr("weavero-menu-oe-verdict", { verdict: "scan" }) + tag("scan"), "🖼", async () => { await P._wvOeMark(reader, idoc, "scan"); if (onDone) onDone(); });
             (idoc.body || idoc.documentElement).appendChild(menu);
             const r = anchor.getBoundingClientRect();
             menu.style.left = Math.max(6, r.left) + "px";
@@ -12887,7 +12923,7 @@ class _ReaderPanelsMixin {
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
             const mk = (label: string, icon: string, fn: () => void, danger?: boolean) =>
                 this._wvCtxItem(idoc, menu, { label, icon, danger, close, onClick: fn });
-            mk("Delete Weavero Outline…", RP_DELETE_SVG, () => this._wvOutlineDoRevert(reader, idoc), true);
+            mk(wvStr("weavero-menu-outline-delete-weavero"), RP_DELETE_SVG, () => this._wvOutlineDoRevert(reader, idoc), true);
             (idoc.body || idoc.documentElement).appendChild(menu);
             const r = anchor.getBoundingClientRect();
             menu.style.left = Math.max(6, r.left) + "px";
@@ -13383,7 +13419,7 @@ class _ReaderPanelsMixin {
                                 + "border:1px solid rgba(127,127,127,.4);border-radius:6px;"
                                 + "box-shadow:0 4px 16px rgba(0,0,0,.3);padding:4px;min-width:160px;"
                                 + "left:" + (menu.offsetWidth - 6) + "px;top:" + (it.offsetTop - 4) + "px;");
-                            this._wvCtxItem(idoc, sub, { label: "Delete Weavero Outline…", icon: RP_DELETE_SVG, danger: true, close,
+                            this._wvCtxItem(idoc, sub, { label: wvStr("weavero-menu-outline-delete-weavero"), icon: RP_DELETE_SVG, danger: true, close,
                                 onClick: (ev2: any) => { try { ev2.stopPropagation(); } catch (_) {} this._wvOutlineDoRevert(reader, idoc); } });
                             // A click on the submenu must not reach the Weavero
                             // row underneath it (that would switch the source).
@@ -14992,6 +15028,27 @@ class _ReaderPanelsMixin {
                     "})()");
             }
         } catch (e) { Zotero.debug("[Weavero] _wvAnnListWireViews err: " + e); }
+    }
+
+    /** Give each view its own setAnnotations back (reader page teardown). Left
+     *  wrapped until 1.0.5-dev.7 (zzz-disable-leftovers.spec.js). */
+    _wvAnnListUnwireViews(reader: any) {
+        try {
+            const ir = reader && reader._internalReader;
+            const iw: any = reader && reader._iframeWindow && reader._iframeWindow.wrappedJSObject;
+            if (!ir || !iw || typeof iw.eval !== "function") return;
+            for (const v of [ir._primaryView, ir._secondaryView, ir._lastView]) {
+                if (!v) continue;
+                const vw: any = (Components as any).utils.waiveXrays(v);
+                if (!vw.__wvOrigSetAnnotations && vw.__wvListWrapV === undefined) continue;
+                iw.__wvV = v;
+                iw.eval("(function(){var v = window.__wvV; delete window.__wvV;" +
+                    "var o = v.__wvOrigSetAnnotations;" +
+                    "if (o) { var p = Object.getPrototypeOf(v);" +
+                    " if (p && p.setAnnotations === o) delete v.setAnnotations; else v.setAnnotations = o; }" +
+                    "delete v.__wvOrigSetAnnotations; delete v.__wvListWrapV;})()");
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvAnnListUnwireViews err: " + e); }
     }
 
     /** Per-scan entry: button + state, gated on the Filters master like the
@@ -22756,9 +22813,9 @@ class _ReaderPanelsMixin {
                     // first (see the comment there). Same Reading Mode gate on
                     // the pin, too -- these two menus are meant to offer the
                     // SAME options, and RM was the one case where they didn't.
-                    mkItem("Select text…", RP_TEXT_SVG, () => this._wvBmAddWithSelection(reader, idoc));
+                    mkItem(wvStr("weavero-menu-ctx-select-text"), RP_TEXT_SVG, () => this._wvBmAddWithSelection(reader, idoc));
                     if (!this._wvReadingModeActive(reader)) {
-                        mkItem("Pin a spot…", WV_PIN_ICON_SVG, () => this._wvBmAddWithPin(reader, idoc));
+                        mkItem(wvStr("weavero-menu-ctx-pin-spot"), WV_PIN_ICON_SVG, () => this._wvBmAddWithPin(reader, idoc));
                     }
                     // Page anchors: PDF only, same rule as the outline's + menu.
                     if ((reader._type || "pdf") === "pdf") {
@@ -22770,7 +22827,7 @@ class _ReaderPanelsMixin {
             // No icons yet for either entry — the user said icons can come
             // later. Placeholder empty span keeps layout consistent with
             // the rest of the context menu.
-            mkItem("Pick item from library…", "", () => {
+            mkItem(wvStr("weavero-menu-bm-pick-item"), "", () => {
                 if (target === "library") {
                     Promise.resolve(this._bmAddBookmarksDialog())
                         .then(() => { try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {} })
@@ -22785,7 +22842,7 @@ class _ReaderPanelsMixin {
             // create the bookmark in a different section than the
             // user expected — confusing.
             if (section !== "local") {
-                mkItem("Add Link…", "", () => {
+                mkItem(wvStr("weavero-menu-bm-add-link"), "", () => {
                     Promise.resolve(this._wvAddUrlBookmark(reader, idoc, target, section))
                         .catch((e: any) => Zotero.debug("[Weavero] add-url-bm err: " + e));
                 });
@@ -22864,14 +22921,14 @@ class _ReaderPanelsMixin {
             const sep = () => this._wvCtxSep(idoc, menu);
 
             heading("Sort by");
-            mkItem("Manual order", curField === "manual", () => apply("manual"));
-            if (section === "local") mkItem("Location", curField === "location", () => apply("location"));
-            mkItem("Name", curField === "alpha", () => apply("alpha"));
-            mkItem("Date added", curField === "date", () => apply("date"));
+            mkItem(wvStr("weavero-menu-bm-sort-manual"), curField === "manual", () => apply("manual"));
+            if (section === "local") mkItem(wvStr("weavero-menu-bm-sort-location"), curField === "location", () => apply("location"));
+            mkItem(wvStr("weavero-menu-bm-sort-name"), curField === "alpha", () => apply("alpha"));
+            mkItem(wvStr("weavero-menu-bm-sort-date"), curField === "date", () => apply("date"));
             sep();
             const manual = curField === "manual";
-            mkItem("Ascending", !manual && curDir === "asc", () => apply(undefined, "asc"), manual);
-            mkItem("Descending", !manual && curDir === "desc", () => apply(undefined, "desc"), manual);
+            mkItem(wvStr("weavero-menu-bm-sort-ascending"), !manual && curDir === "asc", () => apply(undefined, "asc"), manual);
+            mkItem(wvStr("weavero-menu-bm-sort-descending"), !manual && curDir === "desc", () => apply(undefined, "desc"), manual);
             (idoc.body || idoc.documentElement).appendChild(menu);
 
             const r = anchor.getBoundingClientRect();
@@ -23292,16 +23349,16 @@ class _ReaderPanelsMixin {
             } else {
             if (entry) {
                 if (entry.type === "folder") {
-                    item("Rename Folder…", RP_RENAME_SVG, () => {
+                    item(wvStr("weavero-menu-bm-rename-folder"), RP_RENAME_SVG, () => {
                         const n = this._bmPromptName(Zotero.getMainWindow(), "Rename Folder", entry.name || "");
                         if (n) this._bmReaderRename(att.libraryID, att.itemKey, entry.id, n).then(reRender);
                     });
-                    item("New Subfolder…", RP_FOLDER_PLUS_SVG, () => {
+                    item(wvStr("weavero-menu-bm-new-subfolder"), RP_FOLDER_PLUS_SVG, () => {
                         const n = this._bmPromptName(Zotero.getMainWindow(), "New Folder", "New Folder");
                         if (n) this._bmReaderAddFolder(att.libraryID, att.itemKey, section, n, entry.id).then(reRender);
                     });
                     sep();
-                    item("Delete Folder", RP_DELETE_SVG, () => {
+                    item(wvStr("weavero-menu-bm-delete-folder"), RP_DELETE_SVG, () => {
                         const c = (entry.children && entry.children.length) || 0;
                         if (c > 0) { const ok = Services.prompt.confirm(Zotero.getMainWindow(), "Delete Folder", 'Delete "' + (entry.name || "") + '" and its ' + c + " item" + (c === 1 ? "" : "s") + "?"); if (!ok) return; }
                         this._bmReaderRemove(att.libraryID, att.itemKey, entry.id).then(reRender);
@@ -23311,8 +23368,8 @@ class _ReaderPanelsMixin {
                     // library equivalent). Plain/Shift/Ctrl mirror a row click.
                     let openIcon = "";
                     try { openIcon = att.att.getImageSrc(); } catch (_) {}
-                    item("Open", openIcon, () => this._wvNavigateReaderBookmark(reader, entry, {}));
-                    item("Open in New Window", openIcon, () => this._wvNavigateReaderBookmark(reader, entry, { shiftKey: true }));
+                    item(wvStr("weavero-menu-ctx-open"), openIcon, () => this._wvNavigateReaderBookmark(reader, entry, {}));
+                    item(wvStr("weavero-menu-ctx-open-new-window"), openIcon, () => this._wvNavigateReaderBookmark(reader, entry, { shiftKey: true }));
                     // No "Show in Library" for in-document bookmarks — the
                     // target IS the open document, so there's nothing distinct
                     // to reveal (kept only for "Elsewhere in Zotero" items).
@@ -23325,7 +23382,7 @@ class _ReaderPanelsMixin {
                     // other type keeps the shared title+comment editor.
                     if (entry.type === "page") {
                         const cur = entry.anchor === "bottom" ? "bottom" : "top";
-                        item("Edit Bookmark…", cur === "bottom" ? WV_PAGE_BOTTOM_SVG : WV_PAGE_TOP_SVG, async () => {
+                        item(wvStr("weavero-menu-bm-edit"), cur === "bottom" ? WV_PAGE_BOTTOM_SVG : WV_PAGE_TOP_SVG, async () => {
                             try {
                                 const curIdx = (entry.position && Number.isInteger(entry.position.pageIndex))
                                     ? entry.position.pageIndex
@@ -23388,7 +23445,7 @@ class _ReaderPanelsMixin {
                             } catch (e2) { Zotero.debug("[Weavero] bm Edit Bookmark (page) err: " + e2); }
                         });
                     } else {
-                        item("Edit Bookmark…", RP_RENAME_SVG, () => {
+                        item(wvStr("weavero-menu-bm-edit"), RP_RENAME_SVG, () => {
                             this._wvReaderEditBookmarkDialog(reader, att, entry, reRender);
                         });
                     }
@@ -23414,7 +23471,7 @@ class _ReaderPanelsMixin {
                             && ((pdfShape && isPdfV)
                                 || (cfiShape && pvR && typeof pvR.getRange === "function"));
                         if (isTextBm) {
-                            item("Reset to Default Name", RP_REVERT_SVG, () => {
+                            item(wvStr("weavero-menu-bm-reset-name"), RP_REVERT_SVG, () => {
                                 Promise.resolve(this._wvBmRegionText(reader, entry))
                                     .then((t: any) => this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id, t || undefined))
                                     .then(reRender).catch(() => {});
@@ -23422,7 +23479,7 @@ class _ReaderPanelsMixin {
                         } else {
                             const orig = this._bmReaderOriginalLabel(entry);
                             if (orig && orig !== entry.label) {
-                                item("Reset to Default Name", RP_REVERT_SVG,
+                                item(wvStr("weavero-menu-bm-reset-name"), RP_REVERT_SVG,
                                     () => this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id).then(reRender));
                             }
                         }
@@ -23448,7 +23505,7 @@ class _ReaderPanelsMixin {
                             && posE.value.indexOf("epubcfi(") === 0
                             && pvM && typeof pvM.getRange === "function";
                         if (entry.type === "text" && (pdfRegion || cfiRegion)) {
-                            item("Edit Region…", RP_TEXT_SVG,
+                            item(wvStr("weavero-menu-ctx-edit-region"), RP_TEXT_SVG,
                                 () => (pdfRegion
                                     ? this._wvBmEditRegion(reader, idoc, att, entry)
                                     : this._wvBmEditRegionEpub(reader, idoc, att, entry)));
@@ -23468,13 +23525,13 @@ class _ReaderPanelsMixin {
                         const texts = this._wvBmCtxTextSelectionSet(reader, idoc, rowEl, entry);
                         if (texts) {
                             sep();
-                            item(texts.length > 1 ? ("Copy " + texts.length + " to Outline") : "Copy to Outline",
+                            item(wvStr("weavero-menu-bm-copy-to-outline", { count: texts.length }),
                                 this._wvReaderOutlineMenuIconURL(),
                                 () => this._wvBmCopyTextToOutline(reader, idoc, texts));
                             sep();
                         }
                     }
-                    item("Delete Bookmark", RP_DELETE_SVG, () => this._bmReaderRemove(att.libraryID, att.itemKey, entry.id).then(reRender));
+                    item(wvStr("weavero-menu-bm-delete"), RP_DELETE_SVG, () => this._bmReaderRemove(att.libraryID, att.itemKey, entry.id).then(reRender));
                 } else {
                     // "Elsewhere in Zotero" item bookmark: same icons AND wording
                     // as the library bookmark menu — the attachment file-type
@@ -23484,9 +23541,9 @@ class _ReaderPanelsMixin {
                     if (t && t.attachment) {
                         let attIcon = "";
                         try { attIcon = t.attachment.getImageSrc(); } catch (_) {}
-                        item("Open " + t.typeLabel + " in New Tab", attIcon,
+                        item(wvStr("weavero-menu-open-type-in", { type: t.typeKey, where: "tab" }), attIcon,
                             () => this._wvNavigateReaderBookmark(reader, entry, {}));
-                        item("Open " + t.typeLabel + " in New Window", attIcon,
+                        item(wvStr("weavero-menu-open-type-in", { type: t.typeKey, where: "window" }), attIcon,
                             () => this._wvNavigateReaderBookmark(reader, entry, { shiftKey: true }));
                     }
                     // A cross-document location (text selection or pinned
@@ -23494,12 +23551,14 @@ class _ReaderPanelsMixin {
                     // source attachment FILE ("the parent") instead, under a
                     // distinct label.
                     const isCrossDocLoc = (entry.type === "text" || entry.type === "position") && !!entry.srcItemKey;
-                    item(isCrossDocLoc ? "Show Parent in Library" : "Show in Library",
+                    // Zotero's own "Show in Library" (general-show-in-library, a value
+                    // in 9.0, 10 and 11); the parent's is Weavero's.
+                    item(isCrossDocLoc ? wvStr("weavero-menu-bm-show-parent") : wvZoteroText("general-show-in-library"),
                         this._bmShowInLibraryIcon({ libraryID: entry.srcLibraryID || entry.libraryID || att.libraryID }, Zotero.getMainWindow()),
                         () => this._wvNavigateReaderBookmark(reader, entry, { ctrlKey: true }));
                     sep();
                     // Unified edit: title + comment together in one dialog.
-                    item("Edit Bookmark…", RP_RENAME_SVG, () => {
+                    item(wvStr("weavero-menu-bm-edit"), RP_RENAME_SVG, () => {
                         this._wvReaderEditBookmarkDialog(reader, att, entry, reRender);
                     });
                     {
@@ -23524,7 +23583,7 @@ class _ReaderPanelsMixin {
                             && ((pdfShape && isPdfV)
                                 || (cfiShape && pvR && typeof pvR.getRange === "function"));
                         if (isTextBm) {
-                            item("Reset to Default Name", RP_REVERT_SVG, () => {
+                            item(wvStr("weavero-menu-bm-reset-name"), RP_REVERT_SVG, () => {
                                 Promise.resolve(this._wvBmRegionText(reader, entry))
                                     .then((t: any) => this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id, t || undefined))
                                     .then(reRender).catch(() => {});
@@ -23532,18 +23591,18 @@ class _ReaderPanelsMixin {
                         } else {
                             const orig = this._bmReaderOriginalLabel(entry);
                             if (orig && orig !== entry.label) {
-                                item("Reset to Default Name", RP_REVERT_SVG,
+                                item(wvStr("weavero-menu-bm-reset-name"), RP_REVERT_SVG,
                                     () => this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id).then(reRender));
                             }
                         }
                     }
-                    item("Delete Bookmark", RP_DELETE_SVG, () => this._bmReaderRemove(att.libraryID, att.itemKey, entry.id).then(reRender));
+                    item(wvStr("weavero-menu-bm-delete"), RP_DELETE_SVG, () => this._bmReaderRemove(att.libraryID, att.itemKey, entry.id).then(reRender));
                 }
                 sep();
             }
             itemSub("Add Bookmark…", RP_PLUS_SVG, [
-                { label: "Pick item from library…", icon: RP_BM_RIBBON_TAB, fn: () => this._wvReaderAddViaDialog(reader, idoc, section) },
-                { label: "Add Link…", icon: URL_GLOBE_SVG, fn: () => {
+                { label: wvStr("weavero-menu-bm-pick-item"), icon: RP_BM_RIBBON_TAB, fn: () => this._wvReaderAddViaDialog(reader, idoc, section) },
+                { label: wvStr("weavero-menu-bm-add-link"), icon: URL_GLOBE_SVG, fn: () => {
                     Promise.resolve(this._wvAddUrlBookmark(reader, idoc, "document", section))
                         .catch((err: any) => Zotero.debug("[Weavero] add-link err: " + err));
                 } },
@@ -23555,7 +23614,7 @@ class _ReaderPanelsMixin {
             // trailing entry needs the parent.
             {
                 const onFolder = !!(entry && entry.type === "folder");
-                item(onFolder ? "New Subfolder…" : "New Folder…", RP_FOLDER_PLUS_SVG, () => {
+                item(wvStr(onFolder ? "weavero-menu-bm-new-subfolder" : "weavero-menu-bm-new-folder"), RP_FOLDER_PLUS_SVG, () => {
                     const n = this._bmPromptName(Zotero.getMainWindow(), onFolder ? "New Subfolder" : "New Folder", "New Folder");
                     if (n) this._bmReaderAddFolder(att.libraryID, att.itemKey, section, n, onFolder ? entry.id : undefined).then(reRender);
                 });
@@ -23596,16 +23655,16 @@ class _ReaderPanelsMixin {
         const entry = loc && loc.entry;
         if (entry) {
             if (entry.type === "folder") {
-                item("Rename Folder…", RP_RENAME_SVG, () => {
+                item(wvStr("weavero-menu-bm-rename-folder"), RP_RENAME_SVG, () => {
                     const n = this._bmPromptName(win, "Rename Folder", entry.name || "");
                     if (n) this._bmRenameFolder(entry.id, n).then(reRender);
                 });
-                item("New Subfolder…", RP_FOLDER_PLUS_SVG, () => {
+                item(wvStr("weavero-menu-bm-new-subfolder"), RP_FOLDER_PLUS_SVG, () => {
                     const n = this._bmPromptName(win, "New Folder", "New Folder");
                     if (n) this._bmAddFolder(n, entry.id).then(reRender);
                 });
                 sep();
-                item("Delete Folder", RP_DELETE_SVG, () => {
+                item(wvStr("weavero-menu-bm-delete-folder"), RP_DELETE_SVG, () => {
                     const c = this._bmCountDescendants(entry);
                     if (c > 0) { const ok = Services.prompt.confirm(win, "Delete Folder", 'Delete "' + (entry.name || "") + '" and its ' + c + " item" + (c === 1 ? "" : "s") + "?"); if (!ok) return; }
                     this._bmRemove(entry.id).then(reRender);
@@ -23628,12 +23687,13 @@ class _ReaderPanelsMixin {
                     openIcon = im || this._bmShowInLibraryIcon(
                         { libraryID: entry.libraryID }, win);
                 } catch (_) {}
-                item("Open", openIcon, () => this._bmActivateBookmark(entry, {}));
+                item(wvStr("weavero-menu-ctx-open"), openIcon, () => this._bmActivateBookmark(entry, {}));
                 // Library bookmarks point at the library itself — "Show in
                 // Library" would just select the library, which is exactly
                 // what "Open" already does. Suppress the redundant entry.
                 if (entry.type !== "library") {
-                    item("Show in Library", this._bmShowInLibraryIcon({ libraryID: entry.libraryID }, win), () => this._bmShowInLibrary(entry));
+                    // Zotero's own "Show in Library" (general-show-in-library, a value in 9.0, 10 and 11).
+                    item(wvZoteroText("general-show-in-library"), this._bmShowInLibraryIcon({ libraryID: entry.libraryID }, win), () => this._bmShowInLibrary(entry));
                 }
                 sep();
                 if (entry.type === "url") {
@@ -23641,31 +23701,31 @@ class _ReaderPanelsMixin {
                     // URL), so a plain rename prompt would only let the user
                     // touch half of it. Open the same two-field dialog the
                     // Add Link path uses, pre-filled with the current values.
-                    item("Edit Bookmark…", RP_RENAME_SVG, () => {
+                    item(wvStr("weavero-menu-bm-edit"), RP_RENAME_SVG, () => {
                         this._wvEditUrlBookmark(reader, idoc, entry, reRender);
                     });
                 } else {
                     // Title + (annotation bookmarks) the annotation comment,
                     // together — same combined dialog as the library popup.
-                    item("Edit Bookmark…", RP_RENAME_SVG, () => {
+                    item(wvStr("weavero-menu-bm-edit"), RP_RENAME_SVG, () => {
                         const rw = (reader && reader._window) || win;
                         this._bmEditBookmarkDialog(rw, entry, reRender);
                     });
                 }
-                item("Delete Bookmark", RP_DELETE_SVG, () => this._bmRemove(entry.id).then(reRender));
+                item(wvStr("weavero-menu-bm-delete"), RP_DELETE_SVG, () => this._bmRemove(entry.id).then(reRender));
             }
             sep();
         }
         itemSub("Add Library Bookmark…", RP_PLUS_SVG, [
-            { label: "Pick item from library…", icon: RP_BM_RIBBON_TAB, fn: () => {
+            { label: wvStr("weavero-menu-bm-pick-item"), icon: RP_BM_RIBBON_TAB, fn: () => {
                 Promise.resolve(this._bmAddBookmarksDialog()).then(reRender).catch(() => {});
             } },
-            { label: "Add Link…", icon: URL_GLOBE_SVG, fn: () => {
+            { label: wvStr("weavero-menu-bm-add-link"), icon: URL_GLOBE_SVG, fn: () => {
                 Promise.resolve(this._wvAddUrlBookmark(reader, idoc, "library"))
                     .catch((err: any) => Zotero.debug("[Weavero] add-link err: " + err));
             } },
         ]);
-        item("New Folder…", RP_FOLDER_PLUS_SVG, () => {
+        item(wvStr("weavero-menu-bm-new-folder"), RP_FOLDER_PLUS_SVG, () => {
             const n = this._bmPromptName(win, "New Folder", "New Folder");
             if (n) this._bmAddFolder(n).then(reRender);
         });
@@ -23929,13 +23989,13 @@ class _ReaderPanelsMixin {
                 // LEFT = what is added (selected text / pin), RIGHT = the
                 // destination list (outline glyph / bookmark ribbon).
                 if (RP_OUTLINE_VIEW_TYPES.has(reader._type || "pdf")) {
-                    const OLABEL = "Add Selected Text to Outline";
+                    const OLABEL = wvStr("weavero-menu-reader-add-selection-outline");
                     append({ label: OLABEL, onCommand: () => this._wvOutlineAddFromSelection(reader) });
                     this._wvReaderStampMenuIcon(reader, OLABEL,
                         this._wvReaderSelTextMenuIconURL(), this._wvReaderOutlineMenuIconURL(),
                         this._wvOutlineKeyText("selection"));
                 }
-                const LABEL = "Add Selected Text to Bookmarks";
+                const LABEL = wvStr("weavero-menu-reader-add-selection-bookmarks");
                 append({ label: LABEL, onCommand: () => this._wvReaderAddSelectedText(reader) });
                 this._wvReaderStampMenuIcon(reader, LABEL, this._wvReaderSelTextMenuIconURL(), icon);
             } else {
@@ -23946,9 +24006,7 @@ class _ReaderPanelsMixin {
                 // the action is unambiguous.
                 const activeScope = this._wvReaderBmScope();
                 const isLib = activeScope === "library";
-                const LABEL = isLib
-                    ? "Add This Position to Library Bookmarks"
-                    : "Add This Position to Bookmarks";
+                const LABEL = wvStr("weavero-menu-reader-add-position-bookmarks", { scope: isLib ? "library" : "document" });
                 // A position bookmark drops a 📌 marker in the document, so the
                 // menu item gets the matching pin glyph (not the ribbon).
                 // Snapshot the exact click point NOW (params are stale by command
@@ -24041,9 +24099,7 @@ class _ReaderPanelsMixin {
                         // our icon stamping works), so it supports `menu` +
                         // `menupopup` exactly like the tab-header menu's
                         // "Copy As" (user asked why not, 2026-07-29).
-                        LABEL_PAGE = isLib
-                            ? "Add This Page to Library Bookmarks"
-                            : "Add This Page to Bookmarks";
+                        LABEL_PAGE = wvStr("weavero-menu-reader-add-page-bookmarks", { scope: isLib ? "library" : "document" });
                         {
                                 const doAdd = async (a: "top" | "bottom") => {
                                     let stored: any = null;
@@ -24111,7 +24167,7 @@ class _ReaderPanelsMixin {
                     // convention marks further-input entries with "…" (the
                     // pin-bookmark sibling creates immediately, so it has
                     // none). Shipped bare in dev.7 (user caught it).
-                    LABEL_OUTLINE = "Add This Position to Outline…";
+                    LABEL_OUTLINE = wvStr("weavero-menu-reader-add-position-outline");
                     append({ label: LABEL_OUTLINE, onCommand: () => {
                         try {
                             const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
@@ -24279,8 +24335,8 @@ class _ReaderPanelsMixin {
                 let done = false;
                 try {
                     const popup = ev && ev.target;
-                    const mi = popup && popup.querySelector
-                        && popup.querySelector('menuitem[label="' + label + '"]');
+                    // By Weavero's own label, as a string (lib/menu.ts).
+                    const mi = wvMenuItemByLabel(popup, label);
                     if (mi) {
                         mi.classList.add("menuitem-iconic");
                         mi.setAttribute("image", iconURL);
@@ -24327,8 +24383,8 @@ class _ReaderPanelsMixin {
                 let done = false;
                 try {
                     const popup = ev && ev.target;
-                    const mi = popup && popup.querySelector
-                        && popup.querySelector('menuitem[label="' + label + '"]');
+                    // By Weavero's own label, as a string (lib/menu.ts).
+                    const mi = wvMenuItemByLabel(popup, label);
                     if (mi) {
                         const doc = win.document;
                         const menu = doc.createXULElement("menu");
@@ -24355,9 +24411,9 @@ class _ReaderPanelsMixin {
                             menu.style.backgroundSize = "16px 16px";
                         } catch (_) {}
                         const sub = doc.createXULElement("menupopup");
-                        const mk = (lbl: string, img: string, anchor: "top" | "bottom") => { wvMenuItem(doc, { label: lbl, image: img, onCommand: () => onPick(anchor) }, sub); };
-                        mk("Top of page " + pageNum, WV_PAGE_TOP_URI, "top");
-                        mk("Bottom of page " + pageNum, WV_PAGE_BOTTOM_URI, "bottom");
+                        const mk = (img: string, anchor: "top" | "bottom") => { wvMenuItem(doc, { l10n: { id: "weavero-menu-reader-page-anchor", args: { anchor, page: String(pageNum) } }, image: img, onCommand: () => onPick(anchor) }, sub); };
+                        mk(WV_PAGE_TOP_URI, "top");
+                        mk(WV_PAGE_BOTTOM_URI, "bottom");
                         menu.appendChild(sub);
                         mi.parentNode.insertBefore(menu, mi);
                         mi.remove();

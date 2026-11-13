@@ -366,13 +366,18 @@ export function wvFirstMovableIndex(Z: any): number {
     return 0;
 }
 
-/** Zotero pins library tabs itself: `Zotero_Tabs.setPinned` (zotero 49b48f5d08,
- *  2026-11-10, the 11.0 beta after beta.4). A pinned library tab keeps the start
- *  of the bar and can't be closed or moved until unpinned; Zotero saves the pin
- *  with the session. Weavero's library-tab pin is then Zotero's (MJT 2026-11-10:
- *  "Whose pin for My Library? Zotero's own"). A feature test, cached once a
- *  window answers: the API does not come and go. */
+/** Zotero pins tabs itself: `Zotero_Tabs.setPinned` (the 11.0 beta after beta.4).
+ *  zotero 49b48f5d08 pinned library tabs only; b08cc35a50 ("Allow pinning any
+ *  tab", the same day, 2026-11-10, before any build shipped either) pins reader
+ *  and note tabs too. A pinned tab keeps the start of the bar, stays in its
+ *  window, can't be closed by the user (Zotero blocks it through `tab.pinned`:
+ *  `_isClosable`, `moveToWindow`, `move()` clamps), stays pinned when unloaded,
+ *  and is saved with the session. Every pin is then Zotero's (MJT 2026-11-10:
+ *  "Whose pin for My Library? Zotero's own", extended to every tab by MJT's
+ *  delegation the same evening). A feature test, cached once a window answers:
+ *  the API does not come and go. */
 let wvZoteroPinsCache: boolean | null = null;
+export function wvZoteroPinsTabs(): boolean { return wvZoteroPinsLibraryTabs(); }
 export function wvZoteroPinsLibraryTabs(): boolean {
     if (wvZoteroPinsCache != null) return wvZoteroPinsCache;
     try {

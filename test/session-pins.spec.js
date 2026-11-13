@@ -8,10 +8,16 @@
 describe("Weavero — a session keeps its pinned tabs", () => {
     let wv, win, a, b, doc0, active0, pins0;
     const tabOf = (w, id) => w.Zotero_Tabs._tabs.find(t => t.data && t.data.itemID === id);
-    const pinned = id => wv._pinnedTabsGet().some(p => {
-        const it = Zotero.Items.get(id);
-        return it && p.libraryID === it.libraryID && p.itemKey === it.key;
-    });
+    // Where Zotero pins any tab (zotero b08cc35a50) the pin is the tab's own, Weavero's
+    // store only carries a pin to Zotero (tabs.ts _wvApplyZoteroPins).
+    const zpins = () => !!(wvT.lib().wvZoteroPinsTabs && wvT.lib().wvZoteroPinsTabs());
+    const pinned = id => {
+        if (zpins()) return Zotero.getMainWindows().some(w => { const t = tabOf(w, id); return !!(t && t.pinned); });
+        return wv._pinnedTabsGet().some(p => {
+            const it = Zotero.Items.get(id);
+            return it && p.libraryID === it.libraryID && p.itemKey === it.key;
+        });
+    };
 
     before(async function () {
         wv = wvT.plugin();
@@ -76,7 +82,7 @@ describe("Weavero — a session keeps its pinned tabs", () => {
         await wv._wvTabSessionSwitch(id);
         const w = Zotero.getMainWindows().find(x => tabOf(x, a.id));
         assert.isOk(w, "the tab is back");
-        assert.isTrue(pinned(a.id), "and pinned");
+        assert.isOk(await wvT.waitFor(() => pinned(a.id) || null, 8000), "and pinned");
         assert.isFalse(pinned(b.id), "the other is not");
         const t = tabOf(w, a.id);
         assert.isOk(await wvT.waitFor(() => (w._wvPinnedTabIDs && w._wvPinnedTabIDs.has(t.id)) || null, 8000), "drawn as a pin");

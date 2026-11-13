@@ -32,3 +32,11 @@ the historically lossy combinations:
 - Distinctive **window geometry** (move a reader window; second monitor if
   available) and a reader **sidebar** opened at a custom width.
 - One **named tab-session** active.
+- A **split view** (two tabs side by side) in the anchor window.
+
+On a Zotero with its own windows (zotero#6035, 11.0-beta.4 and later) there
+are no reader or note windows. The second main window comes from File > New
+Window, and every reader window above becomes a main window without a library
+tab (Open in New Window on a document). Add a second library tab to the anchor
+window, and pin the second window's library tab and split it beside one of its
+documents.

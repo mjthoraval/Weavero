@@ -37,6 +37,14 @@ describe("Weavero — File / Edit menubar entries for the window commands", () =
 	const mine = popup => Array.from(popup.querySelectorAll(":scope > [data-wv-menubar]"));
 	const visible = popup => mine(popup).filter(el => !el.hidden).map(el => el.dataset.wvMenubar);
 	const byKey = (popup, key) => popup.querySelector(':scope > [data-wv-menubar="' + key + '"]');
+	// The entries' words are weavero.ftl messages (localisation slice 2):
+	// MenuManager sets their l10nID as data-l10n-id and Fluent writes the
+	// label after a popupshowing -- a synthetic one here, read at once.
+	const shown = (el) => {
+		const id = el.getAttribute("data-l10n-id");
+		if (!id) return el.getAttribute("label");
+		return Zotero.Weavero.lib.wvStr(id, JSON.parse(el.getAttribute("data-l10n-args") || "null"));
+	};
 	const accel = Zotero.isMac ? "⌘" : "Ctrl+";
 	const z10 = () => !!doc.getElementById("cmd_zotero_advancedSearch");
 
@@ -78,11 +86,11 @@ describe("Weavero — File / Edit menubar entries for the window commands", () =
 			const kids = Array.from(filePopup.children);
 			assert.deepEqual(kids.slice(0, 4).map(el => el.dataset.wvMenubar),
 				["newtab", "newreaderwin", "newmainwin", "sep"], "first four children");
-			assert.strictEqual(kids[0].getAttribute("label"), "New Tab…");
+			assert.strictEqual(shown(kids[0]), "New Tab…");
 			assert.strictEqual(kids[0].getAttribute("acceltext"), accel + "T");
-			assert.strictEqual(kids[1].getAttribute("label"), "New Reader Window…");
+			assert.strictEqual(shown(kids[1]), "New Reader Window…");
 			assert.strictEqual(kids[1].getAttribute("acceltext"), null, "no shortcut for the picker");
-			assert.strictEqual(kids[2].getAttribute("label"), "New Main Window");
+			assert.strictEqual(shown(kids[2]), "New Main Window");
 			assert.strictEqual(kids[2].getAttribute("acceltext"), accel + "N");
 			assert.strictEqual(kids[3].localName, "menuseparator");
 			assert.strictEqual(kids[4].id, "menu_newItem", "Zotero's own New Item follows");
@@ -102,7 +110,7 @@ describe("Weavero — File / Edit menubar entries for the window commands", () =
 			}
 			const anchor = doc.getElementById("menu_advancedSearch");
 			assert.strictEqual(anchor.nextElementSibling, el, "directly after menu_advancedSearch");
-			assert.strictEqual(el.getAttribute("label"), "Advanced Search in New Window");
+			assert.strictEqual(shown(el), "Advanced Search in New Window");
 			// The remapped shortcut is on by default, so the entry carries it;
 			// with the remap off it says "Shift+Click" (the remap test covers both).
 			const remap = Zotero.Prefs.get("weavero.advSearchShortcutNewWindow") !== false;
@@ -466,7 +474,7 @@ describe("Weavero — File / Edit menubar entries for the window commands", () =
 			popup.appendChild(el);
 			let vis = null;
 			data.onShowing(null, { menuElem: el, setVisible: v => { vis = v; } });
-			return { vis, label: el.getAttribute("label"), accel: el.getAttribute("acceltext") };
+			return { vis, label: el.getAttribute("label") || (data.l10nID && Zotero.Weavero.lib.wvStr(data.l10nID)), accel: el.getAttribute("acceltext") };
 		};
 		assert.strictEqual(Object.prototype.hasOwnProperty.call(win, "_wvWT"), false, "a main window has no reader strip");
 		assert.deepEqual(show(menus[0]), { vis: false, label: "New Tab…", accel: accel + "T" }, "no strip: New Tab hidden");

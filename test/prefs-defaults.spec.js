@@ -51,7 +51,11 @@ describe("Weavero — Settings prefs have registered defaults", () => {
         // The Tags and Related sections' counts and lists (2026-11-03).
         "enableTagsRelatedScope",
         // Notes: the outline beside the editor and the heading folds (2026-11-03).
-        "noteOutline", "noteFolding"];
+        "noteOutline", "noteFolding",
+        // Split view: two tabs side by side (2026-11-10).
+        "enableSplitView",
+        // Its footers: a label on each side whose item pane is closed (2026-11-12).
+        "splitViewFooter"];
         // The item pane sections' paneScope.* prefs (levels, kinds, "always
         // shown" pins) had their grid here from dev.114 to dev.161 and are
         // off the pane since (MJT 2026-11-03); registered still
@@ -75,7 +79,7 @@ describe("Weavero — Settings prefs have registered defaults", () => {
         "enableTagsCountAuto", "enableUriUtilities", "enableVisualExtras", "enableZoteroLinks", "inlineLinks",
         "outlinePageNumbers", "readerItemPane", "readerOutlineTakeover", "recolorAmLinks",
         "showLibraryBookmarksInReader", "windowIcons", "itemPaneStickyHeaders", "enableTagsRelatedScope",
-        "noteOutline", "noteFolding",
+        "noteOutline", "noteFolding", "splitViewFooter",
         "paneScope.tags.own", "paneScope.related.own", "paneScope.links.note", "paneScope.links.ann", "paneScope.links.loop", "paneScope.links.broken",
         "paneScope.backlinks.own", "paneScope.backlinks.loop",
         "paneScope.links.zlinks", "paneScope.links.citations", "paneScope.backlinks.zlinks", "paneScope.backlinks.citations"];

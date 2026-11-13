@@ -269,7 +269,7 @@ active), then:
 - [ ] **Click "Show (default)"** → labels return; `weavero/outlines.json`
       no longer carries a `settings` entry for the document (picking the
       default drops the record).
-- [ ] **Preferences → Reader outline → uncheck "Show page numbers"** →
+- [ ] **Preferences → Reader Outline → uncheck "Show page numbers"** →
       every open reader's outline drops the labels without a tab
       round-trip; the menu now reads **Show** / **✓ Hide (default)**; a
       document switched to Show from there still shows them.
@@ -421,7 +421,7 @@ stroke, Annotations tab active.
       resizes, and the pill stays where it was (12 px under the divider,
       never 0 px tall: the splitter's drag used to write a height on it).
       Restart with it folded -> still folded, and the pill unfolds it.
-      Settings -> Extras -> Collections pane -> untick "Handle on the Tag
+      Settings -> Extras -> Collections Pane -> untick "Handle on the Tag
       Selector" -> plain splitter.
 - [ ] **Settings -> uncheck "Filter the annotations pane"** -> the funnel
       disappears, the pane shows every annotation again, Zotero's selector
@@ -566,7 +566,7 @@ Annotations / Tags / Related, then:
 ## Side panes: drag, collapse, reopen (after touching splitters or the reader-window item pane)
 
 Synthetic drags do not move Gecko splitters, so these are hands-only. Setting:
-*Extras → Collections pane → Resizing a side pane stops at its minimum width*.
+*Extras → Collections Pane → Resizing a side pane stops at its minimum width*.
 
 - [ ] **Setting on**: drag each pane edge hard past its minimum → it stops:
       collections pane 200 px, item pane 357 px, the context pane of a reader
@@ -730,7 +730,7 @@ Real right-click menus; the spec builds them without opening.
       onto the right pane's free area is hidden too.
 - [ ] **Pinned parents in the manager** (2026-10-21): with *Keep parent
       collections pinned at the top while scrolling* on (Preferences →
-      Weavero → Extras → Collections pane), expand a deep branch and scroll
+      Weavero → Extras → Collections Pane), expand a deep branch and scroll
       either tree of the manager → the parents of the rows at the top stay
       pinned above them, outermost first, as in the collections pane (same
       level cap). Click a pinned row → its own row comes back under the
@@ -974,6 +974,29 @@ Plugins Manager (2026-10-26).
      disable, so the page moved the card at once. -->
 
 
+## Maximize across monitors (Windows, two monitors or more, after touching max-span.ts)
+
+`test/maximize-span.spec.js` computes the spans, opens the menu with a
+scripted right-click and spans the runner's window through the plugin's own
+methods; real presses on the caption buttons go through Windows' non-client
+handling (the snap-layouts maximize button), which no scripted event reaches.
+By hand, with the main window, then a Plugins Manager with *Hide title bar*
+on, then (Zotero 10) a reader window with Weavero's tab strip:
+
+- [ ] Right-click the maximize button → *Maximize to Left + Middle*,
+      *Maximize to Middle + Right*, *Maximize to All Three* (the mixed-scale
+      ones after the others, a tooltip saying so); no system menu, no snap
+      layout in the way.
+- [ ] Choose one → the window fills exactly those monitors above the taskbar,
+      no gap at the edges; the button now shows the restore glyph.
+- [ ] Click it → the window is back where and as it was (maximized too).
+- [ ] Span it again, double-click the title bar (an empty part of the tab
+      strip with *Hide title bar* on) → back as well, without a maximize.
+- [ ] Span it, drag it by the title bar → the button shows maximize again.
+- [ ] Span it, restart Zotero (11) → it comes back spanned, the restore
+      glyph shown, and restore still knows where it was.
+
+
 ## File / Edit menubar entries (macOS, after touching the window commands)
 
 `test/menubar-window-entries.spec.js` proves the entries, their order and
@@ -1040,7 +1063,7 @@ stand in. On macOS, by hand:
       the collections toolbar to the items toolbar under the same pixels);
       a second press expands the pane; *View → Layout → Collections Pane*
       shows the matching tick and, used itself, leaves the button in place;
-      the state survives a restart. *Extras → Collections pane* off removes
+      the state survives a restart. *Extras → Collections Pane* off removes
       the button at once.
 - [ ] (Any platform.) Collections tree: with *My Library* selected,
       right-click another collection — *My Library* stays highlighted and

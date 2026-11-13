@@ -210,10 +210,24 @@
 		if (!sameGeom(bg, ag)) FAIL.push(label + ": geometry " + J(bg) + " -> " + J(ag));
 	};
 
-	// main windows: by name, then by position
+	// main windows: by custom title, then by the most tabs in common (a name
+	// like "Window 3" follows the order Zotero reopens its own windows in, so
+	// it can name another window after a restart), then by name, then by
+	// position
 	const afterMains = after.mains.slice();
+	const common = (a, b) => { const m = new Map(); for (const t of a.tabs) { const k = tabKey(t); m.set(k, (m.get(k) || 0) + 1); } let n = 0; for (const t of b.tabs) { const k = tabKey(t); if (m.get(k) > 0) { n++; m.set(k, m.get(k) - 1); } } return n; };
 	before.mains.forEach((bm, i) => {
-		let j = afterMains.findIndex(am => am && am.name === bm.name);
+		let j = bm.title ? afterMains.findIndex(am => am && am.title === bm.title) : -1;
+		if (j < 0) {
+			let best = -1, bestN = 0;
+			afterMains.forEach((am, k) => {
+				if (!am || am.title) return;
+				const n = common(bm, am) + (am.name === bm.name ? 0.5 : 0);
+				if (n > bestN) { bestN = n; best = k; }
+			});
+			if (bestN >= 1) j = best;
+		}
+		if (j < 0) j = afterMains.findIndex(am => am && am.name === bm.name);
 		if (j < 0) j = afterMains.findIndex(am => am);
 		const am = j >= 0 ? afterMains[j] : null;
 		if (!am) { FAIL.push("main window '" + bm.name + "' missing after restart"); return; }
@@ -270,6 +284,12 @@
 		if (J(bm.pin || null) !== J(am.pin || null)) FAIL.push(label + ": pinned section " + J(bm.pin) + " -> " + J(am.pin));
 		if (bm.tagsOpen != null && am.tagsOpen != null && bm.tagsOpen !== am.tagsOpen) FAIL.push(label + ": Tags section open " + bm.tagsOpen + " -> " + am.tagsOpen);
 		if (J(bm.itemPane) !== J(am.itemPane)) WARN.push(label + ": item pane " + J(bm.itemPane) + " -> " + J(am.itemPane));
+		// Split views (1.0.5, "survives a restart, as Firefox"; MJT 2026-11-10).
+		{
+			const sp = multiDiff(bm.splits || [], am.splits || []);
+			if (sp.missing.length || sp.added.length) FAIL.push(label + ": split views " + J(bm.splits || []) + " -> " + J(am.splits || []));
+			else if ((bm.splits || []).length) OK.push(label + ": split view(s) kept: " + bm.splits.join(", "));
+		}
 		if (!missing.length && !added.length && J(bk) === J(ak)) OK.push(label + ": " + bk.length + " tabs, order kept");
 	});
 	afterMains.filter(Boolean).forEach(am => FAIL.push("EXTRA main window after restart: '" + am.name + "' (" + am.tabs.length + " tabs)"));
@@ -397,37 +417,56 @@
 	// historical loss (docs/restart-testing.md, traceability table).
 	const cov = (() => {
 		const s = before, c = [];
-		const mainTabs = s.mains.flatMap(m => m.tabs), readerTabs = s.readers.flatMap(r => r.tabs);
+		// With Zotero's own windows (zotero#6035) there are no reader or note
+		// windows: a document opened in a new window is a main window without a
+		// library tab, and it takes the reader window's place in these lines.
+		// What has no counterpart there (orphan, a window's NATIVE document, the
+		// reader sidebar) stops being essential.
+		const NAT = !!s.nativeWindows;
+		const RW = NAT ? "window without a library tab" : "reader window";
+		const mainsL = NAT ? s.mains.filter(m => m.libraryTabs > 0) : s.mains;
+		const docWins = NAT ? s.mains.filter(m => !m.libraryTabs).map(m => ({ tabs: m.tabs, orphan: false, sb: null })) : s.readers;
+		const mainTabs = mainsL.flatMap(m => m.tabs), readerTabs = docWins.flatMap(r => r.tabs);
 		const isNote = t => String(t.type || "").startsWith("note");
 		const keyCount = arr => { const m = new Map(); for (const k of arr) m.set(k, (m.get(k) || 0) + 1); return m; };
 		let sameWin = 0;
-		for (const w of [...s.mains, ...s.readers]) for (const [, n] of keyCount(w.tabs.map(t => t.key))) if (n > 1) sameWin++;
+		for (const w of [...s.mains, ...s.readers]) for (const [, n] of keyCount(w.tabs.map(t => t.key).filter(Boolean))) if (n > 1) sameWin++;
 		const seen = new Map();
-		for (const w of [...s.mains, ...s.readers]) for (const k of new Set(w.tabs.map(t => t.key))) seen.set(k, (seen.get(k) || 0) + 1);
+		for (const w of [...s.mains, ...s.readers]) for (const k of new Set(w.tabs.map(t => t.key).filter(Boolean))) seen.set(k, (seen.get(k) || 0) + 1);
 		let cross = 0; for (const [, n] of seen) if (n > 1) cross++;
 		const push = (label, n, essential = true) => c.push({ label, n, essential });
-		push("main windows", s.mains.length);
-		push("managed (second) main windows", s.mains.filter(m => m.managed).length);
+		push("main windows", mainsL.length);
+		if (NAT) push("second main windows (Zotero's New Window)", Math.max(0, mainsL.length - 1));
+		else push("managed (second) main windows", s.mains.filter(m => m.managed).length);
 		push("main-window tabs", mainTabs.length);
-		push("reader windows, multi-tab", s.readers.filter(r => r.tabs.length > 1 && !r.orphan).length);
-		push("reader windows, single document", s.readers.filter(r => r.tabs.length === 1 && !r.orphan).length);
-		push("reader windows, orphan (native closed)", s.readers.filter(r => r.orphan).length);
+		push(RW + "s, multi-tab", docWins.filter(r => r.tabs.length > 1 && !r.orphan).length);
+		push(RW + "s, single document", docWins.filter(r => r.tabs.length === 1 && !r.orphan).length);
+		push("reader windows, orphan (native closed)", s.readers.filter(r => r.orphan).length, !NAT);
 		push("groups live", (s.groups || []).filter(g => !g.saved).length);
 		push("groups collapsed", (s.groups || []).filter(g => g.collapsed && !g.saved).length);
 		push("groups saved (parked)", (s.groups || []).filter(g => g.saved).length);
-		push("grouped tabs in reader windows", readerTabs.filter(t => t.grp).length);
-		push("note tabs inside groups", mainTabs.filter(t => t.grp && isNote(t)).length + readerTabs.filter(t => t.grp && t.type === "note").length);
-		push("pinned main-window tabs", mainTabs.filter(t => t.pinned).length);
-		push("pinned reader-window tabs", readerTabs.filter(t => t.pinned).length);
+		push("grouped tabs in " + RW + "s", readerTabs.filter(t => t.grp).length);
+		push("note tabs inside groups", mainTabs.filter(t => t.grp && isNote(t)).length + readerTabs.filter(t => t.grp && isNote(t)).length);
+		push("pinned main-window tabs", mainTabs.filter(t => t.pinned && t.key).length);
+		push("pinned " + RW + " tabs", readerTabs.filter(t => t.pinned).length);
 		push("note tabs in main windows", mainTabs.filter(isNote).length);
 		push("selected note tab", mainTabs.filter(t => t.sel && isNote(t)).length);
-		push("note tabs in reader windows", readerTabs.filter(t => t.type === "note").length);
+		push("note tabs in " + RW + "s", docWins.filter(r => r.tabs.length > 1).flatMap(r => r.tabs).filter(isNote).length);
 		push("same-window duplicates", sameWin);
 		push("cross-window duplicates", cross);
+		if (NAT) {
+			push("a window with a second library tab", mainsL.filter(m => m.libraryTabs > 1).length);
+			push("pinned library tabs", mainTabs.filter(t => t.pinned && !t.key).length);
+		}
+		if (s.splitView) {
+			const splits = s.mains.flatMap(m => m.splits || []);
+			push("split views", splits.length);
+			if (NAT) push("split view with a library tab as a side", splits.filter(x => /(^|\|)lib(\||$)/.test(x)).length);
+		}
 		// Duplicate CONFIGURATIONS (each has bitten once): classify every pair of
 		// copies of the same item by where the copies live and how they differ.
 		{
-			const wins = [...s.mains.map(m => ({ kind: "main", tabs: m.tabs })), ...s.readers.map(r => ({ kind: "reader", tabs: r.tabs }))];
+			const wins = [...mainsL.map(m => ({ kind: "main", tabs: m.tabs })), ...docWins.map(r => ({ kind: "reader", tabs: r.tabs }))];
 			const copies = new Map();
 			wins.forEach((w, wi) => w.tabs.forEach(t => { if (!t.key) return; if (!copies.has(t.key)) copies.set(t.key, []); copies.get(t.key).push({ wi, kind: w.kind, t }); }));
 			const pairs = [];
@@ -439,10 +478,10 @@
 			push("dup pairs: same main window, one grouped one not", n(p => sameMain(p) && (!!p[0].t.grp !== !!p[1].t.grp)));
 			push("dup pairs: same main window, neither grouped", n(p => sameMain(p) && !p[0].t.grp && !p[1].t.grp));
 			push("dup pairs: across main windows", n(p => p[0].kind === "main" && p[1].kind === "main" && p[0].wi !== p[1].wi));
-			push("dup pairs: main window + reader-window extra", n(p => p[0].kind !== p[1].kind && !(p[0].t.native || p[1].t.native)));
-			push("dup pairs: main window + reader-window NATIVE document", n(p => p[0].kind !== p[1].kind && (p[0].t.native || p[1].t.native)));
-			push("dup pairs: same reader window", n(p => p[0].kind === "reader" && p[1].kind === "reader" && p[0].wi === p[1].wi));
-			push("dup pairs: across reader windows", n(p => p[0].kind === "reader" && p[1].kind === "reader" && p[0].wi !== p[1].wi));
+			push(NAT ? "dup pairs: main window + " + RW : "dup pairs: main window + reader-window extra", n(p => p[0].kind !== p[1].kind && !(p[0].t.native || p[1].t.native)));
+			push("dup pairs: main window + reader-window NATIVE document", n(p => p[0].kind !== p[1].kind && (p[0].t.native || p[1].t.native)), !NAT);
+			push("dup pairs: same " + RW, n(p => p[0].kind === "reader" && p[1].kind === "reader" && p[0].wi === p[1].wi));
+			push("dup pairs: across " + RW + "s", n(p => p[0].kind === "reader" && p[1].kind === "reader" && p[0].wi !== p[1].wi));
 			push("dup pairs: one copy pinned, one plain", n(p => !!p[0].t.pinned !== !!p[1].t.pinned));
 			push("dup pairs: notes", n(p => String(p[0].t.type || "").startsWith("note") || p[0].t.ct === "note"));
 			push("items open three times or more", [...copies.values()].filter(a => a.length > 2).length);
@@ -452,19 +491,24 @@
 		}
 		push("EPUB tabs", [...mainTabs, ...readerTabs].filter(t => t.ct === "application/epub+zip").length);
 		push("snapshot (HTML) tabs", [...mainTabs, ...readerTabs].filter(t => t.ct === "text/html").length);
-		push("reader windows whose own document is an EPUB", s.readers.filter(r => r.tabs.some(t => t.native && t.ct === "application/epub+zip")).length);
-		push("reader windows whose own document is a snapshot", s.readers.filter(r => r.tabs.some(t => t.native && t.ct === "text/html")).length);
-		push("pinned tabs in a managed main window", s.mains.filter(m => m.managed).reduce((a, m) => a + m.tabs.filter(t => t.pinned).length, 0));
+		// A window's own document: the reader window's native tab, or with Zotero's
+		// own windows the only tab of a window without a library tab.
+		const ownDoc = (r, ct) => NAT ? (r.tabs.length === 1 && r.tabs[0].ct === ct) : r.tabs.some(t => t.native && t.ct === ct);
+		push(RW + "s whose own document is an EPUB", docWins.filter(r => ownDoc(r, "application/epub+zip")).length);
+		push(RW + "s whose own document is a snapshot", docWins.filter(r => ownDoc(r, "text/html")).length);
+		if (NAT) push("pinned tabs in a second main window", mainsL.slice(1).reduce((a, m) => a + m.tabs.filter(t => t.pinned).length, 0));
+		else push("pinned tabs in a managed main window", s.mains.filter(m => m.managed).reduce((a, m) => a + m.tabs.filter(t => t.pinned).length, 0));
 		// Under Weavero a note opened "in its own window" becomes a single-note
 		// reader deck (a reader window whose only tab is the note), so count
-		// those; native zotero:note windows are listed too if any exist.
-		push("standalone note windows (note decks + native note windows)", s.readers.filter(r => r.tabs.length && r.tabs.every(t => t.type === "note" || t.ct === "note")).length + (s.noteWindows || []).length);
+		// those; native zotero:note windows are listed too if any exist. With
+		// Zotero's own windows: a window whose only tabs are notes.
+		push("standalone note windows (note decks + native note windows)", docWins.filter(r => r.tabs.length && r.tabs.every(t => isNote(t) || t.ct === "note")).length + (s.noteWindows || []).length);
 		push("items with a persisted reading position past page 1", Object.values(s.readerStates || {}).filter(x => x.pageIndex > 0).length);
 		// Zotero's per-item state file carries page/scale/scroll only; a split
 		// view is not persisted by Zotero for tabs, so it cannot survive a
 		// restart under anyone -- listed, never essential.
 		push("items with a split view (Zotero does not persist it)", Object.values(s.readerStates || {}).filter(x => x.splitType).length, false);
-		push("reader sidebar open at a custom width", s.readers.filter(r => r.sb && r.sb.open && r.sb.width !== 240).length);
+		push("reader sidebar open at a custom width", s.readers.filter(r => r.sb && r.sb.open && r.sb.width !== 240).length, !NAT);
 		push("windows moved (x > 0)", [...s.mains, ...s.readers].filter(w => w.geom && w.geom.x != null && w.geom.x > 0).length);
 		push("maximized windows", [...s.mains, ...s.readers].filter(w => w.geom && w.geom.st === 1).length);
 		push("active named session", s.activeSession ? 1 : 0);

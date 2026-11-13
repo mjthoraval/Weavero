@@ -26,6 +26,9 @@
 // Ctrl+N, its window controls and its close-time cleanup.
 // `_wvGlyphLazy` beside `_wvTitleGlyphIdx` (1.0.1-dev.4): where the window's
 // colour came from, the pool or a choice (tabs.ts _wvGlyphRestore).
+// `wv-tbo-more` / `wv-tbo-style` on every reader page (2026-11-12): the
+// toolbar's overflow button and its style (reader-toolbar-overflow.ts,
+// WV-TEMP-4185), which the recording lacked since that feature landed.
 
 describe("Weavero — reader and note window wiring, characterized (reloads the plugin)", function () {
     this.timeout(300000);
@@ -338,7 +341,7 @@ const WIRING2_EXPECTED = {
             "_wvReaderNotesObsID:string", "_wvReaderPaneItemID:number", "_wvRedoKeyH:function",
             "_wvTabGroupWinDnDOff:function", "_wvTabStrip:object", "_wvThemeMQ:object",
             "_wvTitleGlyphIdx:number", "_wvWT:object", "_wvWTMultiSelOff:function", "_wvWTRestored:boolean",
-            "_wvWinIconName:string", "listen newWindowKey", "listen ovFollow:unload",
+            "_wvWinIconName:string", "listen lazy:uiRoots:unload", "listen newWindowKey", "listen ovFollow:unload",
             "listen readerDragOverlay:diag", "listen readerNewTabKey", "listen readerNotes:unload",
             "listen readersCleanup:unload", "listen reopenClosedKey", "listen tabGroupWinDnD:dragover",
             "listen tabGroupWinDnD:drop", "listen winControls:resize", "listen winControls:sizemodechange",
@@ -373,7 +376,7 @@ const WIRING2_EXPECTED = {
         ],
         reader: [],
         "page.ids": [
-            "wv-reader-iframe-nodrag", "wv-reader-panels-style",
+            "wv-reader-iframe-nodrag", "wv-reader-panels-style", "wv-tbo-more", "wv-tbo-style",
         ],
         "page.classes": [
             "wv-filter-svg", "wv-reader-filter-btn", "wv-rf-chev", "wv-ui-dark", "wv-undo-btn x2",
@@ -419,7 +422,7 @@ const WIRING2_EXPECTED = {
             "_wvRedoKeyH:function", "_wvTabGroupWinDnDOff:function", "_wvTabStrip:object",
             "_wvThemeMQ:object", "_wvTitleGlyphIdx:number", "_wvWT:object", "_wvWTClosed:object",
             "_wvWTMultiSelOff:function", "_wvWTRestored:boolean", "_wvWinIconName:string",
-            "listen newWindowKey", "listen ovFollow:unload", "listen readerDragOverlay:diag",
+            "listen lazy:uiRoots:unload", "listen newWindowKey", "listen ovFollow:unload", "listen readerDragOverlay:diag",
             "listen readerNewTabKey", "listen readerNotes:unload", "listen readersCleanup:unload",
             "listen reopenClosedKey", "listen tabGroupWinDnD:dragover", "listen tabGroupWinDnD:drop",
             "listen winControls:resize", "listen winControls:sizemodechange", "listen wvWT:teardown",
@@ -463,7 +466,7 @@ const WIRING2_EXPECTED = {
             "_wvReaderNotesObsID:string", "_wvReaderPaneItemID:number", "_wvRedoKeyH:function",
             "_wvTabGroupWinDnDOff:function", "_wvTabStrip:object", "_wvThemeMQ:object",
             "_wvTitleGlyphIdx:number", "_wvWT:object", "_wvWTMultiSelOff:function", "_wvWTRestored:boolean",
-            "_wvWinIconName:string", "listen newWindowKey", "listen ovFollow:unload",
+            "_wvWinIconName:string", "listen lazy:uiRoots:unload", "listen newWindowKey", "listen ovFollow:unload",
             "listen readerDragOverlay:diag", "listen readerNewTabKey", "listen readerNotes:unload",
             "listen readersCleanup:unload", "listen reopenClosedKey", "listen tabGroupWinDnD:dragover",
             "listen tabGroupWinDnD:drop", "listen winControls:resize", "listen winControls:sizemodechange",
@@ -500,7 +503,7 @@ const WIRING2_EXPECTED = {
             "_wvNativeOutlineMO:null",
         ],
         "page.ids": [
-            "wv-reader-iframe-nodrag", "wv-reader-panels-style",
+            "wv-reader-iframe-nodrag", "wv-reader-panels-style", "wv-tbo-more", "wv-tbo-style",
         ],
         "page.classes": [
             "wv-filter-svg", "wv-reader-filter-btn", "wv-rf-chev", "wv-ui-dark", "wv-undo-btn x2",
@@ -546,7 +549,7 @@ const WIRING2_EXPECTED = {
             "_wvRedoKeyH:function", "_wvTabGroupWinDnDOff:function", "_wvTabStrip:object",
             "_wvThemeMQ:object", "_wvTitleGlyphIdx:number", "_wvWT:object", "_wvWTClosed:object",
             "_wvWTMultiSelOff:function", "_wvWTRestored:boolean", "_wvWinIconName:string",
-            "listen newWindowKey", "listen ovFollow:unload", "listen readerDragOverlay:diag",
+            "listen lazy:uiRoots:unload", "listen newWindowKey", "listen ovFollow:unload", "listen readerDragOverlay:diag",
             "listen readerNewTabKey", "listen readerNotes:unload", "listen readersCleanup:unload",
             "listen reopenClosedKey", "listen tabGroupWinDnD:dragover", "listen tabGroupWinDnD:drop",
             "listen winControls:resize", "listen winControls:sizemodechange", "listen wvWT:teardown",
@@ -589,7 +592,7 @@ const WIRING2_EXPECTED = {
             "_wvReaderMergeAbsorberWired:boolean", "_wvReaderNotesObsID:string", "_wvReaderPaneItemID:number",
             "_wvRedoKeyH:function", "_wvTabGroupWinDnDOff:function", "_wvThemeMQ:object",
             "_wvTitleGlyphIdx:number", "_wvWT:object", "_wvWTMultiSelOff:function", "_wvWTRestored:boolean",
-            "_wvWinIconName:string", "listen newWindowKey", "listen ovFollow:unload",
+            "_wvWinIconName:string", "listen lazy:uiRoots:unload", "listen newWindowKey", "listen ovFollow:unload",
             "listen readerDragOverlay:diag", "listen readerNewTabKey", "listen readerNotes:unload",
             "listen readersCleanup:unload", "listen reopenClosedKey", "listen tabGroupWinDnD:dragover",
             "listen tabGroupWinDnD:drop", "listen wvWT:teardown",
@@ -618,7 +621,7 @@ const WIRING2_EXPECTED = {
             "_wvNativeOutlineMO:null",
         ],
         "page.ids": [
-            "wv-reader-panels-style",
+            "wv-reader-panels-style", "wv-tbo-more", "wv-tbo-style",
         ],
         "page.classes": [
             "wv-filter-svg", "wv-reader-filter-btn", "wv-reader-to-tab", "wv-rf-chev", "wv-ui-dark",
@@ -646,7 +649,7 @@ const WIRING2_EXPECTED = {
             "_wvOvFollowWired:number", "_wvOvMoveHandler:function", "_wvOvPollId:number",
             "_wvOvPosKey:string", "_wvOvSettled:boolean", "_wvPrevWinIcons:object",
             "_wvReaderNotesObsID:string", "_wvReaderPaneItemID:number", "_wvRedoKeyH:function",
-            "_wvTitleGlyphIdx:number", "_wvWinIconName:string", "listen newWindowKey",
+            "_wvTitleGlyphIdx:number", "_wvWinIconName:string", "listen lazy:uiRoots:unload", "listen newWindowKey",
             "listen ovFollow:unload", "listen readerNotes:unload", "listen readersCleanup:unload",
             "listen reopenClosedKey", "listen wvWT:teardown",
         ],
@@ -670,7 +673,7 @@ const WIRING2_EXPECTED = {
         ],
         reader: [],
         "page.ids": [
-            "wv-reader-panels-style",
+            "wv-reader-panels-style", "wv-tbo-more", "wv-tbo-style",
         ],
         "page.classes": [
             "wv-filter-svg", "wv-reader-filter-btn", "wv-reader-to-tab", "wv-rf-chev", "wv-ui-dark",
@@ -698,7 +701,7 @@ const WIRING2_EXPECTED = {
             "_wvReaderMergeAbsorberWired:boolean", "_wvReaderNotesObsID:string", "_wvReaderPaneItemID:number",
             "_wvRedoKeyH:function", "_wvTabGroupWinDnDOff:function", "_wvThemeMQ:object",
             "_wvTitleGlyphIdx:number", "_wvWT:object", "_wvWTMultiSelOff:function", "_wvWTRestored:boolean",
-            "_wvWinIconName:string", "listen newWindowKey", "listen ovFollow:unload",
+            "_wvWinIconName:string", "listen lazy:uiRoots:unload", "listen newWindowKey", "listen ovFollow:unload",
             "listen readerNotes:unload", "listen readersCleanup:unload", "listen reopenClosedKey",
             "listen wvWT:teardown",
         ],
@@ -726,7 +729,7 @@ const WIRING2_EXPECTED = {
             "_wvNativeOutlineMO:null",
         ],
         "page.ids": [
-            "wv-reader-panels-style",
+            "wv-reader-panels-style", "wv-tbo-more", "wv-tbo-style",
         ],
         "page.classes": [
             "wv-filter-svg", "wv-reader-filter-btn", "wv-reader-to-tab", "wv-rf-chev", "wv-ui-dark",
@@ -754,7 +757,7 @@ const WIRING2_EXPECTED = {
             "_wvOvFollowWired:number", "_wvOvMoveHandler:function", "_wvOvPollId:number",
             "_wvOvPosKey:string", "_wvOvSettled:boolean", "_wvPrevWinIcons:object",
             "_wvReaderNotesObsID:string", "_wvReaderPaneItemID:number", "_wvRedoKeyH:function",
-            "_wvTitleGlyphIdx:number", "_wvWinIconName:string", "listen newWindowKey",
+            "_wvTitleGlyphIdx:number", "_wvWinIconName:string", "listen lazy:uiRoots:unload", "listen newWindowKey",
             "listen ovFollow:unload", "listen readerNotes:unload", "listen readersCleanup:unload",
             "listen reopenClosedKey", "listen wvWT:teardown",
         ],
@@ -780,7 +783,7 @@ const WIRING2_EXPECTED = {
             "_wvNativeOutlineMO:null",
         ],
         "page.ids": [
-            "wv-reader-panels-style",
+            "wv-reader-panels-style", "wv-tbo-more", "wv-tbo-style",
         ],
         "page.classes": [
             "wv-filter-svg", "wv-reader-filter-btn", "wv-reader-to-tab", "wv-rf-chev", "wv-ui-dark",
@@ -809,7 +812,7 @@ const WIRING2_EXPECTED = {
             "_wvReaderNotesObsID:string", "_wvReaderPaneItemID:number", "_wvRedoKeyH:function",
             "_wvTabGroupWinDnDOff:function", "_wvTabStrip:object", "_wvThemeMQ:object",
             "_wvTitleGlyphIdx:number", "_wvWT:object", "_wvWTMultiSelOff:function", "_wvWTRestored:boolean",
-            "_wvWinIconName:string", "listen newWindowKey", "listen ovFollow:unload",
+            "_wvWinIconName:string", "listen lazy:uiRoots:unload", "listen newWindowKey", "listen ovFollow:unload",
             "listen readerDragOverlay:diag", "listen readerNewTabKey", "listen readerNotes:unload",
             "listen readersCleanup:unload", "listen reopenClosedKey", "listen tabGroupWinDnD:dragover",
             "listen tabGroupWinDnD:drop", "listen winControls:resize", "listen winControls:sizemodechange",
@@ -846,7 +849,7 @@ const WIRING2_EXPECTED = {
             "_wvNativeOutlineMO:null",
         ],
         "page.ids": [
-            "wv-reader-iframe-nodrag", "wv-reader-panels-style",
+            "wv-reader-iframe-nodrag", "wv-reader-panels-style", "wv-tbo-more", "wv-tbo-style",
         ],
         "page.classes": [
             "wv-filter-svg", "wv-reader-filter-btn", "wv-rf-chev", "wv-ui-dark", "wv-undo-btn x2",
@@ -891,7 +894,7 @@ const WIRING2_EXPECTED = {
             "_wvReaderNotesObsID:string", "_wvReaderPaneItemID:number", "_wvRedoKeyH:function",
             "_wvTabGroupWinDnDOff:function", "_wvTabStrip:object", "_wvThemeMQ:object",
             "_wvTitleGlyphIdx:number", "_wvWT:object", "_wvWTMultiSelOff:function", "_wvWTRestored:boolean",
-            "_wvWinIconName:string", "listen newWindowKey", "listen ovFollow:unload",
+            "_wvWinIconName:string", "listen lazy:uiRoots:unload", "listen newWindowKey", "listen ovFollow:unload",
             "listen readerDragOverlay:diag", "listen readerNewTabKey", "listen readerNotes:unload",
             "listen readersCleanup:unload", "listen reopenClosedKey", "listen tabGroupWinDnD:dragover",
             "listen tabGroupWinDnD:drop", "listen winControls:resize", "listen winControls:sizemodechange",
@@ -928,7 +931,7 @@ const WIRING2_EXPECTED = {
             "_wvNativeOutlineMO:null",
         ],
         "page.ids": [
-            "wv-reader-iframe-nodrag", "wv-reader-panels-style",
+            "wv-reader-iframe-nodrag", "wv-reader-panels-style", "wv-tbo-more", "wv-tbo-style",
         ],
         "page.classes": [
             "wv-filter-svg", "wv-reader-filter-btn", "wv-rf-chev", "wv-ui-dark", "wv-undo-btn x2",

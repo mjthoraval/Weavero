@@ -14,6 +14,12 @@
 // Skipped where Zotero has no Pin Tab of its own (11.0-beta.4 keeps Weavero's
 // own library pin, test/library-tab-native.spec.js; an older Zotero, no
 // movable library tab at all).
+//
+// Since zotero b08cc35a50 ("Allow pinning any tab", the same day, before any
+// build carried 49b48f5d08) Zotero pins every tab, and a pinned tab reorders
+// among the pins: setPinned puts it at the END of the pins, a drop puts it
+// where it was dropped. Weavero hands its own item pins to Zotero, so the
+// fixture's A is a Zotero pin too (test/zotero-pin-any-tab.spec.js).
 describe("Weavero — My Library pinned by Zotero's own Pin Tab", function () {
     this.timeout(120000);
     let wv, win, doc, ZT, cont, a, b, group, prevGroups, prevTW;
@@ -146,6 +152,7 @@ describe("Weavero — My Library pinned by Zotero's own Pin Tab", function () {
         try {
             const t = lib();
             if (t && t.pinned) ZT.setPinned(LIB, false);
+            for (const it of [a, b]) { const tt = it && tabOf(it); if (tt && tt.pinned) ZT.setPinned(tt.id, false); }
             if (t && t.data) { delete t.data.wvPinned; delete t.data.wvGroupId; }
             if (group) wv._tabGroupsSet(wv._tabGroupsGet().filter(g => g.id !== group.id));
             for (const it of [a, b]) { if (it) try { wv._pinnedTabsRemove(it.libraryID, it.key); } catch (er) {} }
@@ -172,17 +179,18 @@ describe("Weavero — My Library pinned by Zotero's own Pin Tab", function () {
         assert.strictEqual(pins[0].l10n, "tabs-pin", "Zotero's own (Weavero's is hidden for a library tab alone)");
     });
 
-    it("Zotero's Pin Tab: My Library first, drawn once, as an icon like the other pins, no refused moves", async function () {
+    it("Zotero's Pin Tab: My Library at the end of the pins, drawn once, as an icon like the other pins, no refused moves", async function () {
         delete win._wvStabilizeBurst;
+        assert.ok(tabOf(a).pinned, "fixture: A's Weavero pin was handed to Zotero");
         const s = await spyMoves(async () => { ZT.setPinned(LIB, true); }, "Zotero's Pin Tab");
         assert.ok(zPinned(), "pinned by Zotero");
         assert.ok(wvT.lib().wvLibraryTabPinned(lib()), "Weavero sees Zotero's pin");
-        assert.deepEqual(order(), ["LIB", "A", "B"]);
-        assert.deepEqual(screen(), ["pin:LIB", "pin:A", "B"], "My Library once, as a pinned icon, before A");
+        assert.deepEqual(order(), ["A", "LIB", "B"], "Zotero puts a new pin at the end of the pins");
+        assert.deepEqual(screen(), ["pin:A", "pin:LIB", "B"], "My Library once, as a pinned icon");
         assert.strictEqual(s.refused, 0, "Weavero asked Zotero for no move it refuses: " + JSON.stringify(s));
         const m = mirror(LIB);
         assert.approximately(rect(m).width, rect(mirror(tabOf(a).id)).width, 1, "as wide as the other pin");
-        assert.strictEqual(m.getAttribute("draggable"), "false", "not draggable: Zotero won't move it");
+        assert.strictEqual(m.getAttribute("draggable"), lib().movable === false ? "false" : "true", "draggable as Zotero allows (pins reorder among themselves)");
     });
 
     it("the pin is Zotero's: saved as `pinned`, no Weavero flag", function () {
@@ -191,15 +199,14 @@ describe("Weavero — My Library pinned by Zotero's own Pin Tab", function () {
         assert.notOk(st.data && st.data.wvPinned, "and Weavero's own flag is not used");
     });
 
-    it("a tab dropped before Zotero's pinned My Library pins after it (Zotero keeps it first)", async function () {
+    it("a tab dropped before Zotero's pinned My Library pins where it was dropped", async function () {
         const nB = node(tabOf(b).id), rL = rect(mirror(LIB));
-        const s = await spyMoves(() => gesture(nB, [Math.round(rect(nB).left - 20), Math.round(rL.left + 4), Math.round(rL.left + 2)], "B to the far left"), "B to the far left");
-        assert.ok(mirror(tabOf(b).id), "B pinned by the drop: " + order().join(","));
-        assert.strictEqual(order()[0], "LIB", "My Library still first: " + order().join(","));
+        const s = await spyMoves(() => gesture(nB, [Math.round(rect(nB).left - 20), Math.round(rL.left + 4), Math.round(rL.left + 2)], "B before My Library"), "B before My Library");
+        assert.ok(tabOf(b).pinned && mirror(tabOf(b).id), "B pinned by Zotero through the drop: " + order().join(","));
+        assert.deepEqual(order(), ["A", "B", "LIB"], "B where it was dropped, among the pins (they reorder, b08cc35a50)");
         assert.strictEqual(s.refused, 0, "no refused move: " + JSON.stringify(s));
-        try { wv._pinnedTabsRemove(b.libraryID, b.key); } catch (er) {}
-        ZT.move(tabOf(b).id, ZT._tabs.length); apply(); await settle("B back");
-        assert.deepEqual(order(), ["LIB", "A", "B"]);
+        wv._wvSetTabPinned(win, tabOf(b), false); apply(); await settle("B back");
+        assert.deepEqual(order(), ["A", "LIB", "B"], "unpinned: right after the pins");
     });
 
     it("a 1.0.3 pin flag becomes Zotero's pin", async function () {
@@ -209,7 +216,7 @@ describe("Weavero — My Library pinned by Zotero's own Pin Tab", function () {
         apply(); await settle("carry over");
         assert.ok(zPinned(), "pinned by Zotero now");
         assert.notOk(lib().data && lib().data.wvPinned, "the old flag is gone");
-        assert.deepEqual(order(), ["LIB", "A", "B"]);
+        assert.deepEqual(order(), ["A", "LIB", "B"]);
     });
 
     it("joining a group unpins My Library, as in Firefox", async function () {

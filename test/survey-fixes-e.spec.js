@@ -91,7 +91,9 @@ describe("Weavero — survey fixes, round E (per-window delegates)", () => {
         // The load side is the wiring table (modules/window-wiring.ts):
         // each entry's wire(p, win) addresses the window it is given.
         const load = wvT.method("_wvMainWires").call(wvT.plugin()).map(e => String(e.wire)).join("\n");
-        const unload = wvT.src("onMainWindowUnload"), destroy = wvT.src("destroy");
+        // The window teardown moved out of the hook (1.0.5-dev.6): the hook decides
+        // whether the window is closing, `_wvMainWindowTeardown` does the work.
+        const unload = wvT.src("_wvMainWindowTeardown"), destroy = wvT.src("destroy");
         assert.include(load, "_setupTreeClickDelegate(win)");
         assert.include(load, "_setupPaneObserver(win)");
         assert.include(load, "_teardownTreeClickDelegate(win)");

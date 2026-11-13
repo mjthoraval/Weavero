@@ -135,7 +135,13 @@ name to a Zotero object, window, or document.
   silently when `win` closes, and a lifecycle flag it was due to clear
   sticks forever (bg-restore teardown, 2026-09-01 — every later window
   open got fought). Long-lived tick loops re-resolve a live window per
-  schedule (global setTimeout fallback), never bind the host once.
+  schedule (global setTimeout fallback), never bind the host once. Cancel
+  on the clock that set the timer: a `wvTimeout` handle passed to a
+  window's `clearTimeout` is never cancelled (another clock's id -- at worst
+  it cancels an unrelated window timer of that number). The filter's
+  data-change debounce did that from 0.22.0 to 1.0.5-dev.9, so every
+  notification started a re-apply ladder of its own (guard
+  per-window-state.spec.js).
 - `onMainWindowLoad` fires at the window's `load` event (xpcom/plugins.js),
   BEFORE ZoteroPane.init has created `itemsView` / `collectionsView` (it
   awaits initItemsTree, then initCollectionsTree). A wire that needs a pane
@@ -246,6 +252,24 @@ name to a Zotero object, window, or document.
   native tab, as a deck window does) runs `_wvReaderPageTeardown(reader)`
   itself first -- else that page keeps the instance's listeners for good
   (2026-10-13).
+  EVERY wrap, prototype patch, page global switch and observer has its
+  give-back in destroy(), not only in a window's unload: a disable must
+  leave nothing of Weavero in a slot Zotero calls. A wrap that "checks for
+  a live plugin" is NOT enough -- under zotero#6080 a plugin's scope is
+  nuked 10 s after unload and any function left behind becomes a dead
+  object inside Zotero. Keep the original where the give-back can find it
+  (`wvWrap` does this; a hand-written wrap stores `_wvOrig*`, and a
+  prototype member is given back by `delete`). `delete` is right ONLY when
+  the native was inherited: a CLASS FIELD is the instance's own property
+  (CollectionViewItemTree's `_handleSelectionChange`, 10.0.8 and 11), and
+  deleting the wrapper left ItemTree's prototype method -- Duplicate Items
+  selected one item until a restart, after any reload, upgrade or disable
+  (2026-11-11; guard selection-native.spec.js). Check `hasOwnProperty`
+  before wrapping and keep the native. Objects Weavero hangs on
+  the `Zotero` global go in `_wvReleaseGlobalState`. Guard:
+  `test/zzz-disable-leftovers.spec.js` (disables the plugin and sweeps
+  Zotero's singletons, windows, views, row classes, readers and note
+  editors for functions from Weavero's global; 69 found on 2026-11-11).
   An OPTIONS OBJECT (`{ capture, passive, once }`) passed to a CONTENT
   target (a reader or pdf.js frame, a note editor's document) is a
   chrome object the content side cannot read: the listener silently goes
@@ -370,6 +394,30 @@ name to a Zotero object, window, or document.
   every layer, so the hidden variants paint under the icon (the header's
   own-count icon showed a white page in dark mode, 2026-10-30). Size the
   box; Zotero's `contain` fits it. Guard: `test/pane-scope.spec.js`.
+- WINDOW GEOMETRY ACROSS MONITORS is in DEVICE pixels, through the tree
+  owner: `win.docShell.treeOwner.QueryInterface(Ci.nsIBaseWindow)`
+  `get/setPositionAndSize` (AppWindow::MoveResize). `screenX` / `moveTo` /
+  `resizeTo` / `outerWidth` are CSS pixels of the window's CURRENT monitor:
+  on a 100% + 125% desktop device x 3840 reads screenX 3072, and one
+  `resizeTo` cannot size a window across the scale boundary. Measured
+  2026-11-11 (11.0-beta.4, Windows 11): setPositionAndSize lands exactly,
+  also on a maximized window (it becomes normal); desktop px = device px on
+  Windows; a normal window's frame is INVISIBLE, 8 device px (10 at 125%) on
+  the left, right and bottom (`mozInnerScreenX` - outer x), so place by the
+  inner rect, as Snap does. The screen manager scripts no screen list
+  (screenForRect / primaryScreen only): probe outside each known monitor's
+  edges (lib/screens.ts). Every restore CLAMPS a window to one monitor
+  (AppWindow::SetSpecifiedSize, zoteroPane.js constrainToScreen): a size
+  wider than a monitor survives a restart only if Weavero puts it back.
+  Zotero's caption buttons hit-test as non-client (HTMAXBUTTON, the Windows
+  11 snap-layouts button): messages posted to the runner's own HWND
+  (PostMessageW, not real input) show a right-click on them reaching the
+  page as mousedown / mouseup / click with button 2 (WM_NCRBUTTON*), a left
+  click as an ordinary click and `command`, and a title-bar double-click as
+  a mousedown with detail 2 and a mouseup -- the first press only as the
+  chrome-only `draggableregionleftmousedown` (nsWindow.cpp) -- whose
+  preventDefault cancels the OS's maximize (GTK takes the same mouseup).
+  Guard: `test/maximize-span.spec.js` (max-span.ts).
 - `winOf(node)` from `src/lib/dom.ts`, never `node.ownerGlobal` (renamed in
   FF153/Zotero 11; works on the dev platform, breaks silently later —
   `test/compat.spec.js` enforces this on the bundle).
@@ -516,6 +564,73 @@ name to a Zotero object, window, or document.
   readers (item-details re-reads `pinnedPane` on EVERY render). The first
   window keeps Zotero's pref (works without Weavero). Example: pane.ts
   `_wvWireWindowPanePrefs` (0.22.3-dev.47).
+- On a Zotero with its OWN windows (zotero#6035; `Zotero.Prefs.setForWindow`
+  exists) the settings Zotero keeps per window -- whatever upstream reads
+  through `getForWindow` (`search.quicksearch-mode`, `pinnedPane`,
+  `panes.<pane>.open`, `sidenav.order`) -- are read and written with
+  `Zotero.Prefs.getForWindow/setForWindow(win, …)`. A plain `Zotero.Prefs.set`
+  there is "a change made outside of a main window" and EVERY window takes it
+  (ZoteroPane.setWindowSetting). Feature-test `setForWindow`; Zotero 9/10 keep
+  the one pref. Weavero's collapse to the quick search set every window's mode
+  (align review 2026-11-11; guard quicksearch-mode-per-window.spec.js).
+- A callback that belongs to ONE window acts for THAT window: an observer on
+  its tree, a wrap on its items view, a wrap on a row prototype (each window
+  loads its own `zotero/itemTreeRow`), a handler on a row in its document.
+  Bind the filter's `_wvFilterWinOverride` to it, read its own view
+  (`itemsView.getSelectedItems()`, `winOf(row)`, the section's own `.item`),
+  and keep per-view snapshots per view (`_wvSafeSelMap`) -- never
+  `Zotero.getMainWindow()`, the filter accessors' focused fallback, or a
+  plugin-wide slot. The filter's tree observer, the child filter's fallback,
+  the selection capture and the Related-row lookup all read the FOCUSED window
+  until 2026-11-11 (align review; guard per-window-state.spec.js, which makes
+  another window the focused one with `_wvWithMainWindow`). A TIMER armed for
+  a window remembers that window and binds it when it fires -- the override
+  is gone by then and focus may have moved: the filter's deliberate retry,
+  stale-keep repair, final apply at quiescence and data-change ladder all
+  fired for the focused window, and the items view's setFilter, `_refresh`
+  and `notify` wraps applied there, until 1.0.5-dev.10. Bind with
+  `_wvWithFilterWin(win, fn)` around SYNCHRONOUS work only: the override is
+  one plugin-wide slot, and held across an `await` it binds whatever else
+  runs meanwhile.
+- A box that clips a view it does not lay out (a split view's card, any
+  Weavero container around Zotero's panes) uses `overflow: clip`, never
+  `hidden`: a hidden box is a scroll container, a focus pass inside it
+  scrolls it, and its start edge goes under the box's edge (the right side of
+  a library split lost its Tag Selector padding, MJT 2026-11-11). And a
+  library view in a box narrower than the window has nothing holding it
+  whole: Zotero keeps a view's minimum through `#main-window`'s min-width
+  (_mainWindow.scss), and `#zotero-trees`'s automatic minimum (its content's;
+  the items toolbar measured 418px) pushed the item pane's side navigation
+  out of the box. Give it `min-width: 0` there and let a pane yield
+  (tab-split.ts). Guard: split-view.spec.js "a library side keeps its whole
+  view". Room kept free inside such a box (the item pane drawn over a card's
+  end) is a margin on its CONTENT, never the box's own padding: a flex item's
+  border box never goes under its padding, and a 357px padding held a reader
+  side at ~530px against a 140px floor (2026-11-11; guard split-panes.spec.js
+  section 4).
+- The filter's APPLY state is per window and per view too, behind accessors
+  (filter.ts `_wvApplyWinStOf` / `_wvApplyViewStOf`): the flags
+  (`_suppressTreeObserverUntil`, `_filterApplying`, `_collectionSwapping`) per
+  window, the no-op memo, reveal / opened sets, chevron maps and
+  `_currentQuickSearchValue` per items view (keyed by its row provider: one
+  per library tab on zotero#6035). A new field an apply reads or writes joins
+  them -- a plain `this._x` is one slot for every window. Until 1.0.5-dev.11
+  they were plugin-wide: one window's apply silenced another's observer,
+  skipped its apply onto stale rows, and cleared what the user opened there
+  (measured 2026-11-11; guard per-window-apply-state.spec.js). A wrap on a
+  row provider reaches its own view directly (`_wvApplyViewStOf(rp)`). Per-row
+  code reads them inside an apply, where `_wvPinnedApply` has resolved the
+  window once: never resolve a window per row. A timer captures the state
+  object it will write, not the accessor.
+- A global pref that changes what the filter keeps (the Show Non-Matching
+  toggles) acts in EVERY main window and voids every view's memo
+  (`_wvApplyMemoInvalidate`): the signature does not name it, and a library
+  tab off screen would skip its next apply onto the old rows (2026-11-11).
+- Zotero 10.0 and later switch collections through the PLURAL
+  `itemsView.changeCollectionTreeRows` (the pane calls it; the singular only
+  forwards to it): a wrap on the singular never runs there. Wrap the method
+  the pane calls, feature-tested; Zotero 9 has only the singular (2026-11-11,
+  guard per-window-apply-state.spec.js).
 - A NEW main window's collection tree selects `lastViewedFolder` when it
   mounts (collectionTree.jsx makeVisible, not awaited), after a plugin's
   init has run: one `selectByID` from the init loses to it. Set the pref to
@@ -572,11 +687,19 @@ name to a Zotero object, window, or document.
   (issue #63, 2026-11-04). Guard: collections-pane-toggle.spec.js "the
   open collections splitter takes no room".
 - A Zotero pane Weavero builds outside `#zotero-pane` (the reader-window
-  item pane, any pane in a window Zotero did not lay out) is passed to
-  `Zotero.UIProperties.registerRoot`, as zoteroPane.js does for
-  `#zotero-context-pane`: View -> Font Size and the density setting reach
-  only registered roots (issue #63, 2026-11-04). Guard:
-  reader-window-pane-ui.spec.js.
+  item pane, any pane in a window Zotero did not lay out) is registered
+  with Zotero.UIProperties through `wvUIRoot` (lib/ui-roots.ts), as
+  zoteroPane.js registers `#zotero-context-pane`: View -> Font Size and the
+  density setting reach only registered roots (issue #63, 2026-11-04).
+  Never `registerRoot` directly: Zotero keeps a WeakRef per root and never
+  drops it, and the cycle collector treats a WeakRef as strong -- the root's
+  closed window was never freed (2026-11-12). Guards:
+  reader-window-pane-ui.spec.js, reader-leak.spec.js.
+- No WeakRef in anything long-lived that names a window, a document or a
+  node: Gecko's cycle collector follows a WeakRef to its target like a strong
+  edge, so the target is never freed (lib/listen.ts, WEAK FOR THE GC). Key by
+  a number (an inner-window id), or drop the entry when the window unloads.
+  Guard: reader-leak.spec.js.
 
 ## fix: commits name their guard
 

@@ -16,7 +16,9 @@ describe("Weavero — stuck-state and tab-loss contracts", () => {
 
     it("the final-apply backstop releases the hold (filter stale-keep repair stays alive)", () => {
         const s = wvT.src("_wvArmFinalApply");
-        assert.isAtLeast(count(s, "_wvFAHold = false"), 2, "the done branch AND the backstop clear the hold");
+        // The hold is the window's episode's own since 2026-11-11 (`st.hold`;
+        // `_wvFAHold` before).
+        assert.isAtLeast(count(s.toLowerCase(), "hold = false"), 2, "the done branch AND the backstop clear the hold");
     });
 
     it("a saved window is forgotten only once a window exists for it", () => {

@@ -22,6 +22,12 @@ const ctOf = (iid) => {
 	} catch (e) { return null; }
 };
 const snap = { t: Date.now(), zotero: Zotero.version, weavero: lp._version || null, focused: null, mains: [], readers: [], groups: null, sessions: null, plugins: {}, errors: [] };
+// A Zotero with its own windows (zotero#6035, 11.0-beta.4+: the two signs of
+// lib/windows.ts): no reader or note windows, a document "in a new window" is
+// a main window without a library tab, library tabs are tabs.
+snap.nativeWindows = typeof Zotero.Prefs.setForWindow === "function"
+	|| typeof (Zotero.Session && Zotero.Session.addClosedWindow) === "function";
+snap.splitView = typeof lp._wvTabSplits === "function";
 try { snap.errors = (Zotero.getErrors(true) || []).map(e => String(e).slice(0, 200)); } catch (e) {}
 try { snap.focused = lp._wvWindowStoreFocusDescriptor(); } catch (e) {}
 // Pinned main-window tabs: the PREF is the persisted truth (`weavero.pinnedTabs`,
@@ -30,6 +36,11 @@ try { snap.focused = lp._wvWindowStoreFocusDescriptor(); } catch (e) {}
 // a restore by a moment, so it is recorded separately as `pinDecorated`.
 const pinnedKeys = (() => { try { return new Set(lp._pinnedTabsGet().map(p => p.libraryID + ":" + p.itemKey)); } catch (e) { return new Set(); } })();
 for (const w of Zotero.getMainWindows()) {
+	// Where Zotero pins any tab (`Zotero_Tabs.setPinned`, the 11.0 beta after
+	// beta.4) every pin is Zotero's, per tab: `tab.pinned`. Before that, with
+	// its own windows, a library tab's pin is Weavero's flag in its data.
+	const zPins = typeof w.Zotero_Tabs.setPinned === "function";
+	const isLib = (t) => String(t.type || "").startsWith("library");
 	const designatedPin = new Set(), seenPin = new Set();
 	for (const t of w.Zotero_Tabs._tabs) {
 		const k = ikey(t.data && t.data.itemID);
@@ -42,6 +53,17 @@ for (const w of Zotero.getMainWindows()) {
 	// Library-view state + item pane, per window.
 	let libState = null, itemPane = null;
 	try { const ms = lp._wvTabSessionCaptureMainState(w); libState = ms && ms.collection || null; } catch (e) {}
+	// With Zotero's own windows a library tab not shown since the start has
+	// no view yet: its collection is Zotero's record in the tab's state
+	// (libraryView.js restoreLibraryTabState, `state.collections`), which is
+	// what the tab shows when opened (2026-11-11: "L1 -> null" was this).
+	if (!libState && snap.nativeWindows) {
+		try {
+			const lt = w.Zotero_Tabs._tabs.find(isLib);
+			const c = lt && lt.data && lt.data.state && lt.data.state.collections;
+			if (Array.isArray(c) && c.length) libState = c[0];
+		} catch (e) {}
+	}
 	try {
 		const ip = w.document.querySelector("#zotero-item-pane");
 		if (ip) itemPane = { width: ip.getAttribute("width") || null, collapsed: ip.getAttribute("collapsed") === "true" };
@@ -78,13 +100,26 @@ for (const w of Zotero.getMainWindows()) {
 				grp: lp._wvTabGroupStamp(t) || null,
 				sel: w.Zotero_Tabs.selectedID === t.id,
 				// Lost pins = 78ea810. `pinned` from the pref (persisted truth),
-				// `pinDecorated` from the live designated-id set.
-				pinned: designatedPin.has(t.id),
+				// `pinDecorated` from the live designated-id set; Zotero's own
+				// flag where Zotero pins.
+				pinned: zPins ? !!t.pinned : isLib(t) ? !!(t.data && t.data.wvPinned) : designatedPin.has(t.id),
 				pinDecorated: !!(w._wvPinnedTabIDs instanceof Set && w._wvPinnedTabIDs.has(t.id)),
 				page,
 			};
 		}),
 		managed: !!w._wvManagedWindow,
+		// 0 = a document's own window (Zotero's own windows: the reader and
+		// note windows' place); 2+ = library tabs as tabs.
+		libraryTabs: w.Zotero_Tabs._tabs.filter(isLib).length,
+		// Split views (1.0.5): "left|right", a library tab as "lib", an item by
+		// its key, as the split itself is restored (tab-split.ts descOf).
+		splits: (() => {
+			try {
+				if (!snap.splitView) return [];
+				const d = (id) => { const t = w.Zotero_Tabs._tabs.find(x => x.id === id); return !t ? "?" : isLib(t) ? "lib" : (ikey(t.data && t.data.itemID) || "?"); };
+				return lp._wvTabSplits(w).filter(s => s.right && !s.picker).map(s => d(s.left) + "|" + d(s.right)).sort();
+			} catch (e) { return []; }
+		})(),
 		pinnedMirrors,
 		// A BACKGROUND main window defers its saved selection to its first
 		// activation (the library tab shows until then); the deferred item is
@@ -184,6 +219,9 @@ try {
 		id: s.id, name: s.name,
 		windows: (s.windows || []).length,
 		tabs: (s.windows || []).reduce((a, w2) => a + ((w2.tabs || []).length), 0),
+		// Per window, so a changed digest says which window (2026-11-11: 9 -> 10
+		// windows with the same 45 tabs).
+		wins: (s.windows || []).map(w2 => (w2.kind || "?") + ":" + (w2.tabs || []).length + (w2.title ? ":" + w2.title : "")).sort(),
 	}));
 } catch (e) {}
 // Weavero note-link wiring: every LOADED note editor must carry Weavero's

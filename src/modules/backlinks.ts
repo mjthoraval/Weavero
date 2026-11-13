@@ -45,6 +45,7 @@ import { wvLinkGlyphUri, wvLinkGlyphEl, wvRefMarkGlyphEl, WvRefMark } from "../l
 import { wvSvgEl } from "../lib/svg";
 import { wvStageNativeUndo } from "./undo";
 import { BTN_CLASS, BTN_SIDEBAR_CLASS, WV_GUIDE_COLOR } from "./constants";
+import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
 
 declare const Zotero: any;
 
@@ -534,7 +535,9 @@ export function wvBlParseLink(raw: string): WvBlLink | null {
             const tok = parts.length >= 2 ? parts[parts.length - 2] : "u";
             if (!key) return null;
             if (tok === "g" || tok === "groups") {
-                // zotero://note/g/<gid>/<key>: the key is last, the gid before it.
+                // zotero://note/g/<key>: a group token with no group id. The
+                // full `note/g/<gid>/<key>` form has its gid in `tok` and is
+                // read below (public-api.spec.js locks both).
                 return null;
             }
             if (/^\d+$/.test(tok)) lib = Number(tok);
@@ -3792,9 +3795,11 @@ class _BacklinksMixin {
                 wvPopupHost(doc).appendChild(menu);
             }
             while (menu.firstChild) menu.removeChild(menu.firstChild);
-            wvMenuItem(doc, { label: "Show in Library", onCommand: () => self._wvBlOpenItem(srcItem, "select") }, menu);
+            // Zotero's own "Show in Library" (general-show-in-library: a value
+            // in 9.0, 10 and 11's zotero.ftl, so read, not set as an l10n id).
+            wvZoteroLabel(wvMenuItem(doc, { onCommand: () => self._wvBlOpenItem(srcItem, "select") }, menu), wvZoteroText("general-show-in-library"));
             wvMenuItem(doc, {
-                label: "Copy Link",
+                l10n: { id: "weavero-menu-ref-copy-link" },
                 onCommand: () => {
                     const link = (srcItem.isAnnotation && srcItem.isAnnotation()) ? self._buildOpenLink(srcItem) : self._buildSelectLink(srcItem);
                     if (link) Zotero.Utilities.Internal.copyTextToClipboard(link);
@@ -3806,7 +3811,7 @@ class _BacklinksMixin {
                 && !(owner.isAnnotation && owner.isAnnotation()) && (this._wvBlOwnerOf(target) || target).id !== owner.id;
             wvMenuSeparator(doc, menu);
             wvMenuItem(doc, {
-                label: "Add as Related",
+                l10n: { id: "weavero-menu-ref-add-related" },
                 disabled: !canRelate,
                 onCommand: () => self._wvBlAddRelated(owner, target),
             }, menu);

@@ -172,7 +172,10 @@ describe("Weavero — option contracts (source)", () => {
         const s = wvT.src("_appendOpenInToItemsMenu");
         assert.include(s, "groupsOn");
         assert.isAbove(s.indexOf("groupsOn"), -1);
-        assert.isBelow(s.indexOf("groupsOn"), s.indexOf('"New Group"'), "the gate is decided before the entry is built");
+        // The entry's label is its weavero.ftl id since localisation step 2
+        // (93bb6ea7); the English "New Group" is no longer in the code.
+        assert.isAbove(s.indexOf('"weavero-menu-new-group"'), -1, "the New Group entry is still built here");
+        assert.isBelow(s.indexOf("groupsOn"), s.indexOf('"weavero-menu-new-group"'), "the gate is decided before the entry is built");
     });
 
     it("the reader undo wrap, history stamps and undo buttons are wired by the panels entry, not the outline takeover", () => {

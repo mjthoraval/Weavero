@@ -80,6 +80,10 @@
             /^Weavero — pref getters \(characterization\) every getter answers/,
             /^Weavero — custom window titles live in the window's state the window store carries/,
             /^Weavero — wire stamps are build-keyed \(hot-upgrade rewiring\) Reader\.getWindowStates/,
+            // A reader or note opened in a window is a main window there.
+            /^Weavero — menus take their words from weavero\.ftl a reader window and a note window link weavero\.ftl/,
+            /^Weavero — a disable leaves no Weavero code in Zotero Zotero 9\/10: /,
+            /^Weavero — a closed reader or window is not kept alive three reader windows/,
         ],
         /** The shared helpers the plugin publishes (src/lib), or null. */
         lib() { return (Zotero.Weavero && Zotero.Weavero.lib) || null; },
@@ -444,7 +448,9 @@
             // returns there) -- its stash, styles, icon and the reader frame's
             // no-drag rule; the note window's Zotero icon in its menubar
             // (lib/menubar.ts wvMenubarTakesNonMenus).
-            const noMacMain = /^(_wvCompactTitleBar:object|wv-compact-titlebar-styles|wv-early-compact-css|wv-hamburger-popup|wv-win-name-tooltip|_wvCompactMenubar:object|wv-reader-compact-menubar-styles|wv-reader-menubar-icon|wv-reader-iframe-nodrag|wv-menubar-zicon)( x\d+)?$|^listen hamburgerPromo:/;
+            // And the maximize button's right-click (max-span.ts: macOS's
+            // button is the system's; no span there).
+            const noMacMain = /^(_wvCompactTitleBar:object|wv-compact-titlebar-styles|wv-early-compact-css|wv-hamburger-popup|wv-win-name-tooltip|_wvCompactMenubar:object|wv-reader-compact-menubar-styles|wv-reader-menubar-icon|wv-reader-iframe-nodrag|wv-menubar-zicon)( x\d+)?$|^listen (hamburgerPromo|maxSpan):/;
             const fixStr = (s) => typeof s === "string" ? s.replace(/menu_fileQuitItem(Win|Unix)/g, "menu_fileQuitItem") : s;
             const keep = (s) => typeof s !== "string"
                 || !(/^wv-ui-dark( x\d+)?$/.test(s) || lazyPane.test(s) || (!Zotero.isWin && winOnly.test(s)) || (Zotero.isMac && noMacMain.test(s)));
@@ -479,6 +485,8 @@
         /** Pending tests this run may legitimately have, by full title. */
         PENDING_ALLOWLIST: [
             { re: /^Weavero — plugin compat: /, why: "companion plugin not installed in this run (npm run test:compat installs it)" },
+            { re: /^Weavero — split view: inside each side 4\. a note side at the floor keeps its toolbar's context-pane toggle/, why: "companion run only: Better Notes adds buttons to the note toolbar, which pushes the toggle past a 142px side (known limit, tracking registers)" },
+            { re: /^Weavero — public API: a plugin that draws comments itself \(declareCommentRenderer\) /, why: "companion run only: Annotation Markdown is installed and draws the sidebar comment itself, so the suite's baseline (Weavero's own preview) is absent" },
             { re: /^Weavero — native windows \(zotero#6035\) on a real native build/, why: "version: needs a Zotero with its own windows" },
             { re: /^Weavero — Advanced Search in New Window on a Zotero with its own windows real windows/, why: "version: needs a Zotero with its own windows" },
             { re: /^Weavero — a window keeps its colour \(zotero#6035\) on a real native build/, why: "version: needs a Zotero with its own windows" },
@@ -488,8 +496,18 @@
             { re: /^Weavero — saved windows and group moves on Zotero's windows \(zotero#6035\) on a real native build/, why: "version: needs a Zotero with its own windows" },
             { re: /^Weavero — named sessions on Zotero's windows \(zotero#6035\)/, why: "version: needs a Zotero with its own windows" },
             { re: /^Weavero — the filter in every library tab \(zotero#6035\)/, why: "version: needs a Zotero with its own windows" },
+            { re: /^Weavero — the filter's apply state per window and per view two library tabs in one window /, why: "version: needs a Zotero with its own windows (library tabs)" },
             { re: /^Weavero — a library tab is a tab like any other on a Zotero with its own windows /, why: "version: needs a Zotero with its own windows (an older Zotero's library tab is fixed first), without Zotero's own Pin Tab (there: library-tab-zotero-pin.spec.js)" },
             { re: /^Weavero — My Library pinned by Zotero's own Pin Tab /, why: "version: needs Zotero's own Pin Tab for library tabs (Zotero_Tabs.setPinned, zotero 49b48f5d08, the beta after 11.0-beta.4)" },
+            { re: /^Weavero — any tab pinned by Zotero's own Pin Tab /, why: "version: needs Zotero to pin any tab (zotero b08cc35a50, the beta after 11.0-beta.4)" },
+            { re: /^Weavero — tab-order stabilizer backs off from a reorder storm /, why: "version: its scenario is a Weavero pin among unpinned tabs; where Zotero pins any tab (b08cc35a50) Zotero orders the pins (runs on beta.4 and Zotero 10)" },
+            { re: /^Weavero — pinned tabs reorder by drag and every drag settles (a stale group stamp|a drag that ends without a drop|a collapsed group hides its pinned first member|a pin dropped right after a group's chip)/, why: "version: a pin inside a tab group is Weavero's own; where Zotero pins any tab (b08cc35a50) joining a group unpins (zotero-pin-any-tab.spec.js)" },
+            { re: /^Weavero — a pin dragged past the only normal tab takes a tab's width /, why: "version: its pin is Weavero's mirror; where Zotero pins any tab (b08cc35a50) the pin is Zotero's own tab (runs on beta.4 and Zotero 10)" },
+            { re: /^Weavero — split view: two tabs side by side a pinned My Library may be a side/, why: "version: needs a Zotero with its own windows (an older Zotero's library tab is fixed, never pinned)" },
+            { re: /^Weavero — split view in the tab strip (7\. a pinned tab that becomes a side|7\. a split not re-formed after a restart|16\. MJT's case)/, why: "version: needs a Zotero with its own windows (an older Zotero's library tab is fixed, never pinned)" },
+            { re: /^Weavero — split view in the tab strip 7\. Zotero's own pin/, why: "version: needs Zotero to pin tabs itself (Zotero_Tabs.setPinned, zotero b08cc35a50, the beta after 11.0-beta.4)" },
+            { re: /^Weavero — split view: inside each side 9b\. two library sides/, why: "version: needs a Zotero with its own windows (an older Zotero has one library tab)" },
+            { re: /^Weavero — split view: inside each side 15\. two library sides/, why: "version: needs a Zotero with its own windows (an older Zotero has one library tab)" },
             // Nested suites: a full title starts with the OUTER describe's.
             { re: /^Weavero — context-menu handlers ignore bubbled submenu events /, why: "popups do not open in this runner window, or no bookmarkable row is selected" },
             { re: /^Weavero — items-list header contributes no intrinsic width its max-content width/, why: "the desktop keeps the runner's window hidden (measured on CI)" },
@@ -500,6 +518,13 @@
             { re: /^Weavero — File \/ Edit menubar entries for the window commands (opened from the hamburger|the menubar keeps Settings, Plugins and Exit)/, why: "platform: macOS has no hamburger (_applyCompactTitleBar skips it; the menu bar is the system's)" },
             { re: /^Weavero — tab-level undo choice a NEW main window gets the Edit hook/, why: "platform: Windows only, multi-main on" },
             { re: /^Weavero — window identity, lone window/, why: "needs the lone-window case" },
+            // Maximize across monitors (maximize-span.spec.js, 2026-11-11).
+            { re: /^Weavero — maximize across monitors .*\(needs two monitors side by side\)$/, why: "runner: one monitor, or none side by side, or a platform where a window cannot span (macOS, Wayland)" },
+            { re: /^Weavero — maximize across monitors (a right-click on the maximize button|while spanned the button shows)/, why: "platform: macOS has no maximize button in the page (the system's own), or the runner's window is not in its normal state" },
+            { re: /^Weavero — maximize across monitors a double-click on the title bar/, why: "runner: the window is not in its normal state" },
+            { re: /^Weavero — maximize across monitors a reader window's own maximize button/, why: "version: Weavero's own reader-window buttons are Zotero 9/10's (on a Zotero with its own windows a reader window is a main window); platform: not macOS" },
+            { re: /^Weavero — maximize across monitors a Zotero with its own windows: the span rides/, why: "version: needs a Zotero with its own windows (zotero#6035)" },
+            { re: /^Weavero — maximize across monitors Zotero 9\/10: the window store keeps/, why: "version: Weavero's own restart, an older Zotero (Zotero restores each of its own windows; the span rides the window's state there)" },
             { re: /^Weavero — View → Layout follows the tab .*note tab/, why: "version: note tabs (note-in-tab) need a Zotero that loads 'note' tabs" },
             // Unlisted until the 1.0.0-beta.1 CI, the first Ubuntu run of
             // these specs (2026-11-03).

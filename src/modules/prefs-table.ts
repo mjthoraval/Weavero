@@ -232,6 +232,8 @@ export const WV_PREFS: Record<string, WvPrefRow> = {
     advSearchShortcutNewWindow: { def: true, masters: ["_wvAdvSearchWindowsOn"] },
     advSearchWindowHidePanes: { def: true, gate: ["newMainWindow"] },
     enableTabGroups: { def: true, masters: [TW] },
+    // Split view: two tabs side by side (tab-split.ts; MJT 2026-11-10).
+    enableSplitView: { def: true, masters: [TW] },
     windowTitleGlyphs: { def: false, masters: [TW] },
     windowIcons: { def: true, masters: [TW], win: true },
     separateTaskbarButtons: { def: false, masters: [TW], win: true },
@@ -248,6 +250,9 @@ export const WV_PREFS: Record<string, WvPrefRow> = {
     sessionAutoReopen: { def: true, gate: ["newMainWindow"] },
     sessionSortReverse: { def: false },
     readerItemPane: { def: true, gate: ["enableTabsAndWindows"] },
+    // The split view's corner label on a side whose item pane is closed
+    // (tab-split.ts; MJT 2026-11-12).
+    splitViewFooter: { def: true, gate: ["enableSplitView"] },
     readerUndoButtons: { def: true, gate: ["enableVisualExtras"] },
     enableDefaultChild: { def: true },
     defattSortFirstDefault: { def: true },

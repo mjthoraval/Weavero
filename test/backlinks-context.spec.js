@@ -823,7 +823,9 @@ describe("Weavero — Backlinks with their context", function () {
         const menu = doc.getElementById("wv-backlinks-menu");
         try {
             const items = [...menu.querySelectorAll("menuitem")].map((m) => m.getAttribute("label"));
-            assert.include(items, "Show in Library");
+            // Zotero's own words, in Zotero's language (general-show-in-library;
+            // the runner's Zotero is French), since localisation slice 2.
+            assert.include(items, /** @type {any} */ (Zotero).ftl.formatValueSync("general-show-in-library"));
             assert.notInclude(items, "Reveal in Library");
         }
         finally { try { menu.hidePopup(); } catch (e) {} }

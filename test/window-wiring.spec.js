@@ -50,7 +50,9 @@
 //     host, and its per-section observers in a WeakMap). And with where a
 //     window's colour came from (`_wvGlyphLazy` beside `_wvTitleGlyphIdx`,
 //     1.0.1-dev.4: a colour drawn from the pool, which a window's saved colour
-//     may take back on a Zotero with its own windows). Set
+//     may take back on a Zotero with its own windows). And with the maximize
+//     button's right-click (`maxSpan:contextmenu`, `maxSpan:rbup` on the window,
+//     1.0.5-maxspan.1: maximize across monitors, max-span.ts). Set
 //     WV_WIRING_RECORD=<path> to dump a new recording instead of comparing.
 //     A deliberate change edits the affected lines here, in the same commit,
 //     with the reason.
@@ -241,12 +243,15 @@ const WIRING_EXPECTED = {
             "_wvCompactTitleBar:object", "_wvFilterBar:object",
             "_wvFilterState:object", "_wvFilterTbBtn:object", "_wvFilterTreeObserver:object", "_wvHid:object",
             "_wvHidMO:object", "_wvItemDropOff:function", "_wvLastLibraryID:number",
-            "_wvLibrariesBoxMo:object", "_wvMainNewTabKeyH:function", "_wvOvActivateHandler:function",
+            "_wvLibrariesBoxMo:object", "_wvMainNewTabKeyH:function", "_wvObsReload:object", "_wvObsXpi:object", "_wvOvActivateHandler:function",
             "_wvOvBirthMon:string", "_wvOvFollowWired:number", "_wvOvMoveHandler:function",
             "_wvOvPollId:number", "_wvOvPosKey:string", "_wvOvSettled:boolean", "_wvPaneObs:object",
-            "_wvPinnedTabIDs:object", "_wvRedoKeyH:function", "_wvStrayObs:object", "_wvStrayObsVer:number", "_wvTabBarDecoMo:object",
+            "_wvPinnedTabIDs:object", "_wvRedoKeyH:function", "_wvStrayObs:object", "_wvStrayObsVer:number",
+            // Split view (tab-split.ts, 1.0.5).
+            "_wvTSplitRestoreArmed:boolean", "_wvTSplitSyncing:boolean", "_wvTSplits:object", "_wvTabBarDecoMo:object",
             "_wvTabExtRepositioner:object", "_wvTabGroupWinDnDOff:function", "_wvTabMultiSelOff:function",
-            "_wvThemeMQ:object", "_wvTreeDelegate:object", "listen countTip:blur", "listen countTip:keydown", "listen newWindowKey", "listen ovFollow:unload",
+            "_wvThemeMQ:object", "_wvTreeDelegate:object", "_wvWinOrder:number", "listen countTip:blur", "listen countTip:keydown",
+            "listen maxSpan:contextmenu", "listen maxSpan:rbup", "listen newWindowKey", "listen ovFollow:unload",
             "listen reopenClosedKey", "listen stuckDropRow:dragend", "listen stuckDropRow:dragenter", "listen stuckDropRow:dragexit", "listen stuckDropRow:dragleave",
             "listen stuckDropRow:dragover", "listen stuckDropRow:drop", "listen tabGroupDnD:escKey", "listen tabGroupWinDnD:dragover",
             "listen tabGroupWinDnD:drop", "listen xwinDrop:dragover", "listen xwinDrop:drop",
@@ -255,11 +260,14 @@ const WIRING_EXPECTED = {
             "_wvLoadURIWired", "_wvOrigCopySelectedToClipboard", "_wvOrigLoadURI",
             "_wvOrigToggleAdvancedSearchState", "_wvOrigViewItems", "_wvQuickCopyWired",
             "_wvViewItemsWrapped", "wrap buildCollectionContextMenu:wv-hid",
-            "wrap setTagScope:tagScopeRows", "wrap updateNewNoteMenu:newNoteMenu",
+            // Split view: a reader|reader split's own panes (tab-split.ts, 1.0.5);
+            // a library side's own panes (item 15).
+            "wrap serializePersist:splitPersist",
+            "wrap setTagScope:tagScopeRows", "wrap unserializePersist:splitLibPersist", "wrap updateNewNoteMenu:newNoteMenu",
         ],
         Zotero_Tabs: [
-            "wrap close:trace+lastView", "wrap getState:normalize", "wrap markAsLoaded:trace",
-            "wrap restoreState:trace", "wrap select:trace",
+            "_wvOrigCanUnloadTS", "wrap close:trace+lastView", "wrap getState:normalize", "wrap markAsLoaded:trace",
+            "wrap restoreState:trace", "wrap select:trace", "wrap updateSidebarLayout:splitSidebar",
         ],
         itemsView: [
             "_wvCacheStateWired", "_wvCollChangeWrapped", "_wvIsSelectableOrig", "_wvOrigResetColumns",
@@ -341,6 +349,7 @@ const WIRING_EXPECTED = {
             "wv-filter-tb-button", "wv-hamburger-popup", "wv-hid-sheet", "wv-pinned-tab-style",
             "wv-selected-tab-ring", "wv-sticky-heads-styles", "wv-tab-group-styles", "wv-tab-library-tooltip", "wv-tabs-menu-clear-btn",
             "wv-tabs-menu-filetype-btn", "wv-tabs-menu-settings-btn", "wv-tb-toggle-collections-pane",
+            "wv-tsplit-layer", "wv-tsplit-style",
             "wv-view-menuitem-outline", "wv-view-menuitem-pane", "wv-view-menuitem-selector",
             "wv-view-menuitem-sidebar", "wv-win-name-tooltip",
         ],
@@ -356,14 +365,16 @@ const WIRING_EXPECTED = {
             "_wvFilterBar:object", "_wvFilterState:object", "_wvFilterTbBtn:object",
             "_wvFilterTreeObserver:object", "_wvGlyphLazy:number", "_wvHid:object", "_wvHidApplyTries:number", "_wvHidMO:object",
             "_wvItemDropOff:function", "_wvLibrariesBoxMo:object", "_wvMainNewTabKeyH:function",
-            "_wvManagedWindow:boolean", "_wvOvActivateHandler:function", "_wvOvBirthMon:string",
+            "_wvManagedWindow:boolean", "_wvNotifierObsIDs:object", "_wvObsReload:object", "_wvObsXpi:object", "_wvOvActivateHandler:function", "_wvOvBirthMon:string",
             "_wvOvFollowWired:number", "_wvOvMoveHandler:function", "_wvOvPollId:number",
-            "_wvOvPosKey:string", "_wvOvSettled:boolean", "_wvPaneObs:object", "_wvPaneOpen:object", "_wvPinnedTabIDs:object",
-            "_wvPrevWinIcons:object",
-            "_wvRedoKeyH:function", "_wvStrayObs:object", "_wvStrayObsVer:number", "_wvTabBarDecoMo:object",
+            "_wvOvPosKey:string", "_wvOvSettled:boolean", "_wvPQListeners:object", "_wvPaneObs:object", "_wvPaneOpen:object", "_wvPinnedTabIDs:object",
+            "_wvPrefObsIDs:object", "_wvPrevWinIcons:object",
+            "_wvRedoKeyH:function", "_wvStrayObs:object", "_wvStrayObsVer:number",
+            "_wvTSplitRestoreArmed:boolean", "_wvTSplitSyncing:boolean", "_wvTSplits:object", "_wvTabBarDecoMo:object",
             "_wvTabExtRepositioner:object", "_wvTabGroupWinDnDOff:function", "_wvTabMultiSelOff:function",
             "_wvThemeMQ:object", "_wvTitleGlyphIdx:number", "_wvTreeDelegate:object", "_wvWinIconName:string",
-            "_wvWindowId:number", "listen countTip:blur", "listen countTip:keydown", "listen newWindowKey", "listen ovFollow:unload", "listen reopenClosedKey",
+            "_wvWinOrder:number", "_wvWindowId:number", "listen countTip:blur", "listen countTip:keydown", "listen maxSpan:contextmenu", "listen maxSpan:rbup",
+            "listen newWindowKey", "listen ovFollow:unload", "listen reopenClosedKey",
             "listen stuckDropRow:dragend", "listen stuckDropRow:dragenter", "listen stuckDropRow:dragexit", "listen stuckDropRow:dragleave", "listen stuckDropRow:dragover",
             "listen stuckDropRow:drop", "listen tabGroupDnD:escKey", "listen tabGroupWinDnD:dragover", "listen tabGroupWinDnD:drop",
             "listen xwinDrop:dragover", "listen xwinDrop:drop",
@@ -372,11 +383,12 @@ const WIRING_EXPECTED = {
             "_wvLoadURIWired", "_wvOrigCopySelectedToClipboard", "_wvOrigLoadURI",
             "_wvOrigToggleAdvancedSearchState", "_wvOrigViewItems", "_wvPanePersistIsolated",
             "_wvPanePersistKey", "_wvQuickCopyWired", "_wvViewItemsWrapped",
-            "wrap buildCollectionContextMenu:wv-hid", "wrap setTagScope:tagScopeRows", "wrap updateNewNoteMenu:newNoteMenu",
+            "wrap buildCollectionContextMenu:wv-hid", "wrap serializePersist:splitPersist", "wrap setTagScope:tagScopeRows",
+            "wrap unserializePersist:splitLibPersist", "wrap updateNewNoteMenu:newNoteMenu",
         ],
         Zotero_Tabs: [
-            "_wvSidebarIsolated", "_wvSidebarKey", "wrap close:trace+lastView", "wrap getState:normalize",
-            "wrap markAsLoaded:trace", "wrap restoreState:trace", "wrap select:trace",
+            "_wvOrigCanUnloadTS", "_wvSidebarIsolated", "_wvSidebarKey", "wrap close:trace+lastView", "wrap getState:normalize",
+            "wrap markAsLoaded:trace", "wrap restoreState:trace", "wrap select:trace", "wrap updateSidebarLayout:splitSidebar",
         ],
         itemsView: [
             "_wvColIsolated", "_wvColKey", "_wvCollChangeWrapped", "_wvIsSelectableOrig",
@@ -455,6 +467,7 @@ const WIRING_EXPECTED = {
             "wv-filter-tb-button", "wv-hamburger-popup", "wv-hid-sheet", "wv-pinned-tab-style",
             "wv-selected-tab-ring", "wv-sticky-heads-styles", "wv-tab-group-styles", "wv-tab-library-tooltip", "wv-tabs-menu-clear-btn",
             "wv-tabs-menu-filetype-btn", "wv-tabs-menu-settings-btn", "wv-tb-toggle-collections-pane",
+            "wv-tsplit-layer", "wv-tsplit-style",
             "wv-view-menuitem-outline", "wv-view-menuitem-pane", "wv-view-menuitem-selector",
             "wv-view-menuitem-sidebar", "wv-win-name-tooltip", "wv-window-badge-dot-style",
         ],

@@ -34,7 +34,7 @@ import { wvLivePlugin } from "../lib/live";
 import { wvStoreWrite, wvStoreRead, wvStoreRemove } from "../lib/store";
 import { wvTimeout } from "../lib/timers";
 import { wvListen, wvListener, wvUnlisten, wvEventOpts } from "../lib/listen";
-import { wvWrap } from "../lib/wrap";
+import { wvWrap, wvUnwrap } from "../lib/wrap";
 import { urlPattern, wvLinkVars } from "../lib/links";
 import { wvMainWins, wvNativeWindows, wvWinType } from "../lib/windows";
 import { wvAccel } from "../lib/keys";
@@ -44,6 +44,9 @@ import { WV_LINK_MENU_ICON } from "../lib/link-glyph";
 import { wvStageNativeUndo } from "./undo";
 import { wvRefTitle, type WvRefKind } from "./backlinks";
 import { wvAltReveal, wvMenubarTakesNonMenus, wvMenubarSafeBefore } from "../lib/menubar";
+import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
+import { wvMenuItemByLabel } from "../lib/menu";
+import { wvUIRoot } from "../lib/ui-roots";
 
 class _ReaderMixin {
     [k: string]: any;
@@ -1445,9 +1448,7 @@ class _ReaderMixin {
                     const capturedTabID = String((reader && reader.tabID) || "");
                     if (capturedTabID) {
                         items.push({
-                            label: annKeys.length > 1
-                                ? "Add to Bookmarks  (" + annKeys.length + " annotations)"
-                                : "Add to Bookmarks",
+                            label: wvStr("weavero-menu-reader-ann-add-to-bookmarks", { count: annKeys.length }),
                             onCommand: () => {
                                 try {
                                     const P: any = wvLivePlugin();   // never a captured instance
@@ -1478,10 +1479,10 @@ class _ReaderMixin {
                 }
                 if (withText.length) {
                     const types = new Set(withText.map(x => x.type));
-                    const base = types.size > 1 ? "Copy Annotation Text"
-                        : (types.has("underline") ? "Copy Underlined Text" : "Copy Highlighted Text");
-                    const label = withText.length > 1
-                        ? base + "  (" + withText.length + " annotations)" : base;
+                    const label = wvStr("weavero-menu-reader-ann-copy-text", {
+                        type: types.size > 1 ? "mixed" : (types.has("underline") ? "underline" : "highlight"),
+                        count: withText.length,
+                    });
                     const textKeys = withText.map(x => x.key);
                     items.push({
                         label,
@@ -1502,11 +1503,12 @@ class _ReaderMixin {
                     });
                 }
             } catch (e) {}
+            // The icons go on in the reader's own menu by these labels
+            // (pane.ts decorateContextMenu), recorded as they are given.
+            const iconLabel = (label: string, kind: string) => { try { self._wvReaderMenuIconNote(label, kind); } catch (e) {} return label; };
             if (self._getEnableCopyItemLink()) {
                 items.push({
-                    label: capturedKeys.length > 1
-                        ? "Copy Select Links  (" + capturedKeys.length + " annotations)"
-                        : "Copy Select Link",
+                    label: iconLabel(wvStr("weavero-menu-reader-ann-copy-select-link", { count: capturedKeys.length }), "link"),
                     onCommand: () => {
                         try {
                             const fresh = capturedKeys
@@ -1529,9 +1531,7 @@ class _ReaderMixin {
                 } catch (e) {}
                 if (openCount > 0) {
                     items.push({
-                        label: openCount > 1
-                            ? "Copy Open Links  (" + openCount + " annotations)"
-                            : "Copy Open Link",
+                        label: iconLabel(wvStr("weavero-menu-reader-ann-copy-open-link", { count: openCount }), "link"),
                         onCommand: () => {
                             try {
                                 const fresh = capturedKeys
@@ -1546,9 +1546,7 @@ class _ReaderMixin {
                 }
             }
             items.push({
-                label: annKeys.length > 1
-                    ? "Add Related…  (" + annKeys.length + " annotations)"
-                    : "Add Related…",
+                label: iconLabel(wvStr("weavero-menu-reader-ann-add-related", { count: annKeys.length }), "relations"),
                 onCommand: () => {
                     // Defer to next tick so the context menu fully
                     // closes / unwinds in the reader iframe before we
@@ -1724,7 +1722,7 @@ class _ReaderMixin {
                 const selNow = this._wvReadSelectionForLink(reader);
                 const selLink = selNow ? this._wvBuildSelectionPosLink(linkBase, selNow) : null;
                 if (selLink) {
-                    MENU_LABEL = "Copy Link to Selected Text";
+                    MENU_LABEL = wvStr("weavero-menu-reader-copy-link-selection");
                     capturedLink = selLink;
                     // SHORT selections get TextQuoteSelector-style context
                     // (tp/ts) so the text fallback can pick the right
@@ -1748,7 +1746,7 @@ class _ReaderMixin {
                     }
                 }
                 else {
-                    MENU_LABEL = "Copy Link to This Page";
+                    MENU_LABEL = wvStr("weavero-menu-reader-copy-link-page");
                     capturedLink = linkBase + "?page=" + (pageIndex + 1);
                     // The exact clicked point, as a pin. Degrades to the page
                     // for anyone without Weavero, since `page=` rides along.
@@ -1762,7 +1760,7 @@ class _ReaderMixin {
                                 text: "",
                             });
                             if (pinLink) {
-                                MENU_LABEL_2 = "Copy Link to This Position";
+                                MENU_LABEL_2 = wvStr("weavero-menu-reader-copy-link-position");
                                 capturedLink2 = pinLink;
                             }
                         }
@@ -1822,7 +1820,7 @@ class _ReaderMixin {
                     rawVal = this._collapseEpubCfiToStart(rawVal);
                 }
                 const q = (kind === "cfi" ? "?cfi=" : "?sel=") + encodeURIComponent(rawVal);
-                MENU_LABEL = isSelectionLink ? "Copy Link to Selected Text" : "Copy Link to This Location";
+                MENU_LABEL = wvStr(isSelectionLink ? "weavero-menu-reader-copy-link-selection" : "weavero-menu-reader-copy-link-location");
                 capturedLink = linkBase + q;
             }
             else {
@@ -1862,12 +1860,14 @@ class _ReaderMixin {
                     const st = (win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
                     const ct = (win.clearTimeout) ? win.clearTimeout.bind(win) : clearTimeout;
                     let timer: any = null;
+                    // Weavero's own label, from weavero.ftl, is the only handle
+                    // (lib/menu.ts wvMenuItemByLabel).
+                    const byLabel = wvMenuItemByLabel;
                     const onShow = (ev) => {
                         let stamped = false;
                         try {
                             const popup = ev && ev.target;
-                            const mi = popup && popup.querySelector
-                                && popup.querySelector('menuitem[label="' + MENU_LABEL + '"]');
+                            const mi = byLabel(popup, MENU_LABEL);
                             if (mi) {
                                 mi.classList.add("menuitem-iconic");
                                 mi.setAttribute("image", iconURL);
@@ -1878,8 +1878,7 @@ class _ReaderMixin {
                             // link IS a pin (user request 2026-08-05). Same
                             // popup as MENU_LABEL, so one pass stamps both.
                             if (MENU_LABEL_2) {
-                                const mi2 = popup && popup.querySelector
-                                    && popup.querySelector('menuitem[label="' + MENU_LABEL_2 + '"]');
+                                const mi2 = byLabel(popup, MENU_LABEL_2);
                                 if (mi2) {
                                     mi2.classList.add("menuitem-iconic");
                                     mi2.setAttribute("image", (this as any)._wvReaderPinMenuIconURL());
@@ -2489,8 +2488,9 @@ class _ReaderMixin {
             // change of either pref), as zoteroPane.js registers
             // #zotero-context-pane. Unregistered, this pane stayed at the
             // default size beside a larger main window (issue #63,
-            // 2026-11-04). A WeakRef there: nothing to unregister.
-            try { (Zotero as any).UIProperties.registerRoot(pane); }
+            // 2026-11-04). Through wvUIRoot: Zotero's entry, a WeakRef, kept
+            // the closed window alive (lib/ui-roots.ts).
+            try { wvUIRoot(pane, (this as any)._wvWireTag()); }
             catch (e) { Zotero.debug("[Weavero] reader pane UIProperties err: " + e); }
             // notes-context reads ZoteroContextPane.splitter/context — give the
             // shim real-enough values (splitter "open"; context.mode tracks
@@ -3172,15 +3172,19 @@ class _ReaderMixin {
     }
 
     /** Register the `tabs.title.reader` observer once. Idempotent across reloads
-     *  via the id stashed on the Zotero.Weavero namespace. */
+     *  via the id kept on the Zotero global as `_wvTabTitlePrefObs`, which
+     *  destroy() unregisters with every other `_wv*PrefObs`. It used to sit on
+     *  the Zotero.Weavero namespace, which bootstrap deletes at shutdown: one
+     *  observer more per reload, one left after a disable (alignment review
+     *  2026-11-11). */
     _wvRegisterTabTitlePrefObserver() {
         try {
-            const ns: any = (Zotero as any).Weavero || ((Zotero as any).Weavero = {});
-            if (ns._tabTitlePrefObserverID != null) {
-                try { Zotero.Prefs.unregisterObserver(ns._tabTitlePrefObserverID); } catch (e) {}
-                ns._tabTitlePrefObserverID = null;
+            const g: any = Zotero;
+            if (g._wvTabTitlePrefObs != null) {
+                try { Zotero.Prefs.unregisterObserver(g._wvTabTitlePrefObs); } catch (e) {}
+                g._wvTabTitlePrefObs = null;
             }
-            ns._tabTitlePrefObserverID = Zotero.Prefs.registerObserver("tabs.title.reader", () => {
+            g._wvTabTitlePrefObs = Zotero.Prefs.registerObserver("tabs.title.reader", () => {
                 try { const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; if (lp && lp._wvOnTabTitlePrefChange) lp._wvOnTabTitlePrefChange(); } catch (e) {}
             });
         } catch (e) { Zotero.debug("[Weavero] _wvRegisterTabTitlePrefObserver err: " + e); }
@@ -5068,6 +5072,12 @@ class _ReaderMixin {
             const anyTab = rs.find((r: any) => r && r.constructor && r.constructor.name === "ReaderTab");
             if (!anyTab) return false;
             const proto: any = Object.getPrototypeOf(anyTab);
+            // Kept for _wvReaderProtoPeel: a disable with no reader open still
+            // finds the prototypes to give back.
+            try {
+                const S = (this as any)._wvReaderProtos || ((this as any)._wvReaderProtos = new Set());
+                S.add(proto); S.add(Object.getPrototypeOf(proto));
+            } catch (e) {}
             // Base-class guard — MUST live above the _wvWinSafetyVer early
             // return (its own GVER gate makes it idempotent; a plugin reload
             // hits the early return with the persisted stamp and would
@@ -5124,7 +5134,9 @@ class _ReaderMixin {
                     P._wvUninitSafetyVer = UVER;
                 }
             } catch (e) { Zotero.debug("[Weavero] uninit safety wrap err: " + e); }
-            const VER = 2;
+            // 3: a reader shown beside the selected tab (a split, tab-split.ts) stays
+            // active, as the selected one does -- else Zotero releases its pages.
+            const VER = 3;
             if (proto._wvWinSafetyVer === VER) return true;
             if (proto._wvOrigUpdateDocShellActivity) proto._updateDocShellActivity = proto._wvOrigUpdateDocShellActivity;
             if (proto._wvOrigSetReadAloudStatus) proto._setReadAloudStatus = proto._wvOrigSetReadAloudStatus;
@@ -5140,7 +5152,15 @@ class _ReaderMixin {
                         try { if (this._iframe) this._iframe.docShellIsActive = true; } catch (e) {}
                         return;
                     }
-                    return orig.apply(this, arguments as any);
+                    const r = orig.apply(this, arguments as any);
+                    try {
+                        const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (lp && !lp._wvDestroyed && typeof lp._wvTabSplitVisible === "function"
+                                && lp._wvTabSplitVisible(this._window, this.tabID) && this._iframe) {
+                            this._iframe.docShellIsActive = true;
+                        }
+                    } catch (e) {}
+                    return r;
                 };
             }
             if (typeof proto._setReadAloudStatus === "function") {
@@ -5699,7 +5719,7 @@ class _ReaderMixin {
             } catch (e) {}
             try { ed.mode = editable ? "edit" : "view"; } catch (e) {}
             try { ed.viewMode = "window"; } catch (e) {}
-            try { (Zotero as any).UIProperties.registerRoot(ed); } catch (e) {}
+            try { wvUIRoot(ed, (this as any)._wvWireTag()); } catch (e) {}
             try { ed.item = item; } catch (e) {}
             try { if (typeof ed.refresh === "function") ed.refresh(); } catch (e) {}
             let title = "";
@@ -8545,6 +8565,10 @@ class _ReaderMixin {
                 try {
                     if (!Zotero.Items.exists(itemID)) { consume(itemID); continue; }   // gone for good
                     if (this._wvReaderWindowHostingItem(itemID)) { consume(itemID); continue; }   // claimed after all
+                    // Left open by the last disable (Zotero's own window): open, or
+                    // closed by the user since -- either way not ours to reopen.
+                    const kept: any = (this as any)._wvDisableKeptReaderIDs;
+                    if (kept && kept.has(itemID)) { consume(itemID); continue; }
                     if (inFlight(itemID)) continue;   // preemptive reopen already opening it — adopt will consume
                     const it: any = Zotero.Items.get(itemID);
                     if (it && typeof it.isNote === "function" && it.isNote()) { consume(itemID); continue; } // note-heads persist as orphans
@@ -9002,7 +9026,9 @@ class _ReaderMixin {
         try {
             const ZP: any = win && win.ZoteroPane;
             if (!ZP || typeof ZP.viewItems !== "function") return;
-            const orig = ZP._wvOrigViewItems || ZP.viewItems.bind(ZP);
+            // Zotero's own function, unbound, so the unwire puts back exactly
+            // what was there (_wvUnwireMultiOpenConsolidation).
+            const orig = ZP._wvOrigViewItems || ZP.viewItems;
             ZP._wvOrigViewItems = orig;
             ZP.viewItems = async function (items: any[], event: any, options: any = {}) {
                 try {
@@ -9039,10 +9065,22 @@ class _ReaderMixin {
                         }
                     }
                 } catch (e) { Zotero.debug("[Weavero] viewItems consolidate err: " + e); }
-                return orig(items, event, options);
+                return orig.call(ZP, items, event, options);
             };
             ZP._wvViewItemsWrapped = true;
         } catch (e) { Zotero.debug("[Weavero] _wvSetupMultiOpenConsolidation err: " + e); }
+    }
+
+    /** Zotero's own `viewItems` back (destroy). It stayed Weavero's after a
+     *  disable until 1.0.5-dev.7 (zzz-disable-leftovers.spec.js). */
+    _wvUnwireMultiOpenConsolidation(win: any) {
+        try {
+            const ZP: any = win && win.ZoteroPane;
+            if (!ZP || !ZP._wvOrigViewItems) return;
+            ZP.viewItems = ZP._wvOrigViewItems;
+            delete ZP._wvOrigViewItems;
+            delete ZP._wvViewItemsWrapped;
+        } catch (e) {}
     }
 
     /** Reveal a deck window hidden by _wvOpenFreshReaderWindowHidden. Idempotent. */
@@ -9906,6 +9944,7 @@ class _ReaderMixin {
             const setT = (iwin && iwin.setTimeout) ? iwin.setTimeout.bind(iwin) : setTimeout;
             const clearT = (iwin && iwin.clearTimeout) ? iwin.clearTimeout.bind(iwin) : clearTimeout;
             view._wvHlPatched = true;
+            view._wvHlOrig = view._highlightPosition;   // _wvReaderUnwireInternals
             view._highlightPosition = function (position) {
                 try {
                     this._highlightedPosition = position;
@@ -10477,9 +10516,12 @@ class _ReaderMixin {
             const ir = reader && reader._internalReader;
             if (!ir || ir._wvSplitTogglesWrapped) return;
             const self = this;
+            // The originals, for _wvReaderUnwireInternals (a disable).
+            const origs: any = ir._wvSplitToggleOrigs = {};
             const wrap = (name) => {
                 const orig = ir[name];
                 if (typeof orig !== "function") return;
+                origs[name] = orig;
                 ir[name] = function () {
                     const ret = orig.apply(this, arguments);
                     try {
@@ -10495,6 +10537,118 @@ class _ReaderMixin {
         } catch (e) {
             Zotero.debug("[Weavero] _wvWrapSplitToggles err: " + e);
         }
+    }
+
+    /** Give one reader's internals back what Weavero wrapped on them: the split
+     *  toggles, each view's overlay-popup callback (link modifiers, preview
+     *  zones), resettable highlight and outline navigate, the views' and the
+     *  annotation manager's content-side wraps. Run by the reader page teardown
+     *  (destroy). Until 1.0.5-dev.7 all of these stayed after a disable --
+     *  harmless while each checks for a live plugin, dead functions inside the
+     *  reader once zotero#6080 nukes a plugin's scope (alignment review
+     *  2026-11-11; guard zzz-disable-leftovers.spec.js). */
+    _wvReaderUnwireInternals(reader: any) {
+        const back = (host: any, key: string, orig: any) => {
+            if (!host || typeof orig !== "function") return;
+            try {
+                const p = Object.getPrototypeOf(host);
+                if (p && p[key] === orig) delete host[key];
+                else host[key] = orig;
+            } catch (e) {}
+        };
+        const ir: any = reader && reader._internalReader;
+        if (!ir) return;
+        try {
+            const origs = ir._wvSplitToggleOrigs;
+            if (origs) for (const k of Object.keys(origs)) back(ir, k, origs[k]);
+            delete ir._wvSplitToggleOrigs;
+            delete ir._wvSplitTogglesWrapped;
+        } catch (e) {}
+        for (const v of [ir._primaryView, ir._secondaryView, ir._lastView]) {
+            if (!v) continue;
+            try { wvUnwrap(v, "_onSetOverlayPopup"); } catch (e) {}
+            try {
+                if (v._wvPrevZonesOrig) back(v, "_onSetOverlayPopup", v._wvPrevZonesOrig);   // an older build's
+                delete v._wvPrevZonesOrig; delete v._wvPrevZonesWired; delete v._wvPrevZonesSeq;
+            } catch (e) {}
+            try {
+                if (v._wvHlOrig) back(v, "_highlightPosition", v._wvHlOrig);
+                else if (v._wvHlPatched) delete v._highlightPosition;   // an older build's
+                if (v._wvHlTimer && v._iframeWindow) v._iframeWindow.clearTimeout(v._wvHlTimer);
+                delete v._wvHlOrig; delete v._wvHlPatched; delete v._wvHlTimer;
+            } catch (e) {}
+            try {
+                // The outline recovery's navigate is an own wrapper over the
+                // prototype's method (reader-panels.ts _wvOutlineInstallRecovery).
+                if (v._wvOutlineWired) {
+                    delete v.navigate;
+                    delete v._wvOutlineOrigNavigate;
+                    delete v._wvOutlineWired;
+                }
+            } catch (e) {}
+        }
+        try { (this as any)._wvAnnListUnwireViews(reader); } catch (e) {}
+        // The EPUB outline scroll feed (reader-panels.ts _wvOutlineSpy*): two
+        // observers on the view and a 500 ms poll on the sidebar window.
+        // DELETED, not nulled: a reload unwires and rewires every reader, and a
+        // `null` left behind is a new `_wv*` key on a reader that never had an
+        // EPUB outline (1.0.5-dev.7 to dev.11, zz-reader-window-wiring.spec.js
+        // red on Zotero 10.0.8). The spy tests them for truthiness only.
+        try {
+            for (const k of ["_wvOlSpySecsMO", "_wvOlSpyBodyMO"]) {
+                try { if (reader[k]) reader[k].disconnect(); } catch (e) {}
+                delete reader[k];
+            }
+            if (reader._wvOlSpyPagedPoll) {
+                const sw: any = reader._iframeWindow;
+                try { if (sw) sw.clearInterval(reader._wvOlSpyPagedPoll); } catch (e) {}
+            }
+            delete reader._wvOlSpyPagedPoll;
+            delete reader._wvOlSpyBodyEl;
+            delete reader._wvOlSpySecsEl;
+        } catch (e) {}
+        // The "Hide Annotations in the Reader" block is undone by its own
+        // teardown, which repaints; a block left behind is only lifted here.
+        for (const v of [ir._primaryView, ir._secondaryView, ir._lastView]) {
+            try { if (v && v._wvOrigSetAnnotations) { back(v, "setAnnotations", v._wvOrigSetAnnotations); delete v._wvOrigSetAnnotations; } } catch (e) {}
+        }
+    }
+
+    /** Give the ReaderTab / ReaderInstance prototypes back their own methods
+     *  (_wvEnsureReaderTabWindowSafety's guards). Their classes are reachable
+     *  only through a reader, so the prototypes seen at install are kept on the
+     *  instance, plus those of every reader open now. destroy() runs it. */
+    _wvReaderProtoPeel() {
+        const protos = new Set<any>((this as any)._wvReaderProtos || []);
+        try {
+            for (const r of ((Zotero.Reader as any)._readers || [])) {
+                let p = r && Object.getPrototypeOf(r), i = 0;
+                while (p && p !== Object.prototype && i++ < 4) { protos.add(p); p = Object.getPrototypeOf(p); }
+            }
+        } catch (e) {}
+        const pairs: Array<[string, string]> = [
+            ["_hideReadAloudGuidance", "_wvOrigHideReadAloudGuidance"],
+            ["uninit", "_wvOrigUninit"],
+            ["_updateDocShellActivity", "_wvOrigUpdateDocShellActivity"],
+            ["_setReadAloudStatus", "_wvOrigSetReadAloudStatus"],
+        ];
+        for (const P of protos) {
+            for (const [key, origKey] of pairs) {
+                try {
+                    if (Object.prototype.hasOwnProperty.call(P, origKey)) {
+                        const orig = P[origKey];
+                        const up = Object.getPrototypeOf(P);
+                        if (up && up[key] === orig) delete P[key];   // it was inherited
+                        else if (typeof orig === "function") P[key] = orig;
+                        delete P[origKey];
+                    }
+                } catch (e) {}
+            }
+            for (const s of ["_wvWinSafetyVer", "_wvUninitSafetyVer", "_wvGuidanceSafetyVer"]) {
+                try { delete P[s]; } catch (e) {}
+            }
+        }
+        (this as any)._wvReaderProtos = null;
     }
 
     /** Poll briefly for the secondary pane to exist after a split opens, then
@@ -10822,7 +10976,9 @@ class _ReaderMixin {
                     }
                 }
             };
-            (this as any)._wvScanNoFeedback = scanWithoutSelfFeedback;
+            // (Not kept on the plugin: `_wvScanNoFeedback`, read nowhere, held the
+            // last reader wired -- its frame, document and ReaderTab -- after it
+            // closed. Found 2026-11-12 by test/reader-leak.spec.js.)
 
             observer.observe(idoc.body || idoc.documentElement,
                 { childList: true, subtree: true, characterData: true });
@@ -13738,6 +13894,23 @@ class _ReaderMixin {
         const contentEl = commentEl.querySelector(".content");
         if (!contentEl) return false;
 
+        // A plugin that draws comments itself declared this surface
+        // (Zotero.Weavero.api.declareCommentRenderer, modules/plugin-api.ts):
+        // no preview of ours, Zotero's comment left for that plugin to draw.
+        // Before the Annotation Markdown branch below: a declaration is the
+        // plugin's own word, AM's detection a reading of its DOM, and the AM
+        // extras (links inside its preview, the add-comment entry) are not
+        // ours to put into another plugin's drawing.
+        if ((this as any)._wvApiCommentYields(commentEl)) {
+            for (const p of commentEl.querySelectorAll(".wv-md-preview")) p.remove();
+            commentEl.classList.remove("wv-comment-preview");
+            commentEl.classList.remove("wv-editing");
+            // The rebuild rate limit is a loop-breaker: a withdrawal must
+            // draw at once.
+            commentEl.removeAttribute("data-wv-last-rebuild");
+            return false;
+        }
+
         // --- Annotation Markdown (zotero-annotation-markdown) interop ------
         // AM owns the comment display when installed: it hides the native
         // editor (inline display:none + data-annotation-markdown-source-
@@ -14990,17 +15163,34 @@ class _ReaderMixin {
 
             const minBtn = mkCtl("wv-window-min", "Minimize", () => win.minimize());
             const maxBtn = mkCtl("wv-window-max", "Maximize", () => {
+                // Spanned across monitors (max-span.ts): back to before the span.
+                const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                if (lp && win._wvMaxSpan && win.windowState === win.STATE_NORMAL && lp._wvMaxSpanRestore(win)) return;
                 if (win.windowState === win.STATE_MAXIMIZED) win.restore();
                 else win.maximize();
             });
+            // Right-click: maximize across monitors. On the button itself (Weavero's
+            // own element, rebuilt with the strip), resolving the plugin when it
+            // fires.
+            const spanPress = (e: any, late: boolean) => {
+                try {
+                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (lp && typeof lp._wvMaxSpanOnPress === "function") lp._wvMaxSpanOnPress(win, e, late);
+                } catch (er) {}
+            };
+            maxBtn.addEventListener("contextmenu", (e: any) => spanPress(e, false));
+            maxBtn.addEventListener("mouseup", (e: any) => { if (e.button === 2) spanPress(e, true); });
             const closeBtn = mkCtl("wv-window-close", "Close", () => win.close());
 
             // Keep the max/restore icon in sync via a data-state attribute.
             // The CSS rule `.wv-window-max[data-state='maximized']` swaps
-            // the bg image from maximize.svg to restore.svg.
+            // the bg image from maximize.svg to restore.svg. A window spanned
+            // across monitors shows the restore glyph too (max-span.ts).
             const syncMaxIcon = () => {
                 try {
-                    if (win.windowState === win.STATE_MAXIMIZED) {
+                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    const spanned = !!(lp && win._wvMaxSpan && lp._wvMaxSpanIsSpanned && lp._wvMaxSpanIsSpanned(win));
+                    if (win.windowState === win.STATE_MAXIMIZED || spanned) {
                         maxBtn.setAttribute("data-state", "maximized");
                         maxBtn.setAttribute("title", "Restore");
                         maxBtn.setAttribute("aria-label", "Restore");
@@ -15079,13 +15269,17 @@ class _ReaderMixin {
             if (!menubar) return;
             const mw = Zotero.getMainWindow && Zotero.getMainWindow();
             if (!mw || !mw.document || mw.closed) return;
-            const mkMirror = (id, mainMenuId, fallbackLabel) => {
+            // The main window's own label (Zotero's, in Zotero's language);
+            // without it Zotero's menubar.ftl id, which reader windows link
+            // (menu-tools / menu-help: 9.0, 10 and 11).
+            const mkMirror = (id, mainMenuId, fallbackL10nID) => {
                 const menu = doc.createXULElement("menu");
                 menu.id = id;
                 menu.className = "wv-reader-menu";
                 const srcMenu = mw.document.getElementById(mainMenuId);
-                menu.setAttribute("label",
-                    (srcMenu && srcMenu.getAttribute("label")) || fallbackLabel);
+                const srcLabel = srcMenu && srcMenu.getAttribute("label");
+                if (srcLabel) wvZoteroLabel(menu, srcLabel);
+                else wvL10n(menu, fallbackL10nID);
                 const ak = srcMenu && srcMenu.getAttribute("accesskey");
                 if (ak) menu.setAttribute("accesskey", ak);
                 const popup = doc.createXULElement("menupopup");
@@ -15107,9 +15301,9 @@ class _ReaderMixin {
                 menu.append(popup);
                 return menu;
             };
-            const tools = mkMirror("wv-reader-tools-menu", "toolsMenu", "Tools");
+            const tools = mkMirror("wv-reader-tools-menu", "toolsMenu", "menu-tools");
             tools.setAttribute("data-wv-tag", tag);
-            const help = mkMirror("wv-reader-help-menu", "helpMenu", "Help");
+            const help = mkMirror("wv-reader-help-menu", "helpMenu", "menu-help");
             // Main-window order is … Tools, Window, Help. On macOS only
             // where Gecko's native menu list stays in step (lib/menubar.ts
             // wvMenubarSafeBefore: the note window's Window menu follows two
@@ -15132,12 +15326,15 @@ class _ReaderMixin {
                 const edit0 = doc.getElementById("edit-menu");
                 const epop0 = edit0 && edit0.querySelector(":scope > menupopup");
                 if (epop0 && !doc.getElementById("wv-reader-copy-citation")) {
-                    const mkCopy = (id, srcId, fallback, asCitations) => {
+                    // The main window's own label (Zotero's), else weavero.ftl's.
+                    const mkCopy = (id, srcId, fallbackL10nID, asCitations) => {
                         const it = doc.createXULElement("menuitem");
                         it.id = id;
                         it.className = "wv-reader-menu";
                         const src = mw.document.getElementById(srcId);
-                        it.setAttribute("label", (src && src.getAttribute("label")) || fallback);
+                        const srcLabel = src && src.getAttribute("label");
+                        if (srcLabel) wvZoteroLabel(it, srcLabel);
+                        else wvL10n(it, fallbackL10nID);
                         const cak = src && src.getAttribute("accesskey");
                         if (cak) it.setAttribute("accesskey", cak);
                         it.addEventListener("command", async () => {
@@ -15165,8 +15362,8 @@ class _ReaderMixin {
                         });
                         return it;
                     };
-                    const cc = mkCopy("wv-reader-copy-citation", "menu_copyCitation", "Copy Citation", true);
-                    const cb = mkCopy("wv-reader-copy-bibliography", "menu_copyBibliography", "Copy Bibliography", false);
+                    const cc = mkCopy("wv-reader-copy-citation", "menu_copyCitation", "weavero-menu-reader-copy-citation", true);
+                    const cb = mkCopy("wv-reader-copy-bibliography", "menu_copyBibliography", "weavero-menu-reader-copy-bibliography", false);
                     // Main order: Copy, Copy Citation, Copy Bibliography, Paste.
                     const copyItem = epop0.querySelector("[command='cmd_copy']");
                     if (copyItem) { copyItem.after(cc, cb); } else { epop0.append(cc, cb); }
@@ -15206,7 +15403,9 @@ class _ReaderMixin {
                     const fi = doc.createXULElement("menuitem");
                     fi.id = "wv-reader-find-item";
                     fi.className = "wv-reader-menu";
-                    fi.setAttribute("label", (srcFind && srcFind.getAttribute("label")) || "Find");
+                    // Zotero's own Find (the main window's reader Find), else
+                    // general-find (zotero.ftl, a value in 9.0, 10 and 11).
+                    wvZoteroLabel(fi, (srcFind && srcFind.getAttribute("label")) || wvZoteroText("general-find"));
                     const fak = srcFind && srcFind.getAttribute("accesskey");
                     if (fak) fi.setAttribute("accesskey", fak);
                     fi.setAttribute("acceltext", "Ctrl+F");
@@ -15825,9 +16024,9 @@ class _ReaderMixin {
             // cluster below — the hamburger then holds NOTHING but this
             // window's own menubar, mirrored.
             if (!(opts && opts.mirrorOnly)) try {
-                const mkTop = (label: string, fn: () => void, accel?: string, hideWhen?: () => boolean) => {
+                const mkTop = (l10nID: string, fn: () => void, accel?: string, hideWhen?: () => boolean) => {
                     const mi: any = doc.createXULElement("menuitem");
-                    mi.setAttribute("label", label);
+                    wvL10n(mi, l10nID);
                     if (accel) mi.setAttribute("acceltext", accel);
                     // Re-read on every open (the popupshowing handler below).
                     if (hideWhen) mi._wvHideWhen = hideWhen;
@@ -15839,7 +16038,7 @@ class _ReaderMixin {
                 };
                 const ACCEL = Zotero.isMac ? "⌘" : "Ctrl+";
                 const liveP = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-                mkTop("New Tab", () => {
+                mkTop("weavero-menu-hamburger-new-tab", () => {
                     const p: any = liveP();
                     if (!p) return;
                     if ((win as any)._wvWT) {
@@ -15849,11 +16048,11 @@ class _ReaderMixin {
                         p._wvMainNewTabPicker(win);
                     }
                 }, ACCEL + "T");
-                mkTop("New Reader Window", () => {
+                mkTop("weavero-menu-hamburger-new-reader-window", () => {
                     const p: any = liveP();
                     if (p) p._wvNewReaderWindowPicker(win);
                 });
-                mkTop("New Main Window", () => {
+                mkTop("weavero-menu-file-new-main-window", () => {
                     const p: any = liveP();
                     if (p) p._wvOpenEmptyMainWindow();
                 }, ACCEL + "N", () => { const p: any = liveP(); return !(p && p._wvMultiMainOn && p._wvMultiMainOn()); });
@@ -15864,7 +16063,8 @@ class _ReaderMixin {
             // cluster (Tools/Help), which land in different groups below.
             const appendMirrorSubmenu = (src: any) => {
                 const submenu: any = doc.createXULElement("menu");
-                submenu.setAttribute("label", src.label);
+                // The menubar menu's own label (Zotero's).
+                wvZoteroLabel(submenu, src.label);
                 if (src.accesskey) submenu.setAttribute("accesskey", src.accesskey);
                 if (src.hidden) submenu.hidden = true;
                 submenu._wvSrcPopupId = src.popupId;   // for the visibility sync below
@@ -16019,7 +16219,7 @@ class _ReaderMixin {
                     if (!el) return;
                     if (spec.sepBefore) popup.appendChild(doc.createXULElement("menuseparator"));
                     const mi: any = doc.createXULElement("menuitem");
-                    mi.setAttribute("label", el.getAttribute("label") || "");
+                    wvZoteroLabel(mi, el.getAttribute("label") || "");   // the native item's own (Zotero's)
                     // Shortcut hint, Firefox-style: reuse the native item's
                     // acceltext, or compose it from its <key> reference
                     // (looked up in the item's OWN document).
@@ -16492,9 +16692,13 @@ class _ReaderMixin {
                 menu.id = MENU_ID;
                 menu.setAttribute("data-wv-menu-ver", MENU_VER);
 
-                const mkItem = (label: string, onClick: () => void, opts?: { icon?: string; getVisible?: () => boolean }) => {
+                // `what`: a weavero.ftl id, { id, args }, or { zotero } -- the
+                // string Zotero labels its own tab menu with (tabs.js _openMenu).
+                const mkItem = (what: any, onClick: () => void, opts?: { icon?: string; getVisible?: () => boolean }) => {
                     const it = doc.createXULElement("menuitem");
-                    it.setAttribute("label", label);
+                    const w = typeof what === "string" ? { id: what } : what;
+                    if (w.zotero != null) wvZoteroLabel(it, w.zotero);
+                    else wvL10n(it, w.id, w.args);
                     if (opts?.icon) {
                         // XUL renders `image="..."` on a menuitem only when
                         // the item carries class="menuitem-iconic". Add
@@ -16536,7 +16740,8 @@ class _ReaderMixin {
                 };
                 const targetItemID = () => { const t = targetTab(); return t ? t.itemID : (reader && reader.itemID); };
 
-                const showInLibrary = mkItem("Show in Library", () => {
+                // Zotero's own "Show in Library" (general-show-in-library, a value in 9.0, 10 and 11).
+                const showInLibrary = mkItem({ zotero: wvZoteroText("general-show-in-library") }, () => {
                     try {
                         const t = targetTab();
                         if (t && t.reader && typeof t.reader.showInLibrary === "function") { t.reader.showInLibrary(); return; }
@@ -16545,8 +16750,9 @@ class _ReaderMixin {
                         if (mw && mw.ZoteroPane && id != null) { mw.ZoteroPane.selectItem(id); mw.focus(); }
                     } catch (e) {}
                 });
-                const str = (key: string, fallback: string, n?: number) => {
-                    try { return (Zotero as any).getString(key, [], n); } catch (e) { return fallback; }
+                // Zotero's own tab-menu strings (tabs.js _openMenu).
+                const str = (key: string, n?: number) => {
+                    try { return String((Zotero as any).getString(key, [], n)); } catch (e) { return ""; }
                 };
                 // "View Online", "Show File", "Open in External Viewer": the one
                 // list in tabs.ts (WV_TAB_MENU_ENTRIES) as XUL items; label and
@@ -16555,7 +16761,7 @@ class _ReaderMixin {
                 const lpE: any = this;
                 const entryItems: any = {};
                 for (const en of lpE._wvTabMenuEntries()) {
-                    const mi = mkItem(en.label(lpE), () => {
+                    const mi = mkItem(en.l10n(lpE), () => {
                         const r: any = en.run(lpE, targetItem());
                         if (r && typeof r.catch === "function") r.catch((e: any) => Zotero.debug("[Weavero] reader tab menu " + en.key + " err: " + e));
                     }, {
@@ -16571,10 +16777,10 @@ class _ReaderMixin {
                 // group commands for deck tabs, multi-select aware. The popup
                 // is rebuilt per popupshowing from the LIVE plugin (reload-safe).
                 const groupMenu: any = doc.createXULElement("menu");
-                groupMenu.setAttribute("label", "Add Tab to Group");
+                wvL10n(groupMenu, "weavero-menu-tab-add-to-group", { count: 1 });
                 const groupPopup: any = doc.createXULElement("menupopup");
                 groupMenu.appendChild(groupPopup);
-                const removeFromGroup = mkItem("Remove from Tab Group", () => {
+                const removeFromGroup = mkItem({ id: "weavero-menu-tab-remove-from-group", args: { count: 1 } }, () => {
                     try {
                         const lp: any = (Zotero as any).Weavero?.plugin;
                         const st = win._wvWT;
@@ -16593,7 +16799,7 @@ class _ReaderMixin {
                 // this window) + Move Tab to Main Window (the reader's analogue of
                 // the main window's "Move to New Window").
                 const moveMenu: any = doc.createXULElement("menu");
-                moveMenu.setAttribute("label", str("tabs.move", "Move Tab"));
+                wvZoteroLabel(moveMenu, str("tabs.move"));
                 const movePopup: any = doc.createXULElement("menupopup");
                 moveMenu.appendChild(movePopup);
                 // Multi-select aware: when several strip tabs are selected, every
@@ -16622,8 +16828,8 @@ class _ReaderMixin {
                         this._wvWTPersistSaveDebounced();
                     } catch (e) {}
                 };
-                const moveStartItem = mkItem(str("tabs.moveToStart", "Move to Start"), () => moveToEdge(false));
-                const moveEndItem = mkItem(str("tabs.moveToEnd", "Move to End"), () => moveToEdge(true));
+                const moveStartItem = mkItem({ zotero: str("tabs.moveToStart") }, () => moveToEdge(false));
+                const moveEndItem = mkItem({ zotero: str("tabs.moveToEnd") }, () => moveToEdge(true));
                 movePopup.appendChild(moveStartItem);
                 movePopup.appendChild(moveEndItem);
                 // The per-window / per-group move targets AND the bottom "Move to New
@@ -16635,7 +16841,7 @@ class _ReaderMixin {
                 movePopup.appendChild(mvTargetsSep);
 
                 // "Duplicate Tab" — open the same document in another reader tab.
-                const duplicate = mkItem(str("tabs.duplicate", "Duplicate Tab"), () => {
+                const duplicate = mkItem({ zotero: str("tabs.duplicate") }, () => {
                     try { const id = targetItemID(); if (id != null) this._wvWTMountTab(win, id, { allowDuplicate: true, select: true }); } catch (e) {}
                 });
 
@@ -16643,7 +16849,7 @@ class _ReaderMixin {
                 // Label is set per-target in popupshowing (mirrors the main
                 // window's _registerPinTabMenu onShowing logic). Pinned tabs
                 // render icon-only and cluster at the left of the strip.
-                const pinTab = mkItem("Pin Tab", () => {
+                const pinTab = mkItem({ id: "weavero-menu-tab-pin", args: { action: "pin", count: 1 } }, () => {
                     try {
                         const t = targetTab();
                         if (!t) return;
@@ -16655,10 +16861,10 @@ class _ReaderMixin {
 
                 const sep = doc.createXULElement("menuseparator");
 
-                const closeItem = mkItem(str("general.close", "Close"), () => {
+                const closeItem = mkItem({ zotero: str("general.close") }, () => {
                     try { const t = targetTab(); if (t) this._wvWTCloseTab(win, t.id); else (reader.close?.() ?? win.close()); } catch (e) {}
                 });
-                const closeOther = mkItem(str("tabs.closeOther", "Close Other Tabs"), () => {
+                const closeOther = mkItem({ zotero: str("tabs.closeOther") }, () => {
                     try {
                         const t = targetTab(); const stx = win._wvWT;
                         if (!t || !stx) return;
@@ -16667,7 +16873,7 @@ class _ReaderMixin {
                         }
                     } catch (e) {}
                 }, { getVisible: () => { try { return !!(win._wvWT && win._wvWT.tabs.length > 1); } catch (e) { return false; } } });
-                const reopen = mkItem(str("tabs.undoClose", "Reopen Closed Tab", 1), () => {
+                const reopen = mkItem({ zotero: str("tabs.undoClose", 1) }, () => {
                     try {
                         const lp: any = (Zotero as any).Weavero?.plugin;
                         // Prefer Weavero's closed reader-window / group stack; else
@@ -16685,7 +16891,7 @@ class _ReaderMixin {
                 // Built from the shared `_wvBuildCopyAsSubmenu`, repopulated per target
                 // on submenu open (the entries depend on the right-clicked tab's item).
                 const copyAs = doc.createXULElement("menu");
-                copyAs.setAttribute("label", "Copy As");
+                wvL10n(copyAs, "weavero-menu-copy-as");
                 copyAs.setAttribute("class", "menu-iconic");
                 if (wvIcon) copyAs.setAttribute("image", wvIcon);
                 // Gated by the URI-utilities option like the main window's
@@ -16722,7 +16928,7 @@ class _ReaderMixin {
                 // "Open Notes" — mount the item's (parent's) child notes as note
                 // tabs in this reader window. Shown only on non-note tabs whose
                 // item actually has child notes.
-                const openNotes = mkItem("Open Notes", () => {
+                const openNotes = mkItem("weavero-menu-tab-open-notes", () => {
                     try { this._wvWTOpenChildNotes(win, targetItemID()); } catch (e) {}
                 }, { getVisible: () => {
                     try {
@@ -16778,7 +16984,8 @@ class _ReaderMixin {
                             const lpMv: any = (Zotero as any).Weavero?.plugin;
                             const selMv = lpMv && lpMv._wvWTMultiSelTargets ? lpMv._wvWTMultiSelTargets(win, win._wvWTCtxTabId) : null;
                             const multiMv = !!(selMv && selMv.length > 1);
-                            moveMenu.setAttribute("label", multiMv ? "Move Tabs" : str("tabs.move", "Move Tab"));
+                            if (multiMv) { wvL10n(moveMenu, "weavero-menu-tab-move-tabs"); moveMenu.removeAttribute("data-wv-zotero-label"); }
+                            else wvZoteroLabel(moveMenu, str("tabs.move"));
                             // Rebuild the nested per-window / per-group move targets +
                             // the bottom "Move to New Reader/Main Window" options
                             // (windows + groups change between opens), appended after
@@ -16828,14 +17035,14 @@ class _ReaderMixin {
                                 const curGroup = ctxKey && lp._tabGroupOfKey(ctxKey.libraryID, ctxKey.itemKey);
                                 grouped = !!curGroup;
                                 const targets = lp._wvWTMultiSelTargets(win, ctxId);
-                                groupMenu.setAttribute("label", targets.length > 1
-                                    ? "Add " + targets.length + " Tabs to Group" : "Add Tab to Group");
-                                removeFromGroup.setAttribute("label", targets.length > 1
-                                    ? "Remove " + targets.length + " Tabs from Group" : "Remove from Tab Group");
+                                wvL10n(groupMenu, "weavero-menu-tab-add-to-group", { count: targets.length });
+                                wvL10n(removeFromGroup, "weavero-menu-tab-remove-from-group", { count: targets.length });
                                 while (groupPopup.firstChild) groupPopup.removeChild(groupPopup.firstChild);
-                                const mkG = (label: string, icon: string | null, fn: () => void) => {
+                                // `what`: a weavero.ftl id, or { data } for a group's name.
+                                const mkG = (what: any, icon: string | null, fn: () => void) => {
                                     const mi = doc.createXULElement("menuitem");
-                                    mi.setAttribute("label", label);
+                                    if (typeof what === "string") wvL10n(mi, what);
+                                    else wvDataLabel(mi, what.data);
                                     if (icon) { mi.setAttribute("class", "menuitem-iconic"); mi.setAttribute("image", icon); }
                                     mi.addEventListener("command", (ev: any) => {
                                         try { ev.stopPropagation(); fn(); } catch (er) {}
@@ -16843,7 +17050,7 @@ class _ReaderMixin {
                                     groupPopup.appendChild(mi);
                                     return mi;
                                 };
-                                mkG("New Group", null, () => lp._wvTabGroupNewFromDeckTabs(win, targets));
+                                mkG("weavero-menu-new-group", null, () => lp._wvTabGroupNewFromDeckTabs(win, targets));
                                 const groups = lp._tabGroupsGet();
                                 const others = groups.filter((x: any) =>
                                     !(targets.length === 1 && curGroup && x.id === curGroup.id));
@@ -16853,7 +17060,7 @@ class _ReaderMixin {
                                         // Saved (parked) group → tabs-menu-list design:
                                         // hollow group-colour dot + right-aligned "saved".
                                         const parked = lp._wvTabGroupOpenCount(g.id) === 0;
-                                        const gmi = mkG(g.name || "Unnamed group",
+                                        const gmi = mkG(g.name ? { data: g.name } : "weavero-menu-group-unnamed-add",
                                             lp._wvTabGroupDotImage(lp._tabGroupColorHex(g.color), parked),
                                             () => {
                                                 targets.forEach((id: any, i: number) => {
@@ -16863,7 +17070,7 @@ class _ReaderMixin {
                                                 });
                                                 lp._wvWTMultiSelClear(win);
                                             });
-                                        if (parked && gmi) { try { gmi.setAttribute("acceltext", "saved"); } catch (e) {} }
+                                        if (parked && gmi) { try { gmi.setAttribute("acceltext", wvStr("weavero-menu-group-saved-hint", null, null)); } catch (e) {} }
                                     }
                                 }
                             }
@@ -16872,14 +17079,14 @@ class _ReaderMixin {
                         } catch (e) {}
                         try {
                             const lpR: any = (Zotero as any).Weavero?.plugin;
-                            const wlabel = lpR && lpR._wvClosedTopLabel && lpR._wvClosedTopLabel();
-                            if (wlabel) { reopen.setAttribute("label", wlabel); wvSetBoolAttr(reopen, "disabled", false); }
+                            const wl = lpR && lpR._wvClosedTopL10n && lpR._wvClosedTopL10n();
+                            if (wl) { wvL10n(reopen, wl.id, wl.args); reopen.removeAttribute("data-wv-zotero-label"); wvSetBoolAttr(reopen, "disabled", false); }
                             else {
-                                reopen.setAttribute("label", str("tabs.undoClose", "Reopen Closed Tab", 1));
+                                wvZoteroLabel(reopen, str("tabs.undoClose", 1));
                                 wvSetBoolAttr(reopen, "disabled", !(win._wvWTClosed && win._wvWTClosed.length));
                             }
                         } catch (e) {}
-                        try { const t = targetTab(); pinTab.setAttribute("label", (t && t.pinned) ? "Unpin Tab" : "Pin Tab"); } catch (e) {}
+                        try { const t = targetTab(); wvL10n(pinTab, "weavero-menu-tab-pin", { action: (t && t.pinned) ? "unpin" : "pin", count: 1 }); } catch (e) {}
                         try {
                             const it = targetItem();
                             for (const en of lpE._wvTabMenuEntries()) {
@@ -16966,9 +17173,13 @@ class _ReaderMixin {
                 menu.id = MENU_ID;
                 menu.setAttribute("data-wv-tag", menuTag);
 
-                const mkItem = (label: string, onClick: () => void, opts?: { icon?: string; getVisible?: () => boolean }) => {
+                // `what`: a weavero.ftl id, { id, args }, or { zotero } -- the
+                // string Zotero labels its own tab menu with (tabs.js _openMenu).
+                const mkItem = (what: any, onClick: () => void, opts?: { icon?: string; getVisible?: () => boolean }) => {
                     const it = doc.createXULElement("menuitem");
-                    it.setAttribute("label", label);
+                    const w = typeof what === "string" ? { id: what } : what;
+                    if (w.zotero != null) wvZoteroLabel(it, w.zotero);
+                    else wvL10n(it, w.id, w.args);
                     if (opts?.icon) {
                         it.setAttribute("class", "menuitem-iconic");
                         it.setAttribute("image", opts.icon);
@@ -16987,7 +17198,8 @@ class _ReaderMixin {
                     ? (this as any)._menuItemIconURLDark
                     : (this as any)._menuItemIconURLLight;
 
-                const showInLibrary = mkItem("Show in Library", () => {
+                // Zotero's own "Show in Library" (general-show-in-library, a value in 9.0, 10 and 11).
+                const showInLibrary = mkItem({ zotero: wvZoteroText("general-show-in-library") }, () => {
                     try {
                         const mw: any = Zotero.getMainWindow();
                         const ZP: any = mw && (mw as any).ZoteroPane;
@@ -16997,24 +17209,25 @@ class _ReaderMixin {
                         }
                     } catch (e) {}
                 });
-                const moveToTab = mkItem("Move to Main Window", () => {
+                const moveToTab = mkItem("weavero-menu-tab-move-to-main-window", () => {
                     try { this._moveNoteToTab(itemID); } catch (e) {}
                 });
                 const sep = doc.createXULElement("menuseparator");
-                const copySelect = mkItem("Copy Select Link", () => {
+                const copySelect = mkItem("weavero-menu-related-copy-select-link", () => {
                     try {
                         const item = Zotero.Items.get(itemID);
                         if (item) (this as any)._copyItemLinks([item], "select");
                     } catch (e) {}
                 }, { icon: WV_LINK_MENU_ICON, getVisible: () => (this as any)._getEnableCopyItemLink?.() ?? false });
-                const copyOpen = mkItem("Copy Open Link", () => {
+                const copyOpen = mkItem({ id: "weavero-menu-related-copy-open-link", args: { external: "no" } }, () => {
                     try {
                         const item = Zotero.Items.get(itemID);
                         if (item) (this as any)._copyItemLinks([item], "open");
                     } catch (e) {}
                 }, { icon: WV_LINK_MENU_ICON, getVisible: () => (this as any)._getEnableCopyItemLink?.() ?? false });
                 const sep2 = doc.createXULElement("menuseparator");
-                const closeItem = mkItem("Close", () => {
+                // Zotero's own "Close" (its tab menu's, general.close).
+                const closeItem = mkItem({ zotero: (() => { try { return String(Zotero.getString("general.close")); } catch (e) { return ""; } })() }, () => {
                     try { win.close(); } catch (e) {}
                 });
 
@@ -17178,11 +17391,23 @@ class _ReaderMixin {
                 return;
             }
             const tag = this._wvWireTag();
-            if (pv._wvPrevZonesWired === tag) return;
-            if (!pv._wvPrevZonesOrig) pv._wvPrevZonesOrig = pv._onSetOverlayPopup;
-            const origSet = pv._wvPrevZonesOrig;
-            pv._wvPrevZonesWired = tag;
-            pv._onSetOverlayPopup = function (popup: any) {
+            // A layer of wvWrap since 1.0.5-dev.7, beside the link-modifier
+            // layer (_wvWireReaderLinkClicks): one table holds the native, so a
+            // disable gives it back whichever layer came first. A view wired by
+            // an older build (own `_wvPrevZonesOrig`) is put back first.
+            try {
+                if (pv._wvPrevZonesOrig) {
+                    const T = Object.prototype.hasOwnProperty.call(pv, "_wvWraps") && pv._wvWraps;
+                    const e = T && T._onSetOverlayPopup;
+                    // The table's native is the old zones wrapper only when that
+                    // one was installed first; then the native is its saved one.
+                    if (e) { if (String(e.native).indexOf("_wvPreviewInjectZones") !== -1) e.native = pv._wvPrevZonesOrig; }
+                    else pv._onSetOverlayPopup = pv._wvPrevZonesOrig;
+                    delete pv._wvPrevZonesOrig;
+                    delete pv._wvPrevZonesWired;
+                }
+            } catch (_) {}
+            wvWrap(pv, "_onSetOverlayPopup", "previewZones", tag, (origSet: any) => function (this: any, popup: any) {
                 // UPSTREAM BUG FIX (2026-08-27): hover a link -> popup shows;
                 // popup closes; stop on the SAME link again -> nothing. The
                 // hover handler only opens when `_selectedOverlay !== overlay`
@@ -17208,7 +17433,7 @@ class _ReaderMixin {
                     }
                 } catch (_) {}
                 return ret;
-            };
+            });
         } catch (e) { Zotero.debug("[Weavero] _wvWirePreviewLinkZones err: " + e); }
     }
 

@@ -20,6 +20,7 @@
 import { schemeAltPart, joinSchemeAlt, buildUrlRegex, urlLinkClass } from "../lib/links";
 import { wvTimeout } from "../lib/timers";
 import { wvCloneFor } from "../lib/xray";
+import { wvL10n } from "../lib/l10n";
 
 export const URL_SCHEMES = [
     // ---- Tier 1: bare-colon schemes (name:) -------------------------------
@@ -88,24 +89,25 @@ export interface WvCopyAsEntry {
     key: string;
     sep?: boolean;
     cite?: boolean;
-    label?: (p: any, items: any[]) => string;
+    /** The entry's weavero.ftl message (+ args) for these items. */
+    l10n?: (p: any, items: any[]) => { id: string; args?: any };
     visible: (p: any, items: any[]) => boolean;
     run?: (p: any, items: any[]) => void;
 }
 
 export const WV_COPY_AS: WvCopyAsEntry[] = [
-    { key: "citation", cite: true, label: () => "Citation", visible: (p, c) => c.length > 0, run: (p, c) => p._copyCitationOrBibliography(c, true) },
-    { key: "bibliography", cite: true, label: () => "Bibliography", visible: (p, c) => c.length > 0, run: (p, c) => p._copyCitationOrBibliography(c, false) },
+    { key: "citation", cite: true, l10n: () => ({ id: "weavero-menu-copy-as-citation" }), visible: (p, c) => c.length > 0, run: (p, c) => p._copyCitationOrBibliography(c, true) },
+    { key: "bibliography", cite: true, l10n: () => ({ id: "weavero-menu-copy-as-bibliography" }), visible: (p, c) => c.length > 0, run: (p, c) => p._copyCitationOrBibliography(c, false) },
     // Zotero does not auto-generate citation keys: shown only when one exists.
-    { key: "citationKey", cite: true, label: () => "Citation Key", visible: (p, c) => p._anyHasCitationKey(c), run: (p, c) => p._copyCitationKeys(c) },
+    { key: "citationKey", cite: true, l10n: () => ({ id: "weavero-menu-copy-as-citation-key" }), visible: (p, c) => p._anyHasCitationKey(c), run: (p, c) => p._copyCitationKeys(c) },
     { key: "sep1", sep: true, visible: (p, items) => items.length > 0 },
     // ONE link selecting the whole set (`.../items?itemKey=K1,K2` for several).
-    { key: "selectLink", label: () => "Select Link", visible: (p, items) => items.some((it: any) => !!p._buildSelectLink(it)), run: (p, items) => p._copyCombinedSelectLink(items, {}) },
-    { key: "openLink", label: (p, items) => "Open Link" + (items.length === 1 && p._isExternalOpenTarget(items[0]) ? " (external app)" : ""), visible: (p, items) => items.some((it: any) => !!p._buildOpenLink(it)), run: (p, items) => p._copyItemLinks(items, "open") },
-    { key: "onlineLink", cite: true, label: () => "Online Library Link", visible: (p, c) => p._anyHasWebURL(c), run: (p, c) => p._copyOnlineLibraryLinks(c) },
+    { key: "selectLink", l10n: () => ({ id: "weavero-menu-copy-as-select-link", args: { collection: "no" } }), visible: (p, items) => items.some((it: any) => !!p._buildSelectLink(it)), run: (p, items) => p._copyCombinedSelectLink(items, {}) },
+    { key: "openLink", l10n: (p, items) => ({ id: "weavero-menu-copy-as-open-link", args: { external: items.length === 1 && p._isExternalOpenTarget(items[0]) ? "yes" : "no" } }), visible: (p, items) => items.some((it: any) => !!p._buildOpenLink(it)), run: (p, items) => p._copyItemLinks(items, "open") },
+    { key: "onlineLink", cite: true, l10n: () => ({ id: "weavero-menu-copy-as-online-link" }), visible: (p, c) => p._anyHasWebURL(c), run: (p, c) => p._copyOnlineLibraryLinks(c) },
     { key: "sepBbt", sep: true, visible: (p) => p._isBetterBibTeXActive() },
-    { key: "bibtex", cite: true, label: () => "[BBT] BibTeX", visible: (p, c) => p._isBetterBibTeXActive() && c.length > 0, run: (p, c) => p._copyExportToClipboard(c, BBT_BIBTEX_TRANSLATOR_ID) },
-    { key: "biblatex", cite: true, label: () => "[BBT] BibLaTeX", visible: (p, c) => p._isBetterBibTeXActive() && c.length > 0, run: (p, c) => p._copyExportToClipboard(c, BBT_BIBLATEX_TRANSLATOR_ID) },
+    { key: "bibtex", cite: true, l10n: () => ({ id: "weavero-menu-copy-as-bbt-bibtex" }), visible: (p, c) => p._isBetterBibTeXActive() && c.length > 0, run: (p, c) => p._copyExportToClipboard(c, BBT_BIBTEX_TRANSLATOR_ID) },
+    { key: "biblatex", cite: true, l10n: () => ({ id: "weavero-menu-copy-as-bbt-biblatex" }), visible: (p, c) => p._isBetterBibTeXActive() && c.length > 0, run: (p, c) => p._copyExportToClipboard(c, BBT_BIBLATEX_TRANSLATOR_ID) },
 ];
 
 export const urlMethods = {
@@ -1281,7 +1283,8 @@ export const urlMethods = {
                 if (!en.visible(self, set)) continue;
                 if (en.sep) { sub.appendChild(doc.createXULElement("menuseparator")); continue; }
                 const mi = doc.createXULElement("menuitem");
-                mi.setAttribute("label", en.label!(self, set));
+                const l = en.l10n!(self, set);
+                wvL10n(mi, l.id, l.args);
                 mi.setAttribute("data-wv-key", en.key);
                 mi.addEventListener("command", (e: any) => {
                     try { e.stopPropagation(); } catch (er) {}
@@ -1322,7 +1325,8 @@ export const urlMethods = {
                         const set = setOf(en, ctx);
                         if (!en.visible(self, set)) { ctx.setVisible(false); return; }
                         ctx.setVisible(true);
-                        ctx.menuElem.setAttribute("label", en.label!(self, set));
+                        const l = en.l10n!(self, set);
+                        wvL10n(ctx.menuElem, l.id, l.args);
                     } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
                 },
                 onCommand: (_ev: any, ctx: any) => {
@@ -1576,6 +1580,12 @@ export const urlMethods = {
                 Zotero.debug("[Weavero] handler-svc unavailable: " + e);
             }
 
+            // The schemes whose handler Weavero itself set to "don't ask": only
+            // those are given back. Until 1.0.5-dev.7 every start set "ask" on
+            // all 17 schemes, which undid a user's own "remember my choice"
+            // (alignment review 2026-11-11, survey §2 #29).
+            const mine = wvAppLinkSkippedGet();
+            const mineBefore = mine.join(",");
             for (const def of URL_SCHEMES) {
                 const prefName = "network.protocol-handler.warn-external." + def.name;
                 let enabledThis = false;
@@ -1604,17 +1614,22 @@ export const urlMethods = {
                 try {
                     const handlerInfo = externalSvc.getProtocolHandlerInfo(def.name);
                     if (!handlerInfo) continue;
+                    const at = mine.indexOf(def.name);
                     if (shouldSkip) {
                         handlerInfo.alwaysAskBeforeHandling = false;
                         handlerInfo.preferredAction =
                             Components.interfaces.nsIHandlerInfo.useSystemDefault;
-                    } else {
+                        if (at === -1) mine.push(def.name);
+                    } else if (at !== -1) {
                         // Restore the safe default: ask before
                         // handling. We don't try to remember whatever
                         // value was there before — the safe behaviour
                         // is to ask, which matches Firefox's default
                         // for any scheme the user hasn't customised.
                         handlerInfo.alwaysAskBeforeHandling = true;
+                        mine.splice(at, 1);
+                    } else {
+                        continue;   // not ours: the user's own choice stays
                     }
                     handlerSvc.store(handlerInfo);
                 } catch (e) {
@@ -1622,8 +1637,51 @@ export const urlMethods = {
                         + def.name + ") err: " + e);
                 }
             }
+            if (mine.join(",") !== mineBefore) wvAppLinkSkippedSet(mine);
         } catch (e) {
             Zotero.debug("[Weavero] _applyAppLinkConfirmPref err: " + e);
         }
     },
+
+    /** Put the handler service's "ask before handling" back for every scheme
+     *  Weavero set to "don't ask", as the non-skip branch above does, and
+     *  forget them. destroy() runs it on a disable or an uninstall; the next
+     *  start sets them again if the user still wants no prompt. */
+    _wvAppLinkHandlersRestore() {
+        try {
+            const mine = wvAppLinkSkippedGet();
+            if (!mine.length) return;
+            const externalSvc = Components.classes["@mozilla.org/uriloader/external-protocol-service;1"]
+                .getService(Components.interfaces.nsIExternalProtocolService);
+            const handlerSvc = Components.classes["@mozilla.org/uriloader/handler-service;1"]
+                .getService(Components.interfaces.nsIHandlerService);
+            for (const name of mine) {
+                try {
+                    const hi = externalSvc.getProtocolHandlerInfo(name);
+                    if (!hi || hi.alwaysAskBeforeHandling) continue;
+                    hi.alwaysAskBeforeHandling = true;
+                    handlerSvc.store(hi);
+                } catch (e) {}
+            }
+            wvAppLinkSkippedSet([]);
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvAppLinkHandlersRestore err: " + e);
+        }
+    },
 };
+
+/** `weavero.appLinkHandlersSkipped`: the schemes whose handler Weavero set to
+ *  "don't ask" (comma-separated), so that only those are ever given back. */
+const WV_APPLINK_SKIPPED_PREF = "weavero.appLinkHandlersSkipped";
+function wvAppLinkSkippedGet(): string[] {
+    try {
+        const v = Zotero.Prefs.get(WV_APPLINK_SKIPPED_PREF);
+        return typeof v === "string" && v ? v.split(",").filter(Boolean) : [];
+    } catch (e) { return []; }
+}
+function wvAppLinkSkippedSet(names: string[]) {
+    try {
+        if (names.length) Zotero.Prefs.set(WV_APPLINK_SKIPPED_PREF, names.join(","));
+        else Zotero.Prefs.clear(WV_APPLINK_SKIPPED_PREF);
+    } catch (e) {}
+}

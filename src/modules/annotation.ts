@@ -6,6 +6,7 @@ import { wvSetBoolAttr } from "../lib/dom";
 import { wvSvgEl } from "../lib/svg";
 import { wvCloneFor } from "../lib/xray";
 import { wvLinkGlyphEl, WV_LINK_MENU_ICON } from "../lib/link-glyph";
+import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
 
 // Module: annotation comment text + URL detection + icon
 // rendering + annotation model access + related-item nav
@@ -532,10 +533,13 @@ class _AnnotationMixin {
         const popup = doc.createXULElement("menupopup");
         popup.id = "wv-related-item-menu";
 
-        const append = (label, onCommand, opts) => {
+        // `what`: a weavero.ftl id, { id, args }, or { zotero } -- Zotero's own text.
+        const append = (what, onCommand, opts) => {
             opts = opts || {};
             const mi = doc.createXULElement("menuitem");
-            mi.setAttribute("label", label);
+            const w = typeof what === "string" ? { id: what } : what;
+            if (w.zotero) wvZoteroLabel(mi, w.zotero);
+            else wvL10n(mi, w.id, w.args);
             if (opts.iconURL) {
                 mi.classList.add("menuitem-iconic");
                 mi.setAttribute("image", opts.iconURL);
@@ -665,14 +669,16 @@ class _AnnotationMixin {
         } catch (e) {}
 
         // Helper: emit a "Open <Type> in New Tab" + "Open <Type>
-        // in New Window" pair with a shared type icon. `onOpen` is
-        // a (inWindow) → action factory.
-        const appendOpenPair = (typeStr, typeLabel, onOpen) => {
+        // in New Window" pair with a shared type icon. `l10nID` takes
+        // $type and $where (weavero.ftl). `onOpen` is a (inWindow) →
+        // action factory.
+        const appendOpenPair = (typeStr, l10nID, onOpen) => {
             const icon = itemTypeIconURL(typeStr);
             const tabIcon = icon || ICON_NEW_TAB;
             const winIcon = icon || ICON_NEW_WINDOW;
-            const labelTab    = "Open " + typeLabel + " in New Tab";
-            const labelWindow = "Open " + typeLabel + " in New Window";
+            const type = readerTypeKey(typeStr);
+            const labelTab    = { id: l10nID, args: { type, where: "tab" } };
+            const labelWindow = { id: l10nID, args: { type, where: "window" } };
             if (prefersWindow) {
                 append(labelWindow, onOpen(true),  { iconURL: winIcon });
                 append(labelTab,    onOpen(false), { iconURL: tabIcon });
@@ -682,15 +688,9 @@ class _AnnotationMixin {
             }
         };
 
-        // Map a reader type code (pdf/epub/snapshot/note) to its
-        // display label, falling back to "Attachment" when unknown.
-        const readerTypeLabel = (t) => {
-            if (t === "pdf")      return "PDF";
-            if (t === "epub")     return "EPUB";
-            if (t === "snapshot") return "Snapshot";
-            if (t === "note")     return "Note";
-            return "Attachment";
-        };
+        // A reader type code (pdf/epub/snapshot/note) as weavero.ftl's
+        // $type, "attachment" when unknown.
+        const readerTypeKey = (t) => (t === "pdf" || t === "epub" || t === "snapshot" || t === "note") ? t : "attachment";
 
         if (isAnnotation) {
             // The reader to open is the parent attachment's reader;
@@ -714,9 +714,7 @@ class _AnnotationMixin {
                 // type → "Open in Reader in New Tab".) The icon still
                 // uses the parent's type so it reads as a PDF / EPUB /
                 // snapshot.
-                const tLabel = readerTypeLabel(parentReaderType);
-                const openInLabel = "in " + (tLabel === "Attachment" ? "Reader" : tLabel);
-                appendOpenPair(parentReaderType, openInLabel,
+                appendOpenPair(parentReaderType, "weavero-menu-open-annotation-in",
                     (inWindow) => async () => {
                         try {
                             await Zotero.Reader.open(parentID,
@@ -732,7 +730,7 @@ class _AnnotationMixin {
         }
         if (isAttachment) {
             appendOpenPair(item.attachmentReaderType,
-                readerTypeLabel(item.attachmentReaderType),
+                "weavero-menu-open-type-in",
                 (inWindow) => async () => {
                     try {
                         await Zotero.Reader.open(item.id, null,
@@ -742,7 +740,7 @@ class _AnnotationMixin {
                         Zotero.debug("[Weavero] open-att err: " + e);
                     }
                 });
-            append("Show File", () => {
+            append("weavero-menu-related-show-file", () => {
                 try {
                     if (attachmentFilePath) Zotero.File.reveal(attachmentFilePath);
                 } catch (e) {
@@ -756,7 +754,7 @@ class _AnnotationMixin {
             // tab/window choice (it reads the `note.openInNewWindow`
             // pref internally on the default path). For an explicit
             // window override, use openNoteWindow.
-            appendOpenPair("note", readerTypeLabel("note"),
+            appendOpenPair("note", "weavero-menu-open-type-in",
                 (inWindow) => () => {
                     try {
                         const zp = win.ZoteroPane;
@@ -788,7 +786,7 @@ class _AnnotationMixin {
             // View Online → ─── → Show in Library.
             if (primaryAttachment) {
                 const t = primaryAttachment.attachmentReaderType;
-                appendOpenPair(t, readerTypeLabel(t),
+                appendOpenPair(t, "weavero-menu-open-type-in",
                     (inWindow) => async () => {
                         try {
                             await Zotero.Reader.open(primaryAttachment.id,
@@ -807,7 +805,7 @@ class _AnnotationMixin {
                 onlineUrl = (item.getField && item.getField("url")) || "";
             } catch (e) {}
             if (onlineUrl) {
-                append("View Online", () => {
+                append("weavero-menu-tab-view-online", () => {
                     try { Zotero.launchURL(onlineUrl); }
                     catch (e) {
                         Zotero.debug("[Weavero] view-online err: " + e);
@@ -820,7 +818,8 @@ class _AnnotationMixin {
 
         // ---- Library navigation --------------------------------------------
         if (!opts.skipShowInLibrary) {
-            append("Show in Library", () => this._navigateToItem(item),
+            // Zotero's own "Show in Library" (general-show-in-library, a value in 9.0, 10 and 11).
+            append({ zotero: wvZoteroText("general-show-in-library") }, () => this._navigateToItem(item),
                 { iconURL: ICON_LIBRARY });
         }
 
@@ -833,12 +832,11 @@ class _AnnotationMixin {
         // open link applies (this item is a file attachment, has a best
         // attachment, or — for an annotation — its parent attachment is
         // openable).
-        append("Copy Select Link",
+        append("weavero-menu-related-copy-select-link",
             () => this._copyItemLinks([item], "select"),
             { iconURL: WV_LINK_MENU_ICON });
         if (this._buildOpenLink(item)) {
-            append("Copy Open Link"
-                + (this._isExternalOpenTarget(item) ? " (external app)" : ""),
+            append({ id: "weavero-menu-related-copy-open-link", args: { external: this._isExternalOpenTarget(item) ? "yes" : "no" } },
                 () => this._copyItemLinks([item], "open"),
                 { iconURL: WV_LINK_MENU_ICON });
         }
@@ -847,7 +845,7 @@ class _AnnotationMixin {
         // for visual consistency with the rest of the related-item
         // affordances (items-list `.wv-tree-rel-icon`, sidebar
         // `.wv-btn-relations`, PDF reader marker badge).
-        append("Add Related…", () => {
+        append("weavero-menu-related-add-related", () => {
             try { this._addRelatedItemDialog([item]); }
             catch (e) {
                 Zotero.debug("[Weavero] add-related err: " + e);
@@ -857,7 +855,7 @@ class _AnnotationMixin {
         // that knows the OTHER side of the relation (the relations popup
         // row passes its annotation as opts.sourceItem). GitHub issue #9.
         if (opts.sourceItem && opts.sourceItem.id !== item.id) {
-            append("Remove Relation", () => {
+            append("weavero-menu-related-remove-relation", () => {
                 try {
                     (this as any)._removeRelatedItem(opts.sourceItem, item)
                         .then(() => {

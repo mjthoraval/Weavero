@@ -74,6 +74,7 @@ depend on v10-only row classes), but unconfirmed — check before relying.
 | No-reload reader-tab move / tear-off between windows | Untested | Yes | tabs module; `swapDocShells` — likely v10-dependent, check. |
 | Item pane in separate reader windows | Untested | Yes | reader module; mirrors the main-window item pane. |
 | Compact title bar (hide title bar) | Untested | Yes | pane module; Windows/Linux only. |
+| Maximize across monitors (right-click the maximize button) | Untested | Yes (runner spec 2026-11-11 on 10.0.8 and 11.0-beta.4, a three-monitor Windows desktop; real presses by hand pending) | max-span module; nsIScreenManager probing + the tree owner's device-pixel `setPositionAndSize`; Windows; Linux X11 untested; off on macOS and Wayland. |
 | Outline text highlight on navigation | Untested | Yes | reader-panels module; ON by default (and has been since v0.12). All reader types: PDF recovers the heading on the page; EPUB/snapshot resolve the entry's exact anchor. Best-effort: encoding mismatches and ambiguous destinations decline rather than guess. |
 
 ## v9-specific cosmetic note

@@ -13,7 +13,7 @@ import {
     STYLE_ID, PANEL_ID,
     BTN_CLASS, BTN_TREE_CLASS, BTN_PANE_CLASS,
     BTN_POPUP_CLASS, BTN_SIDEBAR_CLASS,
-    SCHEME_SVG_TEMPLATE, MENU_LABEL_PREFIXES, PLUGIN_CSS,
+    SCHEME_SVG_TEMPLATE, PLUGIN_CSS,
     WV_COUNT_COL_MIN, WV_TAGS_COL_TWO,
 } from "./modules/constants";
 import { makeInvisibleRe, TRAILING_RE as TRAILING_RE_LIB } from "./lib/text";
@@ -22,12 +22,14 @@ import { wvTimeout, wvClearTimeout, wvSleep } from "./lib/timers";
 import { wvInjectStyle, wvRemoveStyle, wvFilterTileRules, wvViewIdsCss } from "./lib/style";
 import { wvWrap, wvUnwrap, wvWrapLayers } from "./lib/wrap";
 import { wvWhenWindowLoaded, wvBoolAttrOn, wvReaderMenuEvent, wvWithin, wvIsTextEntry, wvHtmlEl, WV_XHTML_NS } from "./lib/dom";
-import { wvListen, wvUnlisten, wvUnlistenAll, wvListenKeys, wvUnlistenAllOn, wvSweepTagOnChrome } from "./lib/listen";
+import { wvListen, wvUnlisten, wvUnlistenAll, wvListenKeys, wvUnlistenAllOn, wvSweepTagOnChrome, wvListenRegistry } from "./lib/listen";
+import { wvUIRootsPrune, wvReleaseClosedMainWindow, wvClaimMainWindowObservers, wvForgetMainWindowObservers, wvWatchWindowObservers, wvUIRootsRehook } from "./lib/ui-roots";
 import { wvStoreDir, wvStorePath, wvStoreChain, wvStoreWrite, wvStoreRead, wvStoreRemove } from "./lib/store";
-import { wvLibraryTabPinned, wvZoteroPinsLibraryTabs, wvViewEl, wvViewEls, wvItemsTreeEl, wvItemsTreeEls, wvLibraryViews, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvWindowArgs, wvAdvSearchWindowArgs, wvAdvSearchGeometry, wvOpenLibraryView, wvPaneSizesRead, wvPaneSizesWrite, wvPlanWindowTransfer, wvSelectLibraryTab, wvGeomToPane, wvTransferItemIDs, wvWinType, wvWin32Style } from "./lib/windows";
+import { wvLibraryTabPinned, wvZoteroPinsLibraryTabs, wvZoteroPinsTabs, wvViewEl, wvViewEls, wvItemsTreeEl, wvItemsTreeEls, wvLibraryViews, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvWindowArgs, wvAdvSearchWindowArgs, wvAdvSearchGeometry, wvOpenLibraryView, wvPaneSizesRead, wvPaneSizesWrite, wvPlanWindowTransfer, wvSelectLibraryTab, wvGeomToPane, wvTransferItemIDs, wvWinType, wvWin32Style } from "./lib/windows";
 import { wvAccel, wvAccelAny } from "./lib/keys";
 import { wvCloneFor } from "./lib/xray";
-import { wvMenuItem, wvMenuSeparator } from "./lib/menu";
+import { wvMenuItem, wvMenuSeparator, wvMenuItemByLabel } from "./lib/menu";
+import { wvStr, wvAttr, wvL10n, wvL10nStub, wvL10nRelease, wvFtlEnsure, wvDataLabel, wvZoteroLabel, wvZoteroText } from "./lib/l10n";
 import { wvSvgEl, WV_SVG_NS } from "./lib/svg";
 import { WV_LINK_CHAIN_PATHS, WV_BACKLINK_ARROW_PATH, WV_OUTLINK_ARROW_PATH, WV_LOOPLINK_ARROW_PATH, WV_BROKENLINK_MARK_PATH, WV_ZLINK_KIND_PATH, WV_CITE_KIND_PATH, WV_REF_MARK_TIGHT_VIEWBOX, WV_EXTLINK_PATHS, WV_LINK_MENU_ICON, wvLinkGlyphEl, wvLinkGlyphMarkup, wvLinkGlyphUri } from "./lib/link-glyph";
 import { wvOutsideClick, wvReachableDocs, wvDismissOff } from "./lib/dismiss";
@@ -35,11 +37,12 @@ import { wvAltReveal, wvMenubarSafeBefore } from "./lib/menubar";
 
 /** The shared helpers, published as `Zotero.Weavero.lib` so the suite can
  *  exercise them directly (they are bundled, not otherwise reachable). */
-const WV_LIB = { wvLivePlugin, wvLibraryTabPinned, wvZoteroPinsLibraryTabs, wvViewEl, wvViewEls, wvItemsTreeEl, wvItemsTreeEls, wvLibraryViews, wvViewIdsCss, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvWindowArgs, wvAdvSearchWindowArgs, wvAdvSearchGeometry, wvOpenLibraryView, wvPaneSizesRead, wvPaneSizesWrite, wvSelectLibraryTab, wvPlanWindowTransfer, wvGeomToPane, wvTransferItemIDs, wvWinType, wvIsTextEntry, wvAccel, wvAccelAny, wvCloneFor, wvMenuItem, wvMenuSeparator, wvSvgEl, WV_SVG_NS,
+const WV_LIB = { wvLivePlugin, wvLibraryTabPinned, wvZoteroPinsLibraryTabs, wvZoteroPinsTabs, wvViewEl, wvViewEls, wvItemsTreeEl, wvItemsTreeEls, wvLibraryViews, wvViewIdsCss, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvWindowArgs, wvAdvSearchWindowArgs, wvAdvSearchGeometry, wvOpenLibraryView, wvPaneSizesRead, wvPaneSizesWrite, wvSelectLibraryTab, wvPlanWindowTransfer, wvGeomToPane, wvTransferItemIDs, wvWinType, wvIsTextEntry, wvAccel, wvAccelAny, wvCloneFor, wvMenuItem, wvMenuSeparator, wvMenuItemByLabel, wvStr, wvAttr, wvL10n, wvL10nStub, wvFtlEnsure, wvDataLabel, wvZoteroLabel, wvZoteroText, wvSvgEl, WV_SVG_NS,
     WV_LINK_CHAIN_PATHS, WV_BACKLINK_ARROW_PATH, WV_OUTLINK_ARROW_PATH, WV_LOOPLINK_ARROW_PATH, WV_BROKENLINK_MARK_PATH, WV_ZLINK_KIND_PATH, WV_CITE_KIND_PATH, WV_REF_MARK_TIGHT_VIEWBOX, WV_EXTLINK_PATHS, WV_LINK_MENU_ICON, wvLinkGlyphEl, wvLinkGlyphMarkup, wvLinkGlyphUri, wvHtmlEl, WV_XHTML_NS, WV_LINK_PALETTE, wvLinkVars, wvLinkColor, wvLinkClassRules, wvOutsideClick, wvReachableDocs, wvDismissOff, wvAltReveal, wvMenubarSafeBefore, wvTimeout, wvClearTimeout, wvSleep, wvInjectStyle, wvRemoveStyle, wvFilterTileRules, wvWrap, wvUnwrap, wvWrapLayers,
     wvWhenWindowLoaded, wvBoolAttrOn, wvReaderMenuEvent, wvWithin,
-    wvListen, wvUnlisten, wvUnlistenAll, wvListenKeys,
-    wvStoreDir, wvStorePath, wvStoreChain, wvStoreWrite, wvStoreRead, wvStoreRemove };
+    wvListen, wvUnlisten, wvUnlistenAll, wvListenKeys, wvListenRegistry,
+    wvStoreDir, wvStorePath, wvStoreChain, wvStoreWrite, wvStoreRead, wvStoreRemove,
+    wvScreenLayout, wvScreenNames, wvSpanCombos, wvSpanByRect };
 import { URL_SCHEMES, urlMethods } from "./modules/url";
 import { annotationMethods } from "./modules/annotation";
 import { tabsMethods } from "./modules/tabs";
@@ -59,12 +62,22 @@ import { backlinksMethods } from "./modules/backlinks";
 import { linksMethods } from "./modules/links";
 import { titleLinesMethods } from "./modules/title-lines";
 import { countPopupsMethods } from "./modules/count-popups";
+import { tabSplitMethods } from "./modules/tab-split";
+import { toolbarOverflowMethods } from "./modules/reader-toolbar-overflow";
 import { paneScopeMethods } from "./modules/pane-scope";
 import { windowWiringMethods } from "./modules/window-wiring";
 import { windowStateMethods } from "./modules/window-state";
+import { maxSpanMethods } from "./modules/max-span";
+import { wvScreenLayout, wvScreenNames, wvSpanCombos, wvSpanByRect } from "./lib/screens";
 import { prefsTableMethods } from "./modules/prefs-table";
+import { pluginApiMethods } from "./modules/plugin-api";
 import { WV_PREF_OBSERVERS } from "./modules/prefs-observers";
 import { WV_LINK_PALETTE, wvLinkVars, wvLinkColor, wvLinkClassRules } from "./lib/links";
+import { wvMakePublicApi } from "./lib/public-api";
+
+/** The `unload` watch of a window whose last library view closed while it stays
+ *  open (onMainWindowUnload): its real close tears it down. */
+const WV_UNLOAD_WATCH_KEY = "lazy:wvMainWindowCloseTeardown";
 
 // Captured by the IIFE bundle's closure; the class methods read
 // `_rootURI` to build absolute URIs for resources inside the XPI
@@ -2523,7 +2536,7 @@ class WeaveroPlugin {
             // UPDATE 2026-10-07: c233fcf5f is an ancestor of the 10.0.0 tag (and of
             // every 10.0.x since), so the guard is dead weight on Zotero 10 and is
             // now called only when `Zotero.version < 10.0.0` (Zotero 9, which
-            // Weavero still supports: strict_min_version 7.0). It coexists
+            // Weavero still supports: strict_min_version 9.0). It coexists
             // harmlessly with the fix (it only drops entries whose tab is truly
             // gone, which the fixed Reader.open already ignores).
             //
@@ -3308,6 +3321,8 @@ class WeaveroPlugin {
         try { (this as any)._wvOeRegisterPrefObserver(); } catch (e) {}
         // Same mechanism for the Pin/Unpin Tab entry (Firefox-style pinning).
         this._registerPinTabMenu();
+        // And the split view's entries (tab-split.ts).
+        try { (this as any)._wvTabSplitRegisterMenus(); } catch (e) {}
         // (The "Move Tab"→"Move Tabs" multi-select relabel is folded into the
         // pin menu's onShowing — see _registerPinTabMenu — since a standalone
         // hidden MenuManager item never relabeled reliably.)
@@ -3745,6 +3760,11 @@ class WeaveroPlugin {
         // window takes the full load path, so enabling with several windows
         // doesn't leave them half-wired (observed: no styles / no decoration
         // observer / pins not collapsed in the background window).
+        // The Zotero.Prefs and Zotero.Notifier observers main windows register,
+        // noted per window for its close (lib/ui-roots.ts) -- before any window
+        // wiring below.
+        try { wvWatchWindowObservers((this as any)._wvWireTag()); } catch (e) {}
+        try { wvUIRootsRehook((this as any)._wvWireTag()); } catch (e) {}
         try {
             const focused = Zotero.getMainWindow();
             const all = wvMainWins();
@@ -3753,6 +3773,8 @@ class WeaveroPlugin {
                 try { this.onMainWindowLoad(w); } catch (e) { Zotero.debug("[Weavero] init extra-window wiring err: " + e); }
             }
             if (focused && all.includes(focused)) (this as any)._wvWireMainWindow(focused, "init");
+            // The open windows' observers, for their close (lib/ui-roots.ts).
+            if (focused && all.includes(focused)) wvClaimMainWindowObservers(focused);
         } catch (e) { Zotero.debug("[Weavero] init window wiring err: " + e); }
         // Window-type title glyphs (opt-in) + per-window taskbar icons on
         // every open window (mains + readers), plus the in-window badge
@@ -3815,18 +3837,53 @@ class WeaveroPlugin {
      *  plugin's init resolves; the teardown calls are no-op safe so this
      *  is idempotent. */
     onMainWindowLoad(_window) {
+        // A library view back in a window whose last one had closed: the window
+        // is Weavero's again through the hooks, its pending close watch goes.
+        try { wvUnlisten(_window, WV_UNLOAD_WATCH_KEY); } catch (e) {}
         // Every per-window step lives in the wiring table, in order
         // (modules/window-wiring.ts); init runs its `both` entries for the
         // window that was already open.
         try { (this as any)._wvWireMainWindow(_window, "load"); }
         catch (e) { Zotero.debug("[Weavero] onMainWindowLoad err: " + e); }
+        // The observers its scripts add and Zotero never removes: released at
+        // its close (lib/ui-roots.ts).
+        try { wvClaimMainWindowObservers(_window); } catch (e) {}
     }
 
-    /** Called by the bootstrap shim when the main window closes. Disconnect
-     *  observers eagerly so the next mutation in the dying doc doesn't go
-     *  through dead refs. Lighter than destroy() — preferences observer,
-     *  reader event listeners etc. survive across windows. */
+    /** Zotero's "main window unload" hook. On a Zotero with its own windows it
+     *  also comes when a window's LAST library tab closes and the window stays
+     *  open with its documents (zoteroPane.js unregisterLibraryView ->
+     *  Plugins.notifyMainWindowUnload, called after an await, so a window really
+     *  closing is closed by then). Such a window keeps everything Weavero does
+     *  per window -- the tab bar, pins, groups, split marks, session tracking;
+     *  only its library view went, with its DOM. Zotero calls the hook once per
+     *  load, so that window's real close comes later as its own `unload`, and
+     *  the teardown waits for it. Until 1.0.5-dev.6 the open window was torn
+     *  down (alignment review 2026-11-11, checked live on 11.0-beta.4: its
+     *  tab-bar observer was gone). Guard: test/native-windows.spec.js. */
     onMainWindowUnload(_window) {
+        try {
+            if (_window && !_window.closed && wvNativeWindows() && !(this as any)._wvDestroyed) {
+                const tag = (this as any)._wvWireTag();
+                wvListen(_window, WV_UNLOAD_WATCH_KEY, "unload", (e: any) => {
+                    try {
+                        if (e && e.target && e.target !== _window.document) return;
+                        wvUnlisten(_window, WV_UNLOAD_WATCH_KEY);
+                        const lp: any = wvLivePlugin();
+                        if (lp) lp._wvMainWindowTeardown(_window);
+                    } catch (er) {}
+                }, false, tag);
+                return;
+            }
+        } catch (e) {}
+        this._wvMainWindowTeardown(_window);
+    }
+
+    /** Called when a main window closes. Disconnect observers eagerly so the
+     *  next mutation in the dying doc doesn't go through dead refs. Lighter
+     *  than destroy() — preferences observer, reader event listeners etc.
+     *  survive across windows. */
+    _wvMainWindowTeardown(_window) {
         // Issue #35: arm the window-teardown latch BEFORE any teardown work.
         // The tab-close storm this unload triggers must never prune group
         // members or empty-delete groups (see tearingDown in tab-groups.ts).
@@ -3842,6 +3899,9 @@ class WeaveroPlugin {
         try { (this as any)._wvUnwireLastViewCloseGuard(_window); } catch (e) {}
         try { (this as any)._wvUnpatchTabsGetState(_window); } catch (e) {}
         try { (this as any)._wvUnwireQuickCopyMultiTab(_window); } catch (e) {}
+        // What the window's own scripts leave in Zotero (UIProperties roots,
+        // observers): kept, they kept the closed window (lib/ui-roots.ts).
+        try { wvReleaseClosedMainWindow(_window); } catch (e) {}
         // The shared Zotero.TagSelector must not stay this window's class.
         try { (this as any)._wvTagSelectorClassRelease(_window); } catch (e) {}
         try {
@@ -4087,6 +4147,22 @@ class WeaveroPlugin {
         } catch (e) {}
     }
 
+    /** Unregister and drop every `Zotero._wv*PrefObs` (a pref observer's symbol
+     *  or an array of them) and its `…Ver` stamp. */
+    _wvReleaseGlobalPrefObservers() {
+        const g: any = Zotero;
+        for (const k of Object.getOwnPropertyNames(g)) {
+            if (!/^_wv\w*PrefObs$/.test(k)) continue;
+            const v = g[k];
+            for (const s of (Array.isArray(v) ? v : [v])) {
+                if (s == null) continue;
+                try { Zotero.Prefs.unregisterObserver(s); } catch (e) {}
+            }
+            try { delete g[k]; } catch (e) {}
+            try { delete g[k + "Ver"]; } catch (e) {}
+        }
+    }
+
     destroy(reason) {
         // HARD STOP for every re-apply path (tab-bar decoration observer,
         // note-editor load listeners, style ensurers). These fire from
@@ -4115,6 +4191,9 @@ class WeaveroPlugin {
         // Command-line ingester wrap lives on the Zotero global — restore it
         // (a reload re-wires the fresh instance's version).
         try { (this as any)._wvUnwireCmdLineIngester(); } catch (e) {}
+        // Maximize across monitors: every spanned window stays where it is
+        // and drops the span's marks (modules/max-span.ts).
+        try { (this as any)._wvMaxSpanForgetAll(); } catch (e) {}
         // Stop the background-restore observer NOW: its per-window hooks and
         // tick loop otherwise keep acting for this dead instance after a
         // reload mid-hold (user activations got hijacked).
@@ -4155,6 +4234,13 @@ class WeaveroPlugin {
                 try { (this as any)._wvUnwireColumnPickerNativeFix(w); } catch (e) {}
                 try { (this as any)._wvUnwireEditUndoMenu(w); } catch (e) {}
                 try { (this as any)._wvUnwireMainNewTabShortcut(w); } catch (e) {}
+                // Unwired only on a window's unload until 1.0.5-dev.7: both stayed
+                // wrapped after a disable (zzz-disable-leftovers.spec.js).
+                try { (this as any)._wvUnwireLoadURIHook(w); } catch (e) {}
+                try { (this as any)._wvUnwireMultiOpenConsolidation(w); } catch (e) {}
+                try { (this as any)._wvUnguardCollectionSelectCrossWindow(w); } catch (e) {}
+                try { (this as any)._wvUnguardContextPaneCrossWindow(w); } catch (e) {}
+                try { (this as any)._wvUnwrapMoveToNewWindowHook(w); } catch (e) {}
             }
         } catch (e) {}
         // 0. FINAL store capture, then freeze — teardown below dismantles
@@ -4197,6 +4283,12 @@ class WeaveroPlugin {
         } catch (e) {}
         try { if ((this as any)._wvTaskbarPrefObs) Zotero.Prefs.unregisterObserver((this as any)._wvTaskbarPrefObs); } catch (e) {}
         try { (this as any)._wvOeUnregisterPrefObserver(); } catch (e) {}
+        // Every Zotero.Prefs observer the modules keep on the Zotero global as
+        // `_wv*PrefObs` (a symbol, or an array of them), with its `…Ver` stamp:
+        // 22 were left registered after a disable (zzz-disable-leftovers.spec.js,
+        // alignment review 2026-11-11). Harmless while their callbacks check for
+        // a live plugin; under zotero#6080 a dead function inside Zotero.Prefs.
+        try { this._wvReleaseGlobalPrefObservers(); } catch (e) {}
         // 0a. If Settings is currently open on the Weavero pane, mark a
         //     pref so init() can navigate back once the plugin re-
         //     registers its pane. Without this, plugin reinstall during
@@ -4405,6 +4497,10 @@ class WeaveroPlugin {
         try { (this as any)._wvBgRestoreStop(); } catch (e) {}
         try { (this as any)._wvScopeDestroy(); } catch (e) {}
         try { (this as any)._wvBlDestroy(); } catch (e) {}
+        try { wvL10nRelease(); } catch (e) {}
+        // The public API's AddonManager listener and comment-renderer
+        // declarations (modules/plugin-api.ts).
+        try { (this as any)._wvApiDestroy(); } catch (e) {}
         try { this._unpatchAnnotationRow(); } catch (e) {}
         try { (this as any)._unpatchHideContextAttachments(); } catch (e) {}
 
@@ -4443,6 +4539,7 @@ class WeaveroPlugin {
         try { (this as any)._wvUnwireReaderFindKey(); } catch (e) {}
         try { (this as any)._wvTeardownCollectionMenuEntries(); } catch (e) {}
         this._unregisterPinTabMenu();
+        try { (this as any)._wvTabSplitUnwireAll(); } catch (e) {}
         try { this._teardownTabGroups(); } catch (e) {}
         try { (this as any)._teardownPluginsSearch(); } catch (e) {}
         try { (this as any)._wvUnwireCsdRefresh(); } catch (e) {}
@@ -4457,7 +4554,13 @@ class WeaveroPlugin {
         // teardown (prefs.4): given back to Zotero here, in every window.
         for (const w of wvMainWins()) {
             try { (this as any)._wvUninstallCollapseToQuickSearch(w); } catch (e) {}
+            // The items-list wraps (row provider, rows, collection rows, views),
+            // after the filter's own teardown has used them one last time.
+            try { (this as any)._wvFilterUnwireView(w); } catch (e) {}
         }
+        // The filter's per-window and per-view apply state (WeakMaps on the
+        // instance, filter.ts `_wvApplyWinStOf` / `_wvApplyViewStOf`).
+        try { (this as any)._wvFilterApplyStateRelease(); } catch (e) {}
         try {
             this._teardownTabsMenuLibrarySort(Zotero.getMainWindow());
         } catch (e) {}
@@ -4482,6 +4585,13 @@ class WeaveroPlugin {
                 } catch(e) {}
             }
         } catch(e) {}
+        // ...and the app-picker half, in the handler service (handlers.json),
+        // which a disable or an uninstall left at "don't ask" (alignment review
+        // 2026-11-11, survey §2 #29): ask again for every scheme Weavero set to
+        // skip. A quit or an update keeps it (re-applied at the next start).
+        if (reason === 4 || reason === 6) {   // ADDON_DISABLE, ADDON_UNINSTALL
+            try { (this as any)._wvAppLinkHandlersRestore(); } catch (e) {}
+        }
 
         // 2. Clean up everything we put into the main window's DOM.
         try {
@@ -4606,8 +4716,41 @@ class WeaveroPlugin {
                 try { (this as any)._wvReaderPageTeardown(reader); } catch (e) {}
             }
         } catch(e) {}
+        // ...and the reader classes' prototypes (_wvEnsureReaderTabWindowSafety).
+        try { (this as any)._wvReaderProtoPeel(); } catch (e) {}
+
+        // Zotero.UIProperties entries of the roots the steps above took out
+        // (reader-window panes, split ghosts), and the main windows' observer
+        // claims: lib/ui-roots.ts.
+        try { wvUIRootsPrune(); } catch (e) {}
+        try { wvForgetMainWindowObservers(); } catch (e) {}
+
+        // 4. Last: Weavero's objects on the Zotero global (after the writes the
+        //    steps above queued on the store chains).
+        try { this._wvReleaseGlobalState(reason); } catch (e) {}
 
         Zotero.debug("[Weavero] destroyed");
+    }
+
+    /** Drop every Weavero object kept on the Zotero global (`Zotero._wv*`):
+     *  write chains, undo stacks, caches, logs, observer lists. Under zotero#6080
+     *  a plugin's scope is nuked 10 s after unload, and anything it created and
+     *  left there becomes a dead object (alignment review 2026-11-11; 8 were left
+     *  after a disable, zzz-disable-leftovers.spec.js). An UPDATE keeps the undo
+     *  stacks and the write chains, which are there to outlive an instance; their
+     *  readers recreate them if they come back dead. Primitive values stay. */
+    _wvReleaseGlobalState(reason: any) {
+        const g: any = Zotero;
+        const update = reason === 7 || reason === 8;   // ADDON_UPGRADE, ADDON_DOWNGRADE
+        const keep = update ? new Set(["_wvUndoState", "_wvStoreChains"]) : new Set<string>();
+        for (const k of Object.getOwnPropertyNames(g)) {
+            if (!/^_wv/.test(k) || keep.has(k)) continue;
+            let v: any;
+            try { v = g[k]; } catch (e) { continue; }
+            if (v !== null && (typeof v === "object" || typeof v === "function")) {
+                try { delete g[k]; } catch (e) {}
+            }
+        }
     }
 
     /** Remove everything Weavero wired into one reader's page: panels,
@@ -4667,6 +4810,11 @@ class WeaveroPlugin {
                 for (const el of idoc.querySelectorAll(".wv-btn") as any) el.remove();
             } catch (e) {}
             try { this._wvReaderTeardownPanels(reader, idoc); } catch (e) {}
+            // The toolbar's overflow menu (WV-TEMP-4185): every control shown again.
+            try { (this as any)._wvTbOverflowTeardown(idoc); } catch (e) {}
+            // The reader's internals: split toggles, view callbacks, the
+            // views' and annotation manager's content-side wraps.
+            try { (this as any)._wvReaderUnwireInternals(reader); } catch (e) {}
 
             // Disconnect observer + drop the iframe-doc listeners.
             const data = this._readerObservers.get(reader);
@@ -4869,6 +5017,14 @@ Object.defineProperties(
 );
 Object.defineProperties(
     WeaveroPlugin.prototype,
+    tabSplitMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    toolbarOverflowMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
     paneScopeMethods,
 );
 Object.defineProperties(
@@ -4889,7 +5045,15 @@ Object.defineProperties(
 );
 Object.defineProperties(
     WeaveroPlugin.prototype,
+    maxSpanMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
     prefsTableMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    pluginApiMethods,
 );
 
 // === Lifecycle hooks (called by bootstrap.js shim) ==========================
@@ -4917,6 +5081,9 @@ Zotero.Weavero = {
                 _Weavero._wvStartupReason = reason;
                 Zotero.Weavero.plugin = _Weavero;
                 (Zotero.Weavero as any).lib = WV_LIB;
+                // The public API for other plugins (lib/public-api.ts,
+                // docs/plugin-api.md): the only surface they may count on.
+                (Zotero.Weavero as any).api = wvMakePublicApi(version);
                 // Default-child overrides. Wired HERE as well as in
                 // onMainWindowLoad because a plugin RELOAD does not re-fire
                 // onMainWindowLoad for an already-open window, which would
@@ -4992,6 +5159,7 @@ Zotero.Weavero = {
         onShutdown(reason) {
             if (_Weavero) { _Weavero.destroy(reason); _Weavero = null; }
             Zotero.Weavero.plugin = null;
+            (Zotero.Weavero as any).api = null;
             (Zotero as any)._weaveroReady = false;
         },
         onMainWindowLoad(window) {

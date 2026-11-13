@@ -22,6 +22,7 @@ import { wvListen, wvUnlisten } from "../lib/listen";
 import { wvMainWins } from "../lib/windows";
 import { wvCloneFor } from "../lib/xray";
 import { wvLinkVars } from "../lib/links";
+import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
 
 class _NoteEditorMixin {
     [k: string]: any;
@@ -913,9 +914,9 @@ class _NoteEditorMixin {
         popup.id = "wv-note-link-menu";
 
         const href = anchor.getAttribute("href") || "";
-        const append = (label, fn) => {
+        const append = (l10nID: string, fn) => {
             const mi = doc.createXULElement("menuitem");
-            mi.setAttribute("label", label);
+            wvL10n(mi, l10nID);
             mi.addEventListener("command", () => {
                 try { fn(); }
                 catch(e) { Zotero.debug("[Weavero] note-link menu cmd err: " + e); }
@@ -924,16 +925,30 @@ class _NoteEditorMixin {
         };
         const sep = () => popup.appendChild(doc.createXULElement("menuseparator"));
 
-        append("Copy Link", () => {
+        // Split view (tab-split.ts): the link's target beside this note, in the
+        // window the note is shown in.
+        try {
+            let host: any = win;
+            try {
+                const tw = idoc && idoc.defaultView && idoc.defaultView.browsingContext
+                    && idoc.defaultView.browsingContext.topChromeWindow;
+                if (tw && tw.Zotero_Tabs) host = tw;
+            } catch (e) {}
+            if (href && typeof (this as any)._wvTabSplitLinkOK === "function" && (this as any)._wvTabSplitLinkOK(host, href)) {
+                append("weavero-menu-notelink-open-split", () => { (this as any)._wvTabSplitOpenLink(host, href); });
+                sep();
+            }
+        } catch (e) {}
+        append("weavero-menu-notelink-copy", () => {
             try {
                 if (href) Zotero.Utilities.Internal.copyTextToClipboard(href);
             } catch(e) { Zotero.debug("[Weavero] copy-link err: " + e); }
         });
         sep();
-        append("Edit Link…", () => {
+        append("weavero-menu-notelink-edit", () => {
             this._editNoteLink(anchor, idoc);
         });
-        append("Unlink", () => {
+        append("weavero-menu-notelink-unlink", () => {
             this._unlinkNoteLink(anchor, idoc);
         });
 
@@ -1881,6 +1896,18 @@ class _NoteEditorMixin {
                         if (!idoc) continue;
                         const s = idoc.getElementById("weavero-note-editor-styles");
                         if (s) s.remove();
+                        // The injected ProseMirror plugin stays in the editor (an
+                        // uninstall is a reconfigure, the t.destroy risk): switch
+                        // its decorations off, as the Editor toggle does. Left on
+                        // until 1.0.5-dev.7, the editor kept Weavero's link
+                        // decorations after a disable (zzz-disable-leftovers.spec.js).
+                        try {
+                            const wj: any = iframe.contentWindow && (iframe.contentWindow as any).wrappedJSObject;
+                            if (wj && wj.__wvLinkifyEnabled !== undefined) {
+                                wj.__wvLinkifyEnabled = false;
+                                if (typeof wj.__wvRedecorateNotes === "function") wj.__wvRedecorateNotes();
+                            }
+                        } catch (e) {}
                         // Remove the iframe load listener and clear the
                         // per-document token, so a future instance re-wires
                         // cleanly. (`_wvLoadWired`: older builds' iframe claim.)

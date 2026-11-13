@@ -32,7 +32,12 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
     // that takes part in the order (lib/windows.ts wvFirstDocTab).
     let F = 1;
     const order = () => ZT._tabs.filter(t => !wvT.lib().wvIsLibraryTabID(t.id)).map(t => [a, b, c, d, e].find(it => it.id === (t.data && t.data.itemID))).map(it => it ? names.get(it) : "?");
-    const pinned = (it) => wv._pinnedTabsHas(it.libraryID, it.key);
+    // Where Zotero pins any tab (zotero b08cc35a50) every pin is Zotero's: Weavero
+    // hands its own to Zotero (tabs.ts _wvApplyZoteroPins), and a pinned tab is
+    // never in a group (joining unpins, Firefox). Read and clear pins either way.
+    const zpins = () => !!(wvT.lib().wvZoteroPinsTabs && wvT.lib().wvZoteroPinsTabs());
+    const pinned = (it) => { if (zpins()) { const t = tabOf(it); return !!(t && t.pinned); } return wv._pinnedTabsHas(it.libraryID, it.key); };
+    const unpin = (it) => { if (zpins()) { const t = tabOf(it); if (t && t.pinned) ZT.setPinned(t.id, false); } wv._pinnedTabsRemove(it.libraryID, it.key); };
     const isMirrored = (it) => { const t = tabOf(it); const n = t && node(t.id); return !!(t && mirror(t.id) && n && n.getBoundingClientRect().width < 1); };
     const rect = (el) => el.getBoundingClientRect();
     const waitFor = async (fn, ms, what) => {
@@ -174,7 +179,7 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
         try {
             for (const it of [a, b, c, d, e]) { const t = it && tabOf(it); if (t) { try { wv._wvTabGroupSetStamp(t, null); } catch (er) {} } }
             if (group) wv._tabGroupsSet(wv._tabGroupsGet().filter(g => g.id !== group.id));
-            for (const it of [a, b, c, d, e]) { if (it) try { wv._pinnedTabsRemove(it.libraryID, it.key); } catch (er) {} }
+            for (const it of [a, b, c, d, e]) { if (it) try { unpin(it); } catch (er) {} }
             apply();
         } catch (er) {}
         for (const it of [a, b, c, d, e]) { const t = it && tabOf(it); if (t) { try { ZT.close(t.id); } catch (er) {} } }
@@ -317,6 +322,8 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
     it("a stale group stamp (group gone) does not pull a pin out of the loose cluster", async function () {
         // MJT's bar: the PDF pin carried the stamp of a deleted group, so it was
         // drawn as a real tab beside the mirrors and sorted as a group member.
+        // Zotero's pins are never stamped: a stamp unpins (zotero-pin-any-tab.spec.js).
+        if (zpins()) this.skip();
         const tB = tabOf(b);
         wv._wvTabGroupSetStamp(tB, "wvg-phantom-" + Date.now().toString(36));
         apply(); await sleep(300);
@@ -334,7 +341,8 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
     it("a drag that ends without a drop changes nothing (no move, no unpin)", async function () {
         // A grouped pin is a real tab (pinned-first inside its group) -- the
         // case where the old live-index verdict read 'beyond the pins' and
-        // unpinned it on a bare dragend.
+        // unpinned it on a bare dragend. (No grouped pin where Zotero pins.)
+        if (zpins()) this.skip();
         const tB = tabOf(b);
         wv._wvTabGroupSetStamp(tB, group.id); wv._tabGroupAddKey(group.id, { libraryID: b.libraryID, itemKey: b.key });
         apply(); await sleep(300);
@@ -360,7 +368,8 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
     it("a collapsed group hides its pinned first member too -- no blank box after the chip", async function () {
         // MJT 2026-10-19: a gap after a collapsed group's chip. Its pinned
         // member was hidden (transparent) but kept the pin's width, which the
-        // pin rules hold as hard as the hide rule.
+        // pin rules hold as hard as the hide rule. (No grouped pin where Zotero pins.)
+        if (zpins()) this.skip();
         const tB = tabOf(b);
         wv._wvTabGroupSetStamp(tB, group.id); wv._tabGroupAddKey(group.id, { libraryID: b.libraryID, itemKey: b.key });
         apply(); await sleep(300);
@@ -442,7 +451,7 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
             assert.notOk(wv._wvTabGroupStamp(tabOf(c)), "C did not join the group");
         } finally {
             // Whatever failed above, leave the fixture as the next tests expect it.
-            try { const tC = tabOf(c); const s = wv._wvTabGroupStamp(tC); if (s) wv._wvTabGroupStampLeave(tC, s); if (pinned(c)) wv._pinnedTabsRemove(c.libraryID, c.key); } catch (er) {}
+            try { const tC = tabOf(c); const s = wv._wvTabGroupStamp(tC); if (s) wv._wvTabGroupStampLeave(tC, s); if (pinned(c)) unpin(c); } catch (er) {}
             ZT.move(tabOf(c).id, F + 2); apply(); await sleep(300);
         }
         assert.deepEqual(order(), ["A", "B", "C", "D", "E"]);
@@ -534,7 +543,7 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
             assert.ok(isMirrored(c) && isMirrored(d), "both drawn as mirrors");
         } finally {
             try { win._wvSelTabIDs = new Set(); wv._wvTabMultiSelSync(win); } catch (er) {}
-            for (const it of [c, d]) { try { wv._pinnedTabsRemove(it.libraryID, it.key); } catch (er) {} }
+            for (const it of [c, d]) { try { unpin(it); } catch (er) {} }
             apply(); await sleep(200);
             ZT.move(tC.id, F + 2); ZT.move(tD.id, F + 3); apply(); await sleep(200);
             wv._wvTabGroupStampJoin(tD, group.id); wv._tabGroupAddKey(group.id, { libraryID: d.libraryID, itemKey: d.key }); apply(); await sleep(300);
@@ -545,6 +554,8 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
     });
 
     it("a pin dropped right after a group's chip joins the group as its pinned first member", async function () {
+        // Where Zotero pins, joining a group unpins (Firefox; zotero-pin-any-tab.spec.js).
+        if (zpins()) this.skip();
         const tB = tabOf(b), mB = mirror(tB.id);
         const chip = doc.getElementById("wv-tgchip-" + group.id);
         const rC = rect(chip);
@@ -560,5 +571,113 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
         }
         assert.deepEqual(order(), ["A", "B", "C", "D", "E"]);
         await settle("after leave");
+    });
+});
+
+// MJT 2026-11-11 (11.0-beta.4, 1.0.5-l10n.3): "Dragging a pinned tab to a normal
+// tab should display the target width." His bar: a pinned My Library, ONE
+// normal tab -- a second library tab -- and a pinned document dragged out past
+// it, which stayed an icon. Firefox: a pinned tab dragged onto the scrolling
+// box unpins (drag-and-drop.mjs shouldUnpin); Weavero previews the drop's
+// outcome (tabs.ts dragover), a normal tab's width. Not reproduced in the runner
+// (eleven variants: a note or a PDF pin, selected or pressed from the library
+// tab, multi-selections, a split, a second window); this case locks his layout,
+// and each preview change goes to the drag ring for the next real drag.
+describe("Weavero — a pin dragged past the only normal tab takes a tab's width (MJT's bar)", function () {
+    this.timeout(90000);
+    let wv, win, doc, ZT, cont, P, N, L2;
+    const sleep = (ms) => new Promise(r => win.setTimeout(r, ms));
+    const rect = (el) => el.getBoundingClientRect();
+    const tabOf = (it) => ZT._tabs.find(t => t && t.data && t.data.itemID === it.id) || null;
+    const mirror = (id) => doc.querySelector('#wv-pinned-mirrors .wv-pinned-mirror[data-tab-id="' + id + '"]');
+    const waitFor = async (fn, ms, what) => {
+        const t0 = Date.now();
+        while (Date.now() - t0 < ms) { try { const v = fn(); if (v) return v; } catch (er) {} await sleep(100); }
+        throw new Error("timeout waiting for " + what);
+    };
+    const dragEv = (type, x, y, dt, target) => {
+        const ev = new win.DragEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, screenX: Math.round(win.mozInnerScreenX + x), screenY: Math.round(win.mozInnerScreenY + y), dataTransfer: dt });
+        target.dispatchEvent(ev);
+    };
+    const native = () => wvT.nativeWindows() && !(wvT.lib().wvZoteroPinsTabs && wvT.lib().wvZoteroPinsTabs());
+
+    before(async function () {
+        wv = wvT.plugin();
+        if (!wv) wvT.absent("plugin");
+        win = Zotero.getMainWindow(); doc = win.document; ZT = win.Zotero_Tabs;
+        cont = doc.getElementById("tab-bar-container");
+        if (!cont || typeof win.DragEvent !== "function") this.skip();
+        // Where Zotero pins tabs itself its pins are not Weavero's mirrors.
+        if (wvT.lib().wvZoteroPinsTabs && wvT.lib().wvZoteroPinsTabs()) this.skip();
+        P = new Zotero.Item("note"); P.setNote("<p>wv pin past one tab P</p>"); await P.saveTx();
+        await win.ZoteroPane.openNote(P.id, { openInWindow: false });
+        await waitFor(() => tabOf(P), 15000, "note tab P");
+        wv._pinnedTabsAdd(P.libraryID, P.key);
+        if (native()) {
+            // His bar: My Library pinned, a second library tab the one normal tab.
+            wv._wvSetLibraryTabPinned(win, "zotero-pane", true);
+            ZT.addLibraryTab({ select: true });
+            L2 = await waitFor(() => ZT._tabs.find(t => t.id !== "zotero-pane" && String(t.type).startsWith("library")), 10000, "a second library tab");
+        }
+        else {
+            // An older Zotero: its fixed library tab, the pin, one normal tab.
+            N = new Zotero.Item("note"); N.setNote("<p>wv pin past one tab N</p>"); await N.saveTx();
+            await win.ZoteroPane.openNote(N.id, { openInWindow: false });
+            await waitFor(() => tabOf(N), 15000, "note tab N");
+        }
+        wv._applyPinnedTabs(win); wv._applyTabGroups(win);
+        await sleep(800);
+    });
+
+    after(async function () {
+        if (!ZT) return;
+        try { if (P) wv._pinnedTabsRemove(P.libraryID, P.key); } catch (er) {}
+        try { if (native()) wv._wvSetLibraryTabPinned(win, "zotero-pane", false); } catch (er) {}
+        try { wv._applyPinnedTabs(win); wv._applyTabGroups(win); } catch (er) {}
+        for (const t of [P && tabOf(P), N && tabOf(N), L2]) { if (t) { try { ZT.close(t.id); } catch (er) {} } }
+        await sleep(400);
+        try { if (ZT._tabs.findIndex(t => t.id === "zotero-pane") > 0) ZT.move("zotero-pane", 0); } catch (er) {}
+        try { ZT.select("zotero-pane"); } catch (er) {}
+        await wvT.erase(P, N);
+    });
+
+    it("over the normal tab and past it: a normal tab's width; back over the pins: a pin's", async function () {
+        const tP = tabOf(P);
+        let m = mirror(tP.id);
+        assert.ok(m, "fixture: P drawn as a pinned icon");
+        const normals = Array.from(doc.querySelectorAll("#tab-bar-container .tabs-wrapper .tabs > .tab, #tab-bar-container .tabs > .tab"))
+            .filter(t => rect(t).width > 1 && !t.classList.contains("wv-pinned-tab") && t.getAttribute("data-id") !== tP.id
+                && !(!wvT.nativeWindows() && t.getAttribute("data-id") === "zotero-pane"));
+        assert.lengthOf(normals, 1, "fixture: ONE normal tab: " + normals.map(t => t.getAttribute("data-id")).join(","));
+        const nt = normals[0], rN = rect(nt), refW = rN.width;
+        const y = Math.round(rect(m).top + rect(m).height / 2), x0 = Math.round(rect(m).left + rect(m).width / 2);
+        const dt = new win.DataTransfer();
+        dragEv("dragstart", x0, y, dt, m);
+        const at = {};
+        try {
+            const pass = async (xs) => { for (const x of xs) { let t = doc.elementFromPoint(x, y); if (!t || !cont.contains(t)) t = cont; dragEv("dragover", x, y, dt, t); await sleep(40); } await sleep(200); };
+            await pass([x0 + 2, x0 + 4]);
+            at.pins = { attr: m.getAttribute("data-wv-pin-preview"), w: rect(m).width };
+            // Over the normal tab, then past it, as a hand moves (every 12px).
+            const xs = []; for (let x = x0 + 16; x <= Math.round(rN.right + 24); x += 12) xs.push(x);
+            await pass(xs);
+            at.past = { attr: m.getAttribute("data-wv-pin-preview"), w: rect(m).width };
+            // Back over the pins.
+            const back = []; for (let x = Math.round(rN.right + 12); x >= x0; x -= 24) back.push(x);
+            await pass(back.concat([x0 + 2, x0]));
+            at.back = { attr: m.getAttribute("data-wv-pin-preview"), w: rect(m).width };
+        }
+        finally {
+            dt.dropEffect = "move";
+            dragEv("drop", x0, y, dt, m);
+            dragEv("dragend", x0, y, dt, m);
+            await sleep(900);
+        }
+        const ring = ((/** @type {any} */ (Zotero))._wvGroupDnDLog || []).filter(l => /pin-preview/.test(l)).slice(-6).join(" / ");
+        assert.isBelow(at.pins.w, 40, "over the pins it stays a pin: " + JSON.stringify(at));
+        assert.strictEqual(at.past.attr, "unpin", "past the normal tab the drop unpins: " + JSON.stringify(at) + " ring: " + ring);
+        assert.approximately(at.past.w, refW, 2, "and the preview is as wide as that tab (" + refW + "): " + JSON.stringify(at));
+        assert.isBelow(at.back.w, 40, "back over the pins, a pin again: " + JSON.stringify(at));
+        assert.ok(wv._pinnedTabsHas(P.libraryID, P.key), "dropped back among the pins, P stays pinned");
     });
 });

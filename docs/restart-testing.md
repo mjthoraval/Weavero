@@ -105,6 +105,15 @@ checked, or the dev bridge.
    snapshot as reader windows' own documents, pins a tab in the managed
    window, files a two-tab reader window away with Save and Close, opens a
    note in its own window, moves two reading positions and splits one view.
+   It also puts two tabs of the first window side by side (a split view).
+   On a Zotero with its own windows (zotero#6035, 11.0-beta.4 and later) it
+   builds the same workspace with Zotero's windows: there are no reader or
+   note windows there, so the second and third windows come from Zotero's New
+   Window, and each reader window's role goes to a main window without a
+   library tab (what Zotero opens for a document "in a new window"). There is
+   no orphan and no reader sidebar to restore. Instead, the first window gets a
+   second library tab, and the second window's library tab is pinned and
+   split beside a document. Pins are Zotero's own where Zotero pins any tab.
    `Zotero._wvFixtureOpts = { reset: true }` closes everything first. The
    report's **COVERAGE** section lists what the before-workspace contained and
    flags any essential element at zero, so a green run on a thin workspace
@@ -240,6 +249,8 @@ rows a given run actually exercised.
 | A second main window holding only its library tab vanished at a restart, its own title and settings with it (the store skipped it as "nothing to restore" since 2026-06-03; MJT 2026-10-26, fixed in 0.22.3-dev.40; escaped this protocol because W2 always had tabs) | W3: library tab only, titled "RTF library-only" | main windows by name; custom title per main window |
 | The main window reopened on the collection selected last in ANOTHER main window (Zotero keeps one `lastViewedFolder` for every window and the main window's tree reads it at startup; the anchor's own collection was captured, never applied; MJT 2026-10-26, fixed in 0.22.3-dev.45: the quit flush points it at the anchor's) | W3 on collection "RTF W3", selected after W1's | collection per main window |
 | Pinned item-pane section and open / collapsed sections per main window (Zotero keeps one of each for every window; MJT 2026-10-26, 0.22.3-dev.47: the first window keeps Zotero's own, the others their own, saved with the window) | W3 pins "related" (set aside: no item shown) and collapses Tags; W1 keeps its own | pinned section and Tags section state per main window |
+| Split view, two tabs side by side, must survive a restart (1.0.5, MJT 2026-11-10: "Yes, as Firefox") | W1 splits two documents; with Zotero's own windows, W2's pinned library tab is split beside the selected duplicate | split views per main window, as left\|right pairs |
+| The fixture's second window could not be built on Zotero's own windows: Weavero leaves windows to Zotero there, and the wait for its own window failed (2026-11-11 run on 11.0-beta.4) | the native build: W2 and W3 from Zotero's New Window, R1-R3, R5, R6 as windows without a library tab, a second library tab in W1, a pinned library tab | main windows matched by title, then by the most tabs in common (Zotero's window numbers follow its reopen order) |
 
 ## How the restore works (as of 0.15.3)
 

@@ -84,10 +84,12 @@ describe("Weavero — survey fixes, round D", () => {
         wv._setupItemsListFilter(win);
         assert.strictEqual(iv._wvSetFilterWrapped, wv._wvWireTag(), "wired before the teardown");
         assert.isOk(Object.getOwnPropertyDescriptor(iv, "setFilter"), "own-prop wrap in place");
-        assert.isOk(Object.getOwnPropertyDescriptor(iv, "changeCollectionTreeRow"));
+        // The collection switch goes through the plural on Zotero 10+ (1.0.5-dev.12).
+        const coll = typeof iv.changeCollectionTreeRows === "function" ? "changeCollectionTreeRows" : "changeCollectionTreeRow";
+        assert.isOk(Object.getOwnPropertyDescriptor(iv, coll));
         wv._teardownItemsListFilter(win);
         assert.isUndefined(Object.getOwnPropertyDescriptor(iv, "setFilter"), "the prototype method shows through again");
-        assert.isUndefined(Object.getOwnPropertyDescriptor(iv, "changeCollectionTreeRow"));
+        assert.isUndefined(Object.getOwnPropertyDescriptor(iv, coll));
         assert.isUndefined(iv._wvSetFilterWrapped, "stamp gone with the wrap");
         assert.isUndefined(iv._wvCollChangeWrapped);
         // Put the suite's window back the way the plugin left it.

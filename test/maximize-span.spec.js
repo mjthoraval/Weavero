@@ -124,6 +124,9 @@ describe("Weavero — maximize across monitors", function () {
     it("a right-click on the maximize button opens it, anywhere else nothing", async function () {
         const btn = win.document.querySelector(".titlebar-buttonbox .titlebar-max");
         if (!btn || win.getComputedStyle(btn).display === "none") this.skip();   // macOS: the system's buttons
+        // macOS CI 2026-11-13: the button is in the page and not display:none there, yet the
+        // system draws its own; max-span.ts wires nothing on macOS.
+        if (Zotero.isMac) this.skip();
         const keys = lib.wvListenKeys(win).map(k => k.key);
         assert.includeMembers(keys, ["maxSpan:contextmenu", "maxSpan:rbup"], "wired on the main window");
         const own = Object.prototype.hasOwnProperty.call(wv, "_wvMaxSpanCombos");

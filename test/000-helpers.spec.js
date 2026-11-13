@@ -518,6 +518,8 @@
             { re: /^Weavero — File \/ Edit menubar entries for the window commands (opened from the hamburger|the menubar keeps Settings, Plugins and Exit)/, why: "platform: macOS has no hamburger (_applyCompactTitleBar skips it; the menu bar is the system's)" },
             { re: /^Weavero — tab-level undo choice a NEW main window gets the Edit hook/, why: "platform: Windows only, multi-main on" },
             { re: /^Weavero — window identity, lone window/, why: "needs the lone-window case" },
+            { re: /^Weavero — menus take their words from weavero\.ftl the menubar's File and Edit entries$/, why: "platform: macOS, the menu bar is the system's and does not open from script" },
+            { re: /^Weavero — split view: two tabs side by side 17\. every split entry has an icon/, why: "platform: macOS menus carry no icons" },
             // Maximize across monitors (maximize-span.spec.js, 2026-11-11).
             { re: /^Weavero — maximize across monitors .*\(needs two monitors side by side\)$/, why: "runner: one monitor, or none side by side, or a platform where a window cannot span (macOS, Wayland)" },
             { re: /^Weavero — maximize across monitors (a right-click on the maximize button|while spanned the button shows)/, why: "platform: macOS has no maximize button in the page (the system's own), or the runner's window is not in its normal state" },

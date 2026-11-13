@@ -226,7 +226,10 @@ describe("Weavero — menus take their words from weavero.ftl", function () {
         assert.deepEqual(out.bad, []);
     });
 
-    it("the menubar's File and Edit entries", async () => {
+    it("the menubar's File and Edit entries", async function () {
+        // macOS: the menu bar is the system's; its popups do not open from
+        // script (macOS CI 2026-11-13, "menu_FilePopup opened: false").
+        if (Zotero.isMac) this.skip();
         const out = { n: 0, bad: [] };
         for (const id of ["menu_FilePopup", "menu_EditPopup"]) {
             const p = doc.getElementById(id);
@@ -262,6 +265,8 @@ describe("Weavero — menus take their words from weavero.ftl", function () {
             assert.isOk(wired(), "the reader window's wiring ran");
             assert.isOk(rw.document.querySelector('link[href="weavero.ftl"]'), "weavero.ftl linked in the reader window");
             step("reader File menu");
+            // Not on macOS: the system's menu bar does not open from script.
+            if (!Zotero.isMac) {
             const fp = rw.document.getElementById("menu_FilePopup");
             const shown = new Promise(r => fp.addEventListener("popupshown", () => r(true), { once: true }));
             fp.openPopupAtScreen(rw.screenX + 40, rw.screenY + 60, false);
@@ -277,6 +282,7 @@ describe("Weavero — menus take their words from weavero.ftl", function () {
                 }
             }
             finally { try { fp.hidePopup(); } catch (e) {} await sleep(200); }
+            }
         }
         finally { step("reader close"); try { rw.close(); } catch (e) {} await sleep(800); }
         // A stock note window: an element Weavero labels there links the

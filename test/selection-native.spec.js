@@ -43,6 +43,15 @@ describe("Weavero — Zotero's own selection handler survives a re-wire and a di
 
     after(async function () {
         this.timeout(30000);
+        // Let the window finish what the cases started before it closes:
+        // reachesNative() calls Zotero's handler by hand (debounce off), which
+        // starts the item pane's async work in B. Closed at once after it,
+        // Zotero 10.0.8 ENDED with no quit request and no crash report, at
+        // this close: CI 2026-11-13, four of six release jobs (Windows, Ubuntu,
+        // macOS), and once on the maintainer's machine (2026-11-12). Cause not
+        // found yet (tracking registers). The pause is a test of that reading,
+        // not a fix: if Zotero still ends here, the reading is wrong.
+        await wvT.sleep(2000);
         try { if (B && !B.closed) { B._wvSavedParkClose = true; B.close(); } } catch (e) {}
         await wvT.waitFor(() => Zotero.getMainWindows().length === 1, 8000);
     });

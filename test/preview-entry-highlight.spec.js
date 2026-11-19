@@ -173,6 +173,12 @@ describe("Weavero — a link preview tints the whole reference entry", function 
     let on = null, off = null;
 
     before(async function () {
+        // CI + Linux only (1.2.0 gate, 2026-11-19, MJT: "Skip it on Linux CI, release"):
+        // on GitHub's Ubuntu runner with the Zotero beta the preview popup never opened
+        // (CI run 44537151777, both attempts: "the preview popup opened" null), so every
+        // case here failed in turn; Windows and macOS CI and local runs pass. To fix
+        // with the other CI skips (work/TODO.md).
+        if (Services.env.exists("CI") && Zotero.isLinux) this.skip();
         wv = wvT.plugin();
         for (const m of ["_wvPrevHlWanted", "_wvPrevHlBuild", "_wvPrevHlEntryFromLines", "_wvPrevHlFromPageData", "_wvWirePreviewLinkZones"]) wvT.method(m);
         const path = PathUtils.join(PathUtils.tempDir, "wv-prevhl-" + Date.now() + ".pdf");

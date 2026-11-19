@@ -1,4 +1,4 @@
-/* global describe, it, before, after, assert, Zotero, Components, PathUtils, IOUtils */
+/* global describe, it, before, after, assert, Zotero, Components, PathUtils, IOUtils, Services */
 
 // Link previews mark the whole reference entry, lightly (MJT 2026-11-17, on
 // 11.0-beta.4 with a Physical Review Research paper: "the red line is too dark
@@ -264,6 +264,11 @@ describe("Weavero — a link preview tints the whole reference entry", function 
     });
 
     it("the link zones land on the DOI in Weavero's picture as in Zotero's", async function () {
+        // CI only (1.2.0 gate, 2026-11-19, MJT: "Skip on CI, release now"): on GitHub's
+        // Ubuntu runner with the Zotero beta one of the two pictures had no zone over the
+        // DOI, Weavero's in one run and Zotero's in the next; Windows and macOS CI and
+        // local runs have both. To check on Linux by hand (work/TODO.md).
+        if (Services.env.exists("CI") && Zotero.isLinux) this.skip();
         assert.isOk(on && on.zone, "a zone over the DOI in Weavero's popup");
         assert.isOk(off && off.zone, "and in Zotero's");
         for (const k of ["left", "top", "width", "height"]) assert.approximately(on.zone[k], off.zone[k], 0.5, "zone " + k);

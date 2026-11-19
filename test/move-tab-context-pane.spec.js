@@ -1,4 +1,4 @@
-/* global describe, it, before, after, assert, Zotero, wvT */
+/* global describe, it, before, after, assert, Zotero, Services, wvT */
 // A reader tab moved to another main window and back leaves no item pane
 // behind in the context pane (leak probe 2026-11-13, Zotero 10.0.8).
 //
@@ -53,6 +53,12 @@ describe("Weavero — a tab moved between main windows leaves no item pane behin
     });
 
     it("a reader tab moved to a second window and back: no item pane under a tab id that is gone, in either window", async function () {
+        // CI only (1.2.0 gate, 2026-11-19, MJT: "Skip on CI, release now"): on GitHub's
+        // macOS and Ubuntu runners with Zotero 10 the move never landed within 20 s (two
+        // runs each); Windows CI and local runs move it (locally on 10.0.8 the test also
+        // fails now and then AFTER the move, "tab is undefined": the 2026-11-16 TODO entry).
+        // Unexplained: to check on Linux and macOS by hand (work/TODO.md).
+        if (Services.env.exists("CI") && (Zotero.isMac || Zotero.isLinux)) this.skip();
         const r = await wvT.openReaderTab(pdf.id);
         assert.isOk(r, "the reader");
         ZT.select(r.tabID);

@@ -18,6 +18,19 @@ URLs, `zotero://` links, and optional app schemes (`obsidian://`, `vscode://`, a
 
 **Interlinked navigation** — Ctrl/Cmd-click an internal PDF/EPUB/snapshot link to follow it in a split pane, or Shift+click to follow it in a coupled second window, without losing your place.
 
+### Where a link opens
+
+One meaning for each modifier wherever Weavero opens something — `zotero://` links in comments and notes, link chips, the Backlinks, Item Links and Related rows and their popups, bookmarks, internal links in a document, and the items list. ⌘ replaces Ctrl on macOS.
+
+| | Click / Enter | Ctrl+click / Ctrl+Enter | Shift+click / Shift+Enter | Middle-click |
+|---|---|---|---|---|
+| **From a tab in a split view** | opens it (a tab, or a window when Zotero's *Open PDFs in a new window* is on) | **beside**: in the split's other side; the tab that was there stays open | a new window | a new tab in the background: nothing on screen changes (a note opens in front: Zotero's note opener has no background mode) |
+| **With a tab locked on one side** (*Lock Tab*) | opens it; its tab shows beside the locked tab | **beside**: next to the locked tab (from either side); the locked tab stays | a new window | a new tab in the background |
+| **Alone** | opens it | **beside**: a new split view of this tab and the target | a new window | a new tab in the background |
+| **A link inside the same PDF, EPUB or snapshot** | jumps there | the document's second view (Zotero's split of one file) | a coupled second reader window | the document at that place, in a background tab |
+
+Rows in lists keep their selection clicks (in the items list, Ctrl+click and Shift+click still select rows): use Ctrl+Enter (⌘+Return) there to open the selected item beside. Zotero's own Enter, Shift+Enter and double-click are unchanged. A middle click on a note opens it in front: Zotero's note opener has no background mode. A web link opens in the browser whatever the modifier; Alt keeps its own meanings; on macOS, Control+click is the context menu.
+
 ## Filter your library and reader
 
 A funnel next to the search box opens a filter popup: annotation colour/type/comment, attachment and item type, *Has DOI / URL / Related / Links*, and multi-select tag, publication, author, and collection facets — with include/exclude, OR groups, and a removable chip bar above the items tree. A matching funnel in the reader filters the open document's annotations. A second funnel beside the reader sidebar's search box filters the **annotations pane** the same way — colour, type, tag, comment, person, date — while the document keeps every annotation, so ink strokes can leave the pane and stay on the page. Per document, or as a default for all of them (Use as Default replaces the default, Alt+click adds to it). Zotero's own colour and tag selector at the foot of the pane folds to a **handle**: click the pill to expand or collapse it (one state for every document, kept across restarts; a selection made before folding stays in force and turns the pill blue). The library's Tag Selector gets the same handle on its top edge, and *View → Layout → Tag Selector* follows it. Each handle has its own switch in Settings; off, the selector is Zotero's again. The funnel itself can be switched off there; the pane then follows the types ticked in Settings. Two marks: a green line under the funnel, and under the chips the default sets, says a default other than "show everything" exists (those chips are shown in every document, even one with nothing of that kind); a blue dot on the funnel says this document departs from the default, with its own filter on top of it or after Clear. The footer names the default wherever the document departs from it.

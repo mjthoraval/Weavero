@@ -55,7 +55,11 @@ describe("Weavero — Settings prefs have registered defaults", () => {
         // Split view: two tabs side by side (2026-11-10).
         "enableSplitView",
         // Its footers: a label on each side whose item pane is closed (2026-11-12).
-        "splitViewFooter"];
+        "splitViewFooter",
+        // (splitViewFollow: its row left the pane with Follow Selected Item, archived
+        // 2026-11-18; the pref keeps its default in prefs-table.ts.)
+        // Link previews tint the whole reference entry (2026-11-17).
+        "previewEntryHighlight"];
         // The item pane sections' paneScope.* prefs (levels, kinds, "always
         // shown" pins) had their grid here from dev.114 to dev.161 and are
         // off the pane since (MJT 2026-11-03); registered still
@@ -79,7 +83,7 @@ describe("Weavero — Settings prefs have registered defaults", () => {
         "enableTagsCountAuto", "enableUriUtilities", "enableVisualExtras", "enableZoteroLinks", "inlineLinks",
         "outlinePageNumbers", "readerItemPane", "readerOutlineTakeover", "recolorAmLinks",
         "showLibraryBookmarksInReader", "windowIcons", "itemPaneStickyHeaders", "enableTagsRelatedScope",
-        "noteOutline", "noteFolding", "splitViewFooter",
+        "noteOutline", "noteFolding", "splitViewFooter", "previewEntryHighlight",
         "paneScope.tags.own", "paneScope.related.own", "paneScope.links.note", "paneScope.links.ann", "paneScope.links.loop", "paneScope.links.broken",
         "paneScope.backlinks.own", "paneScope.backlinks.loop",
         "paneScope.links.zlinks", "paneScope.links.citations", "paneScope.backlinks.zlinks", "paneScope.backlinks.citations"];

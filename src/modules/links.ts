@@ -23,8 +23,9 @@ import { wvHtmlEl, wvPopupHost, winOf } from "../lib/dom";
 import { wvMenuItem, wvMenuSeparator } from "../lib/menu";
 import { wvItemsTreeEls, wvMainWins } from "../lib/windows";
 import { wvLinkGlyphUri } from "../lib/link-glyph";
-import { WvSectionDesc, WvLkRow, WvBlEnd, WV_BL_CARD_FOOT, wvBlBodyRegister, wvBlBodyForget, wvBlCardHide, wvBlCardHost, wvBlHtmlToText, wvBlAttOf, wvBlAnnText, wvBlTargetHl } from "./backlinks";
+import { WvSectionDesc, WvLkRow, WvBlEnd, wvBlCardFoot, wvBlBodyRegister, wvBlBodyForget, wvBlCardHide, wvBlCardHost, wvBlHtmlToText, wvBlAttOf, wvBlAnnText, wvBlTargetHl } from "./backlinks";
 import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
+import type { WvOpenWhere } from "../lib/keys";
 
 /** A note citation node and a quoted annotation node, as the note editor
  *  draws them (its node views set the class alone) or as a note's stored
@@ -462,7 +463,7 @@ class _LinksMixin {
                         annText: wvBlAnnText(r.src),
                         segs: r.entry.excerpt.segs,
                         compact,
-                        open: (newWindow: boolean) => self._wvLkOpen(r, { newWindow, win: winOf(row) }),
+                        open: (where: WvOpenWhere, rowEl?: any) => self._wvLkOpen(r, { where, win: winOf(row), from: rowEl || row }),
                         menu: (ev: any) => self._wvLkOpenMenu(ev, r),
                         card: (el: any) => self._wvLkCardShow(el),
                         onKey,
@@ -493,24 +494,38 @@ class _LinksMixin {
      *  Any other link opens as written (page, annotation, wvpos); a
      *  citation selects the cited item; a quote opens the quoted
      *  annotation in its file; a broken reference shows where it is written. */
-    async _wvLkOpen(r: WvLkRow, opts: { newWindow?: boolean; win?: any } = {}) {
+    async _wvLkOpen(r: WvLkRow, opts: { newWindow?: boolean; where?: WvOpenWhere | null; win?: any; from?: any } = {}) {
         const self: any = this;
         try {
             if (!r) return;
-            if (!r.target) { await self._wvBlOpenSource(r.src, r.entry, { newWindow: !!opts.newWindow }); return; }
+            // Where (open-where.ts, MJT 2026-11-17): Shift a new window, Ctrl/Cmd
+            // beside the row's tab, the middle button a tab in the background;
+            // `newWindow` is the older callers'.
+            const where: WvOpenWhere = opts.where || (opts.newWindow ? "window" : "here");
+            const from = opts.from || null;
+            if (!r.target) { await self._wvBlOpenSource(r.src, r.entry, { where, from }); return; }
             const t = r.target;
-            if (r.entry.ref === "link" && /^zotero:\/\/note\//i.test(r.entry.url)) { await self.handleZoteroURI(r.entry.url); return; }
+            // A link as written goes through the link handler, placed as asked
+            // (a window: Zotero's Shift rule on its item first, below).
+            const viaLink = async (url: string, w2: WvOpenWhere) => {
+                if (w2 === "here") await self.handleZoteroURI(url);
+                else await self._wvOpenTarget(opts.win || null, { url }, w2, from);
+            };
+            if (r.entry.ref === "link" && /^zotero:\/\/note\//i.test(r.entry.url)) { await viaLink(r.entry.url, where); return; }
             if (isNote(t)) {
+                if ((where === "beside" || where === "background") && await self._wvOpenTarget(opts.win || null, { item: t }, where, from)) return;
                 const w = (opts.win && opts.win.ZoteroPane) ? opts.win : Zotero.getMainWindow();
-                if (w && w.ZoteroPane && typeof w.ZoteroPane.openNote === "function") await w.ZoteroPane.openNote(t.id, { openInWindow: !!opts.newWindow });
+                if (w && w.ZoteroPane && typeof w.ZoteroPane.openNote === "function") await w.ZoteroPane.openNote(t.id, { openInWindow: where === "window" });
                 return;
             }
-            if (opts.newWindow && await self._wvOpenItemInNewWindow(t)) return;
-            if (r.entry.ref === "link") { await self.handleZoteroURI(r.entry.url); return; }
+            if (where === "window" && await self._wvOpenItemInNewWindow(t)) return;
+            const w3: WvOpenWhere = where === "window" ? "here" : where;
+            if (r.entry.ref === "link") { await viaLink(r.entry.url, w3); return; }
             if (r.entry.ref === "quote" || isAnn(t)) {
                 const link = self._buildOpenLink(t);
-                if (link) { await self.handleZoteroURI(link); return; }
+                if (link) { await viaLink(link, w3); return; }
             }
+            if ((w3 === "beside" || w3 === "background") && await self._wvOpenTarget(opts.win || null, { item: t }, w3, from)) return;
             self._wvBlOpenItem(t, "select");
         } catch (e) { Zotero.debug("[Weavero] links open err: " + e); }
     }
@@ -571,7 +586,7 @@ class _LinksMixin {
         if (!r) return;
         self._wvBlCardOpen(row, (card: any, doc: any) => {
             self._wvBlCardLineage(card, doc, { srcItem: r.src, src: r.entry, target: r.target, broken: r.broken, url: r.entry.url });
-            wvHtmlEl(doc, "div", "wv-bl-card-foot", WV_BL_CARD_FOOT, card);
+            wvHtmlEl(doc, "div", "wv-bl-card-foot", wvBlCardFoot(), card);
         });
     }
 }

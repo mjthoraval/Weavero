@@ -441,12 +441,20 @@ class _ReaderMixin {
         // Zotero shows for URL fields elsewhere in its UI.
         a.title = url;
         a.className = "wv-link " + this._urlLinkClass(url);
-        a.addEventListener("click", e => {
+        // Where it opens (open-where.ts): plain, Ctrl/Cmd beside, Shift a new
+        // window; the middle button (auxclick) a background tab.
+        const go = (e, where) => {
             e.preventDefault();
-            if (url.startsWith("zotero://")) this.handleZoteroURI(url);
-            else this._launchURL(url);
+            const lp: any = wvLivePlugin();
+            if (!lp || where === null) return;
+            Promise.resolve(lp._wvOpenTarget(null, { url }, where, panel)).catch(() => {});
             panel.hidePopup();
+        };
+        a.addEventListener("click", e => {
+            const lp: any = wvLivePlugin();
+            go(e, lp ? lp._wvOpenWhere(e) : "here");
         });
+        a.addEventListener("auxclick", e => { if (e.button === 1) go(e, "background"); });
         return a;
     }
 
@@ -858,7 +866,7 @@ class _ReaderMixin {
             // 2026-11-02, "The preview on hover is missing here"), the
             // press's effect in its foot -- no tooltip over it ("Open in
             // library" until dev.148).
-            this._wvBlCardHover(row, "relCard", (lp: any) => lp._wvRelCardShow(row, annotationItem, item, "Click: open · Right-click for more"));
+            this._wvBlCardHover(row, "relCard", (lp: any) => lp._wvRelCardShow(row, annotationItem, item, wvStr("weavero-open-card-foot", { platform: Zotero.isMac ? "mac" : "other" }, null)));
 
             // Type icon. Zotero stores annotation icons in the
             // `universal` colour folder
@@ -954,7 +962,13 @@ class _ReaderMixin {
             });
             row.appendChild(rmBtn);
 
-            const onActivate = async (e) => {
+            // `where` (open-where.ts): a click's or Enter's modifiers, the middle
+            // button's "background"; a modified open of the row's item, else
+            // its plain one.
+            const onActivate = async (e, whereArg?) => {
+                const lp: any = wvLivePlugin();
+                const where = whereArg || (lp ? lp._wvOpenWhere(e) : "here");
+                if (where === null) return;   // macOS Control+click: the menu
                 // Click inside a url-span in the title: open that URL
                 // instead of navigating to the related item.
                 try {
@@ -965,10 +979,7 @@ class _ReaderMixin {
                         e.preventDefault();
                         const u = sp.getAttribute("data-href")
                             || sp.textContent || "";
-                        if (u) {
-                            if (u.startsWith("zotero://")) this.handleZoteroURI(u);
-                            else this._launchURL(u);
-                        }
+                        if (u && lp) Promise.resolve(lp._wvOpenTarget(null, { url: u }, where, row)).catch(() => {});
                         try { panel.style.display = "none"; } catch (er) {}
                         return;
                     }
@@ -977,7 +988,8 @@ class _ReaderMixin {
                 e.preventDefault();
                 let opened = false;
                 try {
-                    if (item && item.isAnnotation && item.isAnnotation()) {
+                    if (lp && where !== "here") opened = await lp._wvOpenTarget(null, { item }, where, row);
+                    if (!opened && item && item.isAnnotation && item.isAnnotation()) {
                         opened = await this._openAnnotationInReader(item);
                     }
                 } catch (err) {
@@ -1002,9 +1014,12 @@ class _ReaderMixin {
                     },
                 });
             });
-            row.addEventListener("click", onActivate);
+            row.addEventListener("click", (e) => { onActivate(e); });
+            row.addEventListener("mousedown", (e) => { if (e.button === 1) e.preventDefault(); });
+            row.addEventListener("auxclick", (e) => { if (e.button === 1) onActivate(e, "background"); });
             row.addEventListener("keydown", (e) => {
-                if (e.key === "Enter" || e.key === " ") onActivate(e);
+                if (e.key === "Enter") onActivate(e);
+                else if (e.key === " ") onActivate(e, "here");
             });
 
             list.appendChild(row);
@@ -1952,6 +1967,9 @@ class _ReaderMixin {
      *  every re-render, so re-injection is automatic. */
     _toolbarHandlerImpl(event) {
         try {
+            // WV-TEMP-134772 (upstream-fixes.ts): the shared reader prototype's menu
+            // builder, wrapped once from the first reader seen.
+            try { (this as any)._wvWireReaderMenuFix(event && event.reader); } catch (e) {}
             const { reader, doc, append } = event || {};
             const rw: any = reader && reader._window;
             // Standalone reader windows only: a reader TAB lives in a main
@@ -4892,6 +4910,8 @@ class _ReaderMixin {
                 // `|| this` fallback ran the dead instance here.
                 const lp: any = wvLivePlugin();
                 if (!lp) return;
+                // The background-restore guard's pick, if it is this window.
+                try { lp._wvBgForgetWindow(win); } catch (er) {}
                 // Mid-session close: PARK (save) any group whose only members live in
                 // this closing window, so it persists for next launch instead of
                 // being deleted by the next main-window apply (Firefox saved-group
@@ -4936,7 +4956,21 @@ class _ReaderMixin {
                         let belongs = false;
                         // A dead Proxy throws on any access → treat as orphan, drop it.
                         try { belongs = !!r && r._window === win; } catch (er) { belongs = true; }
-                        if (belongs) { rs.splice(i, 1); removed++; }
+                        if (!belongs) continue;
+                        // Zotero's own teardown of the reader. Its window's
+                        // `onclose="reader.close()"` runs only for a close the
+                        // user asks the window manager for; Weavero closes
+                        // reader windows by script (its compact title bar's
+                        // close button, deck windows, a session switch, a
+                        // disable), which fires no `close` event, so uninit()
+                        // never ran and the reader's BlockingObserver stayed
+                        // registered on "http-on-modify-request" with the
+                        // reader, its window and its PDF (full Zotero 10 run
+                        // 2026-11-13: 16 closed reader windows kept by it).
+                        // Guard: test/reader-leak.spec.js.
+                        try { if (r && !r._isUninitialized && typeof r.uninit === "function") r.uninit(); } catch (er) {}
+                        try { if (r && r._blockingObserver && typeof r._blockingObserver.dispose === "function") { r._blockingObserver.dispose(); r._blockingObserver = null; } } catch (er) {}
+                        rs.splice(i, 1); removed++;
                     }
                     if (removed) { try { (Zotero as any).Session.debounceSave(); } catch (er) {} }
                 } catch (er) {}
@@ -10223,17 +10257,18 @@ class _ReaderMixin {
             }
             const handler = (event) => {
                 try {
-                    if (event.button !== 0) return;
-                    // Ctrl on Win/Linux, Cmd (meta) on macOS (where Ctrl+click
-                    // is the OS context-menu gesture); Shift for the window
-                    // variant. Require exactly one (ignore neither / both).
-                    const ctrl = wvAccel(event);
-                    const shift = event.shiftKey;
-                    if (ctrl === shift) return;
+                    if (event.button !== 0 && event.button !== 1) return;
                     // Closures go stale across a hot-reload — resolve the live
                     // plugin instance at event time (none: native click).
                     const plugin = wvLivePlugin();
                     if (!plugin) return;
+                    // Ctrl on Win/Linux, Cmd (meta) on macOS (where Ctrl+click
+                    // is the OS context-menu gesture) for the other view; Shift
+                    // for the window variant; the middle button for a tab in the
+                    // background (open-where.ts). Neither, both, or Alt: the
+                    // reader's own click.
+                    const where = plugin._wvOpenWhere(event);
+                    if (where !== "beside" && where !== "window" && where !== "background") return;
                     const ir = reader._internalReader;
                     if (!ir) return;
                     // Identify the source pane (the view that owns this iframe).
@@ -10308,8 +10343,9 @@ class _ReaderMixin {
                         if (win && typeof win.setTimeout === "function") win.setTimeout(clearSourceSelection, 0);
                         else setTimeout(clearSourceSelection, 0);
                     } catch (er) { clearSourceSelection(); }
-                    if (ctrl) plugin._wvCtrlNavigate(reader, sourceIsPrimary, targetLoc);
-                    else plugin._wvOpenInDupWindow(reader, targetLoc);
+                    if (where === "beside") plugin._wvCtrlNavigate(reader, sourceIsPrimary, targetLoc);
+                    else if (where === "window") plugin._wvOpenInDupWindow(reader, targetLoc);
+                    else plugin._wvOpenReaderBackground(reader, targetLoc);
                 } catch (e) {
                     Zotero.debug("[Weavero] reader link-click handler err: " + e);
                 }
@@ -10365,10 +10401,11 @@ class _ReaderMixin {
             // "exactly one of Ctrl/Shift" gate.
             const clearSelIfModLink = (event) => {
                 try {
-                    if (event.button !== 0) return;
+                    if (event.button !== 0 && event.button !== 1) return;
                     const ctrl = wvAccel(event);
                     const shift = event.shiftKey;
-                    if (ctrl === shift) return;   // need exactly one modifier
+                    // need exactly one modifier -- or the middle button
+                    if (event.button === 0 && ctrl === shift) return;
                     if (typeof view.pointerEventToPosition !== "function"
                         || typeof view._getSelectableOverlay !== "function") return;
                     let pos;
@@ -10377,6 +10414,9 @@ class _ReaderMixin {
                     let ov;
                     try { ov = view._getSelectableOverlay(pos); } catch (e) { return; }
                     if (!ov || (ov.type !== "internal-link" && ov.type !== "citation")) return;
+                    // The middle button on a link opens a tab in the background
+                    // (the pointerup handler): its press starts no autoscroll.
+                    if (event.button === 1) { try { event.preventDefault(); } catch (e) {} return; }
                     // Wipe the reader's selection model + re-render in this same
                     // dispatch (our _render runs last -> the extended range never paints).
                     try { if (typeof view._setSelectionRanges === "function") view._setSelectionRanges(); } catch (e) {}
@@ -10415,16 +10455,18 @@ class _ReaderMixin {
                 try { win.removeEventListener("click", win._wvDomLinkClicksHandler, true); } catch (e) {}
                 try { delete win._wvDomLinkClicksWired; delete win._wvDomLinkClicksHandler; } catch (e) {}
             }
+            // `click` (the left button) and `auxclick` (the middle one: a tab in
+            // the background, open-where.ts).
             const handler = (event) => {
                 try {
-                    if (event.button !== 0) return;
-                    const ctrl = wvAccel(event);
-                    const shift = event.shiftKey;
-                    if (ctrl === shift) return;   // exactly one modifier
+                    if (event.button !== 0 && event.button !== 1) return;
                     // Closures go stale across a hot-reload — resolve live
                     // (none: native click).
                     const plugin = wvLivePlugin();
                     if (!plugin) return;
+                    // Exactly one of Ctrl/Cmd and Shift, or the middle button.
+                    const where = plugin._wvOpenWhere(event);
+                    if (where !== "beside" && where !== "window" && where !== "background") return;
                     const ir = reader._internalReader;
                     if (!ir) return;
                     // Identify the source pane (the view owning this iframe).
@@ -10459,8 +10501,9 @@ class _ReaderMixin {
                     // Keep the source pane put: pre-empt the reader's own bubble-
                     // phase click handler AND the default link navigation.
                     try { event.preventDefault(); event.stopImmediatePropagation(); } catch (e) {}
-                    if (ctrl) plugin._wvCtrlNavigate(reader, sourceIsPrimary, location);
-                    else plugin._wvOpenInDupWindow(reader, location);
+                    if (where === "beside") plugin._wvCtrlNavigate(reader, sourceIsPrimary, location);
+                    else if (where === "window") plugin._wvOpenInDupWindow(reader, location);
+                    else plugin._wvOpenReaderBackground(reader, location);
                 } catch (e) {
                     Zotero.debug("[Weavero] DOM reader link-click handler err: " + e);
                 }
@@ -10468,6 +10511,15 @@ class _ReaderMixin {
             if (wvListen(win, "domLinkClicks:click", "click", handler, true, (this as any)._wvWireTag())) {
                 this._dbg("[Weavero] reader link-clicks: wired a DOM iframe");
             }
+            wvListen(win, "domLinkClicks:auxclick", "auxclick", handler, true, (this as any)._wvWireTag());
+            // The middle press on a link starts no autoscroll.
+            wvListen(win, "domLinkClicks:middleDown", "mousedown", (event: any) => {
+                try {
+                    if (event.button !== 1) return;
+                    const t = event.target;
+                    if (t && typeof t.closest === "function" && t.closest("a[href]")) event.preventDefault();
+                } catch (e) {}
+            }, true, (this as any)._wvWireTag());
         } catch (e) {
             Zotero.debug("[Weavero] _wvWireReaderDomLinkClicks err: " + e);
         }
@@ -10570,6 +10622,8 @@ class _ReaderMixin {
             try {
                 if (v._wvPrevZonesOrig) back(v, "_onSetOverlayPopup", v._wvPrevZonesOrig);   // an older build's
                 delete v._wvPrevZonesOrig; delete v._wvPrevZonesWired; delete v._wvPrevZonesSeq;
+                // A preview still held by the entry highlight is dropped.
+                delete v._wvPrevHlSeq;
             } catch (e) {}
             try {
                 if (v._wvHlOrig) back(v, "_highlightPosition", v._wvHlOrig);
@@ -10796,8 +10850,25 @@ class _ReaderMixin {
             // mousedown handler in the iframe — fires URL action on first click,
             // independent of whatever Zotero does on row selection.
             const sidebarMouseDown = (e) => {
-                if (e.button !== 0) return;
+                if (e.button !== 0 && e.button !== 1) return;
                 if (!e.target || !e.target.closest) return;
+                // A comment link opened where its modifiers say (open-where.ts):
+                // plain, Ctrl/Cmd beside this reader, Shift a new window, the
+                // middle button a background tab. Not ours (macOS
+                // Control+click, the context click): left alone.
+                const lpW: any = wvLivePlugin();
+                const whereW = lpW ? lpW._wvOpenWhere(e) : (e.button === 0 ? "here" : null);
+                if (whereW === null) return;
+                if (e.button === 1) {
+                    const sp1 = e.target.closest(".wv-url-span");
+                    if (!sp1) return;
+                    e.stopPropagation();
+                    if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+                    e.preventDefault();
+                    const u1 = (sp1.getAttribute("data-href") || sp1.textContent || "").trim();
+                    if (u1 && lpW) Promise.resolve(lpW._wvOpenTarget(reader._window || null, { url: u1 }, "background", reader.tabID || sp1)).catch(() => {});
+                    return;
+                }
                 // Verbose edit-flow trace — log every click that lands inside
                 // an annotation comment area, even if we don't act on it.
                 const inCommentArea = e.target.closest(
@@ -10826,9 +10897,8 @@ class _ReaderMixin {
                 // not the URL itself.
                 const url = (urlSpan.getAttribute("data-href")
                           || urlSpan.textContent || "").trim();
-                if (!url) return;
-                if (url.startsWith("zotero://")) this.handleZoteroURI(url);
-                else this._launchURL(url);
+                if (!url || !lpW) return;
+                Promise.resolve(lpW._wvOpenTarget(reader._window || null, { url }, whereW, reader.tabID || urlSpan)).catch(() => {});
             };
             idoc.addEventListener("mousedown", sidebarMouseDown, true);
 
@@ -17407,32 +17477,52 @@ class _ReaderMixin {
                     delete pv._wvPrevZonesWired;
                 }
             } catch (_) {}
-            wvWrap(pv, "_onSetOverlayPopup", "previewZones", tag, (origSet: any) => function (this: any, popup: any) {
-                // UPSTREAM BUG FIX (2026-08-27): hover a link -> popup shows;
-                // popup closes; stop on the SAME link again -> nothing. The
-                // hover handler only opens when `_selectedOverlay !== overlay`
-                // (pdf-view.js), and while every close path upstream TRIES to
-                // clear `_selectedOverlay`, the open-callback sets it BEFORE a
-                // fire-and-forget `await renderPreviewPage()` -- a silent
-                // render failure (reproduced live: pdf.js "startCleanup: Page
-                // is currently rendering") or any close that skips the reset
-                // strands the guard, and that link never previews again.
-                // Enforce the invariant at the one choke point every close
-                // passes through: no popup => no hover guard. Standard hover
-                // UI re-triggers on dwell (browser tooltips, Wikipedia
-                // previews, VS Code hovers), so reappearing is the correct
-                // behaviour.
-                if (!popup) { try { (this as any)._selectedOverlay = null; } catch (_) {} }
-                const ret = origSet.call(this, popup);
-                try {
-                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-                    if (lp && popup && popup.type === "internal-link" && popup.image
-                            && popup.destinationPosition) {
-                        const seq = (pv._wvPrevZonesSeq = (pv._wvPrevZonesSeq || 0) + 1);
-                        lp._wvPreviewInjectZones(reader, pv, popup, 0, seq);
-                    }
-                } catch (_) {}
-                return ret;
+            wvWrap(pv, "_onSetOverlayPopup", "previewZones", tag, (origSet: any) => {
+                const deliver = (self: any, popup: any) => {
+                    const ret = origSet.call(self, popup);
+                    try {
+                        const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (lp && popup && popup.type === "internal-link" && popup.image
+                                && popup.destinationPosition) {
+                            const seq = (pv._wvPrevZonesSeq = (pv._wvPrevZonesSeq || 0) + 1);
+                            lp._wvPreviewInjectZones(reader, pv, popup, 0, seq);
+                        }
+                    } catch (_) {}
+                    return ret;
+                };
+                return function (this: any, popup: any) {
+                    // UPSTREAM BUG FIX (2026-08-27): hover a link -> popup shows;
+                    // popup closes; stop on the SAME link again -> nothing. The
+                    // hover handler only opens when `_selectedOverlay !== overlay`
+                    // (pdf-view.js), and while every close path upstream TRIES to
+                    // clear `_selectedOverlay`, the open-callback sets it BEFORE a
+                    // fire-and-forget `await renderPreviewPage()` -- a silent
+                    // render failure (reproduced live: pdf.js "startCleanup: Page
+                    // is currently rendering") or any close that skips the reset
+                    // strands the guard, and that link never previews again.
+                    // Enforce the invariant at the one choke point every close
+                    // passes through: no popup => no hover guard. Standard hover
+                    // UI re-triggers on dwell (browser tooltips, Wikipedia
+                    // previews, VS Code hovers), so reappearing is the correct
+                    // behaviour.
+                    if (!popup) { try { (this as any)._selectedOverlay = null; } catch (_) {} }
+                    // The entry highlight (preview-highlight.ts) HOLDS an
+                    // internal-link preview until its own picture is ready. Every
+                    // call settles a held one first: a close or a newer popup
+                    // replaces it, and the held popup is then dropped, never shown
+                    // late over what replaced it.
+                    let seq = 0;
+                    try { seq = pv._wvPrevHlSeq = (pv._wvPrevHlSeq || 0) + 1; } catch (_) {}
+                    try {
+                        const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (seq && lp && popup && typeof lp._wvPrevHlWanted === "function" && lp._wvPrevHlWanted(popup)) {
+                            const self = this;
+                            lp._wvPrevHlHold(reader, pv, popup, seq, (p: any) => { deliver(self, p); });
+                            return undefined;
+                        }
+                    } catch (_) {}
+                    return deliver(this, popup);
+                };
             });
         } catch (e) { Zotero.debug("[Weavero] _wvWirePreviewLinkZones err: " + e); }
     }

@@ -865,10 +865,16 @@ class _PaneScopeMixin {
                     // with its lineage (backlinks.ts _wvRelCardShow); the
                     // press's effect in its foot, no native tooltip over it.
                     const own = g.source;
-                    self._wvBlCardHover(row, "relCard", (lp: any) => lp._wvRelCardShow(row, own, ent, "Click: open in library · Shift+click: new window"));
-                    press(row, (e: any) => { self._wvCountOpenItem(ent, !!(e && e.shiftKey)); });
+                    self._wvBlCardHover(row, "relCard", (lp: any) => lp._wvRelCardShow(row, own, ent, wvStr("weavero-open-card-foot-library", { platform: Zotero.isMac ? "mac" : "other" }, null)));
+                    // Where it opens (open-where.ts): a click's or Enter's
+                    // modifiers (Space: plain), the middle button a tab in the
+                    // background.
+                    press(row, (e: any) => {
+                        const where = (e && e.key === " ") ? "here" : self._wvOpenWhere(e);
+                        if (where !== null) self._wvCountOpenItem(ent, where, row);
+                    });
                     row.addEventListener("mousedown", (e: any) => { if (e.button === 1) e.preventDefault(); });
-                    row.addEventListener("auxclick", (e: any) => { if (e.button === 1) { e.preventDefault(); e.stopPropagation(); self._wvCountOpenItem(ent, true); } });
+                    row.addEventListener("auxclick", (e: any) => { if (e.button === 1) { e.preventDefault(); e.stopPropagation(); self._wvCountOpenItem(ent, "background", row); } });
                     row.addEventListener("contextmenu", (e: any) => {
                         e.preventDefault(); e.stopPropagation();
                         try {

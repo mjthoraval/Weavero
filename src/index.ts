@@ -26,7 +26,7 @@ import { wvListen, wvUnlisten, wvUnlistenAll, wvListenKeys, wvUnlistenAllOn, wvS
 import { wvUIRootsPrune, wvReleaseClosedMainWindow, wvClaimMainWindowObservers, wvForgetMainWindowObservers, wvWatchWindowObservers, wvUIRootsRehook } from "./lib/ui-roots";
 import { wvStoreDir, wvStorePath, wvStoreChain, wvStoreWrite, wvStoreRead, wvStoreRemove } from "./lib/store";
 import { wvLibraryTabPinned, wvZoteroPinsLibraryTabs, wvZoteroPinsTabs, wvViewEl, wvViewEls, wvItemsTreeEl, wvItemsTreeEls, wvLibraryViews, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvWindowArgs, wvAdvSearchWindowArgs, wvAdvSearchGeometry, wvOpenLibraryView, wvPaneSizesRead, wvPaneSizesWrite, wvPlanWindowTransfer, wvSelectLibraryTab, wvGeomToPane, wvTransferItemIDs, wvWinType, wvWin32Style } from "./lib/windows";
-import { wvAccel, wvAccelAny } from "./lib/keys";
+import { wvAccel, wvAccelAny, wvOpenWhere } from "./lib/keys";
 import { wvCloneFor } from "./lib/xray";
 import { wvMenuItem, wvMenuSeparator, wvMenuItemByLabel } from "./lib/menu";
 import { wvStr, wvAttr, wvL10n, wvL10nStub, wvL10nRelease, wvFtlEnsure, wvDataLabel, wvZoteroLabel, wvZoteroText } from "./lib/l10n";
@@ -37,7 +37,7 @@ import { wvAltReveal, wvMenubarSafeBefore } from "./lib/menubar";
 
 /** The shared helpers, published as `Zotero.Weavero.lib` so the suite can
  *  exercise them directly (they are bundled, not otherwise reachable). */
-const WV_LIB = { wvLivePlugin, wvLibraryTabPinned, wvZoteroPinsLibraryTabs, wvZoteroPinsTabs, wvViewEl, wvViewEls, wvItemsTreeEl, wvItemsTreeEls, wvLibraryViews, wvViewIdsCss, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvWindowArgs, wvAdvSearchWindowArgs, wvAdvSearchGeometry, wvOpenLibraryView, wvPaneSizesRead, wvPaneSizesWrite, wvSelectLibraryTab, wvPlanWindowTransfer, wvGeomToPane, wvTransferItemIDs, wvWinType, wvIsTextEntry, wvAccel, wvAccelAny, wvCloneFor, wvMenuItem, wvMenuSeparator, wvMenuItemByLabel, wvStr, wvAttr, wvL10n, wvL10nStub, wvFtlEnsure, wvDataLabel, wvZoteroLabel, wvZoteroText, wvSvgEl, WV_SVG_NS,
+const WV_LIB = { wvLivePlugin, wvLibraryTabPinned, wvZoteroPinsLibraryTabs, wvZoteroPinsTabs, wvViewEl, wvViewEls, wvItemsTreeEl, wvItemsTreeEls, wvLibraryViews, wvViewIdsCss, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvWindowArgs, wvAdvSearchWindowArgs, wvAdvSearchGeometry, wvOpenLibraryView, wvPaneSizesRead, wvPaneSizesWrite, wvSelectLibraryTab, wvPlanWindowTransfer, wvGeomToPane, wvTransferItemIDs, wvWinType, wvIsTextEntry, wvAccel, wvAccelAny, wvOpenWhere, wvCloneFor, wvMenuItem, wvMenuSeparator, wvMenuItemByLabel, wvStr, wvAttr, wvL10n, wvL10nStub, wvFtlEnsure, wvDataLabel, wvZoteroLabel, wvZoteroText, wvSvgEl, WV_SVG_NS,
     WV_LINK_CHAIN_PATHS, WV_BACKLINK_ARROW_PATH, WV_OUTLINK_ARROW_PATH, WV_LOOPLINK_ARROW_PATH, WV_BROKENLINK_MARK_PATH, WV_ZLINK_KIND_PATH, WV_CITE_KIND_PATH, WV_REF_MARK_TIGHT_VIEWBOX, WV_EXTLINK_PATHS, WV_LINK_MENU_ICON, wvLinkGlyphEl, wvLinkGlyphMarkup, wvLinkGlyphUri, wvHtmlEl, WV_XHTML_NS, WV_LINK_PALETTE, wvLinkVars, wvLinkColor, wvLinkClassRules, wvOutsideClick, wvReachableDocs, wvDismissOff, wvAltReveal, wvMenubarSafeBefore, wvTimeout, wvClearTimeout, wvSleep, wvInjectStyle, wvRemoveStyle, wvFilterTileRules, wvWrap, wvUnwrap, wvWrapLayers,
     wvWhenWindowLoaded, wvBoolAttrOn, wvReaderMenuEvent, wvWithin,
     wvListen, wvUnlisten, wvUnlistenAll, wvListenKeys, wvListenRegistry,
@@ -63,11 +63,16 @@ import { linksMethods } from "./modules/links";
 import { titleLinesMethods } from "./modules/title-lines";
 import { countPopupsMethods } from "./modules/count-popups";
 import { tabSplitMethods } from "./modules/tab-split";
+import { tabSplitFollowMethods } from "./modules/tab-split-follow";
+import { tabSplitDockMethods } from "./modules/tab-split-dock";
+import { upstreamFixesMethods } from "./modules/upstream-fixes";
+import { openWhereMethods } from "./modules/open-where";
 import { toolbarOverflowMethods } from "./modules/reader-toolbar-overflow";
 import { paneScopeMethods } from "./modules/pane-scope";
 import { windowWiringMethods } from "./modules/window-wiring";
 import { windowStateMethods } from "./modules/window-state";
 import { maxSpanMethods } from "./modules/max-span";
+import { previewHighlightMethods } from "./modules/preview-highlight";
 import { wvScreenLayout, wvScreenNames, wvSpanCombos, wvSpanByRect } from "./lib/screens";
 import { prefsTableMethods } from "./modules/prefs-table";
 import { pluginApiMethods } from "./modules/plugin-api";
@@ -405,7 +410,18 @@ class WeaveroPlugin {
             (l, k) => Zotero.Searches.getByLibraryAndKey(l, k), lib, rawKey);
     }
 
-    async handleZoteroURI(url) {
+    /** A `zotero://` link opened by Weavero. `opts.where` (modules/open-where.ts):
+     *  "here" or absent is the plain open; "beside", "window" or "background"
+     *  places the target that way, from `opts.from` (a node or a tab id) in
+     *  `opts.win`. `opts.noSwitch`: a select that leaves the selected tab alone
+     *  (the background case). */
+    async handleZoteroURI(url, opts?: { where?: string | null; win?: any; from?: any; noSwitch?: boolean }) {
+        const where: any = (opts && opts.where && opts.where !== "here") ? opts.where : null;
+        const hostWin = (): any => {
+            const w = opts && opts.win;
+            if (w && w.Zotero_Tabs) return w;
+            return (this as any)._wvOpenHostWin(opts && opts.from) || Zotero.getMainWindow();
+        };
         try {
             const u = new URL(url);
             const parts = u.pathname.split("/").filter(Boolean);
@@ -449,15 +465,23 @@ class WeaveroPlugin {
                 //                                                      select
                 //                                                      item(s)
                 //   items/<libID>_<key>  (legacy bare form — best effort)
+                // Beside / in the background (open-where.ts): Zotero's select
+                // below, then the layout; a new window has no select of its own.
+                if (where === "beside" || where === "background") {
+                    if (await (this as any)._wvOpenSelectWhere(hostWin(), url, where, opts && opts.from)) return;
+                }
                 const lib = getLib();
-                const win  = Zotero.getMainWindow();
-                const pane = Zotero.getActiveZoteroPane();
+                const own = opts && opts.win && opts.win.ZoteroPane ? opts.win : null;
+                const win  = own || Zotero.getMainWindow();
+                const pane = own ? own.ZoteroPane : Zotero.getActiveZoteroPane();
                 // When the link is clicked from a note tab (or any
                 // non-library tab), `selectItem` / `selectCollection`
                 // affect the library tab in the background but the
                 // user keeps seeing the note. Switch to the library
-                // tab first so the result is visible.
+                // tab first so the result is visible -- unless the
+                // select is a background one (`noSwitch`).
                 const switchToLibrary = async () => {
+                    if (opts && opts.noSwitch) return;
                     try { await wvOpenLibraryView(win); } catch (e) {}
                 };
                 // ?itemKey=K1,K2,… — comma-separated keys (mirrors the
@@ -718,12 +742,24 @@ class WeaveroPlugin {
                 // Before v0.8.5 this branch always called Reader.open,
                 // which silently no-op'd for non-reader files. Fall back
                 // to Reader.open on builds without `FileHandlers`.
-                try {
+                // A modified open (open-where.ts) places the file itself; one
+                // it cannot place (a file only the system opens) opens plainly.
+                // The plain open follows "Open PDFs in a new window" as Zotero's
+                // own handler does (ZoteroProtocolHandler.mjs OpenExtension;
+                // until 1.1.1 Weavero's always opened a tab, survey I5).
+                let placed = false;
+                if (where) {
+                    try { placed = await (this as any)._wvOpenSpecWhere(hostWin(), { kind: "reader", item, location }, where, opts && opts.from); }
+                    catch (e) { placed = false; }
+                }
+                let inWindow = false;
+                try { inWindow = !!Zotero.Prefs.get("openReaderInNewWindow"); } catch (e) {}
+                if (!placed) try {
                     if ((Zotero as any).FileHandlers
                         && typeof (Zotero as any).FileHandlers.open === "function") {
-                        await (Zotero as any).FileHandlers.open(item, { location });
+                        await (Zotero as any).FileHandlers.open(item, { location, openInWindow: inWindow });
                     } else {
-                        await Zotero.Reader.open(item.id, location as any);
+                        await Zotero.Reader.open(item.id, location as any, { openInWindow: inWindow } as any);
                     }
                 } catch (e) {
                     Zotero.debug("[Weavero] zotero://open dispatch err: " + e);
@@ -759,7 +795,9 @@ class WeaveroPlugin {
                 // A link with Weavero's heading id stays here: Better Notes does
                 // not know the id and would open the note at the top.
                 const noteHeading = u.searchParams.get("wvheading");
-                if (!noteHeading) {
+                // A modified open (open-where.ts) stays here too: Better Notes'
+                // handler knows no "beside", window or background tab.
+                if (!noteHeading && !where) {
                     try {
                         const ext = (this as any)._wvNoteExtension(url);
                         if (ext) {
@@ -804,6 +842,18 @@ class WeaveroPlugin {
                 }
                 let noteTrashed = false;
                 try { noteTrashed = !!(note as any).deleted; } catch (e) {}
+                if (where) {
+                    const host = hostWin();
+                    let placed = false;
+                    try { placed = await (this as any)._wvOpenSpecWhere(host, { kind: "note", item: note }, where, opts && opts.from); } catch (e) {}
+                    if (placed) {
+                        if (noteHeading && where === "beside") {
+                            try { (this as any)._wvNoteRevealHeading(host, note.id, noteHeading, "tab"); } catch (e) {}
+                        }
+                        if (noteTrashed) this._showLinkWarning("The linked note is in the Trash (key " + key + ") — opened anyway.");
+                        return;
+                    }
+                }
                 const win  = Zotero.getMainWindow();
                 const pane = win.ZoteroPane;
                 try {
@@ -3323,6 +3373,8 @@ class WeaveroPlugin {
         this._registerPinTabMenu();
         // And the split view's entries (tab-split.ts).
         try { (this as any)._wvTabSplitRegisterMenus(); } catch (e) {}
+        // Its "Follow Selected Item" and "Keep Document in New Tab" (tab-split-follow.ts).
+        try { (this as any)._wvSplitFollowRegisterMenus(); } catch (e) {}
         // (The "Move Tab"→"Move Tabs" multi-select relabel is folded into the
         // pin menu's onShowing — see _registerPinTabMenu — since a standalone
         // hidden MenuManager item never relabeled reliably.)
@@ -3686,36 +3738,50 @@ class WeaveroPlugin {
         // Idempotent — covers a Zotero restart with the toggle still on.
         try { this._applyAppLinkConfirmPref(); }
         catch(e) { Zotero.debug("[Weavero] init confirm sync err: " + e); }
-        // React to OS-driven theme changes by listening on the main
-        // window's prefers-color-scheme media query. Zotero's
-        // theme-detection isn't fully exposed, but UI bg luma is
-        // what _detectUIDark samples — and a media-query change is
-        // a strong signal that bg may have flipped, so a re-detect
-        // is appropriate.
+        try { this._wvUiThemeWatch(Zotero.getMainWindow()); } catch (e) {}
+    }
+
+    /** Follow theme changes through main window `win`: its prefers-color-scheme
+     *  media query (an OS-driven flip in System mode) and its documentElement's
+     *  theme attributes (Zotero's Light / Dark setting). Both are objects of
+     *  that window, so they are moved to another open main window when it
+     *  closes (_wvMainWindowTeardown): bound once at init to whichever window
+     *  was the most recent, they kept that window after it closed -- the
+     *  MediaQueryList and the MutationObserver hold their window -- and theme
+     *  changes went unheard for the rest of the session (end of a full
+     *  11.0-beta.4 run, 2026-11-13: a closed main window kept through
+     *  `_uiThemeMq`). `win` null: just let go. Guard:
+     *  test/zz-theme-watch-window.spec.js. */
+    _wvUiThemeWatch(win: any) {
+        const self: any = this;
         try {
-            const win = Zotero.getMainWindow();
-            if (win && win.matchMedia) {
-                this._uiThemeMq = win.matchMedia("(prefers-color-scheme: dark)");
-                this._uiThemeMqHandler = () => this._applyUIThemeClass();
-                if (typeof this._uiThemeMq.addEventListener === "function") {
-                    this._uiThemeMq.addEventListener("change", this._uiThemeMqHandler);
+            if (self._uiThemeMq && self._uiThemeMqHandler && typeof self._uiThemeMq.removeEventListener === "function") {
+                self._uiThemeMq.removeEventListener("change", self._uiThemeMqHandler);
+            }
+        } catch (e) {}
+        try { if (self._uiThemeObserver) self._uiThemeObserver.disconnect(); } catch (e) {}
+        self._uiThemeMq = null; self._uiThemeMqHandler = null; self._uiThemeObserver = null; self._uiThemeWin = null;
+        try {
+            if (!win || win.closed) return;
+            self._uiThemeWin = win;
+            if (win.matchMedia) {
+                self._uiThemeMq = win.matchMedia("(prefers-color-scheme: dark)");
+                self._uiThemeMqHandler = () => this._applyUIThemeClass();
+                if (typeof self._uiThemeMq.addEventListener === "function") {
+                    self._uiThemeMq.addEventListener("change", self._uiThemeMqHandler);
                 }
             }
-            // Also watch the Zotero main window's documentElement for
-            // attribute/class flips. Zotero's three theme settings
-            // (System / Light / Dark in General → Appearance) toggle
-            // an attribute on this node; the matchMedia listener
-            // above only catches the System-mode case where a flip
-            // is OS-driven. Without this observer, a direct setting
-            // change between Light and Dark wouldn't fire any of our
-            // hooks until the next reader open / window load.
-            const win2 = Zotero.getMainWindow();
-            const doc2 = win2 && win2.document;
-            if (doc2 && doc2.documentElement && win2.MutationObserver) {
-                this._uiThemeObserver = new win2.MutationObserver(() => {
+            // Also watch the window's documentElement for attribute/class
+            // flips. Zotero's three theme settings (System / Light / Dark in
+            // General -> Appearance) toggle an attribute on this node; the
+            // matchMedia listener above only catches the System-mode case
+            // where a flip is OS-driven.
+            const doc = win.document;
+            if (doc && doc.documentElement && win.MutationObserver) {
+                self._uiThemeObserver = new win.MutationObserver(() => {
                     try { this._applyUIThemeClass(); } catch (e) {}
                 });
-                this._uiThemeObserver.observe(doc2.documentElement, {
+                self._uiThemeObserver.observe(doc.documentElement, {
                     attributes: true,
                     attributeFilter: [
                         "class", "lwtheme", "lwthemetextcolor",
@@ -3864,19 +3930,39 @@ class WeaveroPlugin {
     onMainWindowUnload(_window) {
         try {
             if (_window && !_window.closed && wvNativeWindows() && !(this as any)._wvDestroyed) {
-                const tag = (this as any)._wvWireTag();
-                wvListen(_window, WV_UNLOAD_WATCH_KEY, "unload", (e: any) => {
-                    try {
-                        if (e && e.target && e.target !== _window.document) return;
-                        wvUnlisten(_window, WV_UNLOAD_WATCH_KEY);
-                        const lp: any = wvLivePlugin();
-                        if (lp) lp._wvMainWindowTeardown(_window);
-                    } catch (er) {}
-                }, false, tag);
+                this._wvWatchMainWindowClose(_window);
                 return;
             }
         } catch (e) {}
         this._wvMainWindowTeardown(_window);
+    }
+
+    /** Tear main window `_window` down at its own `unload`. For a window that
+     *  stays open without a library view (above), and for a window Zotero
+     *  never tells plugins about: on a Zotero with its own windows a main window
+     *  that never had a library view -- a note or a reader opened in a window
+     *  of its own -- gets no onMainWindowLoad and no onMainWindowUnload
+     *  (xpcom/plugins.js: only windows that loaded a library view), while
+     *  Weavero wires it all the same (window-state.ts _wvWinStateOpened). Its
+     *  teardown never ran: the plugin's items- and collections-menu handler
+     *  lists kept every such window after it closed (leak probe 2026-11-13,
+     *  11.0-beta.4: five note windows opened and closed, five kept, GC path
+     *  plugin -> _collectionMenuHandlersList -> the closed window's menu).
+     *  Keyed: a second call is a no-op, and a library view loading there takes
+     *  the watch back (onMainWindowLoad). Guard: test/reader-leak.spec.js. */
+    _wvWatchMainWindowClose(_window) {
+        try {
+            if (!_window || (this as any)._wvDestroyed) return;
+            const tag = (this as any)._wvWireTag();
+            wvListen(_window, WV_UNLOAD_WATCH_KEY, "unload", (e: any) => {
+                try {
+                    if (e && e.target && e.target !== _window.document) return;
+                    wvUnlisten(_window, WV_UNLOAD_WATCH_KEY);
+                    const lp: any = wvLivePlugin();
+                    if (lp) lp._wvMainWindowTeardown(_window);
+                } catch (er) {}
+            }, false, tag);
+        } catch (e) {}
     }
 
     /** Called when a main window closes. Disconnect observers eagerly so the
@@ -3899,6 +3985,18 @@ class WeaveroPlugin {
         try { (this as any)._wvUnwireLastViewCloseGuard(_window); } catch (e) {}
         try { (this as any)._wvUnpatchTabsGetState(_window); } catch (e) {}
         try { (this as any)._wvUnwireQuickCopyMultiTab(_window); } catch (e) {}
+        // The background-restore guard's pick, if it is this window.
+        try { (this as any)._wvBgForgetWindow(_window); } catch (e) {}
+        // The split follow's previews: their readers' pref observers are Zotero's,
+        // global, and would keep the closed window (tab-split-follow.ts).
+        try { (this as any)._wvSplitFollowReleaseWindow(_window); } catch (e) {}
+        // The theme watch, if it is on this window: onto another open one.
+        try {
+            if ((this as any)._uiThemeWin === _window) {
+                const next: any = (Zotero.getMainWindows() || []).find((w: any) => w !== _window && !w.closed) || null;
+                this._wvUiThemeWatch(next);
+            }
+        } catch (e) {}
         // What the window's own scripts leave in Zotero (UIProperties roots,
         // observers): kept, they kept the closed window (lib/ui-roots.ts).
         try { wvReleaseClosedMainWindow(_window); } catch (e) {}
@@ -4388,6 +4486,7 @@ class WeaveroPlugin {
             this._uiThemeMq = null;
             this._uiThemeMqHandler = null;
         }
+        (this as any)._uiThemeWin = null;
         if (this._uiThemeObserver) {
             try { this._uiThemeObserver.disconnect(); } catch (e) {}
             this._uiThemeObserver = null;
@@ -4530,6 +4629,12 @@ class WeaveroPlugin {
         try { (this as any)._wvTeardownWindowPanePrefs(); } catch (e) {}
         try { (this as any)._wvTeardownNewNoteMenuFix(); } catch (e) {}   // WV-TEMP-134357
         try { (this as any)._wvTeardownCollectionDropFix(); } catch (e) {}   // WV-TEMP-134361
+        try { (this as any)._wvTeardownNoteWindowFix(); } catch (e) {}   // WV-TEMP-134831 (upstream-fixes.ts)
+        try { (this as any)._wvTeardownCtxHeaderFix(); } catch (e) {}   // WV-TEMP-134823 (upstream-fixes.ts)
+        try { (this as any)._wvTeardownNarrowPaneFix(); } catch (e) {}   // WV-TEMP-134826 (upstream-fixes.ts)
+        try { (this as any)._wvTeardownReaderMenuFix(); } catch (e) {}   // WV-TEMP-134772 (upstream-fixes.ts)
+        try { (this as any)._wvTeardownAddSelectFix(); } catch (e) {}   // WV-TEMP-134824 (upstream-fixes.ts)
+        try { (this as any)._wvTeardownRestoreFocusFix(); } catch (e) {}   // WV-TEMP-134825 (upstream-fixes.ts)
         try { (this as any)._wvTeardownLayoutMenus(); } catch (e) {}
         try { (this as any)._wvTeardownPaneDragNoCollapse(); } catch (e) {}
         try { (this as any)._wvTeardownCollectionsTreeAids(); } catch (e) {}
@@ -4539,6 +4644,8 @@ class WeaveroPlugin {
         try { (this as any)._wvUnwireReaderFindKey(); } catch (e) {}
         try { (this as any)._wvTeardownCollectionMenuEntries(); } catch (e) {}
         this._unregisterPinTabMenu();
+        // The following splits' listeners, marks and menu entries (tab-split-follow.ts).
+        try { (this as any)._wvSplitFollowUnwireAll(); } catch (e) {}
         try { (this as any)._wvTabSplitUnwireAll(); } catch (e) {}
         try { this._teardownTabGroups(); } catch (e) {}
         try { (this as any)._teardownPluginsSearch(); } catch (e) {}
@@ -5021,6 +5128,22 @@ Object.defineProperties(
 );
 Object.defineProperties(
     WeaveroPlugin.prototype,
+    tabSplitFollowMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    tabSplitDockMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    upstreamFixesMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    openWhereMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
     toolbarOverflowMethods,
 );
 Object.defineProperties(
@@ -5046,6 +5169,10 @@ Object.defineProperties(
 Object.defineProperties(
     WeaveroPlugin.prototype,
     maxSpanMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    previewHighlightMethods,
 );
 Object.defineProperties(
     WeaveroPlugin.prototype,
@@ -5080,6 +5207,9 @@ Zotero.Weavero = {
                 // Boot-only machinery (session verify-and-repair) keys off this.
                 _Weavero._wvStartupReason = reason;
                 Zotero.Weavero.plugin = _Weavero;
+                // WV-TEMP-134825 (upstream-fixes.ts): at application start only
+                // (APP_STARTUP = 1), the window Zotero restored last keeps the focus.
+                if (reason === 1) { try { (_Weavero as any)._wvStartRestoreFocusFix(); } catch (e) {} }
                 (Zotero.Weavero as any).lib = WV_LIB;
                 // The public API for other plugins (lib/public-api.ts,
                 // docs/plugin-api.md): the only surface they may count on.

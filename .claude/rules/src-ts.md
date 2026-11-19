@@ -217,7 +217,14 @@ name to a Zotero object, window, or document.
   listener with the property both ways (remove the old value, add the new
   one, on wrap and on unwrap); Zotero's own `destroy()` / re-`init()` then
   stay consistent because they read the property (item-pane creep fix,
-  pane.ts `_wvFixItemPaneCreep`, 2026-10-28). `wvInjectStyle(doc, id, css)` / `wvRemoveStyle`
+  pane.ts `_wvFixItemPaneCreep`, 2026-10-28). `ZoteroContextPane.update` is
+  one too (its window `resize` listener): the window takes trusted resize
+  events at an UNCHANGED size whenever Zotero recomputes its layout
+  constraints, so a wrap that missed the listener was undone within the same
+  second (tab-split.ts `_wvTabSplitStackWire`, 2026-11-17). And a ReaderTab
+  setter that awaits (`setBottomPlaceholderHeight`, `setContextPaneOpen`:
+  `await this._initPromise`) lands after the current task: reading the
+  reader's state right after Zotero called one sees the OLD value. `wvInjectStyle(doc, id, css)` / `wvRemoveStyle`
   — a sheet is always replaced, never skip-if-exists or version-stamped.
   It finds its sheet with `doc.getElementById`, which cannot see into a
   shadow root: a sheet that must live in one is looked up there
@@ -394,6 +401,11 @@ name to a Zotero object, window, or document.
   every layer, so the hidden variants paint under the icon (the header's
   own-count icon showed a white page in dark mode, 2026-10-30). Size the
   box; Zotero's `contain` fits it. Guard: `test/pane-scope.spec.js`.
+  To SHOW a Zotero icon elsewhere (a tab's icon in a list), copy the icon
+  element's classes and attributes (`data-item-type`), as Zotero's own tabs
+  menu does, and let Zotero's rules draw it -- never its computed background:
+  the split picker did, with one size, and showed a white page for every PDF
+  (2026-11-15; guard split-view.spec.js "the picker draws each tab's icon").
 - WINDOW GEOMETRY ACROSS MONITORS is in DEVICE pixels, through the tree
   owner: `win.docShell.treeOwner.QueryInterface(Ci.nsIBaseWindow)`
   `get/setPositionAndSize` (AppWindow::MoveResize). `screenX` / `moveTo` /
@@ -700,6 +712,18 @@ name to a Zotero object, window, or document.
   edge, so the target is never freed (lib/listen.ts, WEAK FOR THE GC). Key by
   a number (an inner-window id), or drop the entry when the window unloads.
   Guard: reader-leak.spec.js.
+- A plugin field that names a window (the user's pick, a target, a press)
+  is cleared when that window closes -- the main-window teardown and the
+  reader window's unload -- even when every reader checks `.closed`: the
+  field alone keeps the closed window and its DOM (`_wvBgUserChosenWin`,
+  2026-11-13). Guard: reader-leak.spec.js.
+- Never undo, at a main window's close, what Zotero's own teardown undoes:
+  Zotero tells plugins of the close (its window-mediator listener) BEFORE
+  the window's unload runs ZoteroPane.destroy(), so a removal of the same
+  observer first makes Zotero's throw, and the rest of destroy() is skipped
+  (Zotero 10.0.8, 2026-11-13: every main window close, quit included).
+  lib/ui-roots.ts removes only what destroy() leaves. Guard:
+  reader-leak.spec.js.
 
 ## fix: commits name their guard
 

@@ -23,6 +23,7 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
 import { wvHtmlEl } from "../lib/dom";
+import { wvStr } from "../lib/l10n";
 import { wvListener } from "../lib/listen";
 import { wvLivePlugin } from "../lib/live";
 import { WV_BL_ICON_CONTEXT, wvBlAttFile, wvBlDrawSegs } from "./backlinks";
@@ -409,14 +410,17 @@ class _CountPopupsMixin {
         return icon;
     }
 
-    /** Open a related item from a list of them: in a new window when asked
-     *  (Shift+click, a middle click or Shift+Enter -- MJT 2026-10-26, "Also
-     *  from the popups"), an annotation in the reader, anything else
-     *  selected in the library. */
-    async _wvCountOpenItem(it: any, newWindow = false) {
+    /** Open a related item from a list of them, where the gesture says
+     *  (open-where.ts, MJT 2026-11-17): Ctrl/Cmd+click or Ctrl/Cmd+Enter beside
+     *  the tab the list is in, Shift+click or Shift+Enter a new window (MJT
+     *  2026-10-26, "Also from the popups"), a middle click a tab in the
+     *  background; plain, or when the gesture cannot apply, an annotation in the
+     *  reader and anything else selected in the library. `from`: the row. */
+    async _wvCountOpenItem(it: any, where: any = "here", from?: any) {
         const self: any = this;
         let opened = false;
-        if (newWindow) { try { opened = await self._wvOpenItemInNewWindow(it); } catch (er) {} }
+        if (where === true) where = "window";
+        if (where && where !== "here") { try { opened = await self._wvOpenTarget(null, { item: it }, where, from); } catch (er) {} }
         try { if (!opened && it.isAnnotation && it.isAnnotation()) opened = await self._openAnnotationInReader(it); } catch (er) {}
         if (!opened) { try { self._navigateToItem(it); } catch (er) {} }
     }
@@ -573,19 +577,21 @@ class _CountPopupsMixin {
                         // focus, the press's effect in its foot -- no native
                         // tooltip over it (MJT 2026-10-30, the Related card).
                         const own = g.source;
-                        self._wvBlCardHover(row, "relCard", (lp: any) => lp._wvRelCardShow(row, own, ent, "Click: open in library · Shift+click: new window"));
-                        // Shift+click, a middle click or Shift+Enter: a new
-                        // window (MJT 2026-10-26, "Also from the popups"),
-                        // else the plain action when nothing opens there.
-                        const activate = async (e: any, newWindow = false) => {
+                        self._wvBlCardHover(row, "relCard", (lp: any) => lp._wvRelCardShow(row, own, ent, wvStr("weavero-open-card-foot-library", { platform: Zotero.isMac ? "mac" : "other" }, null)));
+                        // Where it opens (open-where.ts): the click's or
+                        // Enter's modifiers, the middle button a background
+                        // tab; the plain action when nothing opens there.
+                        const activate = async (e: any, whereArg?: any) => {
+                            const where = whereArg || self._wvOpenWhere(e);
+                            if (where === null) return;   // macOS Control+click
                             try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
-                            await this._wvCountOpenItem(ent, newWindow || !!(e && e.shiftKey));
+                            await this._wvCountOpenItem(ent, where, row);
                             close();
                         };
                         row.addEventListener("click", (e: any) => activate(e));
                         row.addEventListener("mousedown", (e: any) => { if (e.button === 1) e.preventDefault(); });
-                        row.addEventListener("auxclick", (e: any) => { if (e.button === 1) activate(e, true); });
-                        row.addEventListener("keydown", (e: any) => { if (e.key === "Enter" || e.key === " ") activate(e); });
+                        row.addEventListener("auxclick", (e: any) => { if (e.button === 1) activate(e, "background"); });
+                        row.addEventListener("keydown", (e: any) => { if (e.key === "Enter") activate(e); else if (e.key === " ") activate(e, "here"); });
                         row.addEventListener("contextmenu", (e: any) => {
                             e.preventDefault(); e.stopPropagation();
                             // Kept open under the menu, as the relations popup

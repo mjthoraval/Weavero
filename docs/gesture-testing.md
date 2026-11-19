@@ -795,16 +795,44 @@ button are only checked by hand (2026-10-26).
 
 - [ ] Backlinks section, a note row: Shift+click → the note opens in a note
       window, scrolled to the link, which flashes; a plain click → a tab.
-- [ ] The same row with the middle button → a note window, and no
+- [ ] The same row with the middle button → a note TAB, in front (no longer
+      a window; Zotero's note opener has no background mode), and no
       autoscroll cursor appears.
 - [ ] An annotation row (a link in an annotation comment): Shift+click → a
       reader window at that annotation.
-- [ ] Tab to a row, Shift+Enter → a new window.
+- [ ] Tab to a row, Shift+Enter → a new window; Ctrl/Cmd+Enter → beside.
 - [ ] Items list, click a Backlinks number, then middle-click a row in the
-      popup → a new window, and the popup closes.
+      popup → a tab in the background, and the popup closes.
 - [ ] Click a Related number; Shift+click a related paper → its PDF in a
       reader window; a related note → a note window; a paper with no file →
       selected in the library, as a plain click.
+
+## Where a link opens: the opening modifiers (after touching open-where.ts or a link handler)
+
+`test/open-where.spec.js` drives synthetic presses; XUL and the reader may
+ignore those (isTrusted false), so each surface needs one REAL press. ⌘ for
+Ctrl on macOS. Prepare: a PDF with a comment holding a `zotero://open-pdf`
+link to another PDF, a note holding the same link.
+
+- [ ] Split the library and PDF A. In the items list, Ctrl+click the comment
+      link (an annotation row) → PDF B takes A's side, A stays open as a tab.
+- [ ] The same from PDF A's reader sidebar (A in a split with the library) →
+      PDF B takes the other side, the library's; the library tab stays open.
+- [ ] A note tab alone: Ctrl+click its link → a new split, the note and the PDF.
+- [ ] Shift+click the same link → a new window; a middle click → a tab in the
+      background, nothing on screen moves, no autoscroll, no paste (Linux).
+- [ ] My Library locked (*Lock Tab*): Ctrl+click a link in the library →
+      the PDF beside the library; from that PDF's sidebar, Ctrl+click another
+      link → it shows beside the library in the PDF's place (the PDF's tab
+      stays open), the library stays.
+- [ ] Items list: select a paper, Ctrl+Enter (⌘+Return) → its PDF beside;
+      Ctrl+Enter in the quick search box does nothing new; Enter and
+      Shift+Enter are Zotero's.
+- [ ] A PDF's internal link (a figure reference): Ctrl+click → the second
+      view; a middle click → the same PDF at the figure in a background tab.
+- [ ] macOS: Control+click a link → the context menu only, nothing opens.
+- [ ] With Zotero's *Open PDFs in a new window* on, a plain click on a
+      `zotero://open-pdf` link opens a window, as Zotero's own handler does.
 
 ## Backlinks on the children (after touching the attachment badge, the reader buttons or the by-part popup)
 

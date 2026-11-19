@@ -87,6 +87,22 @@ manifest changed, their rules files carry the extra checks.
   normally once that runner had finished.
 - Frequency: popups specs after touching popup code; targeted specs for
   suite-covered machinery; the FULL suite only pre-release or on request.
+- **Which specs (MJT 2026-11-15, "not everything is needed each time").**
+  Day to day, and on a branch, run what the change needs:
+  `npm run test:pick -- --list` (scripts/pick-specs.mjs) lists the specs that
+  name what the diff changed, plus a base set (popups, compat, reader-leak,
+  prefs-defaults, option-gates), and prints the `WV_TEST_ENTRIES` value. Run
+  them on Zotero 11 beta and on Zotero 10. It says "run the full suite" when
+  `src/lib/` changed or more than half of the suite is picked; then do.
+- **One full run per tree that lands.** The full suite runs once on the tree
+  that lands on main (a branch merge, see the branch skill) and at a release,
+  on every Zotero version of the gate; never again on the same tree (a merge
+  that is a fast-forward of a tree that already passed reuses its runs). Zotero
+  10 gets full runs only then; in between, its picked specs. 2026-11-14/15:
+  three branches ran their own full suites on two versions and the merge would
+  have run them again -- about six machine-hours for one night's work.
+- Full runs go to an idle machine (overnight when possible): they take ~25 min
+  per Zotero version, and a runner in use competes with the user's instance.
 - A symptom seen ONLY in the runner is the runner's until a normal Zotero
   shows it too (bridge-driven in the dev profile, and by hand). 2026-11-04:
   "Zotero retains ~85 MB per reader opened and closed" was the scaffold's

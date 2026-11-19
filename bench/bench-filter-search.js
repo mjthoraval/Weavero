@@ -380,6 +380,11 @@
                 const N = R.native = { ops: {}, status: "running" };
                 try {
                     await addon.disable();
+                    // Weavero's disable drops every object it finds on
+                    // `Zotero._wv*` (_wvReleaseGlobalState, since 1.1.0) --
+                    // this report included: put it back at once, or a reader
+                    // polling the report sees it vanish (2026-11-17).
+                    Zotero._wvBenchFS = R;
                     await sleep(4000);
                     N.weaveroGone = !(Zotero.Weavero && Zotero.Weavero.plugin);
                     const sb = zp.document.getElementById("zotero-tb-search");
@@ -438,6 +443,7 @@
             R.itemsChangedDuringRun = await Zotero.DB.valueQueryAsync(
                 "SELECT COUNT(*) FROM items WHERE clientDateModified > ?", [startedSql]);
             R.finished = new Date().toISOString();
+            Zotero._wvBenchFS = R;
         }
     })();
 

@@ -19,6 +19,7 @@ import { URL_SCHEMES } from "./url";
 import { wvWhenWindowLoaded, wvHtmlEl } from "../lib/dom";
 import { wvOutsideClick, wvReachableDocs, wvDismissOff } from "../lib/dismiss";
 import { wvListen, wvUnlisten } from "../lib/listen";
+import { wvLivePlugin } from "../lib/live";
 import { wvMainWins } from "../lib/windows";
 import { wvCloneFor } from "../lib/xray";
 import { wvLinkVars } from "../lib/links";
@@ -595,16 +596,48 @@ class _NoteEditorMixin {
                         const takeover = !!a && this._noteTakeoverForHref(href);
                         idoc.body.classList.toggle("wv-note-native-link", !!a && !takeover);
                     } catch (er) {}
-                    swallowLeft(e);
+                    swallowLeft(e) || swallowMiddle(e);
                 };
-                const onMouseDown   = (e) => { swallowLeft(e); };
-                const onMouseUp     = (e) => { swallowLeft(e); };
-                const onAuxClick    = (e) => { swallowLeft(e); };  // button-1/middle
+                // The middle button on a link: a new tab in the background
+                // (open-where.ts), its press taken -- no autoscroll, no paste.
+                const swallowMiddle = (e) => {
+                    if (e.button !== 1) return null;
+                    const a = findAnchor(e);
+                    if (!a || !this._noteTakeoverForHref(hrefOf(a))) return null;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+                    return a;
+                };
+                // Where a link opens (open-where.ts): plain here, Ctrl/Cmd
+                // beside the note (Zotero's own Ctrl/Cmd+click only opens it,
+                // note-editor link.js), Shift a new window, the middle button a
+                // background tab. A web or app link goes to its browser or app
+                // whatever is held.
+                const openLink = (a, where) => {
+                    const href = hrefOf(a);
+                    if (!href) return;
+                    const lp: any = wvLivePlugin();
+                    if (!lp) return;
+                    if (where === "here" || !/^zotero:\/\//i.test(href)) { lp._launchURL(href); return; }
+                    let host: any = null;
+                    try { const tw = iwin && iwin.browsingContext && iwin.browsingContext.topChromeWindow; if (tw && tw.Zotero_Tabs) host = tw; } catch (er) {}
+                    Promise.resolve(lp._wvOpenTarget(host, { url: href }, where, iframe)).catch(() => {});
+                };
+                const onMouseDown   = (e) => { swallowLeft(e) || swallowMiddle(e); };
+                const onMouseUp     = (e) => { swallowLeft(e) || swallowMiddle(e); };
+                const onAuxClick    = (e) => {
+                    swallowLeft(e);
+                    const a = swallowMiddle(e);
+                    if (a) openLink(a, "background");
+                };
                 const onClick = (e) => {
                     const a = swallowLeft(e);
                     if (!a) return;   // off-scheme (toggle off) → native click/popup
-                    const href = hrefOf(a);
-                    if (href) this._launchURL(href);
+                    const lp: any = wvLivePlugin();
+                    const where = lp ? lp._wvOpenWhere(e) : "here";
+                    if (where === null) return;   // macOS Control+click: the link menu
+                    openLink(a, where);
                 };
 
                 // Right-click on `<a>` → custom menu. Right-click

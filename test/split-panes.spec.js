@@ -318,8 +318,11 @@ describe("Weavero — split view: inside each side", function () {
                 const r = viewEl(L.id, base).getBoundingClientRect();
                 if (r.width > 0) assert.ok(within(r, card, 1), base + " inside the card " + fmt(r) + " in " + fmt(card));
             }
-            const sn = libView(L.id).querySelector(".zotero-view-item-sidenav").getBoundingClientRect();
-            assert.approximately(sn.width, 37, 1, "the side navigation whole");
+            // Under Zotero's 930px a side with a view of its own is stacked, as a window
+            // that narrow (split-stacked.spec.js): its side navigation then a row.
+            const snEl = libView(L.id).querySelector(".zotero-view-item-sidenav");
+            const sn = snEl.getBoundingClientRect();
+            assert.approximately(snEl.classList.contains("stacked") ? sn.height : sn.width, 37, 1, "the side navigation whole");
             assert.ok(within(sn, card, 1), "inside the card " + fmt(sn));
             const sp = splitter(), spr = sp.getBoundingClientRect();
             const hit = doc.elementFromPoint(Math.round(spr.left + spr.width / 2), Math.round(spr.top + spr.height / 2));
@@ -338,7 +341,7 @@ describe("Weavero — split view: inside each side", function () {
         assert.approximately(viewEl(L.id, "zotero-item-pane").getBoundingClientRect().width, alone.ip, 0.5, "unsplit: Zotero's item pane width");
     });
 
-    it("4. a reader side at the floor: the reader yields first, then its item pane, whose side navigation stays whole in the card", async function () {
+    it("4. a reader side at the floor: stacked as a window that narrow, its item pane under the reader inside the card, its side navigation whole", async function () {
         const L = libTab(), t1 = tabOfItem(pdf1);
         const s = await split(L.id, t1.id, "right");
         try {
@@ -346,12 +349,17 @@ describe("Weavero — split view: inside each side", function () {
             pointerDrag(splitter(), 3000); await sleep(800);
             const card = rectOf(t1.id);
             assert.approximately(card.width, 142, 2.5, "the reader side at the floor");
+            // Under Zotero's 930px the side is stacked (split-stacked.spec.js, MJT
+            // 2026-11-17): its pane under the reader, no longer at its end.
+            assert.isTrue(pane().classList.contains("stacked"), "the pane in the stacked layout");
             const pr = pane().getBoundingClientRect();
             assert.ok(within(pr, card, 1), "the pane inside the card " + fmt(pr) + " in " + fmt(card));
+            const ir = doc.getElementById("zotero-context-pane-inner").getBoundingClientRect();
+            assert.ok(ir.height > 100 && within(ir, card, 1), "the item pane drawn inside the card " + fmt(ir));
             const sn = doc.getElementById("zotero-context-pane-sidenav").getBoundingClientRect();
-            assert.approximately(sn.width, 37, 1, "its side navigation whole");
+            assert.approximately(sn.height, 37, 1, "its side navigation whole (a row)");
             assert.ok(within(sn, card, 1), "inside the card");
-            assert.isAtMost(frameW(t1.id), 1, "the reader gave way first");
+            assert.approximately(frameW(t1.id), card.width - 2, 1, "the reader keeps the card's width");
             // The pane closed: the reader alone in the card, at the floor too (a
             // reader's frame held its side at ~416px while nothing gave it a
             // minimum of 0, run probe4 2026-11-11).
@@ -816,6 +824,44 @@ describe("Weavero — split view: inside each side", function () {
         await sleep(300);
     });
 
+    // MJT 2026-11-18 on 1.1.1-dev.8, Open in Split View with a PDF and a note tab: "keeps
+    // the sidebar of the PDF side, which should be hidden" -- a reader beside a note kept
+    // Zotero's normal panes (open). As for a lock's split (split-dock spec), the reader
+    // side keeps its own panes, starting closed; the note side has Zotero's own.
+    it("14. a reader|note split: the reader side starts with its item pane and sidebar closed, whichever side is selected; the note side has Zotero's own pane; separated, the normal state back", async function () {
+        const t1 = tabOfItem(pdf1), t3 = tabOfItem(pdf3), tn = tabOfItem(note);
+        // The normal state: the item pane open, the reader sidebar open.
+        ZT.select(t3.id); await sleep(800);
+        await readerReady(t3.id);
+        await setPaneOpen(true);
+        ZT.updateSidebarLayout({ width: 250 }); reader(t3.id)._updateLayout(); await sleep(400);
+        assert.isTrue(sidebarOpen(t3.id) && !CP().collapsed, "fixture: the normal pane and sidebar open");
+        // Open in Split View on the two, the note selected (as the tab menu does with the
+        // note active).
+        const s = await split(t1.id, tn.id, "right");
+        try {
+            await readerReady(t1.id); await sleep(800);
+            assert.strictEqual(ZT.selectedID, tn.id, "fixture: the note selected");
+            assert.notOk(paneIn(t1.id), "the note selected: nothing drawn in the reader card");
+            assert.isFalse(sidebarOpen(t1.id), "the reader side's sidebar closed");
+            assert.isFalse(CP().collapsed, "the note side: Zotero's own pane, open as in a normal tab");
+            assert.ok(paneIn(tn.id), "drawn over the note's card");
+            ZT.select(t1.id); await sleep(900);
+            assert.isTrue(CP().collapsed, "the reader selected: its own item pane, closed");
+            assert.notOk(paneIn(t1.id), "nothing drawn in the reader card");
+            assert.isFalse(sidebarOpen(t1.id), "its sidebar still closed");
+            ZT.select(tn.id); await sleep(900);
+            assert.isFalse(CP().collapsed, "the note again: its pane open");
+            assert.notOk(paneIn(t1.id), "the reader side still without its pane");
+        }
+        finally { wv._wvTabSplitSeparate(win, s.id); await sleep(500); }
+        ZT.select(t3.id); await sleep(900);
+        assert.isFalse(CP().collapsed, "separated: normal tabs' pane still open");
+        assert.isTrue(sidebarOpen(t3.id), "separated: the normal sidebar still open");
+        ZT.updateSidebarLayout({ width: false }); reader(t3.id)._updateLayout();
+        await sleep(300);
+    });
+
     // ---- 15. Each library side its own pane widths --------------------------------
     // MJT 2026-11-12, on "library|library is not covered: Zotero's library views share
     // one set of pane widths": "Allow different". Zotero keeps one set for every library
@@ -1161,6 +1207,45 @@ describe("Weavero — split view: inside each side", function () {
             try { if (!!ip().collapsed !== was) win.ZoteroPane.toggleItemPane(); } catch (er) {}
             await sleep(300);
             wv._wvTabSplitSeparate(win, s2.id); await sleep(500);
+        }
+    });
+
+    // ---- 21b. A long title stays in its own side ---------------------------------
+    // MJT 2026-11-15 (screenshot, weavero-dev 1.1.1-dev.1): "Tab info at the bottom right
+    // should not overlap in split view" -- a narrow right side with a long title drew its
+    // footer 782 px wide over the left side's footer: the footer's max-width (60%) was a
+    // share of the whole layer, not of its side.
+    it("21b. a footer with a long title stays inside its own side, narrow or wide, and never over the other side's footer", async function () {
+        const t1 = tabOfItem(pdf1), t2 = tabOfItem(pdf2);
+        const PREF = "weavero.splitViewFooter";
+        const prev = Zotero.Prefs.get(PREF);
+        const footerOf = (id) => doc.querySelector('#wv-tsplit-layer .wv-tsplit-footer[data-tab-id="' + id + '"]');
+        const t2Title = ZT._tabs.find(t => t.id === t2.id).title;
+        const LONG = "Lindborg - 2024 - Reynolds-number scaling and convergence time scale in two-dimensional Rayleigh-Benard convection - RETRACTION";
+        const s = await split(t1.id, t2.id, "right");
+        try {
+            Zotero.Prefs.set(PREF, true);
+            await readerReady(t1.id); await readerReady(t2.id);
+            await setPaneOpen(false);
+            ZT.rename(t2.id, LONG);
+            wv._wvTabSplitDrawLayer(win); await sleep(500);
+            for (const px of [600, 450, 900]) {
+                await rightAt(s, px);
+                const a = footerOf(t1.id), b = footerOf(t2.id);
+                assert.ok(a && !a.hidden && b && !b.hidden, "fixture: both footers shown (both item panes closed) at " + px);
+                assert.include(b.querySelector(".wv-tsplit-title").textContent, "RETRACTION", "fixture: the long title");
+                const ar = a.getBoundingClientRect(), br = b.getBoundingClientRect();
+                assert.ok(within(ar, rectOf(t1.id), 1), "left footer inside the left side at " + px + ": " + fmt(ar) + " in " + fmt(rectOf(t1.id)));
+                assert.ok(within(br, rectOf(t2.id), 1), "right footer inside the right side at " + px + ": " + fmt(br) + " in " + fmt(rectOf(t2.id)));
+                assert.ok(br.left >= ar.right - 0.5, "the footers do not overlap at " + px + ": " + fmt(ar) + " / " + fmt(br));
+                const title = b.querySelector(".wv-tsplit-title");
+                assert.ok(title.scrollWidth > title.clientWidth, "the long title is cut with an ellipsis, not spilled, at " + px);
+            }
+        }
+        finally {
+            try { ZT.rename(t2.id, t2Title); } catch (er) {}
+            if (prev === undefined) Zotero.Prefs.clear(PREF); else Zotero.Prefs.set(PREF, prev);
+            wv._wvTabSplitSeparate(win, s.id); await sleep(500);
         }
     });
 });

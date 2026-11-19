@@ -213,6 +213,10 @@ export const WV_PREFS: Record<string, WvPrefRow> = {
     bookmarkPageNumbers: { def: true, masters: ["_getEnableReaderBookmarks"] },
     readerOutlineTakeover: { def: true },
     recolorAmLinks: { def: true },
+    // A link preview tints the whole reference entry, lightly, in place of
+    // Zotero's dark box on its first line (preview-highlight.ts; MJT
+    // 2026-11-17). Off: Zotero's picture as it is.
+    previewEntryHighlight: { def: true, masters: [VE] },
 
     // ---- Notes (2026-11-03): the outline beside every note editor and
     // the heading fold arrows. Settings -> Extras greys them; they live in
@@ -253,6 +257,10 @@ export const WV_PREFS: Record<string, WvPrefRow> = {
     // The split view's corner label on a side whose item pane is closed
     // (tab-split.ts; MJT 2026-11-12).
     splitViewFooter: { def: true, gate: ["enableSplitView"] },
+    // A split made by "Open PDF in Split View" follows the library's selected
+    // item from the start (tab-split-follow.ts; MJT 2026-11-14). Off: a split
+    // follows only once its own menu says so.
+    splitViewFollow: { def: false, gate: ["enableSplitView"] },
     readerUndoButtons: { def: true, gate: ["enableVisualExtras"] },
     enableDefaultChild: { def: true },
     defattSortFirstDefault: { def: true },

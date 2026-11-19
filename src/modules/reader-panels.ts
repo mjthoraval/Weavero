@@ -20350,6 +20350,14 @@ class _ReaderPanelsMixin {
             if (missing) { this._bmFlashMissingRow(row, "wv-bm-reader-flash"); return; }
             this._bmActivateBookmark(bm, e);
         });
+        // The middle button: a tab in the background (open-where.ts).
+        row.addEventListener("mousedown", (e: any) => { if (e.button === 1) e.preventDefault(); });
+        row.addEventListener("auxclick", (e: any) => {
+            if (e.button !== 1) return;
+            e.preventDefault(); e.stopPropagation();
+            if (missing) { this._bmFlashMissingRow(row, "wv-bm-reader-flash"); return; }
+            this._bmActivateBookmark(bm, e);
+        });
         this._wvReaderWireRowHover(reader, idoc, row, bm);
         this._wvReaderWireLibRowDrag(reader, idoc, row, bm, depth, false);
         return row;
@@ -21437,15 +21445,33 @@ class _ReaderPanelsMixin {
     }
 
     /** Click a bookmark. For targets INSIDE the open document (positions,
-     *  selected text, this-doc annotations) the same three modifier options as
-     *  the collections-pane bookmark apply, mapped to the reader:
+     *  selected text, this-doc annotations) the opening modifiers
+     *  (open-where.ts, MJT 2026-11-17), mapped to the reader:
      *    • plain click    → jump to it within THIS reader
+     *    • Ctrl/Cmd-click → the document's other view (Zotero's split of one
+     *                       file), as Ctrl/Cmd+click on an internal link
+     *                       (until 1.1.1: show the document in the library,
+     *                       which stays in the row's menu)
      *    • Shift-click    → open it in a NEW reader window (at the location)
-     *    • Ctrl/Cmd-click → show the document in the library
-     *  Global bookmarks (Elsewhere in Zotero) keep the collections-pane
-     *  behavior (new tab / new window / show in library). */
+     *    • middle click   → the document at it in a tab in the background
+     *  Global bookmarks (Elsewhere in Zotero) open as the collections-pane ones
+     *  (_bmActivateBookmark). A menu's stand-in `{ wvShowInLibrary: true }`:
+     *  Show in Library. */
     _wvNavigateReaderBookmark(reader: any, bm: any, e: any) {
         if (!bm) return;
+        if (e && e.wvShowInLibrary) {
+            const att0 = this._wvReaderAtt(reader);
+            const isLocalAnno0 = bm.type === "item" && this._wvReaderBookmarkIsLocal(reader, bm);
+            const isLocalLoc0 = (bm.type === "position" || bm.type === "page" || bm.type === "text") && this._wvReaderBookmarkIsLocal(reader, bm);
+            if (isLocalLoc0 || isLocalAnno0) {
+                this._bmShowInLibrary(isLocalAnno0 ? bm
+                    : (att0 ? { type: "item", libraryID: att0.libraryID, itemKey: att0.itemKey } : null));
+            }
+            else this._bmActivateBookmark(bm, e);
+            return;
+        }
+        const where = (this as any)._wvOpenWhere(e);
+        if (where === null) return;   // macOS Control+click: the row's menu
         // An in-document target would scroll the hidden base view (see
         // `_wvReadingModeActive`). Targets that leave the document -- URLs and
         // "Elsewhere in Zotero" items -- are unaffected and still work.
@@ -21454,10 +21480,10 @@ class _ReaderPanelsMixin {
                 const iwin = reader._iframeWindow || (reader._iframe && reader._iframe.contentWindow);
                 const idocR = iwin && iwin.document;
                 // Plain click (no modifiers) navigates the Reading Mode overlay
-                // through the same resolver the outline uses. Ctrl/Shift keep
-                // their meaning (show in library / open in a new window), which
-                // don't touch the hidden base view. 2026-07-29.
-                if (!(wvAccelAny(e) || e.shiftKey)) {
+                // through the same resolver the outline uses. The modified
+                // opens keep their meaning (another view, a window, a tab),
+                // which don't touch the hidden base view. 2026-07-29.
+                if (where === "here") {
                     this._wvBmRmNavigate(reader, idocR, bm);
                     return;
                 }
@@ -21469,46 +21495,62 @@ class _ReaderPanelsMixin {
         // `weavero.enableAppLinksSkipConfirm` pref (when set, bypasses
         // Firefox's "Allow this site to open the <scheme> link?" dialog
         // by calling `handlerInfo.launchWithURI` directly), and routes
-        // `zotero://` URLs through the internal dispatcher.  Modifier
-        // keys intentionally don't change behaviour here (no "Show in
-        // Library" for a URL — it doesn't have a library presence).
+        // `zotero://` URLs through the internal dispatcher -- where the
+        // gesture says (open-where.ts; a web or app link: its browser or app).
         if (bm.type === "url" && bm.url) {
-            try { this._launchURL(String(bm.url)); }
+            try { (this as any)._wvOpenTarget(null, { url: String(bm.url) }, where, reader.tabID || (e && e.target) || null); }
             catch (err) { Zotero.debug("[Weavero] url-bm launch err: " + err); }
             return;
         }
         // Clicking a bookmark should reset any open in-document annotation
         // popup; the annotation-bookmark branch below re-opens it for the
         // new annotation if applicable.
-        this._wvDismissReaderAnnPopup(reader);
-        const ctrl = wvAccelAny(e);
-        const shift = !!(e && e.shiftKey);
+        if (where === "here") this._wvDismissReaderAnnPopup(reader);
         const isLocalLoc = (bm.type === "position" || bm.type === "page" || bm.type === "text")
             && this._wvReaderBookmarkIsLocal(reader, bm);
         const isLocalAnno = bm.type === "item" && this._wvReaderBookmarkIsLocal(reader, bm);
         if (isLocalLoc || isLocalAnno) {
             const att = this._wvReaderAtt(reader);
-            if (ctrl) {
-                this._bmShowInLibrary(isLocalAnno ? bm
-                    : (att ? { type: "item", libraryID: att.libraryID, itemKey: att.itemKey } : null));
+            // The place in the document, for the modified opens.
+            const locOf = (): any => {
+                if (isLocalAnno) return { annotationID: bm.itemKey };
+                if (bm.type === "page") {
+                    // Whole-page bookmark — page-level scroll, no pin.
+                    const pi = (bm.location && Number.isInteger(bm.location.pageIndex))
+                        ? bm.location.pageIndex
+                        : (bm.position && Number.isInteger(bm.position.pageIndex))
+                            ? bm.position.pageIndex
+                            : null;
+                    return pi != null ? { pageIndex: pi } : null;
+                }
+                if (bm.position) return { position: bm.position };
+                if (bm.viewType === "pdf" && bm.location && Number.isInteger(bm.location.pageIndex)) return { pageIndex: bm.location.pageIndex };
+                if (bm.location && bm.location.cfi) return { pageNumber: bm.location.cfi };
+                return null;
+            };
+            if (where === "beside") {
+                // The document's other view (Zotero's split of one file), as a
+                // Ctrl/Cmd+click on an internal link; an annotation by its
+                // position (the view's own navigate knows no annotation id).
+                let loc: any = locOf();
+                if (isLocalAnno) {
+                    try {
+                        const an: any = Zotero.Items.getByLibraryAndKey(bm.libraryID, bm.itemKey);
+                        const pos = an && an.annotationPosition ? JSON.parse(an.annotationPosition) : null;
+                        loc = pos ? { position: pos } : null;
+                    } catch (_) { loc = null; }
+                }
+                if (loc) (this as any)._wvCtrlNavigate(reader, true, loc);
                 return;
             }
-            if (shift) {
+            if (where === "background") {
+                const loc = locOf();
+                (this as any)._wvOpenReaderBackground(reader, loc);
+                return;
+            }
+            if (where === "window") {
                 if (att) {
-                    let loc: any = null;
-                    if (isLocalAnno) loc = { annotationID: bm.itemKey };
-                    else if (bm.type === "page") {
-                        // Whole-page bookmark — page-level scroll, no pin.
-                        const pi = (bm.location && Number.isInteger(bm.location.pageIndex))
-                            ? bm.location.pageIndex
-                            : (bm.position && Number.isInteger(bm.position.pageIndex))
-                                ? bm.position.pageIndex
-                                : null;
-                        if (pi != null) loc = { pageIndex: pi };
-                    }
-                    else if (bm.position) loc = { position: bm.position };
-                    else if (bm.viewType === "pdf" && bm.location && Number.isInteger(bm.location.pageIndex)) loc = { pageIndex: bm.location.pageIndex };
-                    else if (bm.location && bm.location.cfi) loc = { pageNumber: bm.location.cfi };
+                    const loc: any = locOf();
                     try {
                         const opened: any = Zotero.Reader.open(att.att.id, loc, { openInWindow: true });
                         // A pinned location drops its 📌 marker in the new window
@@ -21686,6 +21728,15 @@ class _ReaderPanelsMixin {
             row.appendChild(warn);
         }
         row.addEventListener("click", (e: any) => {
+            if (missing) { this._bmFlashMissingRow(row, "wv-bm-reader-flash"); return; }
+            this._wvNavigateReaderBookmark(reader, bm, e);
+        });
+        // The middle button: a tab in the background (open-where.ts); Ctrl and
+        // Shift stay the document scope's multi-select (_wvReaderBmHandleClick).
+        row.addEventListener("mousedown", (e: any) => { if (e.button === 1) e.preventDefault(); });
+        row.addEventListener("auxclick", (e: any) => {
+            if (e.button !== 1) return;
+            e.preventDefault(); e.stopPropagation();
             if (missing) { this._bmFlashMissingRow(row, "wv-bm-reader-flash"); return; }
             this._wvNavigateReaderBookmark(reader, bm, e);
         });
@@ -23555,7 +23606,7 @@ class _ReaderPanelsMixin {
                     // in 9.0, 10 and 11); the parent's is Weavero's.
                     item(isCrossDocLoc ? wvStr("weavero-menu-bm-show-parent") : wvZoteroText("general-show-in-library"),
                         this._bmShowInLibraryIcon({ libraryID: entry.srcLibraryID || entry.libraryID || att.libraryID }, Zotero.getMainWindow()),
-                        () => this._wvNavigateReaderBookmark(reader, entry, { ctrlKey: true }));
+                        () => this._wvNavigateReaderBookmark(reader, entry, { wvShowInLibrary: true }));
                     sep();
                     // Unified edit: title + comment together in one dialog.
                     item(wvStr("weavero-menu-bm-edit"), RP_RENAME_SVG, () => {

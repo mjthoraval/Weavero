@@ -709,6 +709,7 @@
       <checkbox data-l10n-id="weavero-pref-tabs-split-view" native="true"
         preference="extensions.zotero.weavero.enableSplitView"/>
       <html:p class="wv-desc" data-l10n-id="weavero-pref-tabs-split-view-desc"/>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-tabs-split-dock-desc"/>
   </vbox>
   <vbox class="wv-block wv-subblock" data-gated-by="enableTabsAndWindows enableSplitView" data-wv-in="tabs">
       <checkbox data-l10n-id="weavero-pref-tabs-split-footer" native="true"
@@ -994,6 +995,14 @@
     <checkbox data-l10n-id="weavero-pref-undo-buttons" native="true"
       preference="extensions.zotero.weavero.readerUndoButtons"/>
     <html:p class="wv-desc" data-l10n-id="weavero-pref-undo-buttons-desc"/>
+  </groupbox>
+
+  <!-- ============================ Link previews -->
+  <groupbox class="wv-subsec" data-gated-by="enableVisualExtras" data-wv-in="extras">
+    <label><html:h2 data-l10n-id="weavero-pref-link-preview-title"/></label>
+    <checkbox data-l10n-id="weavero-pref-link-preview-entry" native="true"
+      preference="extensions.zotero.weavero.previewEntryHighlight"/>
+    <html:p class="wv-desc" data-l10n-id="weavero-pref-link-preview-entry-desc"/>
   </groupbox>
 
   <!-- ============================ Reader outline -->

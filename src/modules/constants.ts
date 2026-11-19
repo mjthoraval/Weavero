@@ -2634,13 +2634,19 @@ export const PLUGIN_CSS = [
     // showed the resize cursor, and a drag opened the pane a few px wide
     // (with "stops at minimum width" the splitter has no collapse to snap
     // to) -- MJT 2026-10-05. The button is the way back.
-    "#zotero-collections-splitter[state=\"collapsed\"][wv-thin] {",
+    // Keyed on the PANE being collapsed too, not the splitter's `state` alone:
+    // Zutilo's "sticky" toggle shows the pane again and leaves the splitter at
+    // state="collapsed" (its 10 px draggable divider), and these rules made
+    // that splitter 1 px with no pointer -- an open pane nobody could resize
+    // (Zutilo x Weavero check, 2026-11-15). `collapsed` is "" on Zotero 11 and
+    // "true" on 10.
+    "#zotero-collections-pane:is([collapsed=\"\"], [collapsed=\"true\"]) + #zotero-collections-splitter[state=\"collapsed\"][wv-thin] {",
     "  --draggable-size: 1px !important;",
     "}",
     // Pointer-less only while "stops at minimum width" has taken the
     // collapse away (data-wv-collapse): with that setting off, Zotero's
     // snap is back and the strip drags the pane open again.
-    "#zotero-collections-splitter[state=\"collapsed\"][wv-thin][data-wv-collapse] {",
+    "#zotero-collections-pane:is([collapsed=\"\"], [collapsed=\"true\"]) + #zotero-collections-splitter[state=\"collapsed\"][wv-thin][data-wv-collapse] {",
     "  pointer-events: none !important;",
     "}",
     // The OPEN splitter with "stops at minimum width" on: Zotero's
@@ -2699,7 +2705,9 @@ export const PLUGIN_CSS = [
     // showed the resize cursor and did nothing on a drag once "stops at
     // minimum width" had taken their collapse away (data-wv-collapse marks
     // that). Zotero's sidenav toggle reopens both -- MJT 2026-10-05.
-    "#zotero-items-splitter[state=\"collapsed\"][data-wv-collapse],",
+    // The item pane's only while the pane really is collapsed (the sticky
+    // toggle case above, on the right).
+    "#zotero-items-splitter[state=\"collapsed\"][data-wv-collapse]:has(+ #zotero-item-pane:is([collapsed=\"\"], [collapsed=\"true\"])),",
     "#zotero-context-splitter[state=\"collapsed\"][data-wv-collapse],",
     "#zotero-context-splitter-stacked[state=\"collapsed\"][data-wv-collapse] {",
     "  pointer-events: none !important;",

@@ -46,6 +46,7 @@ import { wvSvgEl } from "../lib/svg";
 import { wvStageNativeUndo } from "./undo";
 import { BTN_CLASS, BTN_SIDEBAR_CLASS, WV_GUIDE_COLOR } from "./constants";
 import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
+import type { WvOpenWhere } from "../lib/keys";
 
 declare const Zotero: any;
 
@@ -102,8 +103,13 @@ export function wvRefTitle(n: number, kind: WvRefKind): string {
     return n + (kind === "links" ? (n === 1 ? " Item Link" : " Item Links") : (n === 1 ? " Backlink" : " Backlinks"));
 }
 
-/** The hover card's last line, shared by every row kind. */
-export const WV_BL_CARD_FOOT = "Click to open · Shift+click: new window · Right-click for more";
+/** The hover card's last line, shared by every row kind: the gestures of a row
+ *  (open-where.ts; weavero.ftl). */
+export function wvBlCardFoot(): string {
+    let mac = false;
+    try { mac = !!Zotero.isMac; } catch (e) {}
+    return wvStr("weavero-open-card-foot", { platform: mac ? "mac" : "other" }, null);
+}
 
 /** An item-pane section registered through ItemPaneManager by the
  *  descriptor-driven helpers of this module (Backlinks here, Links in
@@ -1361,7 +1367,8 @@ export interface WvBlRowOpts {
      *  mark's tooltip (`wvBlInternalMark`) -- a popup row's; the item pane's
      *  rows carry none since 2026-10-30. */
     internal?: string | null;
-    open: (newWindow: boolean) => any;
+    /** Open the row's reference `where` (open-where.ts), from `row`. */
+    open: (where: WvOpenWhere, row?: any) => any;
     menu: (ev: any) => void;
     card: (row: any) => void;
     onKey: (ev: any) => void;
@@ -3108,7 +3115,7 @@ class _BacklinksMixin {
                         internal: r.src.internal ? g.title : null,
                         segs: r.src.excerpt.segs,
                         compact,
-                        open: (newWindow) => self._wvBlOpenSource(r.srcItem, r.src, { newWindow }),
+                        open: (where, rowEl) => self._wvBlOpenSource(r.srcItem, r.src, { where, from: rowEl }),
                         menu: (ev) => self._wvBlOpenMenu(ev, r.srcItem, g.owner, r.target),
                         card: (el) => self._wvBlCardShow(el),
                         onKey,
@@ -3187,7 +3194,11 @@ class _BacklinksMixin {
             }
             if (k === "Enter" || k === " ") {
                 ev.preventDefault(); ev.stopPropagation();
-                if (typeof el._wvBlOpen === "function") el._wvBlOpen(!!ev.shiftKey);
+                // Enter's modifiers (open-where.ts): Ctrl/Cmd+Enter beside,
+                // Shift+Enter a new window; Space the plain open.
+                const lp: any = wvLivePlugin();
+                const where = k === " " ? "here" : ((lp && lp._wvOpenWhere(ev)) || "here");
+                if (typeof el._wvBlOpen === "function") el._wvBlOpen(where);
             }
         };
     }
@@ -3247,16 +3258,24 @@ class _BacklinksMixin {
                 blDrawSegs(doc, wvHtmlEl(doc, "div", "wv-bl-excerpt", undefined, text), o.segs);
             }
         }
-        row._wvBlOpen = (newWindow: boolean) => {
+        // Where it opens (open-where.ts, MJT 2026-11-17): a click's modifiers
+        // -- Ctrl/Cmd beside, Shift a new window -- and the middle button a
+        // tab in the background (a new window until then).
+        row._wvBlOpen = (where: WvOpenWhere) => {
             blCardHide(doc);
-            try { const p = o.open(newWindow); if (p && typeof p.catch === "function") p.catch(() => {}); } catch (e) {}
+            try { const p = o.open(where, row); if (p && typeof p.catch === "function") p.catch(() => {}); } catch (e) {}
         };
-        row.addEventListener("click", (ev: any) => { ev.stopPropagation(); row._wvBlOpen(!!ev.shiftKey); });
+        row.addEventListener("click", (ev: any) => {
+            ev.stopPropagation();
+            const lp: any = wvLivePlugin();
+            const where = lp ? lp._wvOpenWhere(ev) : "here";
+            if (where !== null) row._wvBlOpen(where);
+        });
         row.addEventListener("mousedown", (ev: any) => { if (ev.button === 1) ev.preventDefault(); row._wvBlMouse = true; });
         row.addEventListener("auxclick", (ev: any) => {
             if (ev.button !== 1) return;
             ev.preventDefault(); ev.stopPropagation();
-            row._wvBlOpen(true);
+            row._wvBlOpen("background");
         });
         row.addEventListener("contextmenu", (ev: any) => { ev.preventDefault(); ev.stopPropagation(); blCardHide(doc); o.menu(ev); });
         row.addEventListener("keydown", o.onKey);
@@ -3297,7 +3316,7 @@ class _BacklinksMixin {
         if (!src || !srcItem) return;
         this._wvBlCardOpen(row, (card: any, doc: any) => {
             this._wvBlCardLineage(card, doc, { srcItem, src, target: row._wvBlTarget, back: true });
-            wvHtmlEl(doc, "div", "wv-bl-card-foot", WV_BL_CARD_FOOT, card);
+            wvHtmlEl(doc, "div", "wv-bl-card-foot", wvBlCardFoot(), card);
         });
     }
 
@@ -3708,23 +3727,33 @@ class _BacklinksMixin {
     /** A click on a source: a note opens in a tab (the note-tab invariant:
      *  ZoteroPane.openNote with openInWindow false); an annotation opens its
      *  file at that annotation through the same path a link click takes. */
-    async _wvBlOpenSource(srcItem: any, src: WvBacklinkSource, opts: { newWindow?: boolean } = {}) {
+    async _wvBlOpenSource(srcItem: any, src: WvBacklinkSource, opts: { newWindow?: boolean; where?: WvOpenWhere | null; from?: any } = {}) {
         const self: any = this;
         try {
             if (!srcItem) return;
+            // Where (open-where.ts, MJT 2026-11-17): Shift / Shift+Enter a new
+            // window (MJT 2026-10-26), Ctrl/Cmd beside the row's tab, the middle
+            // button a tab in the background; `newWindow` is the older callers'.
+            const where: WvOpenWhere = opts.where || (opts.newWindow ? "window" : "here");
+            const placed = async () => (where === "beside" || where === "background")
+                && !!(await self._wvOpenTarget(null, { item: srcItem }, where, opts.from));
+            const reveal = async (inst: any) => {
+                try { await this._wvBlRevealInNote(inst, srcItem, src && src.url, (src && src.ref) || "link", (src && src.nth) || 0, !!(src && src.joined)); } catch (e) {}
+            };
             if (srcItem.isNote && srcItem.isNote()) {
+                // Beside: the note's tab next to the row's, scrolled to the
+                // reference; in the background it is not on screen to scroll.
+                if (await placed()) { if (where === "beside") await reveal(null); return; }
                 const win = Zotero.getMainWindow();
                 if (win && win.ZoteroPane && typeof win.ZoteroPane.openNote === "function") {
-                    // A tab, or with Shift / a middle click a note window
-                    // (MJT 2026-10-26); either way scrolled to the reference.
-                    const inst = await win.ZoteroPane.openNote(srcItem.id, { openInWindow: !!opts.newWindow });
-                    if (inst || !opts.newWindow) {
-                        try { await this._wvBlRevealInNote(inst, srcItem, src && src.url, (src && src.ref) || "link", (src && src.nth) || 0, !!(src && src.joined)); } catch (e) {}
-                    }
+                    // A tab, or a note window; either way scrolled to the reference.
+                    const inst = await win.ZoteroPane.openNote(srcItem.id, { openInWindow: where === "window" });
+                    if (inst || where !== "window") await reveal(inst);
                 }
                 return;
             }
-            if (opts.newWindow && await self._wvOpenItemInNewWindow(srcItem)) return;
+            if (where === "window" && await self._wvOpenItemInNewWindow(srcItem)) return;
+            if (await placed()) return;
             if (srcItem.isAnnotation && srcItem.isAnnotation()) {
                 const link = self._buildOpenLink(srcItem);
                 if (link) { await self.handleZoteroURI(link); return; }

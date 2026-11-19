@@ -22,6 +22,7 @@
 import { winOf } from "./dom";
 import { wvListen } from "./listen";
 import { wvWrap, wvUnwrap } from "./wrap";
+import { wvNativeWindows } from "./windows";
 
 /** Register `root` with Zotero.UIProperties, and drop it again when its window
  *  unloads. `tag` is the instance's wire tag. */
@@ -266,9 +267,45 @@ export function wvWatchWindowObservers(tag: string): void {
     }
 }
 
+/** The topics of `topics` that the window's own teardown removes `o` from
+ *  itself, read off ZoteroPane.destroy(). Zotero tells plugins of a main
+ *  window's close (its window-mediator listener, xpcom/plugins.js) BEFORE the
+ *  window's unload runs ZoteroPane.destroy(), and 10.0.8's destroy() removes
+ *  `_reloadObserver` from "zotero-reloaded" itself (main: from both topics).
+ *  Removed here first, that call threw NS_ERROR_ILLEGAL_VALUE and the rest of
+ *  destroy() never ran -- the context pane's and the tabs' teardown, the last
+ *  pane's state for the session, the closing of every tab -- at every main
+ *  window close, the last one at quit included (leak probe 2026-11-13, Zotero
+ *  10.0.8, zoteroPane.js line 790). Waiting for Zotero's turn did not work:
+ *  a removal polled for after the unload left the window kept by its observer
+ *  (same probe; what the plugin holds of a gone window's observer is likely a
+ *  dead wrapper by then). So Weavero removes, at once, only what Zotero
+ *  leaves. Source unreadable: "zotero-reloaded" is taken as Zotero's (both
+ *  versions read remove it).
+ *  Guard: test/reader-leak.spec.js. */
+function topicsZoteroRemoves(win: any, topics: string[]): Set<string> {
+    // On a Zotero with its own windows the teardown comes AFTER destroy():
+    // Zotero tells plugins from inside destroy(), after its removals, or the
+    // window's own unload runs it (index.ts _wvWatchMainWindowClose). What is
+    // still registered then is what destroy() did not remove -- a window
+    // whose destroy() never ran (closed before its init ended): all of it
+    // goes. Left to Zotero there, such windows stayed (full 11.0-beta.4 run
+    // 2026-11-13 on 1.1.1-leaks.5: 13 closed main windows kept by their
+    // reload observer, on both topics).
+    if (wvNativeWindows()) return new Set<string>();
+    let src = "";
+    try { src = String(win.ZoteroPane && win.ZoteroPane.destroy); } catch (e) {}
+    const out = new Set<string>();
+    for (const t of topics) {
+        if (src ? src.indexOf('"' + t + '"') !== -1 || src.indexOf("'" + t + "'") !== -1 : t === "zotero-reloaded") out.add(t);
+    }
+    return out;
+}
+
 /** A main window is closing while Zotero runs on: let go of what its scripts
  *  left in Zotero -- its UIProperties roots, and the observers it claimed at
- *  load. Returns how many went. */
+ *  load (less those Zotero's own teardown removes: topicsZoteroRemoves).
+ *  Returns how many went. */
 export function wvReleaseClosedMainWindow(win: any): number {
     if (!win) return 0;
     let doc: any = null;
@@ -284,7 +321,11 @@ export function wvReleaseClosedMainWindow(win: any): number {
         let o: any = null;
         try { o = win[g.key]; } catch (e) {}
         if (!o) continue;
-        for (const t of g.topics) { try { Services.obs.removeObserver(o, t); n++; } catch (e) {} }
+        const zoteros = topicsZoteroRemoves(win, g.topics);
+        for (const t of g.topics) {
+            if (zoteros.has(t)) continue;
+            try { Services.obs.removeObserver(o, t); n++; } catch (e) {}
+        }
         try { delete win[g.key]; } catch (e) {}
     }
     try { delete win[ORDER_KEY]; } catch (e) {}

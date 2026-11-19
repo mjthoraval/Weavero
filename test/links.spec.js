@@ -1038,15 +1038,17 @@ describe("Weavero — Links (outgoing references)", function () {
         key(doc.activeElement, "Home");
         assert.strictEqual(doc.activeElement, stops[0]);
         const opened = [];
-        wv._wvLkOpen = (r, opts) => { opened.push([r.target && r.target.id, !!(opts && opts.newWindow)]); return Promise.resolve(); };   // own property over the shared method
+        wv._wvLkOpen = (r, opts) => { opened.push([r.target && r.target.id, opts && opts.where]); return Promise.resolve(); };   // own property over the shared method
         try {
             key(stops[0], "Enter");
             stops[1].focus();
             key(stops[1], "Enter", { shiftKey: true });
             stops[2].dispatchEvent(new win.MouseEvent("auxclick", { bubbles: true, button: 1 }));
+            // open-where.ts (MJT 2026-11-17): Ctrl/Cmd+Enter beside.
+            key(stops[0], "Enter", Zotero.isMac ? { metaKey: true } : { ctrlKey: true });
         }
         finally { delete wv._wvLkOpen; }
-        assert.deepEqual(opened, [[P2.id, false], [P3.id, true], [Y.id, true]]);
+        assert.deepEqual(opened, [[P2.id, "here"], [P3.id, "window"], [Y.id, "background"], [P2.id, "beside"]]);
         // (No collapsed row any more: the last, Links' broken links, gave way
         // to the header's broken count on 2026-10-30.)
     });

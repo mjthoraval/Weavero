@@ -271,7 +271,12 @@ class _WindowStateMixin {
         Promise.resolve(zp.loadedPromise).then(() => {
             const lp = live();
             if (!lp || w.closed) return;
-            if (!zp.libraryView) lp._wvWireMainWindow(w, "load");
+            if (!zp.libraryView) {
+                lp._wvWireMainWindow(w, "load");
+                // Zotero sends no onMainWindowUnload for it: its own close
+                // tears it down (index.ts _wvWatchMainWindowClose).
+                lp._wvWatchMainWindowClose(w);
+            }
             return lp._wvWinStateApply(w);
         }).catch((e: any) => Zotero.debug("[Weavero] _wvWinStateOpened err: " + e));
     }

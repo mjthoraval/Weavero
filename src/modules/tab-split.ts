@@ -41,7 +41,7 @@
 //
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
-import { wvHtmlEl, wvBoolAttrOn } from "../lib/dom";
+import { wvHtmlEl, wvBoolAttrOn, wvSetBoolAttr, winOf } from "../lib/dom";
 import { wvListen, wvListener, wvUnlisten } from "../lib/listen";
 import { wvLivePlugin } from "../lib/live";
 import { wvUIRoot, wvUIRootsPrune } from "../lib/ui-roots";
@@ -49,6 +49,10 @@ import { wvInjectStyle, wvRemoveStyle } from "../lib/style";
 import { wvWrap, wvUnwrap } from "../lib/wrap";
 import { wvIsLibraryTabID, wvIsFixedLibraryTab, wvMainWins, wvNativeWindows, wvFirstMovableIndex, wvZoteroPinsTabs, wvZoteroPinsLibraryTabs } from "../lib/windows";
 import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
+// A tab locked on one side (tab-split-dock.ts): the rules of its mark in the strip.
+import { WV_TAB_DOCK_CSS } from "./tab-split-dock";
+import { wvMMRegister } from "../lib/menu";
+import { WV_SPLIT_ICON, WV_SPLIT_SEPARATE_ICON, WV_SPLIT_REVERSE_ICON } from "../lib/split-glyph";
 
 declare const Zotero: any;
 declare const Services: any;
@@ -58,9 +62,25 @@ const ENABLE_PREF = "weavero.enableSplitView";
 const STYLE_ID = "wv-tsplit-style";
 const LAYER_ID = "wv-tsplit-layer";
 const GHOST_ID = "wv-tsplit-ghost";
+// Zotero's "Loading..." cover (zoteroPane.xhtml), placed over a card while a split is
+// on screen (_wvTabSplitCoverPlace), and the properties that place it.
+const COVER_ID = "zotero-tab-cover";
+const COVER_VARS = ["--wv-tsplit-cover-x", "--wv-tsplit-cover-y", "--wv-tsplit-cover-w", "--wv-tsplit-cover-h"];
 // Zotero's context pane at its narrowest: $min-width-context-pane 320 + $width-sidenav
 // 37 (scss/components/_contextPane.scss; 357px measured on 11.0-beta.4).
 const CTX_PANE_MIN = 357;
+// Each side laid out as a window of its width (MJT 2026-11-17: "Can you try moving to
+// stacked view each side view in the same way as if it was a full window?"). Zotero
+// stacks a WINDOW narrower than this (zoteroPane.js updateLayoutConstraints,
+// `windowAutoStackMinWidth = 930`: collections pane + items pane + item pane + side
+// navigation + 3px to drag), through its global `layout` pref and `tempStackedMode`,
+// and only with one main window open; a side compares its card's inner width.
+const WINDOW_AUTO_STACK_MIN = 930;
+// Zotero's stacked context pane (scss/components/_contextPane.scss): the item pane at
+// least $min-width-context-pane (320px) tall, the room above it at least
+// $min-height-tab-context - $width-sidenav (263px).
+const CTX_STACK_MIN_H = 320;
+const CTX_STACK_ABOVE_MIN = 263;
 
 // Firefox's split view as cards (content-area.css, nova: 127-162 and 448-615 in
 // the mirror; MJT 2026-11-11, "the separation between the 2 tabs should be more
@@ -113,9 +133,30 @@ export type WvTabSplitSidePanes = { ctx: boolean; sb: boolean; sbW: number | nul
 export type WvTabSplitPanes = { left?: WvTabSplitSidePanes; right?: WvTabSplitSidePanes };
 /** A side the split took off the pins, and its place among them (_wvTabSplitTakePins). */
 export type WvTabSplitPin = { side: "left" | "right"; index: number };
-export type WvTabSplit = { id: string; left: string; right: string | null; ratio: number; picker?: boolean; panes?: WvTabSplitPanes; pins?: WvTabSplitPin[] };
+export type WvTabSplit = { id: string; left: string; right: string | null; ratio: number; picker?: boolean; panes?: WvTabSplitPanes; pins?: WvTabSplitPin[];
+    /** Its document side follows the library side's selected item (tab-split-follow.ts). */
+    follow?: boolean };
 
 const live = () => wvLivePlugin();
+/** A window's stacked-side bookkeeping (_wvTabSplitStackDecide): kept off the window
+ *  (nothing for the wiring snapshot, nothing that outlives it). `ro` watches the two
+ *  cards on screen (`roIDs`); `layout` is Zotero's layout the sides were last decided
+ *  under; `forced` while Zotero's context pane is drawn in another layout than
+ *  Zotero's own (a side stacked by its width); `placing` while a placement runs. */
+type WvTabSplitStack = { ro: any; roIDs: string; layout: string; forced: boolean; placing: boolean; sbTimers: any[]; told: Set<string> };
+const stackStates = new WeakMap<any, WvTabSplitStack>();
+function stackStateOf(win: any): WvTabSplitStack {
+    let st = stackStates.get(win);
+    if (!st) { st = { ro: null, roIDs: "", layout: "", forced: false, placing: false, sbTimers: [], told: new Set() }; stackStates.set(win, st); }
+    return st;
+}
+const zoteroStacked = () => { try { return Zotero.Prefs.get("layout") === "stacked"; } catch (e) { return false; } };
+/** The split of a window's locked tab (tab-split-dock.ts): in the window's list while
+ *  it has a tab to show, drawn as any split -- and first: the split on screen for a
+ *  tab it holds (_wvTabSplitShownOf) -- and skipped by every pass over PAIRS (the
+ *  strip's unit, the tabs kept together, the pair records, a tab's pair for its
+ *  menus and pins). */
+const isDock = (s: any) => !!(s && s.dock);
 
 const CSS = `
 #tabs-deck[wv-tsplit] {
@@ -162,7 +203,8 @@ const CSS = `
    the layout box takes the item pane's width as its basis (--wv-tsplit-ipw,
    _wvTabSplitLibraryFit) -- and never the item pane's side navigation (37px). Only
    minimums and flex: Zotero's widths (zotero-persist) stay, and come back exactly as
-   the side widens or leaves the split. Zotero's stacked layout is left alone. */
+   the side widens or leaves the split. A stacked side is left to Zotero's stacked
+   layout (the [wv-tsplit-stacked] rules below). */
 #tabs-deck[wv-tsplit] > .wv-tsplit-panel[wv-tsplit-libfit] #zotero-collections-pane { min-width: 0 !important; flex: 0 1 var(--wv-tsplit-collw, auto) !important; }
 #tabs-deck[wv-tsplit] > .wv-tsplit-panel[wv-tsplit-libfit] #zotero-layout-switcher { min-width: ${LIB_SIDENAV}px !important; flex: 1 1 var(--wv-tsplit-ipw, auto) !important; }
 #tabs-deck[wv-tsplit] > .wv-tsplit-panel[wv-tsplit-libfit] #zotero-items-pane-container { flex: 1 1 0px !important; }
@@ -195,6 +237,40 @@ const CSS = `
 }
 #tabs-deck[wv-tsplit] ~ #zotero-context-pane:not(.stacked) #zotero-context-pane-inner { min-width: 0 !important; }
 #tabs-deck[wv-tsplit] ~ #zotero-context-pane:not(.stacked) > .zotero-view-item-sidenav { flex-shrink: 0; }
+/* A side as a window of its width (MJT 2026-11-17): stacked under Zotero's 930px or
+   in Zotero's stacked layout (_wvTabSplitSideStacked). A reader or note side's item
+   pane goes under its document, inside its card, as Zotero's stacked pane goes under
+   the window's: Zotero's one pane (position: fixed over the whole window in its own
+   stacked layout, _contextPane.scss) is laid over the card, past its reader's
+   sidebar, its own placeholder and stacked splitter keeping the document's part, and
+   the tab is told the room (setBottomPlaceholderHeight). */
+#tabs-deck[wv-tsplit] ~ #zotero-context-pane.stacked {
+  position: fixed !important; inset: auto !important;
+  left: var(--wv-tsplit-pane-x, -100000px) !important; top: var(--wv-tsplit-pane-y, 0px) !important;
+  width: var(--wv-tsplit-pane-w, 0px) !important; height: var(--wv-tsplit-pane-h, 0px) !important;
+  min-width: 0 !important; z-index: 2; overflow: clip;
+  border-end-start-radius: 7px; border-end-end-radius: 7px;
+}
+#tabs-deck[wv-tsplit] ~ #zotero-context-pane.stacked #zotero-context-pane-inner { min-width: 0 !important; }
+/* A stacked library side: what Zotero keys on the window's stacked class
+   (#main-window.stacked, _toolbar.scss) -- the items toolbar's item-pane toggle --
+   on the card, and its collections pane yields in a narrow card. */
+#tabs-deck[wv-tsplit] > .wv-tsplit-panel[wv-tsplit-stacked] :is(#zotero-toolbar-item-tree, .zotero-toolbar-item-tree) { padding-inline-end: 0; }
+#tabs-deck[wv-tsplit] > .wv-tsplit-panel[wv-tsplit-stacked] :is(#zotero-toolbar-item-tree, .zotero-toolbar-item-tree) :is(#zotero-tb-toggle-item-pane-stacked, .zotero-tb-toggle-item-pane-stacked) { display: flex; margin-inline-start: 9px; }
+#tabs-deck[wv-tsplit] > .wv-tsplit-panel[wv-tsplit-stacked] :is(#zotero-collections-pane, .zotero-collections-pane) { min-width: 0 !important; flex-shrink: 1 !important; }
+/* Zotero's "Loading..." cover (#${COVER_ID}, zoteroPane.xhtml: position: fixed, the
+   whole window below the tab bar) shows while the tab selected loads (tabs.js select:
+   ZoteroContextPane.showLoadingMessage, until its load hook is done). With a split on
+   screen it covered the side beside that tab too, ~0.6 s for a reader (the coordinator
+   2026-11-17, live on trial.8: "both sides get hidden and shown again" when a tab loads
+   beside the locked library): it covers the card of the tab loading only
+   (_wvTabSplitCoverPlace). Zotero still shows and hides it; only its place changes. */
+#${COVER_ID}:has(~ #tabs-deck[wv-tsplit]) {
+  left: var(--wv-tsplit-cover-x, 0px) !important; right: auto !important;
+  top: var(--wv-tsplit-cover-y, auto) !important;
+  width: var(--wv-tsplit-cover-w, 100%) !important; height: var(--wv-tsplit-cover-h, 100%) !important;
+  border-radius: 7px;
+}
 #${LAYER_ID} { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
 #${LAYER_ID}[hidden] { display: none; }
 #${LAYER_ID} #wv-tsplit-ghost {
@@ -203,6 +279,13 @@ const CSS = `
 }
 #${LAYER_ID} #wv-tsplit-ghost > item-details { flex: 1 1 0; min-width: 0; }
 #${LAYER_ID} #wv-tsplit-ghost > item-pane-sidenav { flex: none; }
+/* Stacked (_wvTabSplitGhostLayout): under its side's document, the side navigation a
+   row at its bottom, as in Zotero's stacked pane (contextPane.js update). */
+#${LAYER_ID} #wv-tsplit-ghost[wv-stacked] {
+  flex-direction: column; border-top: var(--material-panedivider);
+  border-start-end-radius: 0; border-end-start-radius: 7px; border-end-end-radius: 7px;
+}
+#${LAYER_ID} #wv-tsplit-ghost[wv-stacked] > item-details { min-height: 0; }
 #${LAYER_ID} .wv-tsplit-pane-handle {
   position: absolute; width: 6px; pointer-events: auto; cursor: ew-resize; background: transparent;
 }
@@ -332,6 +415,19 @@ function fpScore(fp: string[], cur: string[]): number {
     for (const d of fp) { const k = left.get(d) || 0; if (k > 0) { n++; left.set(d, k - 1); } }
     return n / Math.max(fp.length, cur.length);
 }
+/** `el` is the pane a splitter beside it closes: the element right after a
+ *  splitter, as Zotero finds its item pane's (collapsiblePane.mjs: `splitter + *`),
+ *  unless that splitter closes what is before it; or the element right before a
+ *  splitter that does (the collections pane). The splitter's side is its `collapse`
+ *  attribute, or `data-wv-collapse` where Weavero's "stops at minimum width" setting
+ *  has set it aside (pane.ts). */
+function splitterCloses(el: any): boolean {
+    try {
+        const side = (sp: any) => (sp && sp.localName === "splitter" ? (sp.getAttribute("collapse") || sp.getAttribute("data-wv-collapse") || "after") : null);
+        const p = side(el.previousElementSibling), n = side(el.nextElementSibling);
+        return (!!p && p !== "before") || n === "before";
+    } catch (e) { return false; }
+}
 /** Below this a window is not the recorded one. A window comes back with the
  *  tabs it had (Zotero restores them all at once, unloaded), and the record is
  *  re-taken as tabs open and close (_wvTabSplitPersistSoon), so its own window
@@ -356,10 +452,27 @@ class _TabSplitMixin {
         return win._wvTSplits;
     }
 
-    /** The split `tabID` is a side of in `win`, or null. */
+    /** The split `tabID` is a side of in `win`, or null: its PAIR (or Add Split View's
+     *  picker) when it has one, else the split of the window's locked tab
+     *  (tab-split-dock.ts) when that holds it -- whatever their order in the list (the
+     *  lock's split goes back in at every tab it shows). The split a tab's menus,
+     *  records and pins act on; the split DRAWN for a tab is _wvTabSplitShownOf's. */
     _wvTabSplitOf(win: any, tabID: any): WvTabSplit | null {
         if (!tabID) return null;
-        return this._wvTabSplits(win).find((s) => s.left === tabID || s.right === tabID) || null;
+        const splits = this._wvTabSplits(win);
+        const has = (s: WvTabSplit) => s.left === tabID || s.right === tabID;
+        return splits.find((s) => !isDock(s) && has(s)) || splits.find((s) => isDock(s) && has(s)) || null;
+    }
+
+    /** The split on screen while `tabID` is the selected tab: the locked tab's split
+     *  when it holds it -- the lock comes before a pair (MJT 2026-11-17: "a tab in
+     *  split view still appears as one single tab on the side of a locked tab"; the
+     *  pair stays a pair, _wvTabSplitOf) -- else its split. Every pass that lays out,
+     *  draws, or decides what is on screen reads this one. */
+    _wvTabSplitShownOf(win: any, tabID: any): WvTabSplit | null {
+        if (!tabID) return null;
+        const lock = this._wvTabSplits(win).find((s) => isDock(s) && (s.left === tabID || s.right === tabID));
+        return lock || this._wvTabSplitOf(win, tabID);
     }
 
     /** Tab `tabID` is on screen beside the selected tab (the other side of the
@@ -368,7 +481,7 @@ class _TabSplitMixin {
         try {
             const Z = win && win.Zotero_Tabs;
             if (!Z || !tabID) return false;
-            const s = this._wvTabSplitOf(win, Z.selectedID);
+            const s = this._wvTabSplitShownOf(win, Z.selectedID);
             return !!(s && !s.picker && (s.left === tabID || s.right === tabID));
         } catch (e) { return false; }
     }
@@ -381,7 +494,7 @@ class _TabSplitMixin {
             if (!win || !win.document || !win.Zotero_Tabs) return;
             const doc = win.document;
             // Replaced, never skipped when present (src-ts.md sheet replace).
-            wvInjectStyle(doc, STYLE_ID, CSS);
+            wvInjectStyle(doc, STYLE_ID, CSS + WV_TAB_DOCK_CSS);
             const Z: any = win.Zotero_Tabs;
             // Zotero's unload check: never the side on screen beside the selected tab.
             if (Z._wvOrigCanUnloadTS) { Z.canUnload = Z._wvOrigCanUnloadTS; delete Z._wvOrigCanUnloadTS; }
@@ -416,6 +529,10 @@ class _TabSplitMixin {
                     return r;
                 });
             }
+            // Zotero lays its context pane out for ITS layout at every update() (a tab
+            // selected, the pane opened or closed, its splitter moved, View -> Layout):
+            // a side stacked by its own width gets its own back right after.
+            this._wvTabSplitStackWire(win);
             // The split's pane state follows the selection AT ONCE, inside Zotero's
             // own select (item 20, MJT 2026-11-12: "Sometimes, opening a right pane
             // opens it in the other side of the split view"): a press on the other
@@ -445,6 +562,9 @@ class _TabSplitMixin {
             // what Zotero saves of the panes stays the normal state.
             if (typeof Z.updateSidebarLayout === "function") {
                 wvWrap(Z, "updateSidebarLayout", "splitSidebar", (this as any)._wvWireTag(), (orig: any) => function (this: any, arg?: any) {
+                    // A reader sidebar opened, closed or resized: a stacked item pane
+                    // starts past it (_wvTabSplitStackSoon).
+                    try { const lp0 = live(); if (lp0 && !lp0._wvDestroyed && arg && arg.width !== undefined) lp0._wvTabSplitStackSoon(win); } catch (e) {}
                     try {
                         const lp = live();
                         const st = win._wvTSplitPanes;
@@ -538,6 +658,9 @@ class _TabSplitMixin {
         const splits = this._wvTabSplits(win);
         let changed = false;
         for (const s of splits.slice()) {
+            // A locked tab outlives the tab beside it: its own module picks another
+            // (tab-split-dock.ts).
+            if (isDock(s)) { (this as any)._wvTabDockOnClose(win, ids); continue; }
             const hit = ids.filter((id) => id === s.left || id === s.right);
             if (!hit.length) continue;
             win.setTimeout(() => {
@@ -579,7 +702,9 @@ class _TabSplitMixin {
      *  restart could not re-form the split (_wvTabSplitExpire). */
     _wvTabSplitTakePins(win: any, s: WvTabSplit) {
         try {
-            if (!s.right || s.picker) return;
+            // Never the lock's split: a locked tab stays pinned, its badge on its icon
+            // (MJT 2026-11-17), and the tab beside it changes at every selection.
+            if (!s.right || s.picker || isDock(s)) return;
             const P: any = this;
             const Z: any = win.Zotero_Tabs;
             let took = false;
@@ -598,7 +723,8 @@ class _TabSplitMixin {
     }
 
     /** The pins split `s` took, given back (the tab found in its window, or the
-     *  window it moved to; not while it is a side of another split). */
+     *  window it moved to; not while it is a side of another pair -- the lock's split
+     *  takes no pin, and a tab shown beside a locked tab gets its own back). */
     _wvTabSplitGivePins(win: any, s: WvTabSplit) {
         try {
             if (!s || !s.pins || !s.pins.length) return;
@@ -610,7 +736,7 @@ class _TabSplitMixin {
                 if (!t) for (const w2 of wvMainWins()) { const t2 = tabIn(w2, id); if (t2) { w = w2; t = t2; break; } }
                 if (!t) continue;
                 const other = this._wvTabSplitOf(w, id);
-                if (other && other !== s) continue;
+                if (other && other !== s && !isDock(other)) continue;
                 this._wvTabSplitPin(w, t, p.index);
             }
         } catch (e) { Zotero.debug("[Weavero] _wvTabSplitGivePins err: " + e); }
@@ -648,7 +774,7 @@ class _TabSplitMixin {
                     const desc = p && p.side === "right" ? rec.r : rec.l;
                     for (const w of wins) {
                         const Z: any = (w as any).Zotero_Tabs;
-                        const t = Z && Z._tabs.find((x: any) => x && matches(x, desc) && !this._wvTabSplitOf(w, x.id));
+                        const t = Z && Z._tabs.find((x: any) => { if (!x || !matches(x, desc)) return false; const sp = this._wvTabSplitOf(w, x.id); return !sp || isDock(sp); });
                         if (!t) continue;
                         this._wvTabSplitPin(w, t, Number(p.index) || 0);
                         break;
@@ -746,6 +872,9 @@ class _TabSplitMixin {
     _wvTabSplitReverse(win: any, splitID: string) {
         const s = this._wvTabSplits(win).find((x) => x.id === splitID);
         if (!s || !s.right) return;
+        // A locked tab's split swaps its own way (no tab moves in the strip): the
+        // lock goes to the other side.
+        if (isDock(s)) { (this as any)._wvTabDockReverse(win); return; }
         const l = s.left; s.left = s.right; s.right = l; s.ratio = 1 - s.ratio;
         this._wvTabSplitAdjoin(win, s);
         this._wvTabSplitPersist();
@@ -754,6 +883,8 @@ class _TabSplitMixin {
 
     /** Back to two ordinary tabs (Firefox: Separate Split View / Separate Tabs). */
     _wvTabSplitSeparate(win: any, splitID: string) {
+        // A locked tab's split: separating it unlocks the tab.
+        if ((this as any)._wvTabDockSeparate(win, splitID)) return;
         this._wvTabSplitRemove(win, splitID);
         this._wvTabSplitSync(win);
     }
@@ -785,6 +916,8 @@ class _TabSplitMixin {
             const Z: any = win.Zotero_Tabs;
             const deck = doc && doc.getElementById("tabs-deck");
             if (!Z || !deck) return;
+            // A locked tab (tab-split-dock.ts): its split for the tab selected now.
+            (this as any)._wvTabDockReconcile(win);
             // Drop splits whose tabs are gone (closed while not observed).
             for (const s of this._wvTabSplits(win).slice()) {
                 if (!tabIn(win, s.left) || (s.right && !tabIn(win, s.right))) this._wvTabSplitRemove(win, s.id);
@@ -793,7 +926,7 @@ class _TabSplitMixin {
             this._wvTabSplitLibReconcile(win, false);
             this._wvTabSplitMarkStrip(win);
             const sel = Z.selectedID;
-            const s = this._wvTabSplitOn() ? this._wvTabSplitOf(win, sel) : null;
+            const s = this._wvTabSplitOn() ? this._wvTabSplitShownOf(win, sel) : null;
             const want = new Set<string>(s ? [s.left, s.right].filter(Boolean) as string[] : []);
             for (const el of Array.from(deck.children) as any[]) {
                 if (want.has(el.id)) continue;
@@ -803,6 +936,7 @@ class _TabSplitMixin {
                     el.style.removeProperty("flex");
                     this._wvTabSplitCardUnreserve(el);
                     this._wvTabSplitLibraryUnfit(win, el);
+                    this._wvTabSplitStackOff(win, el);
                     this._wvTabSplitUnwirePanel(el);
                 }
             }
@@ -811,24 +945,29 @@ class _TabSplitMixin {
             if (win._wvTSplitCtxSent) win._wvTSplitCtxSent = new Map();
             const layer = this._wvTabSplitLayer(win);
             if (!s) {
-                if (deck.hasAttribute("wv-tsplit")) deck.removeAttribute("wv-tsplit");
+                const wasSplit = deck.hasAttribute("wv-tsplit");
+                if (wasSplit) deck.removeAttribute("wv-tsplit");
                 if (layer) { layer.hidden = true; layer.textContent = ""; }
                 this._wvTabSplitObserve(win, false);
                 const pane = doc.getElementById("zotero-context-pane");
                 if (pane) this._wvTabSplitPaneUnplace(pane);
+                this._wvTabSplitStackLeave(win);
+                this._wvTabSplitCoverBack(win);
                 this._wvTabSplitPanesState(win, null);
                 // Nothing of a split's state left on the window off screen.
                 delete win._wvTSplitCtxSent;
                 if (win._wvTSplitFitMOs instanceof Map && !win._wvTSplitFitMOs.size) delete win._wvTSplitFitMOs;
+                if (wasSplit) this._wvTabSplitZoteroPaneBack(win);
                 return;
             }
             // A side Zotero unloaded (a restart, or before the wrap was in): a reader
             // loads in place, as Zotero's select loads a tab but in the background
             // (item 18: never selected on the way, the split laid out meanwhile);
             // another kind through Zotero's own select, then back.
+            // A side shown as a preview by the follow stays unloaded (tab-split-follow.ts).
             const other = s.left === sel ? s.right : s.left;
             const ot = other ? tabIn(win, other) : null;
-            if (ot && /-unloaded$/.test(String(ot.type)) && !win._wvTSplitLoading && !this._wvTabSplitLoadPartner(win, ot)) {
+            if (ot && /-unloaded$/.test(String(ot.type)) && !win._wvTSplitLoading && !(this as any)._wvSplitFollowHolds(win, ot.id) && !this._wvTabSplitLoadPartner(win, ot)) {
                 win._wvTSplitLoading = true;
                 win._wvTSplitSyncing = false;
                 try { Z.select(other, false, { skipFocus: true }); Z.select(sel, false, {}); }
@@ -855,6 +994,10 @@ class _TabSplitMixin {
                 if (lel) lel.style.setProperty("flex", "0 0 " + Math.round(s.ratio * 100) + "%");
             }
             else this._wvTabSplitApplyRatio(win, s);
+            // Zotero's "Loading..." over the card of the tab it loads, in this pass:
+            // Zotero shows it in the select that ends here (tabs.js), before the
+            // first frame.
+            this._wvTabSplitCoverPlace(win, s);
             // The deck resizes with the window: the sides keep their minimums and
             // the splitter, footer and picker follow.
             this._wvTabSplitObserve(win, true);
@@ -906,7 +1049,7 @@ class _TabSplitMixin {
     _wvTabSplitPartnerLoaded(win: any, id: string) {
         try {
             this._wvTabSplitSync(win);
-            const s = this._wvTabSplitOf(win, id);
+            const s = this._wvTabSplitShownOf(win, id);
             const st = win._wvTSplitPanes;
             if (s && st && st.id === s.id) {
                 this._wvTabSplitSidebarsApply(win, s);
@@ -922,12 +1065,76 @@ class _TabSplitMixin {
      *  reaches the chrome document). */
     _wvTabSplitWirePanel(win: any, el: any, tabID: string) {
         const on = wvListener((this as any)._wvWireTag());
+        // A press on a side's own toggle (the item pane's, the sidebar's) while the side is
+        // not the selected one: the press selects it (`pick`), and the reader may draw the
+        // button again before the release -- its icon follows the side's layout
+        // (reader-ui.js: `stackedView` from the bottom placeholder, told to the selected
+        // tab) -- so the press and the release land on two elements and no click comes.
+        // MJT 2026-11-18 on splitui.2 (a library | PDF split, the library selected): "The
+        // first click on the toggle when not focused does nothing" (ring: the press, no
+        // "toggle-click"). `pick` arms this as it selects the side; if no click reaches the
+        // toggle after the release, the toggle drawn now is clicked for it -- the reader's
+        // own handler, once -- after the side's own state is on Zotero's pane.
+        const armToggle = (ev: any) => {
+            const t = ev && ev.type === "mousedown" && ev.button === 0 ? ev.target : null;
+            const ctl = t && typeof t.closest === "function" ? t.closest(".context-pane-toggle, #sidebarToggle") : null;
+            const iw: any = ctl && ctl.ownerDocument && ctl.ownerDocument.defaultView;
+            if (!ctl || !iw) return;
+            const sel = ctl.id === "sidebarToggle" ? "#sidebarToggle" : ".context-pane-toggle";
+            // The release is heard wherever it lands: the reader's frame, or the main
+            // window -- MJT 2026-11-18 on dev.9, a stacked PDF side: the press armed this,
+            // and no mouseup ever reached the reader's frame (its side was laid out again
+            // under the pointer), so nothing followed. Mouse and pointer events both; the
+            // first one heard settles it, the others are taken off with it.
+            const targets: any[] = [iw, win];
+            const types = ["mouseup", "pointerup"];
+            const old = iw._wvTSplitTogglePress;
+            if (old && old.off) { try { old.off(); } catch (er) {} }
+            // `pressed`: what the press was on. Still in the page at the release, the
+            // browser clicks what the press and the release share -- nothing to stand in
+            // for; only a pressed element drawn away loses its click.
+            const p: any = { sel, clicked: false, pressed: t };
+            p.off = () => { for (const tg of targets) for (const ty of types) { try { tg.removeEventListener(ty, p.onUp, true); } catch (er) {} } };
+            p.onUp = (up: any) => {
+                if (!up || up.button !== 0) return;
+                p.off();
+                p.heard = up.type + " in " + (up.view === win || (up.target && up.target.ownerDocument === win.document) ? "the main window" : "the reader");
+                iw.setTimeout(() => {
+                    try {
+                        if (iw._wvTSplitTogglePress !== p) return;
+                        delete iw._wvTSplitTogglePress;
+                        if (p.clicked) return;
+                        let still = false;
+                        try { still = !!(p.pressed && p.pressed.isConnected); } catch (er) {}
+                        if (still) {
+                            const lp0 = live();
+                            if (lp0) lp0._wvTabSplitRing("toggle press released, no click, its element still there (" + p.heard + "): left to the browser");
+                            return;
+                        }
+                        const lp = live();
+                        if (!lp || lp._wvDestroyed) return;
+                        const Z2 = win.Zotero_Tabs;
+                        if (Z2 && Z2.selectedID !== tabID) Z2.select(tabID, false, { skipFocus: true });
+                        lp._wvTabSplitSync(win);
+                        const now = iw.document.querySelector(sel);
+                        lp._wvTabSplitRing("toggle press without a click in " + lp._wvTabSplitSideName(win, tabID) + " (the button was redrawn; " + p.heard + "): " + sel + (now ? " clicked for it" : " gone"));
+                        if (now && typeof now.click === "function") now.click();
+                    } catch (er) {}
+                }, 60);
+            };
+            iw._wvTSplitTogglePress = p;
+            for (const tg of targets) for (const ty of types) { try { tg.addEventListener(ty, p.onUp, true); } catch (er) {} }
+        };
         const pick = (ev?: any) => {
             try {
                 const Z = win.Zotero_Tabs;
                 const lp = live();
-                if (Z && Z.selectedID !== tabID && lp && lp._wvTabSplitOf(win, tabID) && lp._wvTabSplitVisible(win, tabID)) {
+                // A side shown as a preview is not selected by a press: selecting it
+                // opens its reader (tab-split-follow.ts).
+                if (lp && lp._wvSplitFollowHolds(win, tabID)) return;
+                if (Z && Z.selectedID !== tabID && lp && lp._wvTabSplitShownOf(win, tabID) && lp._wvTabSplitVisible(win, tabID)) {
                     lp._wvTabSplitRing((ev && ev.type) + " in " + lp._wvTabSplitSideName(win, tabID) + " (selected " + lp._wvTabSplitSideName(win, Z.selectedID) + ") on " + ((ev && ev.target && (ev.target.id || ev.target.className || ev.target.localName)) || "?"));
+                    try { armToggle(ev); } catch (er) {}
                     Z.select(tabID, false, { skipFocus: true });
                 }
             } catch (e) {}
@@ -958,6 +1165,8 @@ class _TabSplitMixin {
                     const t = e && e.target;
                     const ctl = t && typeof t.closest === "function" ? t.closest(".context-pane-toggle, #sidebarToggle") : null;
                     if (!ctl) return;
+                    // The press that selected the side got its click: nothing to stand in for.
+                    try { if (iw._wvTSplitTogglePress) iw._wvTSplitTogglePress.clicked = true; } catch (er) {}
                     const Z = win.Zotero_Tabs;
                     const lp = live();
                     if (!Z || !lp || lp._wvDestroyed || !lp._wvTabSplitVisible(win, tabID)) return;
@@ -983,6 +1192,11 @@ class _TabSplitMixin {
             if (r && r._iframeWindow) {
                 wvUnlisten(r._iframeWindow, "tsplit:mousedown:" + el.id);
                 wvUnlisten(r._iframeWindow.document, "tsplit:ctxtoggle:" + el.id);
+                try {
+                    const p = r._iframeWindow._wvTSplitTogglePress;
+                    if (p && p.off) p.off();
+                    delete r._iframeWindow._wvTSplitTogglePress;
+                } catch (e) {}
             }
             try {
                 const ir: any = r && (r as any)._internalReader;
@@ -990,6 +1204,24 @@ class _TabSplitMixin {
                     if (v && v._iframeWindow) wvUnlisten(v._iframeWindow, "tsplit:mousedown:" + el.id);
                 }
             } catch (e) {}
+        } catch (e) {}
+    }
+
+    /** A side's card handed from panel `from` to panel `to`, at once: its place,
+     *  share and the room kept for its item pane. For a tab put back under the same
+     *  id (tab-split-follow.ts: Zotero removes the old panel a moment later, and
+     *  until the next sync the new one would be no side -- the other card alone
+     *  at full width for a frame). The next sync wires `to`. */
+    _wvTabSplitMovePanel(from: any, to: any) {
+        try {
+            if (!from || !to || from === to || !from.classList.contains("wv-tsplit-panel")) return;
+            to.classList.add("wv-tsplit-panel");
+            const side = from.getAttribute("data-wv-side");
+            if (side) to.setAttribute("data-wv-side", side);
+            for (const k of ["flex", "--wv-tsplit-pane-w"]) { const v = from.style.getPropertyValue(k); if (v) to.style.setProperty(k, v); }
+            if (from.hasAttribute("wv-tsplit-paned")) to.setAttribute("wv-tsplit-paned", "");
+            from.classList.remove("wv-tsplit-panel", "wv-tsplit-active");
+            this._wvTabSplitCardUnreserve(from);
         } catch (e) {}
     }
 
@@ -1128,7 +1360,7 @@ class _TabSplitMixin {
         try {
             const Z: any = win.Zotero_Tabs;
             const deck = win.document.getElementById("tabs-deck");
-            const s = Z && this._wvTabSplitOf(win, Z.selectedID);
+            const s = Z && this._wvTabSplitShownOf(win, Z.selectedID);
             if (!s || !deck || !deck.hasAttribute("wv-tsplit")) return;
             if (!s.picker) this._wvTabSplitApplyRatio(win, s);
             this._wvTabSplitPlaceLayer(win);
@@ -1144,7 +1376,7 @@ class _TabSplitMixin {
             const Z: any = win.Zotero_Tabs;
             const deck = doc.getElementById("tabs-deck");
             const layer = this._wvTabSplitLayer(win);
-            const s = this._wvTabSplitOf(win, Z.selectedID);
+            const s = this._wvTabSplitShownOf(win, Z.selectedID);
             if (!layer || !deck || !s || !deck.hasAttribute("wv-tsplit")) { if (layer) { layer.hidden = true; layer.textContent = ""; } return; }
             layer.hidden = false;
             const lel = doc.getElementById(s.left);
@@ -1210,8 +1442,9 @@ class _TabSplitMixin {
             const Z: any = win.Zotero_Tabs;
             const deck = doc.getElementById("tabs-deck");
             const layer = doc.getElementById(LAYER_ID);
-            const s = Z && this._wvTabSplitOf(win, Z.selectedID);
+            const s = Z && this._wvTabSplitShownOf(win, Z.selectedID);
             if (!deck || !layer || !s) return;
+            this._wvTabSplitCoverPlace(win, s);
             const hr = deck.parentNode.getBoundingClientRect();
             const dr = deck.getBoundingClientRect();
             const lel = doc.getElementById(s.left);
@@ -1242,7 +1475,9 @@ class _TabSplitMixin {
                 sp.setAttribute("aria-valuemin", String(Math.round(minL)));
                 sp.setAttribute("aria-valuemax", String(Math.round(W - minR)));
             }
-            // The item panes inside the cards, before the footer that sits beside them.
+            // Each side's layout for its width, then the item panes inside the cards,
+            // before the footer that sits beside them.
+            this._wvTabSplitStackDecide(win, s);
             this._wvTabSplitLibraryFit(win, s);
             this._wvTabSplitPlacePane(win, s);
             this._wvTabSplitPlaceFooters(win);
@@ -1267,6 +1502,11 @@ class _TabSplitMixin {
                 if (ft.hidden !== off) ft.hidden = off;
                 if (off) continue;
                 const or = oel.getBoundingClientRect();
+                // At most 60% of ITS side: the stylesheet's 60% is a share of the layer,
+                // which spans the whole deck, so a long title on a narrow side ran over
+                // the other side's footer (MJT 2026-11-15). Set before measuring.
+                const mw = px(Math.max(80, (or.width - 2) * 0.6));
+                if (ft.style.maxWidth !== mw) ft.style.maxWidth = mw;
                 const fr = ft.getBoundingClientRect();
                 ft.style.left = px(or.right - 1 - hr.left - fr.width);
                 ft.style.top = px(or.bottom - 1 - hr.top - fr.height);
@@ -1278,7 +1518,7 @@ class _TabSplitMixin {
      *  drawn in its card (_wvTabSplitPlacePane), a library's own inside its view. */
     _wvTabSplitSidePaneOpen(card: any): boolean {
         try {
-            if (card.hasAttribute("wv-tsplit-paned")) return true;
+            if (card.hasAttribute("wv-tsplit-paned") || card.hasAttribute("wv-tsplit-stackpaned")) return true;
             const view = card.querySelector("library-view") || (card.querySelector("#zotero-collections-pane") ? card : null);
             if (!view) return false;
             const ip: any = view.querySelector("#zotero-item-pane, [id^='zotero-item-pane-tab-']");
@@ -1294,11 +1534,11 @@ class _TabSplitMixin {
      *  --wv-tsplit-ipw): each pane's own width (zotero-persist), never under its
      *  minimum; a collapsed collections pane takes nothing, a collapsed item pane its
      *  side navigation. Kept current by an observer of those panes while the side is
-     *  on screen. Zotero's stacked layout is left as Zotero lays it out. */
+     *  on screen. A side in the stacked layout (its own, _wvTabSplitSideStacked) is
+     *  left as Zotero lays it out. */
     _wvTabSplitLibraryFit(win: any, s: WvTabSplit) {
         try {
             const doc = win.document;
-            const stacked = Zotero.Prefs.get("layout") === "stacked";
             if (!(win._wvTSplitFitMOs instanceof Map)) win._wvTSplitFitMOs = new Map();
             const mos: Map<string, any> = win._wvTSplitFitMOs;
             for (const id of [s.left, s.right]) {
@@ -1307,7 +1547,7 @@ class _TabSplitMixin {
                 // A Zotero with its own windows: the tab's library-view; an older
                 // Zotero: its one library pane, the deck child #zotero-pane itself.
                 const view = card.querySelector("library-view") || (card.querySelector("#zotero-collections-pane") ? card : null);
-                if (!view || stacked) { this._wvTabSplitLibraryUnfit(win, card); continue; }
+                if (!view || this._wvTabSplitSideStacked(win, id)) { this._wvTabSplitLibraryUnfit(win, card); continue; }
                 const q = (base: string) => view.querySelector("#" + base + ", [id^='" + base + "-tab-']");
                 const cp: any = q("zotero-collections-pane"), ip: any = q("zotero-item-pane");
                 const own = (el: any) => { const v = parseFloat(el && el.style && el.style.width); return v > 0 ? v : (parseFloat(el && el.getAttribute && el.getAttribute("width")) || 0); };
@@ -1323,7 +1563,7 @@ class _TabSplitMixin {
                     const mo = new win.MutationObserver(() => {
                         const lp = live();
                         if (!lp || lp._wvDestroyed) return;
-                        try { const cur = lp._wvTabSplitOf(win, win.Zotero_Tabs.selectedID); if (cur) { lp._wvTabSplitLibraryFit(win, cur); lp._wvTabSplitPlaceFooters(win); } } catch (e) {}
+                        try { const cur = lp._wvTabSplitShownOf(win, win.Zotero_Tabs.selectedID); if (cur) { lp._wvTabSplitLibraryFit(win, cur); lp._wvTabSplitPlaceFooters(win); } } catch (e) {}
                     });
                     for (const el of [cp, ip]) if (el) mo.observe(el, { attributes: true, attributeFilter: ["collapsed", "width", "style"] });
                     mos.set(card.id, mo);
@@ -1359,10 +1599,19 @@ class _TabSplitMixin {
      *  other side's own item pane, when it has one too, at the same place, at that
      *  side's own width where the split keeps its own panes (item 13), else at the
      *  same width (MJT: "on each side"; a side switch then moves neither reader:
-     *  Zotero's pane takes the incoming side's width). Closed, or in
-     *  Zotero's stacked layout, nothing is reserved. A card narrower than the pane:
-     *  the document gives way first, then the pane, never its side navigation. */
+     *  Zotero's pane takes the incoming side's width). Closed, nothing is reserved. A
+     *  card narrower than the pane: the document gives way first, then the pane, never
+     *  its side navigation. A side in the stacked layout (_wvTabSplitSideStacked) has
+     *  its pane UNDER its document instead, as Zotero's stacked pane is under the
+     *  window's: Zotero's pane drawn in the layout of the side it serves
+     *  (_wvTabSplitCtxLayout), the other side's own in its side's, and each reader or
+     *  note side told the room its pane takes at its bottom. */
     _wvTabSplitPlacePane(win: any, s: WvTabSplit) {
+        // One placement at a time: opening or closing Zotero's pane here runs its
+        // update(), whose wrap places it again (_wvTabSplitStackWire).
+        const stk = stackStateOf(win);
+        if (stk.placing) return;
+        stk.placing = true;
         try {
             const doc = win.document;
             const Z: any = win.Zotero_Tabs;
@@ -1370,7 +1619,9 @@ class _TabSplitMixin {
             const pane = doc.getElementById("zotero-context-pane");
             const layer = doc.getElementById(LAYER_ID);
             if (!deck || !pane || !layer || !Z) return;
-            const hasPane = (id: any) => { const t = tabIn(win, id); try { return !!(t && Z.hasContextPane(baseType(t))); } catch (e) { return false; } };
+            // A side shown as a preview has no item pane: the library beside it shows
+            // the item in its own (tab-split-follow.ts).
+            const hasPane = (id: any) => { const t = tabIn(win, id); try { return !!(t && Z.hasContextPane(baseType(t)) && !(this as any)._wvSplitFollowHolds(win, id)); } catch (e) { return false; } };
             const sel = Z.selectedID;
             const other = s.left === sel ? s.right : s.left;
             let host: string | null = null, ghostID: string | null = null;
@@ -1379,7 +1630,6 @@ class _TabSplitMixin {
                 else if (other && hasPane(other)) host = other;
             }
             const CP: any = win.ZoteroContextPane;
-            const stacked = Zotero.Prefs.get("layout") === "stacked";
             // A split that keeps its own panes: each side its own (item 9); Zotero's
             // pane state is the live side's, switched in first.
             const managed = this._wvTabSplitManaged(win, s) && win._wvTSplitPanes && win._wvTSplitPanes.id === s.id;
@@ -1396,19 +1646,36 @@ class _TabSplitMixin {
             if (holding) { host = other; ghostID = sel; }
             const liveID = managed ? (win._wvTSplitPanes.live === "left" ? s.left : (win._wvTSplitPanes.live === "right" ? s.right : null)) : null;
             const ownOf = (id: string): any => s.panes && (s.panes as any)[id === s.left ? "left" : "right"];
+            // The note beside a locked reader has Zotero's own pane: the normal state,
+            // in Zotero's pane while the note is selected (_wvTabSplitNormalSide).
+            const st: any = managed ? win._wvTSplitPanes : null;
+            const normalID = managed ? this._wvTabSplitNormalID(win, s) : null;
             // Zotero's pane holds the live side's state, every other side its own.
             const sideOpen = (id: string | null) => {
-                if (!id || stacked || !CP) return false;
+                if (!id || !CP) return false;
                 if (!managed || id === liveID) return !CP.collapsed;
+                if (id === normalID) return st.normalLive ? !CP.collapsed : !st.normal.collapsed;
                 const p = ownOf(id);
                 return !!(p && p.ctx);
             };
             const open = !!host && sideOpen(host);
+            // Each side's layout, read once (its card's width): the placement below
+            // writes styles, and every read after a write lays the window out again.
+            const stackedMap = new Map<string, boolean>();
+            for (const id of [s.left, s.right]) if (id) stackedMap.set(id, this._wvTabSplitSideStacked(win, id));
+            const stackedOf = (id: string | null) => !!id && !!stackedMap.get(id);
+            // Zotero's pane in the layout of the side it serves, Zotero's own when none.
+            this._wvTabSplitCtxLayout(win, host ? stackedOf(host) : zoteroStacked());
             const W = this._wvTabSplitPaneWidth(win);
             // Each side its own width where the split keeps its own panes (item 13):
             // Zotero's pane holds the live side's, the other side's own pane its own.
             const wOf = (id: string) => {
                 if (!managed || id === liveID) return W;
+                if (id === normalID) {
+                    if (st.normalLive) return W;
+                    const nw = parseFloat(st.normal.widthAttr);
+                    return nw > 0 ? Math.max(nw, CTX_PANE_MIN) : W;
+                }
                 const p: any = ownOf(id);
                 return p && p.ctxW > 0 ? Math.max(p.ctxW, CTX_PANE_MIN) : W;
             };
@@ -1417,7 +1684,11 @@ class _TabSplitMixin {
             for (const id of [s.left, s.right]) {
                 const card = id ? doc.getElementById(id) : null;
                 if (!card) continue;
-                if ((id === host && open) || (id === ghostID && sideOpen(ghostID))) {
+                const shown = (id === host && open) || (id === ghostID && sideOpen(ghostID));
+                // Stacked: no room at the card's end (the document keeps room at its
+                // bottom, below), the mark that its pane is open for the footer.
+                const under = shown && stackedOf(id);
+                if (shown && !under) {
                     const inner = Math.max(0, card.getBoundingClientRect().width - 2);
                     const w = Math.round(Math.max(Math.min(wOf(id as string), inner), Math.min(LIB_SIDENAV, inner)));
                     widths.set(id as string, w);
@@ -1425,10 +1696,13 @@ class _TabSplitMixin {
                     if (!card.hasAttribute("wv-tsplit-paned")) card.setAttribute("wv-tsplit-paned", "");
                 }
                 else this._wvTabSplitCardUnreserve(card);
+                if (card.hasAttribute("wv-tsplit-stackpaned") !== under) { if (under) card.setAttribute("wv-tsplit-stackpaned", ""); else card.removeAttribute("wv-tsplit-stackpaned"); }
             }
             const hr = deck.parentNode.getBoundingClientRect();
             const geom = (id: string) => {
-                const cr = doc.getElementById(id).getBoundingClientRect();
+                if (stackedOf(id)) return this._wvTabSplitStackGeom(win, id, rtl, null);
+                const card = doc.getElementById(id);
+                const cr = card.getBoundingClientRect();
                 const w = widths.get(id) || 0;
                 return { x: rtl ? cr.left + 1 : cr.right - 1 - w, y: cr.top + 1, w, h: Math.max(0, cr.height - 2) };
             };
@@ -1443,11 +1717,29 @@ class _TabSplitMixin {
             const vis = holding ? "hidden" : "";
             if (pane.style.visibility !== vis) pane.style.visibility = vis;
             const ghostOpen = !!ghostID && sideOpen(ghostID);
-            this._wvTabSplitGhost(win, ghostOpen ? ghostID : null, ghostOpen ? geom(ghostID as string) : null, hr);
+            // The other side's own pane, stacked: at the height of Zotero's (one height
+            // for both, as one width where the split keeps none per side).
+            const paneH = this._wvTabSplitStackHeight(win, open && !!host && stackedOf(host));
+            const gg = !ghostOpen ? null : (stackedOf(ghostID) ? this._wvTabSplitStackGeom(win, ghostID as string, rtl, paneH) : geom(ghostID as string));
+            this._wvTabSplitGhost(win, ghostOpen ? ghostID : null, gg, hr);
+            this._wvTabSplitGhostLayout(win, ghostOpen && stackedOf(ghostID));
+            // The bottom room each reader or note side keeps for its stacked pane (0
+            // with it closed, still the stacked layout; none in the standard one), as
+            // Zotero's update() tells the selected tab alone (contextPane.js).
+            for (const id of [s.left, s.right]) {
+                if (!id || !hasPane(id)) continue;
+                let want: number | null = null;
+                if (stackedOf(id)) {
+                    want = 0;
+                    if (id === host && open) want = paneH;
+                    else if (id === ghostID && gg) want = gg.h;
+                }
+                this._wvTabSplitStackRoom(win, id, want);
+            }
             // The pane's own edge resizes it (Zotero's splitter, in the window's flow,
-            // would size the deck).
+            // would size the deck); stacked, Zotero's stacked splitter sizes its height.
             let h = layer.querySelector(".wv-tsplit-pane-handle");
-            if (open && host && !holding) {
+            if (open && host && !holding && !stackedOf(host)) {
                 const g = geom(host);
                 if (!h) {
                     h = wvHtmlEl(doc, "div", "wv-tsplit-pane-handle", undefined, layer);
@@ -1462,7 +1754,9 @@ class _TabSplitMixin {
             else if (h) h.remove();
             this._wvTabSplitPaneToggles(win, s);
             if (managed) this._wvTabSplitPinsApply(win, s);
-        } catch (e) { Zotero.debug("[Weavero] _wvTabSplitPlacePane err: " + e); }
+        }
+        catch (e) { Zotero.debug("[Weavero] _wvTabSplitPlacePane err: " + e); }
+        finally { stk.placing = false; }
     }
 
     _wvTabSplitCardUnreserve(card: any) {
@@ -1478,6 +1772,426 @@ class _TabSplitMixin {
         try { if (pane.style.visibility === "hidden") pane.style.visibility = ""; } catch (e) {}
     }
 
+    // ---- Each side as a window of its width (MJT 2026-11-17) ------------------------
+    // "Can you try moving to stacked view each side view in the same way as if it was a
+    // full window?" A side is stacked when Zotero's layout is (View -> Layout ->
+    // Stacked, or Zotero's own auto-stack of a narrow window) or when its card is
+    // narrower than the width Zotero stacks a window at; standard otherwise. Decided per
+    // side, again whenever a card's width changes (the divider, the window, a side's
+    // collapse: a ResizeObserver on the cards), a side changes, or Zotero's layout does.
+    // Zotero's `layout` and `tempStackedMode` are never written: Zotero's layout stays
+    // the window's, and outside a split nothing changes.
+    //   - A library side: its own library view's layout (Zotero 11: applyLayout per
+    //     view, libraryView.js), kept against Zotero putting its own back (the view's
+    //     adoptSharedState at every select, ZoteroPane.updateLayout) by a layer on that
+    //     view's applyLayout while it is a side. Zotero 10 has one library pane for the
+    //     window, laid out together with the window's own stacked class: it follows
+    //     Zotero's layout there, as before.
+    //   - A reader or note side: Zotero's ONE context pane is laid out for Zotero's
+    //     layout at every update() (contextPane.js); while it serves a side of another
+    //     layout it is given that side's right after (a layer on update), and placed
+    //     under the side's document (CSS above); the other side's own pane likewise.
+
+    /** Whether side `id` of the split on screen is laid out stacked (Zotero's layout
+     *  outside a split, a picker, or for a tab not on screen as a side). */
+    _wvTabSplitSideStacked(win: any, id: any): boolean {
+        try {
+            const global = zoteroStacked();
+            const s = id ? this._wvTabSplitOf(win, id) : null;
+            const card = id ? win.document.getElementById(id) : null;
+            if (!s || s.picker || !s.right || !card || !card.classList.contains("wv-tsplit-panel")) return global;
+            if (global) return true;
+            if (baseType(tabIn(win, id)) === "library") {
+                const v = card.querySelector("library-view");
+                if (!v || typeof v.applyLayout !== "function") return false;
+            }
+            // The card's inner width, as Zotero compares the window's innerWidth.
+            const w = card.getBoundingClientRect().width - 2;
+            return w > 0 && w < WINDOW_AUTO_STACK_MIN;
+        } catch (e) { return zoteroStacked(); }
+    }
+
+    /** The layer on Zotero's ZoteroContextPane.update (wired per window): before it, a
+     *  pane Weavero draws stacked while Zotero's layout is standard has its stacked
+     *  splitter's state put on the standard one -- update() and the `collapsed` getter
+     *  read the splitter of Zotero's layout, and would undo a collapse made with the
+     *  stacked one; after it, the split's placement again, Zotero having laid its pane
+     *  out for its own layout. `update` is an arrow-function field, and init()
+     *  registered THAT function as the window's resize listener (contextPane.js): the
+     *  listener is swapped with the property, both ways (src-ts.md). Without it, every
+     *  resize event put the pane back in Zotero's layout -- and the runner's window gets
+     *  them at an unchanged size whenever Zotero's layout constraints are recomputed
+     *  (1904x1032, 2026-11-17). */
+    _wvTabSplitStackWire(win: any) {
+        try {
+            const CP: any = win.ZoteroContextPane;
+            if (!CP || typeof CP.update !== "function") return;
+            const prev = CP.update;
+            wvWrap(CP, "update", "splitStack", (this as any)._wvWireTag(), (orig: any) => function (this: any) {
+                try { const lp = live(); if (lp && !lp._wvDestroyed) lp._wvTabSplitStackBeforeUpdate(win); } catch (e) {}
+                const r = orig.apply(this, arguments as any);
+                try { const lp = live(); if (lp && !lp._wvDestroyed) lp._wvTabSplitStackAfterUpdate(win); } catch (e) {}
+                return r;
+            });
+            this._wvTabSplitStackSwapResize(win, prev, CP.update);
+        } catch (e) { Zotero.debug("[Weavero] _wvTabSplitStackWire err: " + e); }
+    }
+
+    /** The layer off ZoteroContextPane.update (a disable), its resize listener back. */
+    _wvTabSplitStackUnwire(win: any) {
+        try {
+            const CP: any = win.ZoteroContextPane;
+            if (!CP) return;
+            const prev = CP.update;
+            if (wvUnwrap(CP, "update", "splitStack")) this._wvTabSplitStackSwapResize(win, prev, CP.update);
+        } catch (e) {}
+    }
+
+    /** Zotero's resize listener moved from function `prev` to `cur` (the value of
+     *  ZoteroContextPane.update before and after a wrap change). */
+    _wvTabSplitStackSwapResize(win: any, prev: any, cur: any) {
+        try {
+            if (prev === cur || typeof cur !== "function") return;
+            if (typeof prev === "function") win.removeEventListener("resize", prev);
+            win.addEventListener("resize", cur);
+        } catch (e) {}
+    }
+
+    _wvTabSplitStackBeforeUpdate(win: any) {
+        const st = stackStates.get(win);
+        if (!st || !st.forced || zoteroStacked()) return;
+        const doc = win.document;
+        const sp = doc.getElementById("zotero-context-splitter"), sps = doc.getElementById("zotero-context-splitter-stacked");
+        const v = sps && sps.getAttribute("state");
+        if (sp && (v === "open" || v === "collapsed") && sp.getAttribute("state") !== v) sp.setAttribute("state", v);
+    }
+
+    _wvTabSplitStackAfterUpdate(win: any) {
+        try {
+            const doc = win.document;
+            const Z: any = win.Zotero_Tabs;
+            const deck = doc.getElementById("tabs-deck");
+            const s = Z ? this._wvTabSplitOf(win, Z.selectedID) : null;
+            const st = stackStates.get(win);
+            if (!deck || !deck.hasAttribute("wv-tsplit") || !s || s.picker || !s.right) {
+                if (st && st.forced) this._wvTabSplitCtxLayout(win, zoteroStacked());
+                return;
+            }
+            // Zotero has just told the selected tab its room for ITS layout -- on the way
+            // (a reader takes it after an await, reader.js setBottomPlaceholderHeight):
+            // the side's own is told again whatever the tab holds now.
+            stackStateOf(win).told.add(Z.selectedID);
+            // Inside the split's own layout pass, or a placement: placed once it is over.
+            if (win._wvTSplitSyncing || stackStateOf(win).placing) {
+                win.setTimeout(() => { const lp = live(); if (lp && !lp._wvDestroyed) lp._wvTabSplitRelayout(win); }, 0);
+                return;
+            }
+            // Zotero's own layout changed (View -> Layout, a narrow window's auto-stack):
+            // every side decided again, its library view and its fit too.
+            if (!st || st.layout !== (zoteroStacked() ? "stacked" : "standard")) { this._wvTabSplitRelayout(win); return; }
+            this._wvTabSplitPlacePane(win, s);
+        } catch (e) { Zotero.debug("[Weavero] _wvTabSplitStackAfterUpdate err: " + e); }
+    }
+
+    /** Each side of split `s` in its layout: the card marked (CSS above), a library
+     *  side's view laid out, the cards watched for a change of width. */
+    _wvTabSplitStackDecide(win: any, s: WvTabSplit) {
+        try {
+            const doc = win.document;
+            const st = stackStateOf(win);
+            const global = zoteroStacked();
+            st.layout = global ? "stacked" : "standard";
+            for (const id of [s.left, s.right]) {
+                const card = id ? doc.getElementById(id) : null;
+                if (!card) continue;
+                const on = this._wvTabSplitSideStacked(win, id);
+                if (card.hasAttribute("wv-tsplit-stacked") !== on) { if (on) card.setAttribute("wv-tsplit-stacked", ""); else card.removeAttribute("wv-tsplit-stacked"); }
+                if (baseType(tabIn(win, id)) === "library") this._wvTabSplitLibLayout(win, card, on, global);
+            }
+            this._wvTabSplitStackWatch(win, s);
+        } catch (e) { Zotero.debug("[Weavero] _wvTabSplitStackDecide err: " + e); }
+    }
+
+    /** A library side's view in its side's layout (Zotero 11), and kept in it: Zotero
+     *  passes its own layout to applyLayout, the layer turns it into the side's. Zotero
+     *  10's one library pane follows Zotero's layout. The layout switcher's `orient` is
+     *  one of Zotero's persisted attributes, so a stacked side's can reach pane.persist
+     *  when Zotero saves the view: harmless, Zotero applies its layout after every
+     *  restore of them (libraryView.js adoptSharedState, zoteroPane.js makeVisible) --
+     *  and the split's own records leave it out (_wvTabSplitLibRead). */
+    _wvTabSplitLibLayout(win: any, card: any, on: boolean, global: boolean) {
+        try {
+            const view = card.querySelector("library-view");
+            if (!view || typeof view.applyLayout !== "function") return;
+            wvWrap(view, "applyLayout", "splitStack", (this as any)._wvWireTag(), (orig: any) => function (this: any) {
+                const args = Array.prototype.slice.call(arguments);
+                try { const lp = live(); if (lp && !lp._wvDestroyed) args[0] = lp._wvTabSplitViewStacked(this, !!args[0]); } catch (e) {}
+                return orig.apply(this, args);
+            });
+            const sw = typeof view.getElement === "function" ? view.getElement("zotero-layout-switcher") : null;
+            if (!sw || (sw.getAttribute("orient") === "vertical") === on) return;
+            view.applyLayout(global);
+            // What Zotero's updateLayout does after laying a view out (updateLayoutConstraints
+            // -> itemPane.handleResize): the item pane takes a size for the new layout.
+            try { if (view.itemPane && typeof view.itemPane.handleResize === "function") view.itemPane.handleResize(); } catch (e) {}
+            this._wvTabSplitRing("library side " + card.id + " laid out " + (on ? "stacked" : "standard"));
+        } catch (e) { Zotero.debug("[Weavero] _wvTabSplitLibLayout err: " + e); }
+    }
+
+    /** What the applyLayout layer gives Zotero's applyLayout(`stacked`) on library view
+     *  `view`: its side's layout while its tab is a side on screen, else Zotero's. */
+    _wvTabSplitViewStacked(view: any, stacked: boolean): boolean {
+        try {
+            const win = winOf(view);
+            const tc = view.closest ? view.closest("tab-content") : null;
+            const id = (tc && tc.id) || view.tabID;
+            const card = win && id ? win.document.getElementById(id) : null;
+            if (!card || !card.classList.contains("wv-tsplit-panel")) return stacked;
+            return stacked || this._wvTabSplitSideStacked(win, id);
+        } catch (e) { return stacked; }
+    }
+
+    /** The two cards on screen watched for a change of width: a side passing Zotero's
+     *  930px is laid out again (a drag, a window resize, a side's collapse). */
+    _wvTabSplitStackWatch(win: any, s: WvTabSplit) {
+        try {
+            const st = stackStateOf(win);
+            const ids = s.left + "|" + s.right;
+            if (st.ro && st.roIDs === ids) return;
+            if (st.ro) { try { st.ro.disconnect(); } catch (e) {} st.ro = null; }
+            if (typeof win.ResizeObserver !== "function") return;
+            const ro = new win.ResizeObserver(() => { const lp = live(); if (lp && !lp._wvDestroyed) lp._wvTabSplitStackCheck(win); });
+            for (const id of [s.left, s.right]) { const c = id ? win.document.getElementById(id) : null; if (c) ro.observe(c); }
+            st.ro = ro;
+            st.roIDs = ids;
+        } catch (e) {}
+    }
+
+    _wvTabSplitStackCheck(win: any) {
+        try {
+            const Z: any = win.Zotero_Tabs;
+            const s = Z ? this._wvTabSplitOf(win, Z.selectedID) : null;
+            if (!s || s.picker || !s.right) return;
+            for (const id of [s.left, s.right]) {
+                const card = id ? win.document.getElementById(id) : null;
+                if (card && card.hasAttribute("wv-tsplit-stacked") !== this._wvTabSplitSideStacked(win, id)) { this._wvTabSplitRelayout(win); return; }
+            }
+        } catch (e) {}
+    }
+
+    /** A reader sidebar changed: a stacked pane starts past it, once the reader has
+     *  drawn it (its state goes through React: a moment later). */
+    _wvTabSplitStackSoon(win: any) {
+        try {
+            if (!win.document.querySelector("#tabs-deck[wv-tsplit] > [wv-tsplit-stackpaned]")) return;
+            const st = stackStateOf(win);
+            for (const t of st.sbTimers) { try { win.clearTimeout(t); } catch (e) {} }
+            st.sbTimers = [60, 250].map((ms) => win.setTimeout(() => { const lp = live(); if (lp && !lp._wvDestroyed) lp._wvTabSplitRelayout(win); }, ms));
+        } catch (e) {}
+    }
+
+    /** Zotero's context pane drawn for layout `stacked`, as its update() draws it for
+     *  Zotero's own (contextPane.js: the stacked or standard class, which splitter
+     *  shows, the reader's side navigation inside the pane or beside it, the width),
+     *  carrying the open state over from the splitter of the layout it leaves. */
+    _wvTabSplitCtxLayout(win: any, stacked: boolean) {
+        try {
+            const doc = win.document;
+            const pane = doc.getElementById("zotero-context-pane");
+            const inner = doc.getElementById("zotero-context-pane-inner");
+            const sp = doc.getElementById("zotero-context-splitter");
+            const sps = doc.getElementById("zotero-context-splitter-stacked");
+            const sn = doc.getElementById("zotero-context-pane-sidenav");
+            if (!pane || !inner || !sp || !sps || !sn) return;
+            const st = stackStateOf(win);
+            st.forced = stacked !== zoteroStacked();
+            if (pane.classList.contains("stacked") === stacked && sn.parentElement === (stacked ? inner : pane)) return;
+            const v = (stacked ? sp : sps).getAttribute("state") === "collapsed" ? "collapsed" : "open";
+            if (stacked) {
+                wvSetBoolAttr(sps, "hidden", false);
+                wvSetBoolAttr(sp, "hidden", true);
+                pane.classList.add("stacked");
+                pane.classList.remove("standard");
+                sn.classList.add("stacked");
+                if (sn.parentElement !== inner) { inner.append(sn); try { sn.render(); } catch (e) {} }
+                pane.style.width = "auto";
+                inner.style.removeProperty("min-height");
+                if (sps.getAttribute("state") !== v) sps.setAttribute("state", v);
+            }
+            else {
+                wvSetBoolAttr(sps, "hidden", true);
+                // Shown for a tab with a context pane only (contextPane.js _handleTabSelect
+                // hides it for a library tab, and update() returns there).
+                let hasPane = false;
+                try { const Z: any = win.Zotero_Tabs; hasPane = !!Z.hasContextPane(Z.parseTabType().tabContentType); } catch (e) {}
+                if (hasPane) wvSetBoolAttr(sp, "hidden", false);
+                pane.classList.add("standard");
+                pane.classList.remove("stacked");
+                sn.classList.remove("stacked");
+                if (sn.parentElement !== pane) { pane.append(sn); try { sn.render(); } catch (e) {} }
+                inner.style.minHeight = "100%";
+                const w = parseFloat(pane.getAttribute("width"));
+                if (w > 0) pane.style.width = w + "px";
+                if (sp.getAttribute("state") !== v) sp.setAttribute("state", v);
+            }
+            this._wvTabSplitRing("context pane drawn " + (stacked ? "stacked" : "standard") + (st.forced ? " (its side's own layout)" : " (Zotero's)"));
+        } catch (e) { Zotero.debug("[Weavero] _wvTabSplitCtxLayout err: " + e); }
+    }
+
+    /** The height of a stacked item pane: Zotero's, as drawn (`measured`) or as it would
+     *  be (its own `height`, never under its CSS minimum). */
+    _wvTabSplitStackHeight(win: any, measured: boolean): number {
+        try {
+            const inner = win.document.getElementById("zotero-context-pane-inner");
+            if (measured) { const h = inner.getBoundingClientRect().height; if (h > 0) return h; }
+            let h = parseFloat(inner.style.height);
+            if (!(h > 0)) h = parseFloat(inner.getAttribute("height"));
+            return Math.max(h > 0 ? h : 0, CTX_STACK_MIN_H);
+        } catch (e) { return CTX_STACK_MIN_H; }
+    }
+
+    /** A stacked item pane's place in side `id`'s card: past its reader's sidebar (as
+     *  Zotero's stacked pane starts past the window's, contextPane.js updateLayout) to
+     *  the card's end. `h` null: Zotero's pane, laid over the whole card (its own
+     *  placeholder and splitter keep the document's part above it); else the other
+     *  side's own pane, `h` tall at the card's bottom, leaving Zotero's minimum above. */
+    _wvTabSplitStackGeom(win: any, id: string, rtl: boolean, h: number | null): { x: number; y: number; w: number; h: number } {
+        const cr = win.document.getElementById(id).getBoundingClientRect();
+        const sb = this._wvTabSplitReaderSidebarW(win, id, rtl);
+        const w = Math.max(0, cr.width - 2 - sb);
+        const x = rtl ? cr.left + 1 : cr.left + 1 + sb;
+        const full = Math.max(0, cr.height - 2);
+        if (h == null) return { x, y: cr.top + 1, w, h: full };
+        const gh = Math.max(0, Math.min(h, Math.max(full - CTX_STACK_ABOVE_MIN, Math.min(CTX_STACK_MIN_H, full))));
+        return { x, y: cr.top + 1 + full - gh, w, h: gh };
+    }
+
+    /** The width side `id`'s reader sidebar takes (0 for another kind or closed): where
+     *  its document view starts in its frame, in the main window's pixels. */
+    _wvTabSplitReaderSidebarW(win: any, id: string, rtl: boolean): number {
+        try {
+            if (baseType(tabIn(win, id)) !== "reader") return 0;
+            const r: any = Zotero.Reader.getByTabID(id);
+            const iw = r && r._iframeWindow;
+            const sv = iw && iw.document && iw.document.querySelector(".split-view, #split-view");
+            if (!sv || !r._iframe) return 0;
+            const k = r._iframe.getBoundingClientRect().width / Math.max(1, iw.innerWidth);
+            const vr = sv.getBoundingClientRect();
+            return Math.max(0, Math.round((rtl ? iw.innerWidth - vr.right : vr.left) * k));
+        } catch (e) { return 0; }
+    }
+
+    /** Tell side `id` (a reader or a note) the room its stacked item pane takes at its
+     *  bottom (0: closed, still the stacked layout; null: the standard layout), as
+     *  Zotero's update() tells the selected tab (tab-content setBottomPlaceholderHeight:
+     *  the reader lifts its view, reader.js; the note editor its height, noteEditor.js).
+     *  Only when it differs from what the tab holds now -- or, for a stacked side,
+     *  when Zotero has just told it its own (`told`, _wvTabSplitStackAfterUpdate): a
+     *  reader takes that after an await, so what it holds now is not what it will. */
+    _wvTabSplitStackRoom(win: any, id: string, want: number | null) {
+        try {
+            const card = win.document.getElementById(id);
+            if (!card || typeof card.setBottomPlaceholderHeight !== "function") return;
+            const st = stackStates.get(win);
+            if (st && st.told.has(id)) {
+                st.told.delete(id);
+                if (want != null) { card.setBottomPlaceholderHeight(want); return; }
+            }
+            const kind = baseType(tabIn(win, id));
+            let cur: any;
+            if (kind === "reader") {
+                const r: any = Zotero.Reader.getByTabID(id);
+                const ir = r && r._internalReader;
+                if (!ir) return;
+                try { cur = ir._state.bottomPlaceholderHeight; } catch (e) {}
+            }
+            else if (kind === "note") {
+                const ne = card.querySelector("note-editor");
+                if (!ne) return;
+                cur = ne._bottomPlaceholder;
+            }
+            else return;
+            if (want == null ? cur == null : (typeof cur === "number" && Math.abs(cur - want) < 0.5)) return;
+            card.setBottomPlaceholderHeight(want);
+        } catch (e) {}
+    }
+
+    /** The other side's own pane in its side's layout: a column, its side navigation a
+     *  row at the bottom, stacked; a row beside it, standard. */
+    _wvTabSplitGhostLayout(win: any, stacked: boolean) {
+        try {
+            const gh = win.document.getElementById(GHOST_ID);
+            if (!gh || gh.hasAttribute("wv-stacked") === stacked) return;
+            if (stacked) gh.setAttribute("wv-stacked", ""); else gh.removeAttribute("wv-stacked");
+            const sn = gh.querySelector("item-pane-sidenav");
+            if (sn) { sn.classList.toggle("stacked", stacked); try { sn.render(); } catch (e) {} }
+        } catch (e) {}
+    }
+
+    /** A card no longer a side (or a disable): its marks off, a library view back to
+     *  Zotero's layout, a reader or note without the room a stacked side kept (in
+     *  Zotero's stacked layout, Zotero tells the tab its own when it shows it). */
+    _wvTabSplitStackOff(win: any, card: any) {
+        try {
+            if (card.hasAttribute("wv-tsplit-stacked")) card.removeAttribute("wv-tsplit-stacked");
+            if (card.hasAttribute("wv-tsplit-stackpaned")) card.removeAttribute("wv-tsplit-stackpaned");
+            const view = card.querySelector("library-view");
+            if (view && wvUnwrap(view, "applyLayout", "splitStack")) {
+                try { view.applyLayout(zoteroStacked()); } catch (e) {}
+                try { if (view.itemPane && typeof view.itemPane.handleResize === "function") view.itemPane.handleResize(); } catch (e) {}
+            }
+            if (!zoteroStacked() && card.id) this._wvTabSplitStackRoom(win, card.id, null);
+        } catch (e) {}
+    }
+
+    /** No split on screen (or a disable): Zotero's context pane back in Zotero's layout,
+     *  the watch and timers gone, nothing of it kept for the window. */
+    _wvTabSplitStackLeave(win: any) {
+        const st = stackStates.get(win);
+        if (!st) return;
+        try { if (st.forced) this._wvTabSplitCtxLayout(win, zoteroStacked()); } catch (e) {}
+        try { if (st.ro) st.ro.disconnect(); } catch (e) {}
+        for (const t of st.sbTimers) { try { win.clearTimeout(t); } catch (e) {} }
+        stackStates.delete(win);
+    }
+
+    /** Zotero's "Loading..." cover (the CSS's #zotero-tab-cover rule) over the card
+     *  of the tab loading -- the selected side, or the other side when only that one
+     *  is loading (a side loaded through Zotero's select and back, _wvTabSplitSync) --
+     *  inside its border. Placed on every pass, shown
+     *  or not: Zotero shows it in its select, before Weavero's pass of that select. */
+    _wvTabSplitCoverPlace(win: any, s: WvTabSplit) {
+        try {
+            const doc = win.document;
+            const Z: any = win.Zotero_Tabs;
+            const cover = doc.getElementById(COVER_ID);
+            const deck = doc.getElementById("tabs-deck");
+            if (!cover || !deck || !Z) return;
+            const sel = Z.selectedID;
+            const loading = (id: any) => { const t = id ? tabIn(win, id) : null; return !!(t && /-loading$/.test(String(t.type))); };
+            const other = s.left === sel ? s.right : (s.right === sel ? s.left : null);
+            const id = !loading(sel) && other && loading(other) ? other : sel;
+            const card = id ? doc.getElementById(id) : null;
+            if (!card || card.parentNode !== deck) { this._wvTabSplitCoverBack(win); return; }
+            const r = card.getBoundingClientRect();
+            const g = [r.left + card.clientLeft, r.top + card.clientTop, card.clientWidth, card.clientHeight];
+            COVER_VARS.forEach((k, i) => {
+                const v = Math.round(g[i]) + "px";
+                if (cover.style.getPropertyValue(k) !== v) cover.style.setProperty(k, v);
+            });
+        } catch (e) { Zotero.debug("[Weavero] _wvTabSplitCoverPlace err: " + e); }
+    }
+
+    /** The cover as Zotero has it: nothing of Weavero's left on it. */
+    _wvTabSplitCoverBack(win: any) {
+        try {
+            const cover = win.document.getElementById(COVER_ID);
+            if (!cover) return;
+            for (const k of COVER_VARS) if (cover.style.getPropertyValue(k)) cover.style.removeProperty(k);
+            if (!cover.style.length && cover.hasAttribute("style")) cover.removeAttribute("style");
+        } catch (e) {}
+    }
+
     /** Each side's toolbar toggle follows the pane: Zotero tells only the selected
      *  tab (ZoteroContextPane.update -> tab-content setContextPaneOpen), and the side
      *  beside it kept the state it had when last selected -- no toggle in its toolbar
@@ -1489,6 +2203,8 @@ class _TabSplitMixin {
             const live = !CP.collapsed;
             const managed = this._wvTabSplitManaged(win, s) && win._wvTSplitPanes && win._wvTSplitPanes.id === s.id;
             const liveSide = managed ? win._wvTSplitPanes.live : null;
+            // The note beside a locked reader: Zotero's own (the normal state).
+            const normalID = managed ? this._wvTabSplitNormalID(win, s) : null;
             if (!(win._wvTSplitCtxSent instanceof Map)) win._wvTSplitCtxSent = new Map();
             const sent: Map<string, boolean> = win._wvTSplitCtxSent;
             for (const id of [s.left, s.right]) {
@@ -1496,7 +2212,9 @@ class _TabSplitMixin {
                 // Each side's own state where the split keeps its own panes.
                 const side = id === s.left ? "left" : "right";
                 const own = managed && s.panes && (s.panes as any)[side];
-                const open = managed && side !== liveSide && own ? !!own.ctx : live;
+                const st: any = win._wvTSplitPanes;
+                const open = managed && id === normalID ? (st.normalLive ? live : !st.normal.collapsed)
+                    : (managed && side !== liveSide && own ? !!own.ctx : live);
                 const el = win.document.getElementById(id);
                 if (!el || typeof el.setContextPaneOpen !== "function" || sent.get(id) === open) continue;
                 sent.set(id, open);
@@ -1554,13 +2272,32 @@ class _TabSplitMixin {
                         // Its own collapse button closes this side's pane (item 9),
                         // without selecting the side.
                         const tg = e && e.target && e.target.closest && e.target.closest('[data-action="toggle-pane"]');
-                        const s = lp && id ? lp._wvTabSplitOf(win, id) : null;
+                        const s = lp && id ? lp._wvTabSplitShownOf(win, id) : null;
                         if (tg && s && s.panes) {
-                            const own = (s.panes as any)[id === s.left ? "left" : "right"];
-                            if (own) {
+                            // The note beside a locked reader has Zotero's own pane, the
+                            // normal state (_wvTabSplitNormalSide): its button closes that
+                            // one. MJT 2026-11-18 on trial.14, a locked PDF selected beside
+                            // a note: "I cannot toggle the pane while the locked tab is
+                            // focused" -- the button wrote a side state the note never
+                            // reads (a reader's left over on that side), and nothing closed.
+                            const st: any = win._wvTSplitPanes;
+                            const normal = !!(st && st.id === s.id && st.normal && lp._wvTabSplitNormalID(win, s) === id);
+                            const own = normal ? null : (s.panes as any)[id === s.left ? "left" : "right"];
+                            if (normal || own) {
                                 e.preventDefault(); e.stopPropagation();
-                                lp._wvTabSplitRing("ghost toggle closes " + lp._wvTabSplitSideName(win, id) + " (selected " + lp._wvTabSplitSideName(win, Z.selectedID) + ")");
-                                own.ctx = false;
+                                lp._wvTabSplitRing("ghost toggle closes " + lp._wvTabSplitSideName(win, id) + (normal ? " (normal)" : "") + " (selected " + lp._wvTabSplitSideName(win, Z.selectedID) + ")");
+                                if (normal) {
+                                    // Closed as Zotero closes it (contextPane.js `collapsed`
+                                    // setter: both splitters "collapsed"): its getter reads the
+                                    // splitter, and _wvTabSplitNormalGive puts the splitters
+                                    // back after the open state -- with "open" kept here, the
+                                    // note selected opened its pane again (split-dock spec,
+                                    // 2026-11-18, first run).
+                                    st.normal.collapsed = true;
+                                    if (!st.normal.sp) st.normal.sp = {};
+                                    for (const sid of ["zotero-context-splitter", "zotero-context-splitter-stacked"]) st.normal.sp[sid] = "collapsed";
+                                }
+                                else own.ctx = false;
                                 lp._wvTabSplitRelayout(win);
                                 lp._wvTabSplitPersistSoon();
                                 return;
@@ -1666,7 +2403,7 @@ class _TabSplitMixin {
     _wvTabSplitGhostPin(win: any, gh: any) {
         try {
             const id = gh.getAttribute("data-tab-id");
-            const s = id ? this._wvTabSplitOf(win, id) : null;
+            const s = id ? this._wvTabSplitShownOf(win, id) : null;
             const det: any = gh.querySelector("item-details");
             if (!s || !s.panes || !det) return;
             const own: any = (s.panes as any)[id === s.left ? "left" : "right"];
@@ -1683,16 +2420,53 @@ class _TabSplitMixin {
      *  2026-11-11: "I should be able to open the panes independantly in each side.
      *  The opening and closing of panes should be independant also from the opening
      *  state in normal tabs", and "Same for pinning the item pane sections"). A note
-     *  side keeps Zotero's. */
+     *  side keeps Zotero's -- beside a reader too, whose own panes stay
+     *  (_wvTabSplitNormalSide). */
     _wvTabSplitManaged(win: any, s: WvTabSplit | null): boolean {
         if (!s || s.picker || !s.right) return false;
         const a = baseType(tabIn(win, s.left)), b = baseType(tabIn(win, s.right));
         const ok = (k: string) => k === "reader" || k === "library";
-        return ok(a) && ok(b);
+        return (ok(a) && ok(b)) || !!this._wvTabSplitNormalSide(win, s);
+    }
+
+    /** The note side of a split of a reader and a note, else null: the reader side
+     *  keeps its own panes (starting closed, item 14), the note side has Zotero's own
+     *  (the normal state: `st.normalLive` while the note is selected and Zotero's pane
+     *  holds it). First for a lock -- MJT 2026-11-17 on trial.11, a locked PDF, its
+     *  sidebar and item pane closed, a PDF beside it: "When I go to the note tab, it
+     *  toggles both panes in the locked tab" (a reader beside a note kept Zotero's
+     *  panes, and the locked PDF took the normal ones, both open); then for a pair --
+     *  MJT 2026-11-18 on dev.8: "Open in Split View with a note tab keeps the sidebar
+     *  of the PDF side, which should be hidden" (the PDF side showed Zotero's normal
+     *  item pane, open, where a PDF beside a PDF or a library starts with its panes
+     *  closed). Any split of one reader and one note, a lock's or a pair's, either
+     *  order. */
+    _wvTabSplitNormalSide(win: any, s: WvTabSplit | null): "left" | "right" | null {
+        try {
+            if (!s || s.picker || !s.right) return null;
+            const a = baseType(tabIn(win, s.left)), b = baseType(tabIn(win, s.right));
+            if (a === "reader" && b === "note") return "right";
+            if (a === "note" && b === "reader") return "left";
+            return null;
+        } catch (e) { return null; }
+    }
+
+    /** The tab on the note side of split `s` (_wvTabSplitNormalSide), else null. */
+    _wvTabSplitNormalID(win: any, s: WvTabSplit | null): string | null {
+        const side = this._wvTabSplitNormalSide(win, s);
+        return side && s ? (side === "left" ? s.left : s.right) : null;
+    }
+
+    /** The note side of split `s` is the selected one: Zotero's pane holds the
+     *  normal state. */
+    _wvTabSplitNormalLive(win: any, s: WvTabSplit): boolean {
+        const id = this._wvTabSplitNormalID(win, s);
+        return !!id && !!win.Zotero_Tabs && win.Zotero_Tabs.selectedID === id;
     }
 
     /** The side whose item pane Zotero's context pane shows now: the selected side
-     *  when it is a reader, else the reader beside the selected library. */
+     *  when it is a reader, else the reader beside the selected library; none while
+     *  the note beside a locked reader is selected (Zotero's own pane there). */
     _wvTabSplitLiveSide(win: any, s: WvTabSplit): "left" | "right" | null {
         const Z: any = win.Zotero_Tabs;
         const isReader = (id: any) => baseType(tabIn(win, id)) === "reader";
@@ -1700,6 +2474,7 @@ class _TabSplitMixin {
         if (sel !== s.left && sel !== s.right) return null;
         const selSide = sel === s.left ? "left" : "right";
         if (isReader(sel)) return selSide;
+        if (this._wvTabSplitNormalSide(win, s) === selSide) return null;
         const other = selSide === "left" ? s.right : s.left;
         return isReader(other) ? (selSide === "left" ? "right" : "left") : null;
     }
@@ -1731,7 +2506,10 @@ class _TabSplitMixin {
             if (!this._wvTabSplitOn()) return;
             const Z: any = win.Zotero_Tabs;
             if (!Z) return;
-            const s = this._wvTabSplitOf(win, Z.selectedID);
+            // A locked tab: its split for the tab just selected, before anything
+            // below looks the selected tab's split up.
+            (this as any)._wvTabDockReconcile(win);
+            const s = this._wvTabSplitShownOf(win, Z.selectedID);
             const st = win._wvTSplitPanes;
             const want = s && !s.picker && this._wvTabSplitManaged(win, s) ? s : null;
             const deck = win.document.getElementById("tabs-deck");
@@ -1771,7 +2549,7 @@ class _TabSplitMixin {
 
     /** "left"/"right" for a split's tab, for the ring. */
     _wvTabSplitSideName(win: any, id: any): string {
-        const s = this._wvTabSplitOf(win, id);
+        const s = this._wvTabSplitShownOf(win, id);
         return s ? (s.left === id ? "L" : "R") + ":" + id : "-:" + id;
     }
 
@@ -1821,21 +2599,66 @@ class _TabSplitMixin {
     /** Zotero's context pane takes the live side's own state, open and width: on
      *  entering, and whenever the live side changes (a side switch), after keeping
      *  the outgoing side's (what the user did to Zotero's pane while it was that
-     *  side's). Its width before its open state: the toggle draws it (update). */
+     *  side's). Its width before its open state: the toggle draws it (update). The
+     *  note beside a locked reader selected: Zotero's pane takes the normal state
+     *  (what was done to it there kept as the normal state when it is left). */
     _wvTabSplitPanesSwitch(win: any, s: WvTabSplit, entering: boolean) {
         const st = win._wvTSplitPanes;
         if (!st || st.id !== s.id || !s.panes) return;
         const CP: any = win.ZoteroContextPane;
         if (!CP) return;
         const live = this._wvTabSplitLiveSide(win, s);
-        if (!entering && live === st.live) return;
+        const normalNow = this._wvTabSplitNormalLive(win, s);
+        if (!entering && live === st.live && normalNow === !!st.normalLive) return;
+        if (!entering && st.normalLive) this._wvTabSplitNormalTake(win, st);
         const out = !entering && st.live ? (s.panes as any)[st.live] : null;
         if (out) { out.ctx = !CP.collapsed; const w = this._wvTabSplitPaneAttrW(win); if (w) out.ctxW = w; }
         const own = live ? (s.panes as any)[live] : null;
-        this._wvTabSplitRing("switch " + (entering ? "(enter) " : "") + (st.live || "-") + (out ? "(kept ctx " + out.ctx + ")" : "") + " -> " + (live || "-") + (own ? "(gets ctx " + !!own.ctx + ")" : ""));
+        this._wvTabSplitRing("switch " + (entering ? "(enter) " : "") + (st.normalLive ? "normal" : (st.live || "-")) + (out ? "(kept ctx " + out.ctx + ")" : "")
+            + " -> " + (normalNow ? "normal(gets ctx " + !st.normal.collapsed + ")" : (live || "-")) + (own ? "(gets ctx " + !!own.ctx + ")" : ""));
         st.live = live;
+        st.normalLive = normalNow;
+        if (normalNow) { this._wvTabSplitNormalGive(win, st); return; }
         if (own && own.ctxW > 0) this._wvTabSplitSetPaneW(win, own.ctxW);
         if (own && !!CP.collapsed !== !own.ctx) CP.collapsed = !own.ctx;
+    }
+
+    /** Zotero's pane as it stands, kept as the normal state the split set aside: the
+     *  note beside a locked reader had it (_wvTabSplitNormalSide). */
+    _wvTabSplitNormalTake(win: any, st: any) {
+        try {
+            const CP: any = win.ZoteroContextPane;
+            const pane = win.document.getElementById("zotero-context-pane");
+            if (!CP || !pane || !st || !st.normal) return;
+            const n = st.normal;
+            n.collapsed = !!CP.collapsed;
+            n.widthAttr = pane.getAttribute("width");
+            n.styleW = pane.style.width;
+            for (const id of ["zotero-context-splitter", "zotero-context-splitter-stacked"]) {
+                const sp = win.document.getElementById(id);
+                if (!n.sp) n.sp = {};
+                n.sp[id] = sp ? sp.getAttribute("state") : null;
+            }
+        } catch (e) {}
+    }
+
+    /** Zotero's pane back to the normal state the split set aside: its width, its
+     *  open state, its splitters. */
+    _wvTabSplitNormalGive(win: any, st: any) {
+        try {
+            const CP: any = win.ZoteroContextPane;
+            const pane = win.document.getElementById("zotero-context-pane");
+            if (!pane || !st || !st.normal) return;
+            const n = st.normal;
+            if (n.widthAttr == null) pane.removeAttribute("width"); else pane.setAttribute("width", n.widthAttr);
+            pane.style.width = n.styleW || "";
+            if (CP && !!CP.collapsed !== !!n.collapsed) CP.collapsed = !!n.collapsed;
+            for (const id of Object.keys(n.sp || {})) {
+                const sp = win.document.getElementById(id);
+                const v = n.sp[id];
+                if (sp && v != null && sp.getAttribute("state") !== v) sp.setAttribute("state", v);
+            }
+        } catch (e) {}
     }
 
     /** What the user did to Zotero's pane (any of Zotero's ways, and the pane
@@ -1888,20 +2711,10 @@ class _TabSplitMixin {
                 if (w) own.ctxW = w;
             }
         } catch (e) {}
+        // Zotero's pane on the note beside a locked reader: the normal state itself.
+        if (st.normalLive) this._wvTabSplitNormalTake(win, st);
         delete win._wvTSplitPanes;
-        try {
-            if (pane) {
-                const n = st.normal;
-                if (n.widthAttr == null) pane.removeAttribute("width"); else pane.setAttribute("width", n.widthAttr);
-                pane.style.width = n.styleW || "";
-                if (CP && !!CP.collapsed !== !!n.collapsed) CP.collapsed = !!n.collapsed;
-                for (const id of Object.keys(n.sp || {})) {
-                    const sp = win.document.getElementById(id);
-                    const v = n.sp[id];
-                    if (sp && v != null && sp.getAttribute("state") !== v) sp.setAttribute("state", v);
-                }
-            }
-        } catch (e) {}
+        this._wvTabSplitNormalGive(win, st);
         // Its readers back to Zotero's own sidebar state. A reader selected later
         // re-reads it anyway (reader.js _updateLayout); the one beside it would not.
         try {
@@ -2114,6 +2927,17 @@ class _TabSplitMixin {
                     rec[a] = el.hasAttribute(a) ? el.getAttribute(a) : null;
                     if (a === "width" || a === "height") rec["style." + a] = el.style[a] || "";
                 }
+                // A pane a splitter closes (the item pane, the collections pane): its
+                // open state is its own `collapsed` attribute. Zotero persists that
+                // only as the splitter's `state`, and writing the state back neither
+                // closes nor opens the pane once the splitter has no `collapse`
+                // attribute -- Weavero's own "stops at minimum width" setting, on by
+                // default, sets it aside as `data-wv-collapse` (measured on
+                // 11.0-beta.4, 2026-11-15: a library side's item pane closed inside a
+                // split stayed closed after it, and itemPane.js handleResize took its
+                // width away again). Kept with the pane; _wvTabSplitLibApply puts it
+                // back.
+                if (!("collapsed" in rec) && splitterCloses(el)) rec.collapsed = el.hasAttribute("collapsed") ? el.getAttribute("collapsed") : null;
                 out[typeof root.getBaseID === "function" ? root.getBaseID(el.id) : el.id] = rec;
             }
         } catch (e) {}
@@ -2125,6 +2949,23 @@ class _TabSplitMixin {
      *  inline sizes. */
     _wvTabSplitLibApply(root: any, data: WvTabSplitLib) {
         try {
+            // First a pane's open state (_wvTabSplitLibRead), through the pane's own
+            // `collapsed`: Zotero's item pane re-measures and renders in its setter
+            // (collapsiblePane.mjs setPaneCollapsed), any other pane takes the
+            // attribute, and the window is told, as that setter tells it. The sizes
+            // and the splitters' states below then stand as recorded.
+            let flipped = false;
+            for (const el of Array.from(root.querySelectorAll("[zotero-persist]")) as any[]) {
+                if (!el.id || !splitterCloses(el)) continue;
+                const rec = data[typeof root.getBaseID === "function" ? root.getBaseID(el.id) : el.id];
+                if (!rec || !("collapsed" in rec)) continue;
+                const v = rec.collapsed;
+                const want = v != null && (((Zotero as any).platformMajorVersion || 0) >= 153 || v === "true");
+                if (wvBoolAttrOn(el, "collapsed") === want) continue;
+                try { el.collapsed = want; } catch (e) {}
+                flipped = true;
+            }
+            if (flipped) { try { const w = root.ownerDocument.defaultView; w.dispatchEvent(new w.Event("resize")); } catch (e) {} }
             for (const el of Array.from(root.querySelectorAll("[zotero-persist]")) as any[]) {
                 if (!el.id) continue;
                 const rec = data[typeof root.getBaseID === "function" ? root.getBaseID(el.id) : el.id];
@@ -2221,7 +3062,10 @@ class _TabSplitMixin {
             const ZP: any = win.ZoteroPane;
             for (const [id, snap] of Array.from(map.entries())) {
                 const s = this._wvTabSplitOf(win, id);
-                if (on && s && !s.picker && this._wvTabSplitManaged(win, s)) continue;
+                // (A locked library keeps its own panes beside a note too. A library tab
+                // in a pair keeps its pair's here, also while it is shown alone beside
+                // a locked tab.)
+                if (on && s && !s.picker && (this._wvTabSplitManaged(win, s) || isDock(s))) continue;
                 const root = this._wvTabSplitLibRoot(win, id);
                 const own = s && s.panes ? (s.panes as any)[id === s.left ? "left" : "right"] : null;
                 if (own && root) own.lib = this._wvTabSplitLibRead(root);
@@ -2266,8 +3110,12 @@ class _TabSplitMixin {
                 else {
                     for (const key of Object.keys(snap)) {
                         const cur: any = Object.assign({}, saved[key] || {});
+                        // Only what Zotero persists for the element (a pane's own
+                        // `collapsed`, kept by _wvTabSplitLibRead, is not).
+                        const pel = win.document.getElementById(key);
+                        const persisted = pel ? String(pel.getAttribute("zotero-persist") || "").split(/[\s,]+/) : null;
                         for (const a of Object.keys(snap[key])) {
-                            if (a.startsWith("style.")) continue;
+                            if (a.startsWith("style.") || (persisted && !persisted.includes(a))) continue;
                             const x = snap[key][a];
                             if (x == null) delete cur[a]; else cur[a] = x;
                         }
@@ -2326,6 +3174,8 @@ class _TabSplitMixin {
     _wvTabSplitPersistNormal(win: any) {
         const st = win._wvTSplitPanes;
         if (!st) return;
+        // The note beside a locked reader selected: Zotero's pane is the normal state.
+        if (st.normalLive) this._wvTabSplitNormalTake(win, st);
         let saved: any;
         try { saved = JSON.parse(Zotero.Prefs.get("pane.persist") || "{}"); } catch (e) { return; }
         if (!saved || typeof saved !== "object") return;
@@ -2436,18 +3286,28 @@ class _TabSplitMixin {
         } catch (er) {}
     }
 
-    /** A tab's icon in the footer or the picker: the tab bar's own icon class. */
+    /** A tab's icon in the footer or the picker: the tab bar's own icon element's
+     *  classes and attributes (`data-item-type`: CSSItemTypeIcon, tabBar.jsx), so
+     *  Zotero's own rules draw it, as its tabs menu does -- every layer at its own
+     *  size, and the theme's variant when the theme changes. Never a copied
+     *  background with one size: Zotero's icons are several layers (the theme's at
+     *  `contain`, the others preloaded at `0px auto`), and one size for every layer
+     *  drew the hidden white variant too, a white page for each PDF (MJT 2026-11-15,
+     *  "Wrong icons"; src-ts.md). */
     _wvTabSplitIcon(win: any, t: any, el: any) {
         try {
             const node = win.document.querySelector('#tab-bar-container .tab[data-id="' + t.id + '"] .tab-icon');
-            if (node) {
-                el.className += " " + node.className;
-                const st = win.getComputedStyle(node);
-                el.style.backgroundImage = st.backgroundImage;
-                el.style.backgroundSize = "16px";
-                el.style.backgroundRepeat = "no-repeat";
-                el.style.setProperty("-moz-context-properties", "fill, fill-opacity");
-                el.style.fill = "currentColor";
+            if (!node) return;
+            for (const a of Array.from(node.attributes) as any[]) {
+                if (a.name === "id") continue;
+                if (a.name === "class") {
+                    for (const c of String(a.value).split(/\s+/)) {
+                        if (c) el.classList.add(c);
+                    }
+                }
+                else {
+                    el.setAttribute(a.name, a.value);
+                }
             }
         } catch (e) {}
     }
@@ -2459,15 +3319,20 @@ class _TabSplitMixin {
             if (pop) pop.remove();
             pop = doc.createXULElement("menupopup");
             pop.id = "wv-tsplit-menu";
-            const add = (l10nID: string, fn: () => void) => {
+            const add = (l10nID: string, fn: () => void, icon?: string) => {
                 const mi = doc.createXULElement("menuitem");
                 wvL10n(mi, l10nID);
+                // The tab menu's icons for the same commands (lib/split-glyph.ts).
+                if (icon) { mi.classList.add("menuitem-iconic"); mi.setAttribute("image", icon); }
                 mi.addEventListener("command", () => { const lp = live(); if (lp) try { fn(); } catch (e) {} });
                 pop.appendChild(mi);
             };
-            add("weavero-menu-split-separate-tabs", () => live()._wvTabSplitSeparate(win, s.id));
-            add("weavero-menu-split-reverse", () => live()._wvTabSplitReverse(win, s.id));
-            add("weavero-menu-split-close-both", () => live()._wvTabSplitCloseBoth(win, s.id));
+            add("weavero-menu-split-separate-tabs", () => live()._wvTabSplitSeparate(win, s.id), WV_SPLIT_SEPARATE_ICON);
+            add("weavero-menu-split-reverse", () => live()._wvTabSplitReverse(win, s.id), WV_SPLIT_REVERSE_ICON);
+            // (Not for a locked tab's split: the locked tab stays.)
+            if (!isDock(s)) add("weavero-menu-split-close-both", () => live()._wvTabSplitCloseBoth(win, s.id));
+            // "Follow Selected Item" and "Keep Document in New Tab" (tab-split-follow.ts).
+            try { (this as any)._wvSplitFollowFooterItems(win, s, pop); } catch (e) {}
             (doc.querySelector("popupset") || doc.documentElement).appendChild(pop);
             pop.addEventListener("popuphidden", () => { try { pop.remove(); } catch (e) {} }, { once: true });
             pop.openPopup(anchor, "after_end");
@@ -2547,14 +3412,16 @@ class _TabSplitMixin {
         try {
             const doc = win.document;
             const Z: any = win.Zotero_Tabs;
-            const s = this._wvTabSplitOf(win, Z.selectedID);
+            const s = this._wvTabSplitShownOf(win, Z.selectedID);
             if (!s || s.picker || !s.right) return;
             const sel = tabIn(win, Z.selectedID);
             const otherID = s.left === Z.selectedID ? s.right : s.left;
             const other = tabIn(win, otherID);
             if (!sel || !other) return;
             const hasPane = (t: any) => { try { return !!Z.hasContextPane(baseType(t)); } catch (e) { return false; } };
-            if (hasPane(sel) || !hasPane(other)) return;
+            // A side shown as a preview has none (tab-split-follow.ts): Zotero's
+            // pane stays as it left it for the library.
+            if (hasPane(sel) || !hasPane(other) || (this as any)._wvSplitFollowHolds(win, otherID)) return;
             const cp: any = doc.getElementById("zotero-context-pane-inner");
             const pane = doc.getElementById("zotero-context-pane");
             const CP: any = win.ZoteroContextPane;
@@ -2575,6 +3442,34 @@ class _TabSplitMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvTabSplitContextPane err: " + e); }
     }
 
+    /** A split has just left the screen (separated, unlocked, its other side closed,
+     *  a session switch, the setting off) while a tab WITHOUT a context pane is
+     *  selected -- a library tab: Zotero's own pane state for that tab, through
+     *  Zotero's own handler. Beside a library the split view had put Zotero's context
+     *  pane back for the other side's item (_wvTabSplitContextPane), and Zotero puts it
+     *  away for a library tab only when a tab is SELECTED (contextPane.js
+     *  _handleTabSelect: the splitter hidden, the pane collapsed, its side navigation
+     *  hidden); leaving a split selects nothing, so the pane stayed open beside the
+     *  library at full width -- two side panes on the right (MJT 2026-11-17, trial.8,
+     *  after Unlock; the same after Separate on a library|note pair). A selected
+     *  reader or note keeps the pane state the split gave back (_wvTabSplitPanesLeave). */
+    _wvTabSplitZoteroPaneBack(win: any) {
+        try {
+            const Z: any = win.Zotero_Tabs;
+            const sel = Z && Z.selectedID;
+            const t = tabIn(win, sel);
+            if (!t) return;
+            let hasPane = false;
+            try { hasPane = !!Z.hasContextPane(baseType(t)); } catch (e) {}
+            if (hasPane) return;
+            const cp: any = win.document.getElementById("zotero-context-pane-inner");
+            if (!cp || typeof cp._handleTabSelect !== "function") return;
+            this._wvTabSplitRing("split off screen, " + sel + " selected: Zotero's pane state for it");
+            const p = cp._handleTabSelect("select", "tab", [sel], { [sel]: { type: baseType(t) } });
+            if (p && typeof p.catch === "function") p.catch((e: any) => Zotero.debug("[Weavero] _wvTabSplitZoteroPaneBack err: " + e));
+        } catch (e) { Zotero.debug("[Weavero] _wvTabSplitZoteroPaneBack err: " + e); }
+    }
+
     /** The tab bar draws a split's two tabs as one unit (Firefox's split-view
      *  wrapper: the CSS above, the container in _wvTabSplitPlacePills) and keeps them
      *  side by side. Called on every tab-bar mutation (React redraws the tabs). */
@@ -2584,9 +3479,11 @@ class _TabSplitMixin {
             this._wvTabSplitKeepTogether(win);
             const want = new Map<string, string>();
             for (const s of this._wvTabSplits(win)) {
-                if (s.picker || !s.right) continue;
+                if (s.picker || !s.right || isDock(s)) continue;
                 want.set(s.left, "left"); want.set(s.right, "right");
             }
+            // A locked tab marks the strip its own way (its badge).
+            (this as any)._wvTabDockMarkStrip(win);
             for (const el of doc.querySelectorAll("#tab-bar-container .tab[data-id], #wv-pinned-mirrors [data-wv-tsplit]")) {
                 const id = el.getAttribute("data-id");
                 const v = want.get(id);
@@ -2594,6 +3491,8 @@ class _TabSplitMixin {
                 else if (el.hasAttribute("data-wv-tsplit")) el.removeAttribute("data-wv-tsplit");
             }
             this._wvTabSplitPlacePills(win);
+            // The splits whose document follows the library's selection (tab-split-follow.ts).
+            try { (this as any)._wvSplitFollowSync(win); } catch (e) {}
         } catch (e) {}
     }
 
@@ -2608,7 +3507,7 @@ class _TabSplitMixin {
             win._wvTSplitKeeping = true;
             try {
                 for (const s of this._wvTabSplits(win)) {
-                    if (s.picker || !s.right) continue;
+                    if (s.picker || !s.right || isDock(s)) continue;
                     // Where each side stands among the OTHER tabs: the side whose
                     // place changed is the one that moved (an index alone also
                     // changes for the side the mover passed over).
@@ -2660,7 +3559,7 @@ class _TabSplitMixin {
             const wrap = doc.querySelector("#tab-bar-container .tabs-wrapper");
             const tabsEl = wrap && wrap.querySelector(":scope > .tabs");
             let host: any = doc.getElementById("wv-tsplit-pills");
-            const splits = this._wvTabSplits(win).filter((s) => !s.picker && s.right);
+            const splits = this._wvTabSplits(win).filter((s) => !s.picker && s.right && !isDock(s));
             if (!wrap || !tabsEl || !splits.length) {
                 // No pair in the strip: its listeners go too (the reload spec holds every
                 // keyed listener to be wired again, and a new instance wires these only
@@ -2672,6 +3571,9 @@ class _TabSplitMixin {
                 if (win._wvTSplitPillRO) { try { win._wvTSplitPillRO.disconnect(); } catch (e) {} delete win._wvTSplitPillRO; }
                 return;
             }
+            // A tab drag on: the pills follow the drag (_wvTabSplitDragPills); measured now,
+            // the tabs' boxes would include its transforms.
+            if (host && win._wvDragGeom) { this._wvTabSplitDragPills(win); return; }
             const tag = (this as any)._wvWireTag();
             if (host && (host.parentNode !== wrap || host.getAttribute("data-wv-tag") !== tag)) { host.remove(); host = null; }
             if (!host) {
@@ -2686,9 +3588,14 @@ class _TabSplitMixin {
             if ((host.getAttribute("data-look") === "nova") !== nova) { if (nova) host.setAttribute("data-look", "nova"); else host.removeAttribute("data-look"); }
             const on = wvListener(tag);
             on(tabsEl, "tsplit:pills:scroll", "scroll", () => { const lp = live(); if (lp) lp._wvTabSplitPlacePills(win); }, { passive: true });
-            on(doc.getElementById("tab-bar-container"), "tsplit:pills:dragstart", "dragstart", () => { const h = doc.getElementById("wv-tsplit-pills"); if (h) h.hidden = true; }, true);
+            // A tab drag no longer hides the pills: they follow their tabs (_wvTabSplitDragPills,
+            // from the sliding gap in tab-groups.ts), the dragged pair's with it -- Firefox
+            // drags its split-view wrapper with its background (MJT 2026-11-18: "the shading
+            // and colors of the second tab should be preserved in the dragged preview of the
+            // tab headers. Same as in Firefox"). Put back in place at the end.
             on(doc.getElementById("tab-bar-container"), "tsplit:pills:dragend", "dragend", () => {
                 const h = doc.getElementById("wv-tsplit-pills"); if (h) h.hidden = false;
+                const lp0 = live(); if (lp0) lp0._wvTabSplitDragPills(win, true);
                 win.setTimeout(() => { const lp = live(); if (lp) lp._wvTabSplitMarkStrip(win); }, 0);
             }, true);
             if (!win._wvTSplitPillRO && typeof win.ResizeObserver === "function") {
@@ -2730,6 +3637,53 @@ class _TabSplitMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvTabSplitPlacePills err: " + e); }
     }
 
+    /** During a tab drag each pill follows its pair: its left tab's transform -- the lift
+     *  for the dragged pair (tab-groups.ts _wvOpenGap lifts both its tabs by --wv-lift),
+     *  the slide for a pair the gap moves (that tab's own transform, same transition).
+     *  `clear`: every pill back in place (a drop, a cancel). */
+    _wvTabSplitDragPills(win: any, clear?: boolean) {
+        try {
+            const doc = win.document;
+            const host = doc.getElementById("wv-tsplit-pills");
+            if (!host) return;
+            if (host.hidden) host.hidden = false;
+            const splits = this._wvTabSplits(win);
+            const hr = host.getBoundingClientRect();
+            const px = (n: number) => (Math.round(n * 100) / 100) + "px";
+            for (const p of Array.from(host.querySelectorAll(".wv-tsplit-pill")) as any[]) {
+                if (clear) {
+                    if (p.style.transform) p.style.transform = "";
+                    if (p.style.transition) p.style.transition = "";
+                    continue;
+                }
+                const s = splits.find((x: any) => x && x.id === p.getAttribute("data-split"));
+                const lt = s ? doc.querySelector('#tab-bar-container .tabs > .tab[data-id="' + s.left + '"]') : null;
+                const rt = s ? doc.querySelector('#tab-bar-container .tabs > .tab[data-id="' + s.right + '"]') : null;
+                if (!lt || !rt) continue;
+                if (lt.hasAttribute("data-wv-lifted")) {
+                    // The dragged pair: around its two tabs as they are drawn now (lifted;
+                    // the drag's selection can change their widths -- the close button on
+                    // the selected half only), no transition.
+                    const lr = lt.getBoundingClientRect(), rr = rt.getBoundingClientRect();
+                    const x0 = Math.min(lr.left, rr.left) - PILL_PAD, x1 = Math.max(lr.right, rr.right) + PILL_PAD;
+                    const y0 = Math.min(lr.top, rr.top) - PILL_PAD, y1 = Math.max(lr.bottom, rr.bottom) + PILL_PAD;
+                    if (p.style.transition !== "none") p.style.transition = "none";
+                    if (p.style.transform) p.style.transform = "";
+                    p.style.left = px(x0 - hr.left);
+                    p.style.top = px(y0 - hr.top);
+                    p.style.width = px(x1 - x0);
+                    p.style.height = px(y1 - y0);
+                    p.style.setProperty("--wv-tsplit-pill-mid", px((Math.min(lr.right, rr.right) + Math.max(lr.left, rr.left)) / 2 - x0 - 0.5));
+                    continue;
+                }
+                // A pair the gap slides: its tabs' slide, with their transition.
+                const tf = lt.style.transform || "";
+                if (p.style.transition !== "transform 0.12s ease") p.style.transition = "transform 0.12s ease";
+                if (p.style.transform !== tf) p.style.transform = tf;
+            }
+        } catch (e) {}
+    }
+
     /** Firefox's tooltip line for a split tab: "{label}, Split view left|right". */
     _wvTabSplitTooltip(win: any, tabID: any, label: string): string {
         const s = this._wvTabSplitOf(win, tabID);
@@ -2739,31 +3693,25 @@ class _TabSplitMixin {
 
     // ---- Ways in ---------------------------------------------------------
 
-    /** Items list: open `item` (a PDF, EPUB or snapshot attachment, the best one
+    /** Items list: open `item` (a PDF, EPUB or snapshot attachment, the first one
      *  of a regular item, or a note) in a tab beside the library tab on screen
      *  (Firefox's Open Link in Split View: the current tab left, the new one right
      *  and selected). The library tab already split: its other side is replaced
      *  -- browsing the list, each item can be put beside it in turn (Firefox
-     *  hides the entry instead). */
+     *  hides the entry instead). The "beside" open of every surface since
+     *  1.1.1-openmods.1 (open-where.ts), Ctrl/Cmd+Enter's. */
     async _wvTabSplitOpenItem(win: any, item: any) {
         try {
             if (!this._wvTabSplitOn() || !item) return;
-            const Z: any = win.Zotero_Tabs;
-            const from = Z.selectedID;
-            let tabID: any = null;
-            if (item.isNote && item.isNote()) {
-                await win.ZoteroPane.openNote(item.id, { openInWindow: false });
-                const t = Z._tabs.find((x: any) => x && x.data && x.data.itemID === item.id && baseType(x) === "note");
-                tabID = t && t.id;
-            }
-            else {
-                const att = this._wvTabSplitUsableAttachment(item);
-                if (!att) return;
-                const r: any = await Zotero.Reader.open(att.id, null, { openInWindow: false, allowDuplicate: false });
-                tabID = r && r.tabID;
-            }
-            if (!tabID || tabID === from || !tabIn(win, tabID)) return;
-            this._wvTabSplitCreate(win, from, tabID, { select: "right" });
+            const it = (item.isNote && item.isNote()) ? item : this._wvTabSplitUsableAttachment(item);
+            if (!it) return;
+            await (this as any)._wvOpenTarget(win, { item: it }, "beside", win.Zotero_Tabs.selectedID);
+            // Following from the start, when Settings asks for it (tab-split-follow.ts):
+            // the pair the open made or re-pointed (never the lock's split).
+            try {
+                const made: any = this._wvTabSplitOf(win, win.Zotero_Tabs.selectedID);
+                if (made && !isDock(made)) (this as any)._wvSplitFollowAdopt(win, made);
+            } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvTabSplitOpenItem err: " + e); }
     }
 
@@ -2876,18 +3824,14 @@ class _TabSplitMixin {
     }
 
     /** Open Link in Split View: the link's target in a tab (or the library
-     *  selecting its item) beside the selected tab, which stays on the left; the
-     *  target's tab is selected (Firefox, nsContextMenu.openLinkInSplitView). */
+     *  selecting its item) beside the selected tab, the two in their order in the
+     *  strip; the target's tab is selected (Firefox,
+     *  nsContextMenu.openLinkInSplitView). The link's "beside" open
+     *  (open-where.ts), a Ctrl/Cmd+click's. */
     async _wvTabSplitOpenLink(win: any, url: string) {
         try {
             if (!this._wvTabSplitLinkOK(win, url)) return;
-            const Z: any = win.Zotero_Tabs;
-            const from = Z.selectedID;
-            await (this as any).handleZoteroURI(url);
-            await new Promise((r) => win.setTimeout(r, 150));
-            const to = Z.selectedID;
-            if (!to || to === from) return;
-            this._wvTabSplitCreate(win, from, to, { select: "right" });
+            await (this as any)._wvOpenTarget(win, { url }, "beside", win.Zotero_Tabs.selectedID);
         } catch (e) { Zotero.debug("[Weavero] _wvTabSplitOpenLink err: " + e); }
     }
 
@@ -2915,9 +3859,13 @@ class _TabSplitMixin {
             // entries, where Firefox keeps them (tab-context-menu.js MENU_SECTIONS
             // "priority-items"), out of MenuManager's place at the menu's end.
             const inSplit = (win: any, id: any) => { const s = self._wvTabSplitOf(win, id); return !!(s && s.right && !s.picker); };
-            const entry = (key: string, l10nID: string, show: (win: any, tabID: any, tg: string[]) => boolean, run: (win: any, tabID: any, tg: string[]) => void) => ({
+            // `icon`: lib/split-glyph.ts (MJT 2026-11-18, "Add an icon for the split
+            // view menus"), drawn in context-fill: one drawing for both themes.
+            const entry = (key: string, l10nID: string, icon: string, show: (win: any, tabID: any, tg: string[]) => boolean, run: (win: any, tabID: any, tg: string[]) => void) => ({
                 menuType: "menuitem",
                 l10nID,
+                icon,
+                darkIcon: icon,
                 onShowing: (_ev: any, ctx: any) => {
                     try {
                         const win = winOf(ctx);
@@ -2943,7 +3891,7 @@ class _TabSplitMixin {
                     } catch (e) { Zotero.debug("[Weavero] split menu " + l10nID + " err: " + e); }
                 },
             });
-            const id = MM.registerMenu({
+            const id = wvMMRegister(MM, {
                 menuID: "weavero-tab-split",
                 pluginID: "weavero@mjthoraval",
                 target: "main/tab",
@@ -2953,9 +3901,9 @@ class _TabSplitMixin {
                     // tab is in a split (item 10); Separate Split View when any is,
                     // separating every split among them (unsplitTabs, item 12);
                     // Reverse Tabs on one tab only (`this.multiselected` hides it).
-                    entry("splitAdd", "weavero-menu-split-add", (win, tabID, tg) => tg.length === 1 && !inSplit(win, tabID),
+                    entry("splitAdd", "weavero-menu-split-add", WV_SPLIT_ICON, (win, tabID, tg) => tg.length === 1 && !inSplit(win, tabID),
                         function (this: any, win, tabID) { this._wvTabSplitAddPicker(win, tabID); }),
-                    entry("splitOpen", "weavero-menu-split-open", (win, _tabID, tg) => tg.length === 2 && !tg.some((id) => inSplit(win, id)),
+                    entry("splitOpen", "weavero-menu-split-open", WV_SPLIT_ICON, (win, _tabID, tg) => tg.length === 2 && !tg.some((id) => inSplit(win, id)),
                         function (this: any, win, tabID, tg) {
                             // The two keep their order in the strip (item 16; Firefox
                             // moveTabsToSplitView puts the selected tab first instead)
@@ -2967,14 +3915,18 @@ class _TabSplitMixin {
                             const cur = win.Zotero_Tabs && win.Zotero_Tabs.selectedID;
                             this._wvTabSplitCreate(win, tabID, other, { select: cur === tabID || cur === other ? "none" : "left" });
                         }),
-                    entry("splitSeparate", "weavero-menu-split-separate", (win, _tabID, tg) => tg.some((id) => inSplit(win, id)),
+                    entry("splitSeparate", "weavero-menu-split-separate", WV_SPLIT_SEPARATE_ICON, (win, _tabID, tg) => tg.some((id) => inSplit(win, id)),
                         function (this: any, win, _tabID, tg) {
                             const ids = new Set<string>();
                             for (const id of tg) { const s = this._wvTabSplitOf(win, id); if (s && s.right) ids.add(s.id); }
                             for (const sid of ids) this._wvTabSplitSeparate(win, sid);
                         }),
-                    entry("splitReverse", "weavero-menu-split-reverse", (win, tabID, tg) => tg.length === 1 && inSplit(win, tabID),
+                    entry("splitReverse", "weavero-menu-split-reverse", WV_SPLIT_REVERSE_ICON, (win, tabID, tg) => tg.length === 1 && inSplit(win, tabID),
                         function (this: any, win, tabID) { const s = this._wvTabSplitOf(win, tabID); if (s) this._wvTabSplitReverse(win, s.id); }),
+                    // Every tab's Lock Tab, and the locked tab's Collapse / Expand
+                    // Locked Tab (tab-split-dock.ts).
+                    (this as any)._wvTabDockMenu(),
+                    (this as any)._wvTabDockCollapseMenu(),
                 ],
             });
             if (id) (this as any)._wvTabSplitMenuID = id;
@@ -3000,16 +3952,20 @@ class _TabSplitMixin {
             for (const w of wvMainWins()) {
                 const Z: any = (w as any).Zotero_Tabs;
                 const splits = this._wvTabSplits(w);
+                // The window's locked tab, on screen or not: its own record, before
+                // the window's pairs (tab-split-dock.ts).
+                try { const dr = (this as any)._wvTabDockRecord(w, () => fingerprintOf(w)); if (dr) out.push(dr); } catch (e) {}
                 if (!splits.length) continue;
                 const fp = fingerprintOf(w);
                 for (const s of splits) {
-                    if (s.picker || !s.right) continue;
+                    if (s.picker || !s.right || isDock(s)) continue;
                     const l = descOf(tabIn(w, s.left)), r = descOf(tabIn(w, s.right));
                     if (!l || !r) continue;
                     const rec: any = { l, r, ratio: Math.round(s.ratio * 1000) / 1000, sel: Z && Z.selectedID === s.left ? "left" : (Z && Z.selectedID === s.right ? "right" : ""), w: fp };
                     const p = this._wvTabSplitPanesNow(w, s);
                     if (p) rec.p = p;
                     if (s.pins && s.pins.length) rec.pin = s.pins.map((x) => ({ side: x.side, index: x.index }));
+                    if (s.follow) rec.follow = true;   // tab-split-follow.ts
                     out.push(rec);
                 }
             }
@@ -3085,7 +4041,7 @@ class _TabSplitMixin {
                 if (!Array.isArray(splits) || !splits.length) continue;
                 let fp: string[] | null = null;
                 for (const s of splits) {
-                    if (s.picker || !s.right) continue;
+                    if (s.picker || !s.right || isDock(s)) continue;
                     const l = descOf(tabIn(w, s.left)), r = descOf(tabIn(w, s.right));
                     if (l && r) liveRecs.push({ l, r, fp: fp || (fp = fingerprintOf(w)) });
                 }
@@ -3122,7 +4078,18 @@ class _TabSplitMixin {
                     if (mine < FP_MIN) continue;
                     if (others.some((x: any) => fpScore(rec.w, fingerprintOf(x)) > mine)) continue;
                 }
-                const free = (t: any) => t && !this._wvTabSplitOf(win, t.id);
+                // The window's locked tab: its own module puts it back.
+                if (rec.dock) {
+                    if ((this as any)._wvTabDockAdopt(win, rec)) { recs.splice(recs.indexOf(rec), 1); made++; }
+                    continue;
+                }
+                // (A pair never takes the locked tab; the tab beside it now is free
+                // for one: the lock still shows it alone, the pair is a pair.)
+                const free = (t: any) => {
+                    if (!t || (this as any)._wvTabDockHolds(win, t.id)) return false;
+                    const sp = this._wvTabSplitOf(win, t.id);
+                    return !sp || isDock(sp);
+                };
                 // A split's sides sit together in the strip, left first (Adjoin), and
                 // Zotero restores the order: the first such pair. Two sides recorded
                 // alike (two library tabs, both "lib") took the right side first, so
@@ -3146,6 +4113,7 @@ class _TabSplitMixin {
                 // The pins it had taken: kept to give back (a side found pinned again --
                 // the quit's destroy gave it back -- leaves the pins anew).
                 if (Array.isArray(rec.pin)) s.pins = rec.pin.filter((p: any) => p && (p.side === "left" || p.side === "right")).map((p: any) => ({ side: p.side, index: Math.max(0, Number(p.index) || 0) }));
+                if (rec.follow === true) s.follow = true;   // tab-split-follow.ts
                 this._wvTabSplits(win).push(s);
                 this._wvTabSplitTakePins(win, s);
                 this._wvTabSplitAdjoin(win, s);
@@ -3160,14 +4128,17 @@ class _TabSplitMixin {
     _wvTabSplitRecords(win: any): any[] {
         const out: any[] = [];
         let fp: string[] | null = null;
+        // The window's locked tab, before its pairs (tab-split-dock.ts).
+        try { const dr = (this as any)._wvTabDockRecord(win, () => fp || (fp = fingerprintOf(win))); if (dr) out.push(dr); } catch (e) {}
         for (const s of this._wvTabSplits(win)) {
-            if (s.picker || !s.right) continue;
+            if (s.picker || !s.right || isDock(s)) continue;
             const l = descOf(tabIn(win, s.left)), r = descOf(tabIn(win, s.right));
             if (!l || !r) continue;
             const rec: any = { l, r, ratio: s.ratio, w: fp || (fp = fingerprintOf(win)) };
             const p = this._wvTabSplitPanesNow(win, s);
             if (p) rec.p = p;
             if (s.pins && s.pins.length) rec.pin = s.pins.map((x) => ({ side: x.side, index: x.index }));
+            if (s.follow) rec.follow = true;   // tab-split-follow.ts
             out.push(rec);
         }
         return out;
@@ -3259,6 +4230,9 @@ class _TabSplitMixin {
     _wvTabSplitSessionAdopt(recs: any[]) {
         try {
             const P: any = this;
+            // A window that keeps a tab locked (an older Zotero's library tab
+            // outlives the switch): the session's own records decide.
+            try { P._wvTabDockOffAll(); } catch (e) {}
             P._wvTSplitPending = Array.isArray(recs) ? recs.slice() : [];
             P._wvTSplitPendingUntil = Date.now() + 30000;
             const pass = () => { const lp = live(); if (!lp || lp._wvDestroyed) return; for (const w of wvMainWins()) { try { lp._wvTabSplitRestore(w); } catch (e) {} } };
@@ -3297,6 +4271,7 @@ class _TabSplitMixin {
                     const cp: any = doc.getElementById("zotero-context-pane-inner");
                     if (cp) wvUnwrap(cp, "_handleTabSelect", "splitContextPane");
                     const deck = doc.getElementById("tabs-deck");
+                    const wasSplit = !!deck && deck.hasAttribute("wv-tsplit");
                     if (deck) {
                         deck.removeAttribute("wv-tsplit");
                         for (const el of Array.from(deck.children) as any[]) {
@@ -3305,12 +4280,20 @@ class _TabSplitMixin {
                             el.style.removeProperty("flex");
                             this._wvTabSplitCardUnreserve(el);
                             this._wvTabSplitLibraryUnfit(w, el);
+                            this._wvTabSplitStackOff(w, el);
                             this._wvTabSplitUnwirePanel(el);
                         }
                     }
                     delete (w as any)._wvTSplitFitMOs;
                     const pane = doc.getElementById("zotero-context-pane");
                     if (pane) this._wvTabSplitPaneUnplace(pane);
+                    // Zotero's pane back in Zotero's layout, then its update() given back.
+                    this._wvTabSplitStackLeave(w);
+                    this._wvTabSplitStackUnwire(w);
+                    this._wvTabSplitCoverBack(w);
+                    // A library selected beside a split: Zotero's own pane state for it
+                    // (its handler, unwrapped above), once its layout is Zotero's again.
+                    if (wasSplit) this._wvTabSplitZoteroPaneBack(w);
                     delete (w as any)._wvTSplitCtxSent;
                     this._wvTabSplitObserve(w, false);
                     wvRemoveStyle(doc, STYLE_ID);
@@ -3321,7 +4304,15 @@ class _TabSplitMixin {
                     (w as any)._wvTSplitRestoreArmed = false;
                 } catch (e) {}
             }
+            // A locked tab: its split out of each window's list, its badge off the
+            // strip (tab-split-dock.ts), now that the panes are back.
+            try { (this as any)._wvTabDockUnwireAll(); } catch (e) {}
         } catch (e) {}
+    }
+
+    /** A tab by what it shows, as a split's record names it (for tab-split-dock.ts). */
+    _wvTabSplitDescOf(t: any): string | null {
+        return descOf(t);
     }
 }
 

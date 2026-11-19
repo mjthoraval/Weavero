@@ -38,7 +38,7 @@ import { WV_EXT_ICON_CONTEXT } from "./count-popups";
 import { wvLinkGlyphEl, WV_LINK_MENU_ICON } from "../lib/link-glyph";
 import { wvInjectStyle, wvRemoveStyle } from "../lib/style";
 import { wvTimeout } from "../lib/timers";
-import { wvMenuItem } from "../lib/menu";
+import { wvMenuItem, wvMMRegister } from "../lib/menu";
 import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
 import { wvListen, wvUnlisten } from "../lib/listen";
 import { wvLivePlugin } from "../lib/live";
@@ -1915,7 +1915,7 @@ class _PaneMixin {
                     catch (e) { Zotero.debug("[Weavero] collection Open in New Window err: " + e); }
                 },
             }];
-            const id = MM.registerMenu({ menuID: "weavero-collection-open-window", pluginID: "weavero@mjthoraval", target: "main/library/collection", menus });
+            const id = wvMMRegister(MM, { menuID: "weavero-collection-open-window", pluginID: "weavero@mjthoraval", target: "main/library/collection", menus });
             (this as any)._wvCollectionMenuID = id || null;
             (this as any)._wvCollectionMenus = menus;
             this._wvPurgeCollectionMenuStrays();
@@ -2290,7 +2290,7 @@ class _PaneMixin {
                 ["weavero-menubar-edit-advsearch", "main/menubar/edit", editMenus],
                 ["weavero-menubar-reader-file-windows", "reader/menubar/file", readerFileMenus],
             ] as any[]) {
-                const id = MM.registerMenu({ menuID, pluginID: "weavero@mjthoraval", target, menus });
+                const id = wvMMRegister(MM, { menuID, pluginID: "weavero@mjthoraval", target, menus });
                 if (id) ids.push(id);
             }
             (this as any)._wvMenubarMenuIDs = ids;
@@ -5810,19 +5810,29 @@ class _PaneMixin {
             // each). New Collection carries no margin, New Item carries 4.
             btn.style.marginInlineEnd = collapsed ? "4px" : "8px";
             if (collapsed) {
-                // Match the open-state offset: the collections toolbar's inset
-                // (its container's padding, the pane sits at x = 0).
-                let target = 8;
+                // Match the open-state offset: the collections toolbar's inset (its
+                // container's padding) from the LIBRARY VIEW's own start edge. Not from
+                // the window's: a library tab can be drawn mid-window -- a split view's
+                // right side, the other side of a locked tab -- and the offset measured
+                // there (2026-11-17: margin -962 px for a view at x ~ 964) stayed when
+                // the tab was drawn at the window's start again, taking New Item, Add
+                // Attachment and New Note off screen. Relative to the view, the margin
+                // holds wherever the view goes.
+                let inset = 8;
                 try {
                     const tb = wvViewEl(doc, "zotero-toolbar-collection-tree");
                     const v = tb && parseFloat(win.getComputedStyle(tb).paddingInlineStart);
-                    if (v != null && !isNaN(v)) target = Math.round(v);
+                    if (v != null && !isNaN(v)) inset = Math.round(v);
                 } catch (_) {}
                 const fix = () => {
                     try {
                         btn.style.marginInlineStart = "0px";
-                        const l = Math.round(btn.getBoundingClientRect().left);
-                        if (l !== target) btn.style.marginInlineStart = (target - l) + "px";
+                        const root: any = wvViewEl(doc, "zotero-trees") || pane.parentNode;
+                        const rr = root.getBoundingClientRect();
+                        const br = btn.getBoundingClientRect();
+                        const rtl = win.getComputedStyle(root).direction === "rtl";
+                        const off = Math.round(rtl ? rr.right - br.right : br.left - rr.left);
+                        if (off !== inset) btn.style.marginInlineStart = (inset - off) + "px";
                     } catch (_) {}
                 };
                 fix();
@@ -8795,7 +8805,7 @@ class _PaneMixin {
             // `_setupTabExternalRepositioner`) moves them up under "Show in
             // Library" by their markers.
             const tabEntries: any[] = self._wvTabMenuManagerEntries();
-            const id = (Zotero as any).MenuManager.registerMenu({
+            const id = wvMMRegister((Zotero as any).MenuManager, {
                 menuID: "weavero-tab-copy-links",
                 pluginID: "weavero@mjthoraval",
                 target: "main/tab",
@@ -8933,6 +8943,8 @@ class _PaneMixin {
                         const TOP = new Set(["viewOnline", "showFile", "externalViewer",
                                              "openNotes", "removeFromGroup", "groupTab",
                                              "splitAdd", "splitOpen", "splitSeparate", "splitReverse",
+                                             "splitFollow", "splitKeep",
+                                             "dockLibrary", "dockCollapse",
                                              "moveTab"]);
                         const found: any = {};
                         for (const ch of Array.from(popup.children) as any[]) {
@@ -11534,12 +11546,13 @@ class _PaneMixin {
             if (urlSpan) {
                 const cell = urlSpan.closest(".annotation-row.tight .cell.annotation-comment");
                 if (!cell) return;
+                const whereC = (this as any)._wvOpenWhere(e);
+                if (whereC === null) return;
                 e.stopPropagation(); e.preventDefault();
                 const url = (urlSpan.getAttribute("data-href")
                           || urlSpan.textContent || "").trim();
                 if (!url) return;
-                if (url.startsWith("zotero://")) this.handleZoteroURI(url);
-                else this._launchURL(url);
+                Promise.resolve((this as any)._wvOpenTarget(null, { url }, whereC, urlSpan)).catch(() => {});
                 return;
             }
             const treeIcon = e.target.closest && e.target.closest(".wv-tree-icon");
@@ -11568,8 +11581,26 @@ class _PaneMixin {
             // only, NOT stopped -- Zotero selects the row as usual and the
             // release opens the popup.
             try { this._wvCountOnPress(e, doc.defaultView); } catch (er) {}
-            if (e.button !== 0) return;
             if (!tgt || !tgt.closest) return;
+            // The middle button on a Weavero link: a tab in the background
+            // (open-where.ts, MJT 2026-11-17), the press taken -- no
+            // autoscroll, no paste.
+            if (e.button === 1) {
+                let sp1: any = null;
+                const path1 = (typeof e.composedPath === "function") ? e.composedPath() : [];
+                for (const node of path1) { if (node && node.classList && node.classList.contains("wv-url-span")) { sp1 = node; break; } }
+                if (!sp1) sp1 = tgt.closest(".wv-url-span");
+                if (!sp1) return;
+                const u1 = (sp1.getAttribute("data-href") || sp1.textContent || "").trim();
+                if (!u1) return;
+                e.stopPropagation();
+                if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+                e.preventDefault();
+                H.lastHandled = Date.now();
+                Promise.resolve((this as any)._wvOpenTarget(null, { url: u1 }, "background", sp1)).catch(() => {});
+                return;
+            }
+            if (e.button !== 0) return;
 
             // .wv-tree-rel-icon owns its own click handler that opens
             // the relations popup directly. Suppress the row's
@@ -11647,6 +11678,11 @@ class _PaneMixin {
             // Only URL-span and visible tree-icon clicks are handled.
             // Plain text in the cell: ignored, row selection proceeds.
             if (!urlSpan && !treeIcon) return;
+            // Where a link opens (open-where.ts): plain, Ctrl/Cmd beside the
+            // tab it is in, Shift a new window. macOS Control+click is the
+            // context click: left to the menu.
+            const whereL = urlSpan ? (this as any)._wvOpenWhere(e) : "here";
+            if (whereL === null) return;
 
             this._dbg("[Weavero] mousedown: blocking + firing action urlSpan="
                 + !!urlSpan + " treeIcon=" + !!treeIcon);
@@ -11664,8 +11700,7 @@ class _PaneMixin {
                     this._dbg("[Weavero] tree url click: empty url, ignored");
                     return;
                 }
-                if (url.startsWith("zotero://")) this.handleZoteroURI(url);
-                else this._launchURL(url);
+                Promise.resolve((this as any)._wvOpenTarget(null, { url }, whereL, urlSpan)).catch(() => {});
                 return;
             }
             // Tree icon click → open popup with full comment (sans icon glyph).

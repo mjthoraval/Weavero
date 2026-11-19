@@ -289,6 +289,8 @@ describe("Weavero — pref observer dispatch (characterization)", () => {
         "extensions.zotero.weavero.paneScope.tags.pin.att": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.paneScope.tags.pin.att\")", "_wvScopeRefreshAll()"],
         "extensions.zotero.weavero.paneScope.tags.pin.note": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.paneScope.tags.pin.note\")", "_wvScopeRefreshAll()"],
         "extensions.zotero.weavero.paneScope.tags.pin.own": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.paneScope.tags.pin.own\")", "_wvScopeRefreshAll()"],
+        // Read when a preview opens (preview-highlight.ts): nothing to re-apply.
+        "extensions.zotero.weavero.previewEntryHighlight": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.previewEntryHighlight\")"],
         "extensions.zotero.weavero.previewLinkZones": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.previewLinkZones\")"],
         "extensions.zotero.weavero.readerItemPane": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.readerItemPane\")", "_wvReaderWindowTargets()"],
         "extensions.zotero.weavero.readerLayoutMenu": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.readerLayoutMenu\")"],
@@ -301,6 +303,10 @@ describe("Weavero — pref observer dispatch (characterization)", () => {
         "extensions.zotero.weavero.sessionSort": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.sessionSort\")"],
         "extensions.zotero.weavero.sessionSortReverse": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.sessionSortReverse\")"],
         "extensions.zotero.weavero.showLibraryBookmarksInReader": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.showLibraryBookmarksInReader\")", "_teardownBookmarksToolbarButton(win:navigator:browser)", "_setupBookmarksToolbarButton(win:navigator:browser)"],
+        // A split made by "Open PDF in Split View" follows the library from the
+        // start (tab-split-follow.ts, 2026-11-14): read when a split is made, so a
+        // change calls nothing.
+        "extensions.zotero.weavero.splitViewFollow": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.splitViewFollow\")"],
         "extensions.zotero.weavero.splitViewFooter": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.splitViewFooter\")", "_wvTabSplitDrawLayer(win:navigator:browser)"],
         "extensions.zotero.weavero.tagSelectorHandle": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.tagSelectorHandle\")", "_wvApplyTagSelectorHandle(win:navigator:browser)"],
         "extensions.zotero.weavero.titleLinesCount": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.titleLinesCount\")", "_wvApplyTitleLines(win:navigator:browser)"],

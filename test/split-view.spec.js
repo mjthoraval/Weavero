@@ -276,6 +276,34 @@ describe("Weavero — split view: two tabs side by side", function () {
         finally { separateAll(); }
     });
 
+    it("the picker draws each tab's icon as the tab bar does: every layer of Zotero's icon, not one size for all", async function () {
+        // Zotero's tab icons are several background layers (the theme's icon at
+        // `contain`, the other variants preloaded at `0px auto`). One inline size
+        // for every layer drew the hidden white variant too: "Wrong icons", a white
+        // page with a red corner for every PDF (MJT 2026-11-15).
+        const t1 = tabOfItem(pdf1) || await openPDF(pdf1);
+        const t2 = tabOfItem(pdf2) || await openPDF(pdf2);
+        ZT.select(t1.id); await sleep(300);
+        wv._wvTabSplitAddPicker(win, t1.id);
+        const pk = await waitFor(() => doc.querySelector("#wv-tsplit-layer .wv-tsplit-picker"), 5000, "the picker");
+        try {
+            for (const id of [t2.id, libTab().id]) {
+                const tabIcon = doc.querySelector('#tab-bar-container .tab[data-id="' + id + '"] .tab-icon');
+                const rowIcon = pk.querySelector('.wv-tsplit-row[data-tab-id="' + id + '"] .wv-tsplit-icon');
+                assert.ok(tabIcon && rowIcon, "both icons for " + id);
+                const a = win.getComputedStyle(tabIcon), b = win.getComputedStyle(rowIcon);
+                for (const k of ["backgroundImage", "backgroundSize", "backgroundPosition", "backgroundRepeat"]) {
+                    assert.strictEqual(b[k], a[k], k + " of " + id);
+                }
+                assert.strictEqual(rowIcon.getBoundingClientRect().width, 16, "16px wide");
+            }
+        }
+        finally {
+            pk.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+            await sleep(300);
+        }
+    });
+
     it("Open Link in Split View from a note: the linked PDF beside the note, selected", async function () {
         await win.ZoteroPane.openNote(note.id, { openInWindow: false });
         const nt = await waitFor(() => tabOfItem(note), 15000, "the note tab");
@@ -842,17 +870,23 @@ describe("Weavero — split view: two tabs side by side", function () {
     // Window" with Zotero's PDF icon, then "Open PDF in Split View" with none, its label
     // out of line: "Add icons for Open in Split View". Zotero picks that icon by the
     // attachment type (locateMenu.js ViewItem.className) and only where the menu shows
-    // icons; Zotero's tab menu (tabs.js _openMenu) and Firefox's split entries
-    // (main-popupset.inc.xhtml: context_moveTabToSplitView, the split-view menu) have
-    // none. Menu icons come from --menuitem-icon on Zotero 11, list-style-image before.
+    // icons. Then MJT 2026-11-18 on 1.1.1-dev.8, "Add an icon for the split view menus"
+    // (043c8428, lib/split-glyph.ts): every split entry of the tab menu and of the split's
+    // own menu carries Weavero's split glyph (two panes, the panes apart, two arrows),
+    // where Zotero's tab menu (tabs.js _openMenu) and Firefox's split entries have none.
+    // Menu icons come from --menuitem-icon on Zotero 11, list-style-image before.
     const iconOf = (el) => {
+        // The split's own menu sets its glyphs through the `image` attribute, which Zotero
+        // 11's menu.js maps onto the icon (src-ts rules, "Menu icons on Zotero 11").
+        const img = el.getAttribute("image");
+        if (img && el.classList.contains("menuitem-iconic")) return img;
         const cs = win.getComputedStyle(el);
         const v = String(cs.getPropertyValue("--menuitem-icon") || "").trim();
         if (v && v !== "none" && v !== "initial" && v !== "normal") return v;
         const l = cs.listStyleImage;
         return l && l !== "none" ? l : "";
     };
-    it("17. every split entry has an icon where its neighbours have one: the items list's Zotero's own for the type, the tab menu and the split's menu none (light and dark)", async function () {
+    it("17. every split entry has an icon: the items list's Zotero's own for the type, the tab menu's and the split's menu's Weavero's split glyphs (light and dark)", async function () {
         // macOS menus carry no icons: Zotero's own Open PDF entry has none there (macOS CI 2026-11-13).
         if (Zotero.isMac) this.skip();
         separateAll();
@@ -882,23 +916,14 @@ describe("Weavero — split view: two tabs side by side", function () {
                     assert.approximately(lx(mi), lx(nb), 0.5, theme + ": its label aligned with its neighbour's");
                 }
                 finally { try { menu.hidePopup(); } catch (er) {} await sleep(300); }
-                // The tab menu: one tab, two tabs, a split's tab. It mixes Zotero's
-                // iconless tab entries (tabs.js _openMenu: Show in Library, Duplicate,
-                // Close...) and Weavero's tab entries (Group Tab, Pin Tab) with
-                // Weavero's file entries (Show File, Open in External Viewer), which
-                // carry the items list's icons. A split entry follows the entry right
-                // above it, a tab entry -- none, as Firefox's split entries
-                // (main-popupset.inc.xhtml).
+                // The tab menu: one tab, two tabs, a split's tab. Every split entry
+                // (Add / Open in Split View, Separate Split View / Tabs, Reverse Tabs)
+                // shows Weavero's split glyph (tab-split.ts entry(), split-glyph.ts).
                 const noneWhereNone = (items, what) => {
-                    const split = items.filter(x => /Split View|Reverse Tabs/.test(x.getAttribute("label") || ""));
+                    const split = items.filter(x => /Split View|Reverse Tabs|Separate Tabs/.test(x.getAttribute("label") || ""));
                     assert.ok(split.length, theme + ": " + what + ": fixture: a split entry");
-                    const shown = (el) => el.localName === "menuitem" && !el.hidden && win.getComputedStyle(el).display !== "none";
                     for (const x of split) {
-                        let above = x.previousElementSibling;
-                        while (above && (!shown(above) || split.includes(above)) && above.localName !== "menuseparator") above = above.previousElementSibling;
-                        const want = !!(above && above.localName === "menuitem" && iconOf(above));
-                        const who = above && above.localName === "menuitem" ? above.getAttribute("label") + (want ? " (icon)" : "") : "a separator";
-                        assert.strictEqual(!!iconOf(x), want, theme + ": " + what + ": " + x.getAttribute("label") + (want ? " has an icon, as " : " has none, as ") + who + " above it");
+                        assert.ok(iconOf(x), theme + ": " + what + ": " + x.getAttribute("label") + " has its split icon");
                     }
                 };
                 ZT.select(t1.id); await sleep(300);
@@ -910,14 +935,14 @@ describe("Weavero — split view: two tabs side by side", function () {
                 await sleep(500);
                 try {
                     await withTabMenu(t1.id, async (items) => noneWhereNone(items, "a split's tab"));
-                    // The split's own menu (Firefox's split-view menu: no icons).
+                    // The split's own menu: its Separate and Reverse entries carry their glyphs.
                     const more = doc.querySelector("#wv-tsplit-layer .wv-tsplit-footer") || doc.body;
                     wv._wvTabSplitFooterMenu(win, s, more);
                     const pop = await waitFor(() => doc.getElementById("wv-tsplit-menu"), 3000, "the split's menu");
                     await sleep(300);
-                    const its = Array.from(pop.querySelectorAll(":scope > menuitem"));
-                    assert.ok(its.length, theme + ": fixture: the split's menu entries");
-                    for (const x of its) assert.strictEqual(iconOf(x), "", theme + ": the split's menu: " + x.getAttribute("label") + " has none, as Firefox's");
+                    const its = Array.from(pop.querySelectorAll(":scope > menuitem")).filter(x => /Separate|Reverse/.test(x.getAttribute("label") || ""));
+                    assert.ok(its.length, theme + ": fixture: the split's menu's Separate / Reverse entries");
+                    for (const x of its) assert.ok(iconOf(x), theme + ": the split's menu: " + x.getAttribute("label") + " has its split icon");
                     try { pop.hidePopup(); } catch (er) {}
                 }
                 finally { wv._wvTabSplitSeparate(win, s.id); await sleep(300); }

@@ -61,6 +61,9 @@ issues in flight at once:
   session may share even the branch clone).
 - Track main: rebase or merge main into the branch at natural checkpoints
   so the final merge is small.
+- Tests on the branch: the specs `npm run test:pick -- --list` picks, on
+  Zotero 11 beta and Zotero 10 -- NOT the full suite: §3 runs it once on the
+  merged tree (verify skill §5, "One full run per tree that lands").
 
 ## 3. Merge back (runs in the SHARED clone)
 
@@ -71,7 +74,10 @@ issues in flight at once:
    reuse a number another session announced).
 3. On the merged tree: `npm run typecheck` + FULL `npm test` — the merge
    is not done until the merged suite is green, including both sides'
-   specs.
+   specs. Once per merged tree: when the merge is a fast-forward to a branch
+   tip whose own full runs passed (the branch merged main first), those runs
+   count; do not run them again. Several branches landing the same day:
+   merge them all, then one full run on the result.
 4. Single `chore:` bump to the next `-dev.N`.
 5. **Install + self-test immediately** (standing rule): build, install
    into the running instance stating which version replaced which,

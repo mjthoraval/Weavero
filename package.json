@@ -1,6 +1,6 @@
 {
   "name": "weavero",
-  "version": "1.1.0",
+  "version": "1.1.1-dev.13",
   "private": true,
   "description": "A Zotero plugin with filters, clickable links, bookmarks, tabs management and other improvements.",
   "homepage": "https://github.com/mjthoraval/Weavero",
@@ -14,6 +14,7 @@
     "typecheck": "tsc --noEmit",
     "test": "zotero-plugin test --exit-on-finish",
     "test:local": "node scripts/test-local.mjs",
+    "test:pick": "node scripts/pick-specs.mjs",
     "build": "zotero-plugin build",
     "start": "zotero-plugin serve",
     "prebuild": "npm run typecheck",
@@ -40,7 +41,7 @@
     "prosemirror-view": "1.40.1",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "zotero-plugin-scaffold": "^0.9.3",
+    "zotero-plugin-scaffold": "^0.9.4",
     "zotero-types": "^4.1.3"
   }
 }

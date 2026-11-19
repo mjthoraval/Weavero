@@ -780,21 +780,23 @@ describe("Weavero — Backlinks with their context", function () {
 
     // MJT 2026-10-26: "Backlinks section rows (Shift or middle-click = open
     // the note in a new window); Ok" -- Zotero's own Shift rule for notes
-    // (zoteroPane.js viewItems), the middle click of the collections tree.
-    it("Shift+click, a middle click and Shift+Enter open the source in a new window; a plain click does not", function () {
+    // (zoteroPane.js viewItems). MJT 2026-11-17 (open-where.ts): the middle
+    // click is a tab in the background (Firefox's), Ctrl/Cmd beside.
+    it("Shift+click and Shift+Enter open the source in a new window, a middle click in a background tab, Ctrl/Cmd+click beside; a plain click here", function () {
         const h = host();
         wv._wvBlRenderBody(h, P, doc);
         const row = rowOf(h, S1.id);
         const calls = [];
-        wv._wvBlOpenSource = (srcItem, src, opts) => { calls.push([srcItem && srcItem.id, !!(opts && opts.newWindow)]); };   // own property over the shared method
+        wv._wvBlOpenSource = (srcItem, src, opts) => { calls.push([srcItem && srcItem.id, opts && opts.where]); };   // own property over the shared method
         try {
             row.dispatchEvent(new win.MouseEvent("click", { bubbles: true, shiftKey: true }));
             row.dispatchEvent(new win.MouseEvent("auxclick", { bubbles: true, button: 1 }));
             row.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true }));
+            row.dispatchEvent(new win.MouseEvent("click", Object.assign({ bubbles: true }, Zotero.isMac ? { metaKey: true } : { ctrlKey: true })));
             row.dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
         }
         finally { delete wv._wvBlOpenSource; }
-        assert.deepEqual(calls, [[S1.id, true], [S1.id, true], [S1.id, true], [S1.id, false]]);
+        assert.deepEqual(calls, [[S1.id, "window"], [S1.id, "background"], [S1.id, "window"], [S1.id, "beside"], [S1.id, "here"]]);
     });
 
     it("in a new window a note opens in a note window, an annotation in a reader window at itself", async function () {

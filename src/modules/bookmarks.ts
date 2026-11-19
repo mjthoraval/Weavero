@@ -42,7 +42,7 @@ import { wvStoreWrite, wvStoreRead } from "../lib/store";
 import { wvTimeout } from "../lib/timers";
 import { wvMenuItem } from "../lib/menu";
 import { wvMainWins, wvOpenLibraryView } from "../lib/windows";
-import { wvAccel, wvAccelAny } from "../lib/keys";
+import { wvAccel } from "../lib/keys";
 import { wvSvgEl } from "../lib/svg";
 import { wvLinkColor, wvLinkClassRules } from "../lib/links";
 import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
@@ -3308,9 +3308,19 @@ class _BookmarksMixin {
         } catch (_) {}
     }
 
+    /** Open bookmark `bm` where `event` asks (open-where.ts, MJT 2026-11-17):
+     *  plain in a tab, Ctrl/Cmd+click beside the tab it is clicked from (until
+     *  1.1.1 Show in Library, which stays in the row's menu), Shift a reader
+     *  window, the middle button a tab in the background. A menu passes a
+     *  stand-in: `{}` the plain open, `{ shiftKey: true }` a window,
+     *  `{ wvShowInLibrary: true }` Show in Library. */
     async _bmActivateBookmark(bm: any, event: any) {
         try {
             if (!bm) return;
+            if (event && event.wvShowInLibrary) { await this._bmShowInLibrary(bm); return; }
+            const where = (this as any)._wvOpenWhere(event);
+            if (where === null) return;   // macOS Control+click: the row's menu
+            const from = (event && event.target && event.target.nodeType) ? event.target : null;
             // URL / app-link bookmarks: route through Weavero's
             // `_launchURL`, the same helper note-editor / annotation
             // clicks use. It honours `weavero.enableAppLinksSkipConfirm`
@@ -3318,21 +3328,21 @@ class _BookmarksMixin {
             // the <scheme> link with <app>?" dialog by calling
             // `handlerInfo.launchWithURI` directly), and intercepts
             // `zotero://` URLs to dispatch into ZoteroPane / Reader /
-            // openNote without prompting.
+            // openNote without prompting -- where the gesture says.
             if (bm.type === "url" && bm.url) {
-                try { this._launchURL(String(bm.url)); }
+                try { await (this as any)._wvOpenTarget(null, { url: String(bm.url) }, where, from); }
                 catch (e) { Zotero.debug("[Weavero] url-bm launch err: " + e); }
                 return;
             }
-            if (wvAccelAny(event)) {
-                await this._bmShowInLibrary(bm);
-                return;
-            }
             const target = await this._bmResolveOpenTarget(bm);
+            if (target && (where === "beside" || where === "background")) {
+                if (await (this as any)._wvOpenTarget(null, { item: target.attachment, location: target.location || null }, where, from)) return;
+            }
             if (target) {
-                await this._bmOpenInReader(bm, !!(event && event.shiftKey));
+                await this._bmOpenInReader(bm, where === "window");
                 return;
             }
+            // A collection, a saved search, an item with no file: the library.
             await this._bmShowInLibrary(bm);
         } catch (e) {
             Zotero.debug("[Weavero] _bmActivateBookmark err: " + e);
@@ -4562,6 +4572,16 @@ class _BookmarksMixin {
         });
         row.addEventListener("click", (e: any) => {
             // Orphan target → flash the row as feedback, keep the popup open.
+            if (missing) { this._bmFlashMissingRow(row); return; }
+            this._bmActivateBookmark(bm, e);
+            this._bmHidePopup(win);
+        });
+        // The middle button: a tab in the background (open-where.ts); its
+        // press starts no autoscroll.
+        row.addEventListener("mousedown", (e: any) => { if (e.button === 1) e.preventDefault(); });
+        row.addEventListener("auxclick", (e: any) => {
+            if (e.button !== 1) return;
+            e.preventDefault(); e.stopPropagation();
             if (missing) { this._bmFlashMissingRow(row); return; }
             this._bmActivateBookmark(bm, e);
             this._bmHidePopup(win);

@@ -24,7 +24,7 @@ import { wvWrap, wvUnwrap } from "../lib/wrap";
 import { wvListen, wvListener, wvUnlisten } from "../lib/listen";
 import { wvStoreWrite, wvStoreRead, wvStoreRemove } from "../lib/store";
 import { wvTimeout } from "../lib/timers";
-import { wvMenuItem } from "../lib/menu";
+import { wvMenuItem, wvMMRegister } from "../lib/menu";
 import { wvFirstDocTab, wvFirstMovableIndex, wvIsFixedLibraryTab, wvIsLibraryTabID, wvLibraryTabPinned, wvMainWins, wvNativeWindows, wvSelectLibraryTab, wvStoredFromSaved, wvWinType, wvZoteroPinsLibraryTabs, wvZoteroPinsTabs } from "../lib/windows";
 import { wvAccel } from "../lib/keys";
 import { wvSvgEl } from "../lib/svg";
@@ -4994,7 +4994,11 @@ class _TabsMixin {
                         }
                     }
                 } catch (e) {}
-                if (m.getAttribute("title") !== (tab.title || "")) m.setAttribute("title", tab.title || "");
+                // A locked tab's line after its title (tab-split-dock.ts _wvTabDockTip,
+                // which writes the same text on a lock change).
+                let tip = tab.title || "";
+                try { if (typeof (this as any)._wvTabDockTip === "function") tip = (this as any)._wvTabDockTip(win, tid, tip); } catch (e) {}
+                if (m.getAttribute("title") !== tip) m.setAttribute("title", tip);
                 m.classList.toggle("selected", Z.selectedID === tid);
                 // A mirror kept from an older build (the container survives a
                 // plugin reload) gets the drag source too -- check-before-write.
@@ -5233,6 +5237,20 @@ class _TabsMixin {
             if (!tab) return false;
             if (ZT._tabs.some((t: any) => t && t.id === newId)) return false;   // collision
             try { const c = win.document.getElementById(oldId); if (c) c.id = newId; } catch (e) {}
+            // The context pane's item pane for this tab, named by the tab's id
+            // (contextPane.js `data-tab-id`), and removed when a tab of that id
+            // closes. Left under the old id it was never removed: every move
+            // between main windows left one more item pane (with its attachment
+            // note editor) in the window (leak probe 2026-11-13, Zotero 10.0.8).
+            // Guard: test/move-tab-context-pane.spec.js.
+            try {
+                for (const el of Array.from(win.document.querySelectorAll("item-details[data-tab-id]")) as any[]) {
+                    if (el.dataset.tabId !== oldId) continue;
+                    el.dataset.tabId = newId;
+                    if (el.id === oldId + "-context") el.id = newId + "-context";
+                    try { if (el.tabID === oldId) el.tabID = newId; } catch (e) {}
+                }
+            } catch (e) {}
             tab.id = newId;
             if (ZT._selectedID === oldId) ZT._selectedID = newId;
             try {
@@ -7331,7 +7349,7 @@ class _TabsMixin {
                 && typeof (Zotero as any).MenuManager.registerMenu === "function")) return;
             this._unregisterPinTabMenu();
             const self = this;
-            const id = (Zotero as any).MenuManager.registerMenu({
+            const id = wvMMRegister((Zotero as any).MenuManager, {
                 menuID: "weavero-tab-pin",
                 pluginID: "weavero@mjthoraval",
                 target: "main/tab",
@@ -7582,6 +7600,13 @@ class _TabsMixin {
             "splitOpen",
             "splitSeparate",
             "splitReverse",
+            // A split whose document follows the library (tab-split-follow.ts).
+            "splitFollow",
+            "splitKeep",
+            // Every tab's "Lock Tab" (tab-split-dock.ts; the key from when it was
+            // the library tab's alone), and the locked tab's Collapse / Expand.
+            "dockLibrary",
+            "dockCollapse",
             "moveTab",
             "duplicate",
             "pin",
@@ -7656,7 +7681,7 @@ class _TabsMixin {
             // keeps winning and the targets never appear).
             this._unregisterMoveTabsMenu();
             const self = this;
-            const id = MM.registerMenu({
+            const id = wvMMRegister(MM, {
                 menuID: "weavero-move-tabs",
                 target: "main/tab",
                 menus: [{
@@ -8051,7 +8076,7 @@ class _TabsMixin {
             if (!((Zotero as any).MenuManager
                 && typeof (Zotero as any).MenuManager.registerMenu === "function")) return;
             this._unregisterDevNewWindowMenu();
-            const id = (Zotero as any).MenuManager.registerMenu({
+            const id = wvMMRegister((Zotero as any).MenuManager, {
                 menuID: "weavero-dev-new-window",
                 pluginID: "weavero@mjthoraval",
                 target: "main/tab",
@@ -8112,7 +8137,7 @@ class _TabsMixin {
             if (!((Zotero as any).MenuManager
                 && typeof (Zotero as any).MenuManager.registerMenu === "function")) return;
             this._unregisterReopenClosedMenu();
-            const id = (Zotero as any).MenuManager.registerMenu({
+            const id = wvMMRegister((Zotero as any).MenuManager, {
                 menuID: "weavero-reopen-closed",
                 pluginID: "weavero@mjthoraval",
                 target: "main/tab",
@@ -11377,6 +11402,22 @@ class _TabsMixin {
     _wvBgRestoreStop() {
         try { const f = (this as any)._wvBgRestoreStopFn; if (typeof f === "function") f(); } catch (e) {}
         (this as any)._wvBgRestoreOn = false;
+    }
+
+    /** A window is closing: the background-restore guard lets go of it. The
+     *  user's pick (`_wvBgUserChosenWin`) outlives the guard on purpose -- the
+     *  restore's last focus calls read it -- and nothing took it back, so a
+     *  picked window that later closed stayed in memory with its whole DOM for
+     *  the session (leak probe 2026-11-13, Zotero 10.0.8: GC path plugin ->
+     *  _wvBgUserChosenWin -> the closed main window). Every reader of these
+     *  fields already treats a closed window as none. Called from the main
+     *  window teardown and a reader window's unload.
+     *  Guard: test/reader-leak.spec.js. */
+    _wvBgForgetWindow(win: any) {
+        const self: any = this;
+        try { if (self._wvBgUserChosenWin === win) self._wvBgUserChosenWin = null; } catch (e) { self._wvBgUserChosenWin = null; }
+        try { if (self._wvBgRestoreTargetWin === win) self._wvBgRestoreTargetWin = null; } catch (e) { self._wvBgRestoreTargetWin = null; }
+        try { if (self._wvBgPress && self._wvBgPress.win === win) self._wvBgPress = null; } catch (e) { self._wvBgPress = null; }
     }
 
     /** A reader opening while the guard runs raises its own window once it has

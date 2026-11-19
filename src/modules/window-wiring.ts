@@ -107,6 +107,8 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     // strip build).
     { id: "new-tab-shortcut", on: "both", nativeOff: true, wire: (p, win) => p._wvWireMainNewTabShortcut(win) },
     { id: "new-window-shortcut", on: "both", nativeOff: true, wire: (p, win) => p._wvWireNewWindowShortcut(win) },
+    // Ctrl/Cmd+Enter in the items list: the selected item beside (open-where.ts).
+    { id: "open-beside-key", on: "both", wire: (p, win) => p._wvWireOpenBesideKey(win) },
     // On a Zotero with its own windows too (the port, MJT 2026-11-07): there
     // Shift+click is Zotero's, the rest of the routes Weavero's.
     { id: "advsearch-new-window", on: "both", wire: (p, win) => p._wvWireAdvSearchNewWindow(win) },
@@ -130,6 +132,27 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     // dropped on the library row (upstream register #35; installs nothing once
     // Zotero compares the dragged id against collection rows only).
     { id: "collection-drop-lib", on: "both", wire: (p, win) => p._wvWireCollectionDropFix(win) },
+    // WV-TEMP-134831: Zotero 11's "Edit in a Separate Window" from a note tab does
+    // nothing (upstream register #66; upstream-fixes.ts; installs nothing once
+    // Notes.open no longer lets a tab stand in for a window).
+    { id: "note-window", on: "both", wire: (p, win) => p._wvWireNoteWindowFix(win) },
+    // WV-TEMP-134823: Zotero 11's item pane header blank after the pane is opened on a
+    // tab selected while it was closed (upstream register #64; upstream-fixes.ts;
+    // installs nothing once handleCollapse or the collapsed setter changes).
+    { id: "ctx-header", on: "both", wire: (p, win) => p._wvWireCtxHeaderFix(win) },
+    // WV-TEMP-134826: a window without a library counts its open item pane in its
+    // minimum width (upstream register #53; upstream-fixes.ts; installs nothing once
+    // updateLayoutConstraints stops zeroing the fixed width there).
+    { id: "narrow-pane", on: "both", wire: (p, win) => p._wvWireNarrowPaneFix(win) },
+    // WV-TEMP-134772: Zotero's own reader menu entries greyed on 11.0-beta.4 (upstream
+    // register #18, fixed upstream by 3e32faa0a, not in a beta yet; upstream-fixes.ts).
+    // Once per plugin, from any open reader; the reader toolbar handler covers the rest.
+    { id: "reader-menu-disabled", on: "both", wire: (p) => p._wvWireReaderMenuFix() },
+    // WV-TEMP-134824: a new item / collection made in one window selects it in that
+    // window's active view only (upstream registers #58, #59; upstream-fixes.ts;
+    // installs nothing once the collection tree's 'add' checks the window). Every
+    // library view of the window, each further library tab too (perView).
+    { id: "add-select", on: "both", views: true, perView: true, wire: (p, win) => p._wvWireAddSelectFix(win) },
     // Weavero's Fluent file into the window (the Backlinks section's header
     // and sidenav are l10n ids; issue #60). `refresh`: replace a link an older
     // build left behind (a stale link blanks the window's strings).

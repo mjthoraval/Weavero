@@ -73,6 +73,48 @@ export function wvMenuItemByLabel(popup: any, label: string): any {
     return null;
 }
 
+/** Zotero's MenuManager labels an entry only through its data-l10n-id
+ *  (xpcom/pluginAPI/menuManager.js: `menuElem.dataset.l10nId`), and Fluent
+ *  translates that asynchronously -- not always before the popup is on
+ *  screen: Firefox does not promise it (bug 1737951, open), and the
+ *  2026-11-16 CI run on Windows, Zotero 10.0.9, saw an entry labelled in
+ *  `popupshowing` still empty at `popupshown`. So every Weavero
+ *  registration passes its `menus` through this: an entry with an l10nID
+ *  writes its text synchronously in `onShowing` (lib/l10n.ts wvL10n, the
+ *  element's own current id and args), before its own hook runs, which may
+ *  relabel it the same way. A hook relabels with wvL10n(ctx.menuElem, ...),
+ *  never with MenuManager's ctx.setL10nArgs (asynchronous again).
+ *  Guard: test/menus-l10n.spec.js, every audit with Fluent paused. */
+export function wvMMSyncLabels(menus: any[]): any[] {
+    return (menus || []).map((m: any) => {
+        if (!m || typeof m !== "object") return m;
+        const out: any = Object.assign({}, m);
+        if (Array.isArray(m.menus)) out.menus = wvMMSyncLabels(m.menus);
+        if (!m.l10nID || m.menuType === "separator") return out;
+        const orig = m.onShowing;
+        out.onShowing = function (this: any, ev: any, ctx: any) {
+            try {
+                const el = ctx && ctx.menuElem;
+                if (el) {
+                    const id = el.getAttribute("data-l10n-id") || m.l10nID;
+                    let args: any;
+                    try { args = JSON.parse(el.getAttribute("data-l10n-args") || "null") || undefined; } catch (e) { args = undefined; }
+                    wvL10n(el, id, args);
+                }
+            }
+            catch (e) { Zotero.debug("[Weavero] menu label err: " + e); }
+            if (typeof orig === "function") return orig.apply(this, arguments as any);
+        };
+        return out;
+    });
+}
+
+/** `MM.registerMenu(opts)` with every entry labelled synchronously
+ *  (wvMMSyncLabels): the one way Weavero registers with MenuManager. */
+export function wvMMRegister(MM: any, opts: any): any {
+    return MM.registerMenu(Object.assign({}, opts, { menus: wvMMSyncLabels(opts && opts.menus) }));
+}
+
 /** A XUL `menuseparator`, appended to `parent` when given. */
 export function wvMenuSeparator(doc: any, parent?: any): any {
     const sep: any = doc.createXULElement("menuseparator");

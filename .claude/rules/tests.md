@@ -40,11 +40,14 @@ paths:
   openReaderTab / domViewOf (the Xray-waived DOM view once its document
   holds a text) / closeReaderTab, createItem/erase, purgeDeadReaders.
   Prefer them to a per-file copy; a targeted run always stages the 000-
-  files. `wvT.waitFor(fn)` AWAITS what `fn` returns: a predicate that
-  returns a promise is satisfied by the promise's RESULT, not by the
-  promise existing -- return a boolean (`!!w._ready`), then await the
-  promise separately (2026-10-16: a ready-promise resolving to undefined
-  read as "never started" for three runs). A chrome-side position/selector handed to a DOM view must be
+  files. `wvT.waitFor(fn)` stops at the first TRUTHY value `fn` returns
+  (000-helpers.spec.js), and a promise is truthy: a predicate that returns
+  a promise ends the wait at once, with no retry, and the caller's `await`
+  then yields the promise's RESULT (undefined when it resolves to nothing)
+  -- return a boolean (`!!w._ready`), then await the promise separately
+  (2026-10-16: a ready-promise resolving to undefined read as "never
+  started" for three runs; wording corrected 2026-11-19 after the refs
+  branch found the old text said waitFor awaits the result). A chrome-side position/selector handed to a DOM view must be
   `Cu.cloneInto(obj, pv._iframeWindow)` first or `toDisplayedRange`
   returns null (test/dom-view-fixture.spec.js runs the real views). The
   same for an EVENT built with a content window's constructor: its init

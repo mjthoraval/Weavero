@@ -687,12 +687,13 @@ describe("Weavero — clickable column counts open a popup of what was counted",
     });
 
     // MJT 2026-10-26: "Backlinks section rows (Shift or middle-click = open
-    // the note in a new window); Ok" / "Also from the popups".
-    it("a related or backlink row opens in a new window with Shift+click or a middle click, and the popup closes", async function () {
+    // the note in a new window); Ok" / "Also from the popups". MJT 2026-11-17
+    // (open-where.ts): the middle click is a tab in the background.
+    it("a related or backlink row opens in a new window with Shift+click, in a background tab with a middle click, and the popup closes", async function () {
         const anchor = doc.documentElement;
         const calls = [];
-        wv._wvOpenItemInNewWindow = async (item) => { calls.push(item && item.id); return true; };   // own properties over the shared methods
-        wv._wvBlOpenSource = (srcItem, src, opts) => { calls.push("bl:" + (srcItem && srcItem.id) + ":" + !!(opts && opts.newWindow)); };
+        wv._wvOpenTarget = async (w, target, where) => { calls.push(where + ":" + (target && target.item && target.item.id)); return true; };   // own properties over the shared methods
+        wv._wvBlOpenSource = (srcItem, src, opts) => { calls.push("bl:" + (srcItem && srcItem.id) + ":" + (opts && opts.where)); };
         try {
             for (const ev of [new win.MouseEvent("click", { bubbles: true, shiftKey: true }), new win.MouseEvent("auxclick", { bubbles: true, button: 1 })]) {
                 closePanel();
@@ -707,8 +708,8 @@ describe("Weavero — clickable column counts open a popup of what was counted",
             await wvT.waitFor(() => panel().style.display === "none", 2000);
             assert.strictEqual(panel().style.display, "none", "a backlink's middle click closes it too");
         }
-        finally { delete wv._wvOpenItemInNewWindow; delete wv._wvBlOpenSource; closePanel(); }
-        assert.deepEqual(calls, [R1.id, R1.id, "bl:" + S.id + ":true"]);
+        finally { delete wv._wvOpenTarget; delete wv._wvBlOpenSource; closePanel(); }
+        assert.deepEqual(calls, ["window:" + R1.id, "background:" + R1.id, "bl:" + S.id + ":background"]);
     });
 
     it("a tag row adds that tag to the clicked window's Tag filter and closes the popup", async function () {

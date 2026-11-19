@@ -186,13 +186,27 @@ import { wvNativeWindows } from "../lib/windows";
                 } catch (e) { dbg("master observer err: " + e); }
             }
         }
-        if (win && observers.length) {
-            win.addEventListener("unload", () => {
+        const unloadAt = paneUnloadTarget(doc) || win;
+        if (unloadAt && observers.length) {
+            unloadAt.addEventListener("unload", () => {
                 for (const o of observers) {
                     try { Services.prefs.removeObserver(o.full, o.obs); } catch (e) {}
                 }
             }, { once: true });
         }
+    }
+
+    /** Where this pane hears its own close. Zotero sends `unload` to each
+     *  top-level element of a plugin pane and THEN nukes the pane's sandbox
+     *  (Zotero_Preferences.onUnload); a listener on the window's `unload` runs
+     *  after that, into a dead object: every close of Settings logged a
+     *  sourceless "can't access dead object", the pref observers stayed, and
+     *  the next change of a watched pref logged one more per gated element
+     *  (found 2026-11-15 by the Zutilo x Weavero check). The pane's single
+     *  top-level element is its `.main-section`, the section nav's parent. */
+    function paneUnloadTarget(doc) {
+        const nav: any = doc.querySelector(".wv-nav");
+        return (nav && nav.parentElement) || null;
     }
 
     /** Sticky section strip (the old design's tabs, as scroll-nav). The
@@ -263,8 +277,9 @@ import { wvNativeWindows } from "../lib/windows";
                 masterObs.push({ full, obs });
             } catch (e) { dbg("nav master observer err: " + e); }
         });
-        if (view0 && masterObs.length) {
-            view0.addEventListener("unload", () => {
+        const navUnloadAt = mainSec || view0;   // the pane's top-level element: see paneUnloadTarget
+        if (navUnloadAt && masterObs.length) {
+            navUnloadAt.addEventListener("unload", () => {
                 for (const o of masterObs) {
                     try { Services.prefs.removeObserver(o.full, o.obs); } catch (e) {}
                 }

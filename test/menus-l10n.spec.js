@@ -14,8 +14,12 @@
 //       lambdas), with an explicit allow-list;
 //   (c) the lookups that used to find entries by their English label find
 //       them in another language too.
-// And the timing that lets a menu be labelled by Fluent in `popupshowing`:
-// Gecko has translated it by `popupshown`, its width unchanged.
+// And the timing: Weavero's entries have their words when the menu shows,
+// whatever Fluent's pace. Fluent translates asynchronously and Firefox does
+// not wait for it before showing a popup (bug 1737951, open); the CI run of
+// 2026-11-16 (Windows, Zotero 10.0.9) saw an entry labelled in `popupshowing`
+// still empty at `popupshown`. So every audit runs with the document's Fluent
+// PAUSED: an entry that waits for Fluent shows empty there and fails.
 //
 // FAILS on 1.0.5-l10n.2 (menus labelled in English in the code).
 
@@ -74,29 +78,60 @@ describe("Weavero — menus take their words from weavero.ftl", function () {
 
     // ---- the timing -------------------------------------------------------
 
-    it("an entry labelled by Fluent in popupshowing has its text at popupshown, and the popup keeps its width", async () => {
+    // Fluent paused in `d` while `fn` runs, then given back; what anything
+    // labelled through Fluent meanwhile gets its words at once.
+    const fluentPaused = async (d, fn) => {
+        d.l10n.pauseObserving();
+        try { return await fn(); }
+        finally {
+            d.l10n.resumeObserving();
+            try { await d.l10n.translateRoots(); } catch (e) {}
+        }
+    };
+
+    // A popup labelled in its `popupshowing` by `label(mi)`; what its entry
+    // says at `popupshown`, and the popup's width then and 300 ms after
+    // Fluent is back.
+    const openLabelled = async (label) => {
         const pop = doc.createXULElement("menupopup");
         doc.querySelector("popupset").appendChild(pop);
         let mi = null, atShown = null, wShown = 0;
         pop.addEventListener("popupshowing", () => {
             mi = doc.createXULElement("menuitem");
-            doc.l10n.setAttributes(mi, "weavero-backlinks-header", { count: 2 });
+            label(mi);
             pop.appendChild(mi);
         });
-        const shown = new Promise(r => pop.addEventListener("popupshown", () => {
-            atShown = mi && mi.getAttribute("label");
-            wShown = pop.getBoundingClientRect().width;
-            r(true);
-        }, { once: true }));
-        pop.openPopupAtScreen(200, 200, false);
-        const ok = await Promise.race([shown, sleep(3000).then(() => false)]);
         try {
-            assert.isTrue(ok, "the popup opened");
-            assert.strictEqual(atShown, "2 Backlinks", "translated before it was shown");
+            const ok = await fluentPaused(doc, async () => {
+                const shown = new Promise(r => pop.addEventListener("popupshown", () => {
+                    atShown = mi && mi.getAttribute("label");
+                    wShown = pop.getBoundingClientRect().width;
+                    r(true);
+                }, { once: true }));
+                pop.openPopupAtScreen(200, 200, false);
+                return Promise.race([shown, sleep(3000).then(() => false)]);
+            });
             await sleep(300);
-            assert.strictEqual(pop.getBoundingClientRect().width, wShown, "no width change after the show");
+            return { ok, atShown, wShown, wAfter: pop.getBoundingClientRect().width, after: mi && mi.getAttribute("label") };
         }
         finally { try { pop.hidePopup(); } catch (e) {} pop.remove(); }
+    };
+
+    it("an entry Weavero labels in popupshowing has its words at popupshown, Fluent paused, and the popup keeps its width", async () => {
+        const r = await openLabelled(mi => lib.wvL10n(mi, "weavero-backlinks-header", { count: 2 }));
+        assert.isTrue(r.ok, "the popup opened");
+        assert.strictEqual(r.atShown, "2 Backlinks", "labelled before it was shown, without Fluent");
+        assert.strictEqual(r.after, "2 Backlinks", "Fluent, back, says the same");
+        assert.strictEqual(r.wAfter, r.wShown, "no width change once Fluent is back");
+    });
+
+    it("the pause makes a late label visible: an entry labelled only through Fluent is empty at popupshown", async () => {
+        // The control for every audit below: without it they could pass on
+        // Fluent's timing.
+        const r = await openLabelled(mi => doc.l10n.setAttributes(mi, "weavero-backlinks-header", { count: 2 }));
+        assert.isTrue(r.ok, "the popup opened");
+        assert.notOk(r.atShown, "Fluent paused: no label yet at popupshown");
+        assert.strictEqual(r.after, "2 Backlinks", "Fluent, back, labels it");
     });
 
     // ---- (a) every Weavero entry carries a Fluent id ----------------------
@@ -135,7 +170,7 @@ describe("Weavero — menus take their words from weavero.ftl", function () {
             else if (el.getAttribute("label") !== t) out.bad.push(what + ": shows something else than " + id + " (" + JSON.stringify(t) + ")");
         }
     };
-    const openAudit = async (popup, where, out, open) => {
+    const openAudit = (popup, where, out, open) => fluentPaused(popup.ownerDocument, async () => {
         const shown = new Promise(r => {
             const on = (e) => { if (e.target !== popup) return; popup.removeEventListener("popupshown", on); r(true); };
             popup.addEventListener("popupshown", on);
@@ -159,7 +194,7 @@ describe("Weavero — menus take their words from weavero.ftl", function () {
             }
         }
         finally { try { popup.hidePopup(); } catch (e) {} await sleep(200); }
-    };
+    });
 
     it("the items list's context menu: one item, two items", async () => {
         const ZP = win.ZoteroPane;
@@ -189,7 +224,7 @@ describe("Weavero — menus take their words from weavero.ftl", function () {
 
     it("the tab menu: the library tab and a reader tab", async () => {
         const out = { n: 0, bad: [] };
-        const tabMenu = async (tabID, where) => {
+        const tabMenu = (tabID, where) => fluentPaused(doc, async () => {
             const ps = doc.querySelector("popupset");
             let popup = null;
             const on = (e) => { if (e.target && e.target.parentNode === ps && e.target.localName === "menupopup") popup = e.target; };
@@ -217,7 +252,7 @@ describe("Weavero — menus take their words from weavero.ftl", function () {
                 try { popup.hidePopup(); } catch (e) {}
             }
             finally { ps.removeEventListener("popupshowing", on, true); await sleep(200); }
-        };
+        });
         await tabMenu("zotero-pane", "library tab menu");
         const reader = await wvT.openReaderTab(A.id);
         try { await tabMenu(reader.tabID, "reader tab menu"); }
@@ -268,6 +303,7 @@ describe("Weavero — menus take their words from weavero.ftl", function () {
             // Not on macOS: the system's menu bar does not open from script.
             if (!Zotero.isMac) {
             const fp = rw.document.getElementById("menu_FilePopup");
+            await fluentPaused(rw.document, async () => {
             const shown = new Promise(r => fp.addEventListener("popupshown", () => r(true), { once: true }));
             fp.openPopupAtScreen(rw.screenX + 40, rw.screenY + 60, false);
             const ok = await Promise.race([shown, sleep(3000).then(() => false)]);
@@ -282,6 +318,7 @@ describe("Weavero — menus take their words from weavero.ftl", function () {
                 }
             }
             finally { try { fp.hidePopup(); } catch (e) {} await sleep(200); }
+            });
             }
         }
         finally { step("reader close"); try { rw.close(); } catch (e) {} await sleep(800); }

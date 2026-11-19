@@ -11,13 +11,14 @@
 //  - `wvL10n(el, id, args)`: an element Weavero builds or relabels gets
 //    data-l10n-id / data-l10n-args, after weavero.ftl is linked into its
 //    document, and Fluent owns its label from then on, as for Zotero's own
-//    menus (zoteroPane.js buildCollectionContextMenu). The label is also
-//    written at once from the same message: measured on 11.0-beta.4
-//    (2026-11-11), Fluent has translated an item labelled in `popupshowing`
-//    by `popupshown` anyway (test/menus-l10n.spec.js checks it on every
-//    Zotero the suite runs on), but code that reads a label right after
-//    building it, and a document whose Fluent is not ready, then see the
-//    text, not nothing.
+//    menus (zoteroPane.js buildCollectionContextMenu). The label is ALSO
+//    written at once from the same message, and that is what puts it on
+//    screen: Fluent translates asynchronously, and Firefox does not promise
+//    a popup's entries are translated before it shows (bug 1737951, open).
+//    Usually they are; on the 2026-11-16 CI run (Windows, Zotero 10.0.9) an
+//    entry labelled in `popupshowing` was still empty at `popupshown`.
+//    MenuManager entries get the same through lib/menu.ts wvMMRegister.
+//    Guard: test/menus-l10n.spec.js audits every menu with Fluent paused.
 //  - `wvStr(id, args, attr)`: the text itself, synchronously, where Zotero
 //    takes a plain string and renders it itself (the reader's context menus:
 //    `append({ label })`, xpcom/reader.js _openContextMenu).

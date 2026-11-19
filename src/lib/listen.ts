@@ -68,12 +68,50 @@ function widOf(target: any): number {
     }
 }
 
-/** Drop the entries of window `wid` (its unload). */
+/** Drop the entries of window `wid` (its unload), and those of any window
+ *  that is closed by now: an entry whose own unload never reached its hook
+ *  (wired after the unload, see targetGone) otherwise stayed until a prune,
+ *  every 256 new entries -- a closed reader's pdf.js frame with it (full
+ *  Zotero 10 run, 2026-11-13). Guard: test/listen-frames.spec.js. */
 function dropWindow(wid: number): void {
     hooks.delete(wid);
     let j = 0;
-    for (let i = 0; i < wired.length; i++) if (wired[i].wid !== wid) wired[j++] = wired[i];
+    for (let i = 0; i < wired.length; i++) {
+        const w = wired[i];
+        if (w.wid === wid) continue;
+        let closed = false;
+        try {
+            const t = w.ref.deref();
+            closed = !t || targetGone(t);
+        }
+        catch (e) { closed = true; }
+        if (!closed) wired[j++] = w;
+    }
     wired.length = j;
+    dropHooksWithoutEntries();
+}
+
+/** The target's window is gone: a closed window, a document no longer in a
+ *  window, a node of such a document, or a dead wrapper. A listener wired
+ *  there never fires, and its window's unload has come already, so a
+ *  registry entry for it would never leave: the external-link tip wires a
+ *  pdf.js frame on a retry, and a reader closed in between was still wired
+ *  (1 in 5 full Zotero 10 runs, 2026-11-12/13: reader-leak's first case
+ *  found one closed reader more, held through `extTip:*` entries).
+ *  Guard: test/listen-frames.spec.js. */
+function targetGone(target: any): boolean {
+    try {
+        const Cu = (Components as any).utils;
+        if (Cu.isDeadWrapper(target)) return true;
+        if (typeof target.closed === "boolean" && "document" in target && !target.nodeType) return !!target.closed;
+        const w: any = winOf(target);
+        if (w) return !!w.closed;
+        if (target.nodeType === 9) return true;   // a document with no window
+        const d: any = target.ownerDocument;
+        if (d && !d.defaultView) return true;      // a node of one
+    }
+    catch (e) {}
+    return false;
 }
 
 function hookUnload(target: any, wid: number): void {
@@ -182,6 +220,7 @@ export function wvEventOpts(target: any, opts: any): any {
 export function wvListen(target: any, key: string, type: string, fn: any,
     opts: boolean | { capture?: boolean; passive?: boolean } | undefined, tag: string): boolean {
     if (!target || typeof target.addEventListener !== "function" || dead.has(tag)) return false;
+    if (targetGone(target)) return false;
     const T = table(target);
     const cur = T[key];
     if (cur && cur.tag === tag) return false;

@@ -25,7 +25,7 @@ import { wvSetBoolAttr, wvHtmlEl } from "../lib/dom";
 import { wvListen, wvUnlisten } from "../lib/listen";
 import { wvInjectStyle, wvRemoveStyle } from "../lib/style";
 import { wvSleep, wvTimeout } from "../lib/timers";
-import { wvMenuItem } from "../lib/menu";
+import { wvMenuItem, wvMMRegister } from "../lib/menu";
 import { wvStoreWrite, wvStoreRead } from "../lib/store";
 import { wvFirstDocTab, wvFirstMovableIndex, wvIsFixedLibraryTab, wvIsLibraryTabID, wvLibraryTabPinned, wvMainWins, wvNativeWindows, wvWinType, wvZoteroPinsLibraryTabs, wvZoteroPinsTabs } from "../lib/windows";
 import { wvAccelAny } from "../lib/keys";
@@ -205,6 +205,24 @@ const WV_SURFACE_READER: WvTabSurface = {
 
 declare const Zotero: any;
 declare const Services: any;
+
+/** The block a split's two tabs take in the strip while dragged together
+ *  (_wvDragCacheGeom): the first tab's left outer edge to the last one's right
+ *  outer edge, margins included (a pair's tabs carry the pill's margins,
+ *  tab-split.ts). `nat` gives an element's natural edges (the rect without its
+ *  translate); null reads the rects as they are. */
+function wvPairSpan(win: any, a: any, b: any, nat: ((el: any) => { left: number; right: number }) | null): { left: number; right: number } {
+    const ra = nat ? nat(a) : a.getBoundingClientRect();
+    const rb = nat ? nat(b) : b.getBoundingClientRect();
+    const firstIsA = ra.left <= rb.left;
+    const first = firstIsA ? a : b, last = firstIsA ? b : a;
+    const rf = firstIsA ? ra : rb, rl = firstIsA ? rb : ra;
+    let ml = 0, mr = 0;
+    try { ml = parseFloat(win.getComputedStyle(first).marginLeft) || 0; } catch (e) {}
+    try { mr = parseFloat(win.getComputedStyle(last).marginRight) || 0; } catch (e) {}
+    return { left: rf.left - ml, right: rl.right + mr };
+}
+
 /** Firefox's nine group colours in Firefox's picker order (tabgroup-menu.js
  *  `COLORS`: blue, purple, cyan, orange, yellow, pink, green, gray, red --
  *  MJT 2026-10-07; the order also drives the auto-colour of new groups).
@@ -2746,7 +2764,8 @@ class _TabGroupsMixin {
             // pass then parks it at the group's EDGE rather than its original
             // slot (2026-07-27). The cancel branch moves each tab back.
             try {
-                const ids = [win._wvTabGroupDragTabID, ...(win._wvMultiDragIDs || [])].filter(Boolean);
+                const pe = win._wvDragGeom && win._wvDragGeom.partnerEl;
+                const ids = [win._wvTabGroupDragTabID, ...(win._wvMultiDragIDs || []), pe ? pe.getAttribute("data-id") : null].filter(Boolean);
                 win._wvDragOrigIndices = ids.map((id: any) => ({
                     id, idx: win.Zotero_Tabs._tabs.findIndex((t: any) => t.id === id),
                 })).filter((r: any) => r.idx > 0);
@@ -3227,16 +3246,43 @@ class _TabGroupsMixin {
             if (!draggedEl) { win._wvDragGeom = null; return; }
             const draggedMirror = draggedEl.classList.contains("wv-pinned-mirror");
             const dr = draggedEl.getBoundingClientRect();
+            // A split's two tabs drag as ONE block, as Firefox drags its
+            // tab-split-view-wrapper (drag-and-drop.mjs handle_dragstart: `if
+            // (tab.splitview) tab = tab.splitview`). MJT 2026-11-18: "Dragging split
+            // view tabs should make them move together with the preview of the 2
+            // split view tabs staying together", then "do the same as Firefox": both
+            // lifted side by side, the gap the pair's width, never pinned by the drop
+            // (_wvComputeDrop); the other tab joins the dropped one at the drop
+            // (tab-split.ts _wvTabSplitKeepTogether). Not in a multi-selection drag,
+            // nor for a lock (its two tabs are not neighbours in the strip).
+            let partnerEl: any = null;
+            try {
+                const P: any = this;
+                const multi = !!(win._wvMultiDragIDs && win._wvMultiDragIDs.length);
+                const s = !multi && !draggedMirror && typeof P._wvTabSplitOf === "function" ? P._wvTabSplitOf(win, tabID) : null;
+                if (s && s.right && !s.picker && !s.dock) {
+                    const other = s.left === tabID ? s.right : s.left;
+                    const oEl = tabsBox.querySelector('.tab[data-id="' + other + '"]');
+                    if (oEl && oEl.getBoundingClientRect().width >= 1) partnerEl = oEl;
+                }
+            } catch (eP) {}
             // A pin's own width before any preview grew it (_wvPinRowHold); kept
             // across a re-cache mid-drag, cleared by _wvClearGap.
             if (draggedMirror && draggedEl._wvW0 == null) draggedEl._wvW0 = dr.width;
-            const gapWidth = (typeof width === "number" && width) || dr.width;
+            let gapWidth = (typeof width === "number" && width) || dr.width;
+            // The pair's block: from the first tab's outer edge to the last one's,
+            // their margins included (a pair's tabs carry the pill's margins,
+            // tab-split.ts) -- the room the strip closes and opens for it.
+            const pair = partnerEl ? wvPairSpan(win, draggedEl, partnerEl, null) : null;
+            if (pair) gapWidth = pair.right - pair.left;
             // Lift the dragged tab: floats above, follows the cursor instantly
             // (no transition), and doesn't intercept dragover hit-testing.
-            draggedEl.style.transition = "none";
-            draggedEl.style.zIndex = "10";
-            draggedEl.style.position = "relative";
-            draggedEl.style.pointerEvents = "none";
+            for (const lifted of partnerEl ? [draggedEl, partnerEl] : [draggedEl]) {
+                lifted.style.transition = "none";
+                lifted.style.zIndex = "10";
+                lifted.style.position = "relative";
+                lifted.style.pointerEvents = "none";
+            }
             // Multi-tab drag, Firefox's way (drag-and-drop.js: the other moving
             // tabs are taken out of flow and hidden; the held tab gets
             // [small-stack] for two tabs, [big-stack] for more, drawn as cards
@@ -3297,6 +3343,7 @@ class _TabGroupsMixin {
                 if (!isTabEl && !isChipEl) continue;
                 const id = isMirrorEl ? el.getAttribute("data-tab-id") : el.getAttribute("data-id");
                 if (isTabEl && id === tabID) continue;          // the dragged tab's other face
+                if (partnerEl && (el === partnerEl || (isTabEl && id === partnerEl.getAttribute("data-id")))) continue;   // lifted with it
                 const r = el.getBoundingClientRect();
                 if (isTabEl && r.width < 1) continue;       // hidden collapsed member / mirrored pin
                 const zone = zoneOf(el);
@@ -3312,11 +3359,28 @@ class _TabGroupsMixin {
                     dropEls.push({ el, left: r.left, right: r.right, mid: (r.left + r.right) / 2, kind: "chip", groupId: gid, collapsed: !!(g && g.collapsed), firstZIdx: firstZIdxOf[gid], zone });
                 }
             }
+            // Another split is ONE drop element, as Firefox's wrapper (drag-and-drop.mjs
+            // _getDropIndex: `if (item.splitview) item = item.splitview`, its middle
+            // decides before or after): nothing lands between its two tabs.
+            try {
+                const P: any = this;
+                const pairs = typeof P._wvTabSplits === "function" ? P._wvTabSplits(win).filter((x: any) => x && x.right && !x.picker && !x.dock) : [];
+                const idOf = (d: any) => d && d.kind === "tab" && d.el ? (d.el.getAttribute("data-id") || d.el.getAttribute("data-tab-id")) : null;
+                for (const sp of pairs) {
+                    const iL = dropEls.findIndex((d: any) => idOf(d) === sp.left);
+                    const iR = dropEls.findIndex((d: any) => idOf(d) === sp.right);
+                    if (iL < 0 || iR < 0 || Math.abs(iR - iL) !== 1) continue;
+                    const a = dropEls[Math.min(iL, iR)], b = dropEls[Math.max(iL, iR)];
+                    dropEls.splice(Math.min(iL, iR), 2, Object.assign({}, a, { right: b.right, mid: (a.left + b.right) / 2, wvPairEnd: b }));
+                }
+            } catch (eW) {}
             for (const e of elems) e.el.style.transition = "transform 0.12s ease";
             const draggedZone = zoneOf(draggedEl);
+            const grabTab = typeof grab === "number" ? grab : dr.width / 2;
             win._wvDragGeom = {
-                gapWidth, grab: (typeof grab === "number" ? grab : gapWidth / 2), width: gapWidth,
-                originLeft: dr.left, originRight: dr.right, elems, dropEls, draggedEl,
+                gapWidth, grab: pair ? grabTab + (dr.left - pair.left) : (typeof grab === "number" ? grab : gapWidth / 2), width: gapWidth,
+                originLeft: pair ? pair.left : dr.left, originRight: pair ? pair.right : dr.right, elems, dropEls, draggedEl,
+                partnerEl, selfWidth: dr.width,
                 endSlot: Z._tabs.length, firstNonPinnedZIdx,
                 draggedPinned: draggedMirror || draggedEl.classList.contains("wv-pinned-tab") || wvLibraryTabPinned(Z._tabs.find((t: any) => t && t.id === tabID)),
                 draggedZone,
@@ -3324,7 +3388,8 @@ class _TabGroupsMixin {
                 mirrorsC: mirrorsOutside ? mirrorsC : null,
                 // A strip tab dragged over the pinned row would vanish under the
                 // strip's clip (overflow: hidden); _wvDragFloat carries it there.
-                floatHost: (mirrorsOutside && draggedZone === "strip") ? mirrorsC.parentElement : null,
+                // Not a pair: it never goes among the pins (_wvComputeDrop).
+                floatHost: (mirrorsOutside && draggedZone === "strip" && !partnerEl) ? mirrorsC.parentElement : null,
                 stripLeft: tabsBox.getBoundingClientRect().left,
             };
             win._wvGapResult = null;
@@ -3352,7 +3417,10 @@ class _TabGroupsMixin {
         // kept the dragged tab's state (MJT 2026-11-10: "It does not seem
         // possible to pin a tab at the last pinned position").
         const rows = !!g.rows;
-        const inPins = rows && clientX < g.stripLeft;
+        // A split's pair is never pinned by a drop (a tab leaves the pins while it
+        // is in a split, tab-split.ts): no pin row, no slot among the pins.
+        const pairDrag = !!g.partnerEl;
+        const inPins = !pairDrag && rows && clientX < g.stripLeft;
         // A collapsed group's chip stands for the whole group: cursor over its
         // left half drops before it (outside), over its right half joins it.
         for (const d of g.dropEls) {
@@ -3374,6 +3442,7 @@ class _TabGroupsMixin {
         if (!nextEl) slot = g.endSlot;
         else if (nextEl.kind === "tab") slot = nextEl.zIdx;
         else slot = (nextEl.firstZIdx != null ? nextEl.firstZIdx : g.endSlot);   // before a chip → before its group
+        if (pairDrag && slot < g.firstNonPinnedZIdx) slot = g.firstNonPinnedZIdx;
         // A slot inside the pinned region (< firstNonPinnedZIdx) is allowed
         // for an unpinned tab: it PINS on commit (Weavero's drop-to-pin; the
         // region's end rides along so the commit can tell). Firefox clamps
@@ -3388,6 +3457,11 @@ class _TabGroupsMixin {
         let insertionX = nextEl ? nextEl.left : (g.dropEls.length ? g.dropEls[g.dropEls.length - 1].right : -1);
         // The landing gap opens in the row the insertion point is in.
         let insertionZone = nextEl ? nextEl.zone : (prevEl ? prevEl.zone : g.draggedZone);
+        // A pair held back from the pins: its gap opens where it will land.
+        if (pairDrag && nextEl && nextEl.kind === "tab" && nextEl.zIdx < slot) {
+            const at = g.dropEls.find((d: any) => d.kind === "tab" && d.zIdx >= slot);
+            if (at) { insertionX = at.left; insertionZone = at.zone; }
+        }
         if (inPins) {
             // Past the last pin, still over the pinned row (or the arrow): the
             // end of the pins. Strip tabs scrolled out of view lie under the
@@ -3436,9 +3510,19 @@ class _TabGroupsMixin {
                 return { left: r.left - tx, right: r.right - tx, width: r.width };
             };
             const dn = nat(d);
-            geom.originLeft = dn.left; geom.originRight = dn.right;
-            geom.gapWidth = dn.width; geom.width = dn.width;
-            geom.grab = (typeof geom.grab === "number" ? geom.grab : w0 / 2) * (dn.width / w0);
+            if (geom.partnerEl) {
+                // A split's pair: the block of the two (_wvDragCacheGeom), its grab
+                // point kept where it was in it.
+                const sp = wvPairSpan(win, d, geom.partnerEl, nat);
+                const w = sp.right - sp.left;
+                geom.originLeft = sp.left; geom.originRight = sp.right;
+                geom.gapWidth = w; geom.width = w; geom.selfWidth = dn.width;
+            }
+            else {
+                geom.originLeft = dn.left; geom.originRight = dn.right;
+                geom.gapWidth = dn.width; geom.width = dn.width; geom.selfWidth = dn.width;
+                geom.grab = (typeof geom.grab === "number" ? geom.grab : w0 / 2) * (dn.width / w0);
+            }
             for (const e of geom.elems) { try { e.left = nat(e.el).left; } catch (er) {} }
             for (const de of geom.dropEls) {
                 try { if (de.el) { const n = nat(de.el); de.left = n.left; de.right = n.right; de.mid = (n.left + n.right) / 2; } } catch (er) {}
@@ -3455,7 +3539,7 @@ class _TabGroupsMixin {
             // may just have resized the dragged element: re-measure first.
             this._wvPinRowHold(geom);
             try {
-                if (geom.draggedEl && Math.abs(geom.draggedEl.getBoundingClientRect().width - geom.gapWidth) > 1) this._wvDragRecache(win);
+                if (geom.draggedEl && Math.abs(geom.draggedEl.getBoundingClientRect().width - (geom.selfWidth || geom.gapWidth)) > 1) this._wvDragRecache(win);
             } catch (er) {}
             const res = this._wvComputeDrop(win, clientX);
             if (!res) return;
@@ -3472,9 +3556,11 @@ class _TabGroupsMixin {
                 // dragover is blocked) mouse position -- the lifted tab snapped
                 // back on each title update of a loading tab (MJT 2026-10-15).
                 // An inline value cannot beat a stylesheet !important.
-                const dEl = geom.draggedEl;
-                if (dEl.style.getPropertyValue("--wv-lift") !== tf) dEl.style.setProperty("--wv-lift", tf);
-                if (!dEl.hasAttribute("data-wv-lifted")) dEl.setAttribute("data-wv-lifted", "1");
+                // A split's pair: both tabs lifted by the same amount, side by side.
+                for (const dEl of geom.partnerEl ? [geom.draggedEl, geom.partnerEl] : [geom.draggedEl]) {
+                    if (dEl.style.getPropertyValue("--wv-lift") !== tf) dEl.style.setProperty("--wv-lift", tf);
+                    if (!dEl.hasAttribute("data-wv-lifted")) dEl.setAttribute("data-wv-lifted", "1");
+                }
                 if (geom.floatHost) this._wvDragFloat(win, geom, tf);
                 if (!win._wvTGFirstLift) {
                     win._wvTGFirstLift = Date.now();
@@ -3521,6 +3607,9 @@ class _TabGroupsMixin {
                 const tf = dx ? ("translateX(" + dx + "px)") : "";
                 if (e.el.style.transform !== tf) e.el.style.transform = tf;
             }
+            // A split pair's background (tab-split.ts pills) follows its tabs, the dragged
+            // pair's too (Firefox drags its split-view wrapper with its background).
+            try { const P: any = this; if (typeof P._wvTabSplitDragPills === "function") P._wvTabSplitDragPills(win); } catch (eP) {}
         } catch (e) {}
     }
 
@@ -3595,19 +3684,21 @@ class _TabGroupsMixin {
                 try { if (geom.mirrorsC) geom.mirrorsC.style.marginInlineEnd = ""; } catch (er) {}
                 try { if (geom.draggedEl) delete geom.draggedEl._wvW0; } catch (er) {}
                 for (const e of geom.elems) { try { e.el.style.transform = ""; e.el.style.transition = ""; } catch (er) {} }
-                if (geom.draggedEl) {
+                for (const lifted of [geom.draggedEl, geom.partnerEl]) {
+                    if (!lifted) continue;
                     try {
-                        const s = geom.draggedEl.style;
+                        const s = lifted.style;
                         s.transform = ""; s.transition = ""; s.zIndex = ""; s.position = ""; s.pointerEvents = "";
-                        geom.draggedEl.removeAttribute("data-wv-drag-join");
-                        geom.draggedEl.removeAttribute("data-wv-lifted");
-                        geom.draggedEl.removeAttribute("data-wv-stack");
+                        lifted.removeAttribute("data-wv-drag-join");
+                        lifted.removeAttribute("data-wv-lifted");
+                        lifted.removeAttribute("data-wv-stack");
                         s.removeProperty("--wv-lift");
                         s.removeProperty("--wv-group-color");
                     } catch (er) {}
                 }
             }
             win._wvDragGeom = null;
+            try { const P: any = this; if (typeof P._wvTabSplitDragPills === "function") P._wvTabSplitDragPills(win, true); } catch (eP) {}
             if (win._wvJoinTargetChip) {
                 const c = win.document.getElementById(win._wvJoinTargetChip);
                 if (c) c.classList.remove("wv-tg-join-target");
@@ -6809,7 +6900,7 @@ class _TabGroupsMixin {
             if (!(Zotero.MenuManager && typeof Zotero.MenuManager.registerMenu === "function")) return;
             this._unregisterTabGroupMenus();
             const self: any = this;
-            const id = Zotero.MenuManager.registerMenu({
+            const id = wvMMRegister(Zotero.MenuManager, {
                 menuID: "weavero-tab-groups",
                 pluginID: "weavero@mjthoraval",
                 target: "main/tab",

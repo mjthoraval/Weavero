@@ -130,9 +130,20 @@ describe("Weavero — note heading folding", function () {
         }, 5000);
         expect(saved, "fold entry for the note, in its last state").to.be.ok;
         expect(saved.map((e) => e.t)).to.deep.equal(["Alpha child"]);
-        await wvT.sleep(800);   // the store's write debounce
+        // The store's write debounce, then the write itself: on a slow runner the
+        // file still held the state before, 800 ms after the memory state was
+        // right (CI 2026-11-13: macOS beta three times, Windows beta once). Read
+        // until the file carries the last state, 10 s at most; a write that
+        // never comes still fails below.
         const file = PathUtils.join(Zotero.DataDirectory.dir, "weavero", "note-view.json");
-        const onDisk = JSON.parse(await IOUtils.readUTF8(file));
+        let onDisk = null;
+        for (let i = 0; i < 50; i++) {
+            await wvT.sleep(200);
+            try { onDisk = JSON.parse(await IOUtils.readUTF8(file)); } catch (e) { onDisk = null; }
+            const d = onDisk && onDisk.folds && onDisk.folds[key];
+            if (d && d.length === 1 && d[0].t === "Alpha child") break;
+        }
+        expect(onDisk, "note-view.json read").to.be.ok;
         expect(onDisk.producer).to.equal("weavero");
         expect(onDisk.folds[key], "written to note-view.json").to.deep.equal(saved);
         await ZP.selectItem(other.id);
@@ -391,9 +402,20 @@ describe("Weavero — note list folding", function () {
             return li && li.length === 1 && li[0].t === "Imaging" ? li : null;
         }, 5000);
         expect(saved, "one list entry, Imaging").to.be.ok;
-        await wvT.sleep(800);   // the store's write debounce
+        // The store's write debounce, then the write itself: on a slow runner the
+        // file still held the state before, 800 ms after the memory state was
+        // right (CI 2026-11-13: macOS beta three times, Windows beta once). Read
+        // until the file carries the last state, 10 s at most; a write that
+        // never comes still fails below.
         const file = PathUtils.join(Zotero.DataDirectory.dir, "weavero", "note-view.json");
-        const onDisk = JSON.parse(await IOUtils.readUTF8(file));
+        let onDisk = null;
+        for (let i = 0; i < 50; i++) {
+            await wvT.sleep(200);
+            try { onDisk = JSON.parse(await IOUtils.readUTF8(file)); } catch (e) { onDisk = null; }
+            const d = onDisk && onDisk.folds && onDisk.folds[key];
+            if (d && JSON.stringify(d.filter((e) => e && e.k === "li")) === JSON.stringify(saved)) break;
+        }
+        expect(onDisk, "note-view.json read").to.be.ok;
         expect((onDisk.folds[key] || []).filter((e) => e.k === "li"), "written to note-view.json").to.deep.equal(saved);
         await ZP.selectItem(other.id);
         await wvT.sleep(500);

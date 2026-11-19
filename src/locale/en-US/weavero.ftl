@@ -298,6 +298,9 @@ weavero-pref-tabs-groups-desc = Group tabs Firefox-style: right-click a tab → 
 weavero-pref-tabs-split-view =
     .label = Split view
 weavero-pref-tabs-split-view-desc = Show two tabs side by side, Firefox-style: right-click a tab → “Add Split View”, or select two tabs and choose “Open in Split View”. In the items list, “Open PDF in Split View” opens it beside the library; links in notes and comments offer “Open Link in Split View”. Drag the bar between the two to resize. Splits persist across restarts.
+# A tab locked on one side (tab-split-dock.ts): no setting of its own, it is
+# turned on per window from any tab's menu.
+weavero-pref-tabs-split-dock-desc = To keep a tab in view, right-click it → “Lock Tab”: it moves to the left side of the window, and the right side shows whichever tab you select (lock the library, and an item you open from it opens beside it). The locked tab is framed in gold, with a padlock on its icon; while you are on it, the tab shown beside it is shaded. Click the locked tab to collapse its side, leaving the window to the tab you are on; click it again to bring it back. To unlock it, right-click it → “Unlock Tab”.
 weavero-pref-tabs-split-footer =
     .label = Show a label on each side whose item pane is closed
 weavero-pref-tabs-split-footer-desc = In a split view, a side with its item pane closed shows its tab’s icon and title in its bottom corner, with a menu for the split (separate the tabs, reverse them, close both). Opening that side’s item pane hides the label: the pane’s header names the item.
@@ -493,6 +496,13 @@ weavero-pref-undo-title = Undo
 weavero-pref-undo-buttons =
     .label = Undo / Redo arrows in the reader toolbar
 weavero-pref-undo-buttons-desc = Two arrows after the annotation tools: click to undo or redo the latest step of the reader tab (outline, bookmarks, annotations), right-click for the history. Ctrl+Z, Ctrl+Y and Edit → Undo work either way. Default on.
+
+# Link previews: the picture of the destination page the reader shows when the
+# pointer rests on an internal link, such as a citation's [23].
+weavero-pref-link-preview-title = Link Previews
+weavero-pref-link-preview-entry =
+    .label = Mark the whole reference in link previews
+weavero-pref-link-preview-entry-desc = When the pointer rests on a citation, the preview of the reference list marks every line of the cited entry with a light red tint, in place of Zotero’s dark box on its first line. Off: Zotero’s preview as it is. Default on.
 
 # Reader outline. Once prefs.js knows Zotero's current sizes it relabels the
 # first two size choices with -size-zotero-px / -size-item-pane-px ($px,
@@ -1018,6 +1028,40 @@ weavero-menu-items-open-split =
        *[note] Open Note in Split View
     }
 
+# Split view, a document that follows the library's selected item
+# (tab-split-follow.ts): the entries of the tab menu and of the split's own
+# menu, on a split of a library tab and a document.
+weavero-menu-split-follow =
+    .label = Follow Selected Item
+weavero-menu-split-keep =
+    .label = Keep Document in New Tab
+# The follow side's preview: its Open button (it opens the document in Zotero's
+# reader in the same place) and the line shown when a document has no preview.
+weavero-split-follow-open = Open
+    .title = Open in Zotero’s reader, here, to read and annotate (or double-click the preview)
+weavero-split-follow-failed = No preview for this document. Click its tab to open it.
+
+# A tab locked on one side of the window (tab-split-dock.ts): every tab's menu
+# entry, Lock Tab, or Unlock Tab on the locked tab ($action: lock or unlock, as
+# Pin Tab / Unpin Tab); and the locked tab's entry that takes its side off the
+# screen or brings it back ($collapsed: yes while collapsed).
+weavero-menu-lock-tab =
+    .label = { $action ->
+        [unlock] Unlock Tab
+       *[lock] Lock Tab
+    }
+weavero-menu-lock-collapse =
+    .label = { $collapsed ->
+        [yes] Expand Locked Tab
+       *[no] Collapse Locked Tab
+    }
+# The line added under the locked tab's tooltip in the tab bar: a click on the
+# tab collapses its side, or expands it again ($collapsed: yes while collapsed).
+weavero-dock-tab-tip = { $collapsed ->
+        [yes] Locked tab, collapsed. Click to expand it.
+       *[no] Locked tab. Click to collapse it.
+    }
+
 # The note editor's context menu (note-nav.ts): fold and heading links.
 # $folded: yes when the right-clicked heading's section is folded.
 weavero-menu-note-fold-section =
@@ -1052,6 +1096,20 @@ weavero-menu-outline-expand-all =
     .label = Expand All
 weavero-menu-outline-collapse-all =
     .label = Collapse All
+
+# The last line of a row's hover card (Backlinks, Item Links, Related, the
+# relations popup): the gestures that open the row (open-where.ts). "Beside":
+# next to the tab the row is in (the other side of a split view, or a new
+# one). $platform: mac or other.
+weavero-open-card-foot = Click to open · { $platform ->
+        [mac] ⌘-click
+       *[other] Ctrl+click
+    }: beside · Shift+click: new window · Middle-click: background tab (a note: in front) · Right-click for more
+# The same for a Related row, whose click selects the item in the library.
+weavero-open-card-foot-library = Click: open in library · { $platform ->
+        [mac] ⌘-click
+       *[other] Ctrl+click
+    }: beside · Shift+click: new window · Middle-click: background tab (a note: in front)
 
 # A link's right-click menu in a note (note-editor.ts).
 weavero-menu-notelink-open-split =

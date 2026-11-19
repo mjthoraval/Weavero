@@ -105,6 +105,34 @@ describe("Weavero — collections-pane toggle button", () => {
         assert.strictEqual(btn().parentNode.firstElementChild, btn());
     });
 
+    it("collapsed, keeps its inset from the library view's own start wherever the view sits (a split's right side)", async function () {
+        // 2026-11-17 (MJT, trial.10): a library tab shown as a split view's right
+        // side (beside a locked tab) collapsed its collections pane; the button's
+        // offset was measured from the WINDOW's left (target 8 px), so it got
+        // margin-inline-start -962 px and took New Item, Add Attachment and New Note
+        // off screen with it once the tab was drawn on the left again.
+        if (doc.hidden) this.skip();
+        const trees = doc.getElementById("zotero-trees");
+        assert.ok(trees, "#zotero-trees");
+        if (pane.hasAttribute("collapsed")) wv._wvCollectionsPaneToggle(win);
+        const tb = doc.getElementById("zotero-toolbar-collection-tree");
+        const inset = Math.round(parseFloat(win.getComputedStyle(tb).paddingInlineStart)) || 8;
+        const was = trees.style.marginInlineStart;
+        try {
+            // The library view moved away from the window's start, as a split's right
+            // side is: the button must follow it.
+            trees.style.marginInlineStart = "300px";
+            btn().doCommand();
+            await waitFor(() => btn().parentNode === doc.getElementById("zotero-items-toolbar"), 3000, "collapsed: in the items toolbar");
+            await new Promise(r => win.requestAnimationFrame(() => win.setTimeout(r, 120)));
+            const off = Math.round(btn().getBoundingClientRect().left - trees.getBoundingClientRect().left);
+            assert.isAtMost(Math.abs(off - inset), 1, "the button sits " + inset + " px into the view, not at the window's x = " + inset + " (offset " + off + ", margin " + btn().style.marginInlineStart + ")");
+        } finally {
+            trees.style.marginInlineStart = was;
+            if (pane.hasAttribute("collapsed")) wv._wvCollectionsPaneToggle(win);
+        }
+    });
+
     it("re-homes when the pane is toggled by other means (View → Layout, the splitter)", async () => {
         if (pane.hasAttribute("collapsed")) wv._wvCollectionsPaneToggle(win);
         splitter.setAttribute("state", "collapsed"); pane.setAttribute("collapsed", "true");
@@ -175,6 +203,8 @@ describe("Weavero — collections-pane toggle button", () => {
     it("collapsed splitters with no way to drag back open take no pointer (no dead resize cursor; MJT 2026-10-05)", async () => {
         const pe = (el) => win.getComputedStyle(el).pointerEvents;
         const is = doc.getElementById("zotero-items-splitter");
+        const itemPaneEl = doc.getElementById("zotero-item-pane");
+        const ipCollapsed = itemPaneEl.getAttribute("collapsed");
         const saved = Zotero.Prefs.get("weavero.paneDragNoCollapse");
         const isState = is.getAttribute("state");
         try {
@@ -187,6 +217,11 @@ describe("Weavero — collections-pane toggle button", () => {
             assert.equal(pe(splitter), "none", "collapsed with the button: no resize cursor, no drag");
             wv._wvCollectionsPaneToggle(win);
             // Right: the item pane's collapsed splitter (Zotero's sidenav reopens it).
+            // Collapsed as Zotero does it (collapsiblePane.mjs setPaneCollapsed: the
+            // pane's `collapsed` AND the splitter's state), not the state alone: the
+            // rule needs both since a splitter left collapsed beside an OPEN pane
+            // must stay draggable (Zutilo's sticky toggle, 2026-11-15).
+            itemPaneEl.setAttribute("collapsed", "true");
             is.setAttribute("state", "collapsed");
             assert.equal(pe(is), "none", "collapsed item-pane splitter takes no pointer");
             Zotero.Prefs.set("weavero.paneDragNoCollapse", false);
@@ -199,6 +234,36 @@ describe("Weavero — collections-pane toggle button", () => {
         }
         finally {
             if (isState) is.setAttribute("state", isState); else is.removeAttribute("state");
+            if (ipCollapsed === null) itemPaneEl.removeAttribute("collapsed"); else itemPaneEl.setAttribute("collapsed", ipCollapsed);
+            Zotero.Prefs.set("weavero.paneDragNoCollapse", saved === undefined ? true : !!saved);
+        }
+    });
+
+    it("a splitter left at state=collapsed beside an OPEN pane stays draggable (Zutilo's sticky toggle, 2026-11-15)", async () => {
+        // Zutilo's "sticky" show/hide opens the pane again and leaves its
+        // splitter at state="collapsed" (a 10 px draggable divider). Weavero's
+        // thin, pointer-less treatment of a collapsed splitter keyed on that
+        // state alone, so the open pane could no longer be resized.
+        const cs = win.getComputedStyle(splitter);
+        const is = doc.getElementById("zotero-items-splitter");
+        const itemPane = doc.getElementById("zotero-item-pane");
+        const saved = Zotero.Prefs.get("weavero.paneDragNoCollapse");
+        const sState = splitter.getAttribute("state"), iState = is.getAttribute("state");
+        try {
+            Zotero.Prefs.set("weavero.paneDragNoCollapse", true);
+            await waitFor(() => splitter.hasAttribute("data-wv-collapse") && is.hasAttribute("data-wv-collapse"), 3000, "snap removed");
+            if (pane.hasAttribute("collapsed")) wv._wvCollectionsPaneToggle(win);
+            assert.isTrue(splitter.hasAttribute("wv-thin"), "the toggle button is on");
+            assert.isFalse(pane.hasAttribute("collapsed") || itemPane.hasAttribute("collapsed"), "both panes open");
+            splitter.setAttribute("state", "collapsed");
+            is.setAttribute("state", "collapsed");
+            assert.notEqual(cs.pointerEvents, "none", "collections splitter beside an open pane takes the pointer");
+            assert.notEqual(cs.getPropertyValue("--draggable-size").trim(), "1px", "and keeps Zotero's drag band");
+            assert.notEqual(win.getComputedStyle(is).pointerEvents, "none", "item-pane splitter beside an open pane takes the pointer");
+        }
+        finally {
+            if (sState) splitter.setAttribute("state", sState); else splitter.removeAttribute("state");
+            if (iState) is.setAttribute("state", iState); else is.removeAttribute("state");
             Zotero.Prefs.set("weavero.paneDragNoCollapse", saved === undefined ? true : !!saved);
         }
     });

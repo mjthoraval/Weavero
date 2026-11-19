@@ -512,6 +512,7 @@
             { re: /^Weavero — split view: inside each side 9b\. two library sides/, why: "version: needs a Zotero with its own windows (an older Zotero has one library tab)" },
             { re: /^Weavero — split view: inside each side 15\. two library sides/, why: "version: needs a Zotero with its own windows (an older Zotero has one library tab)" },
             { re: /^Weavero — split view: a tab locked on one side a Zotero with its own windows/, why: "version: needs a Zotero with its own windows (an older Zotero has one library tab and one window of tabs)" },
+            { re: /^Weavero — split view: a tab locked on one side the note beside a locked PDF that is selected/, why: "screen: needs each side at least Zotero's 930px wide (the spec asks a 1920px window); a smaller screen (CI's runners, a monitor at 125%) stacks the sides, and a stacked side's sidenav draws no toggle-pane button (measured 2026-11-19: 1500px window, 735px stacked cards, the button 0px wide)" },
             { re: /^Weavero — upstream fixes WV-TEMP-134823/, why: "version: Zotero 11's collapsed-attribute mismatch (Zotero 10 re-renders; a Zotero without it needs no fix)" },
             { re: /^Weavero — upstream fixes WV-TEMP-134824/, why: "version: Zotero 11's windows each with their own views (Zotero 10 has one view; Weavero's own windows there have their guard)" },
             { re: /^Weavero — upstream fixes WV-TEMP-134772/, why: "version: Zotero 11 without zotero 3e32faa0a (Zotero 10 writes disabled=\"undefined\", read as enabled; a later beta has the fix)" },

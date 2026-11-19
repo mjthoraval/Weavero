@@ -1177,6 +1177,10 @@ describe("Weavero — split view: a tab locked on one side", function () {
             assert.ok(paneIn(tn.id), "fixture: the note's item pane drawn over its card");
             const g = ghost();
             const btn = g && g.querySelector('[data-action="toggle-pane"]');
+            // A side under Zotero's 930px is stacked (tab-split.ts WINDOW_AUTO_STACK_MIN), and a
+            // stacked side's sidenav draws no toggle button: on a screen that cannot give the
+            // window the 1920px before() asks for (CI's runners, a 125% monitor), nothing to press.
+            if ([...doc.querySelectorAll(".wv-tsplit-panel")].some(c => c.hasAttribute("wv-tsplit-stacked"))) this.skip();
             if (!btn || btn.getBoundingClientRect().width < 1) this.skip();   // no such button on this Zotero (its sidenav has none)
             btn.dispatchEvent(new win.MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }));
             await sleep(800);
@@ -1444,6 +1448,13 @@ describe("Weavero — split view: a tab locked on one side", function () {
         assert.ok(await fetchOk(LOCK_SVG), "Zotero ships " + LOCK_SVG);
         const acc = accentRGB();
         assert.lengthOf(acc, 3, "fixture: Zotero's accent color: " + acc);
+        // Weavero's Firefox look (on by default) in this window, as every full run has
+        // it: its selected-tab ring painted violet over the frame of a SELECTED locked
+        // tab (1.2.0 gate, 2026-11-19: red in every full Zotero 11 run and on CI, green
+        // alone only because a lone spec's window had no ring sheet yet).
+        assert.isTrue(!!wv._getSelectedTabRing(), "fixture: the Firefox look on (its default)");
+        wv._wvEnsureSelectedTabRing(doc);
+        assert.ok(doc.getElementById("wv-selected-tab-ring"), "fixture: the Firefox look's sheet in the window");
         // tab-split-dock.ts WV_LOCK_FRAME_LIGHT / _DARK.
         const gold = win.matchMedia("(prefers-color-scheme: dark)").matches ? [245, 179, 15] : [181, 120, 0];
         assert.isFalse(near(gold, acc, 40), "fixture: the gold is not the accent (" + acc + ")");

@@ -128,7 +128,12 @@ const STRIP_KEYS = ["tdock:strip:mousedown", "tdock:strip:click"];
  *    (outline-offset -2px), so the tab's width and padding stay as Zotero has them
  *    (src-ts.md, never vary padding between tabs); an outline follows the tab's own
  *    corners and paints above its background and its content, the selected tab's fill
- *    and Weavero's selected ring included. Gold, not Zotero's accent: the active side's
+ *    included -- but NOT above Weavero's selected ring (the Firefox look's 1px gradient
+ *    band, a positioned ::before of the selected tab, tab-groups.ts
+ *    _wvEnsureSelectedTabRing, on by default): it painted violet over the frame's edge
+ *    whenever the locked tab was the selected one (1.2.0 gate, 2026-11-19, every full
+ *    Zotero 11 run and CI). A locked tab draws no ring: its gold frame is its mark,
+ *    selected or not; the selected fill still says it is selected. Gold, not Zotero's accent: the active side's
  *    card is framed in the accent (tab-split.ts .wv-tsplit-active), and an accent frame
  *    on the locked tab said the side you are on was the locked one (MJT 2026-11-18 on
  *    1.1.1-dev.7: "The blue line around the locked tab and around the focused tab
@@ -161,6 +166,10 @@ export const WV_TAB_DOCK_CSS = `
 }
 @media (prefers-color-scheme: dark) {
   #tab-bar-container :is(.tab, .wv-pinned-mirror)[data-wv-tdock] { outline-color: ${WV_LOCK_FRAME_DARK} !important; }
+}
+#tab-bar-container .tab.selected[data-wv-tdock]::before,
+#tab-bar-container #wv-pinned-mirrors .wv-pinned-mirror.selected[data-wv-tdock]::before {
+  background: none !important;
 }
 #tab-bar-container :is(.tab, .wv-pinned-mirror)[data-wv-tdock-beside]:not(.selected) {
   background-color: var(--fill-quinary) !important;

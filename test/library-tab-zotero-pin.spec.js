@@ -22,7 +22,7 @@
 // fixture's A is a Zotero pin too (test/zotero-pin-any-tab.spec.js).
 describe("Weavero — My Library pinned by Zotero's own Pin Tab", function () {
     this.timeout(120000);
-    let wv, win, doc, ZT, cont, a, b, group, prevGroups, prevTW;
+    let wv, win, doc, ZT, cont, a, b, group, prevGroups, prevTW, libWasPinned = false;
     const LIB = "zotero-pane";
     const sleep = (ms) => new Promise(r => win.setTimeout(r, ms));
     const tabOf = (it) => ZT._tabs.find(t => t && t.data && t.data.itemID === it.id) || null;
@@ -128,6 +128,15 @@ describe("Weavero — My Library pinned by Zotero's own Pin Tab", function () {
         }
         cont = doc.getElementById("tab-bar-container");
         if (!lib()) this.skip();
+        // Since 11.0-beta.5 the first main window starts with its library tab
+        // pinned (zotero 0883f08887, "Pin the library tab of the first window by
+        // default"), the runner's too. These cases start from an unpinned My
+        // Library, as Zotero's own tabsTest.js does (`tabs.setPinned('zotero-pane',
+        // false)` in its before()); after() puts the pin back. Without it every
+        // case found My Library first: 4 of 9 failed on the beta.5 full run
+        // (2026-11-21), ["LIB", "A", "B"] for ["A", "LIB", "B"].
+        libWasPinned = zPinned();
+        if (libWasPinned) { ZT.setPinned(LIB, false); await sleep(300); }
         prevGroups = Zotero.Prefs.get("weavero.enableTabGroups");
         prevTW = Zotero.Prefs.get("weavero.enableTabsAndWindows");
         Zotero.Prefs.set("weavero.enableTabGroups", true);
@@ -161,6 +170,9 @@ describe("Weavero — My Library pinned by Zotero's own Pin Tab", function () {
         for (const it of [a, b]) { const t = it && tabOf(it); if (t) { try { ZT.close(t.id); } catch (er) {} } }
         await sleep(300);
         try { if (lib() && ZT._tabs.indexOf(lib()) > 0) ZT.move(LIB, 0); } catch (er) {}
+        // The pin the run started with (beta.5's first-window default), back for
+        // the specs after this one.
+        if (libWasPinned) { try { ZT.setPinned(LIB, true); apply(); } catch (er) {} }
         try { ZT.select(LIB); } catch (er) {}
         await sleep(300);
         await wvT.erase(a, b);

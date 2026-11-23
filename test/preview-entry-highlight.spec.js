@@ -97,12 +97,54 @@ describe("Weavero — a link preview tints the whole reference entry", function 
         }), rwin));
     }
 
+    // ---- CI DIAGNOSTICS (branch ci-macdiag only, temporary) -------------------
+    // "the preview popup opened: expected null" twice in a row on macOS + beta.
+    // Hypotheses: (a) the pdf.js frame gets no animation frames (a hidden or
+    // occluded window; pdf.js runs page.render on requestAnimationFrame), so
+    // Zotero's renderPreviewPage never settles and no popup is ever handed on;
+    // (b) the view's overlay revision moved during the render (Zotero drops its
+    // popup); (c) the popup reached Weavero's wrapper and was held or dropped
+    // there (its two counters; the link-modifier flag, which nulls popups).
+    const pvFacts = () => {
+        const o = {};
+        const safe = (k, f) => { try { o[k] = f(); } catch (e) { o[k] = "ERR " + e; } };
+        safe("rev", () => pv._overlayRevision);
+        safe("hlSeq", () => pv._wvPrevHlSeq);
+        safe("zonesSeq", () => pv._wvPrevZonesSeq);
+        safe("selectedOverlay", () => !!pv._selectedOverlay);
+        safe("linkMod", () => pv._iframeWindow._wvLinkMod);
+        safe("state", () => { const s = state(); return s ? { type: s.type, image: !!s.image } : null; });
+        safe("pref", () => Zotero.Prefs.get("weavero.previewEntryHighlight"));
+        safe("readerHidden", () => reader._iframeWindow.document.hidden);
+        safe("pdfHidden", () => pv._iframeWindow.document.hidden);
+        safe("readerTabSelected", () => Zotero.getMainWindow().Zotero_Tabs.selectedID === reader.tabID);
+        return o;
+    };
+    async function openDiag(overlay, st, ms, before) {
+        const d = { ok: !!st, ms, before, after: pvFacts() };
+        const [rafPdf, rafReader, probe] = await Promise.all([wvT.diagRaf(pv._iframeWindow), wvT.diagRaf(reader._iframeWindow), wvT.diagProbe()]);
+        Object.assign(d, { rafPdf, rafReader, probe });
+        if (!st) {
+            // Zotero's own renderer, called directly: does it finish at all now?
+            const rwin = reader._iframeWindow;
+            const r = await wvT.diagRace(Promise.resolve().then(() => pv._pdfRenderer.renderPreviewPage(Cu.cloneInto(overlay.destinationPosition, rwin))), 10000);
+            let pic = null;
+            try { if (r.state === "ok") { const v = Cu.waiveXrays(r.value); pic = v ? { imageLen: String(v.image || "").length, w: v.width, h: v.height } : String(v); } } catch (e) { pic = "ERR " + e; }
+            d.directRender = { state: r.state, ms: r.ms, error: r.error || null, pic };
+            d.env = wvT.diagEnv();
+        }
+        wvT.diag("preview:open", d);
+    }
+
     /** Hover-open `overlay` (chrome object) and wait for the popup and its
      *  link zones. */
     async function open(overlay) {
         await close();
+        const before = pvFacts();
         await fire(overlay);
+        const t0 = Date.now();
         const st = await wvT.waitFor(() => { const s = state(); return s && s.image ? s : null; }, 15000, 50);
+        await openDiag(overlay, st, Date.now() - t0, before);
         assert.isOk(st, "the preview popup opened");
         const img = await wvT.waitFor(() => { const i = popupImg(); return i && i.clientWidth && i.getAttribute("src") === st.image ? i : null; }, 10000, 50);
         assert.isOk(img, "the popup shows the picture");

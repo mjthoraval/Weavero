@@ -162,15 +162,29 @@ describe("Weavero — per-window state on two main windows", function () {
         if (wv._wvRecentlyAddedItemIDs) wv._wvRecentlyAddedItemIDs.clear();
         // The filter is set in B but not applied: only B's tree observer applies it.
         B._wvFilterState = abstractFilter();
-        await quiet();
-        const filtered = await focused(A, async () => {
-            const tree = B.document.getElementById(B.ZoteroPane.itemsView.id);
-            const probe = B.document.createElement("div");
-            probe.hidden = true;
-            tree.appendChild(probe);
-            probe.remove();
-            return wvT.waitFor(() => (rows(B) < all ? true : null), 5000, 50);
+        const quietOk = await quiet();
+        // CI DIAGNOSTICS (ci-macdiag): failed once on macOS + beta. Did B's tree
+        // observer fire an apply at all (and for which window), or was it late?
+        const pre = { quietOk: !!quietOk, quietA: quietIn(A), quietB: quietIn(B), observer: !!B._wvFilterTreeObserver, all,
+            suppressB: (() => { const prev = wv._wvFilterWinOverride; wv._wvFilterWinOverride = B; try { return (wv._suppressTreeObserverUntil || 0) - Date.now(); } finally { wv._wvFilterWinOverride = prev || null; } })() };
+        let filtered = null, t0 = 0;
+        const seen = await applies(async () => {
+            filtered = await focused(A, async () => {
+                const tree = B.document.getElementById(B.ZoteroPane.itemsView.id);
+                const probe = B.document.createElement("div");
+                probe.hidden = true;
+                t0 = Date.now();
+                tree.appendChild(probe);
+                probe.remove();
+                return wvT.waitFor(() => (rows(B) < all ? true : null), 5000, 50);
+            });
         });
+        const d = { pre, filtered: !!filtered, ms: filtered ? Date.now() - t0 : null, rowsB: rows(B), applies: brief(seen), lateMs: null };
+        if (!filtered) {
+            const late = await wvT.waitFor(() => (rows(B) < all ? true : null), 15000, 100);
+            d.lateMs = late ? Date.now() - t0 : null;
+        }
+        wvT.diag("perwindow:bg-observer", Object.assign(d, { envA: wvT.diagEnv(A), envB: wvT.diagEnv(B), probe: await wvT.diagProbe(A) }));
         assert.isOk(filtered, "the second window's rows are filtered by its own observer (" + rows(B) + " of " + all + ")");
     });
 

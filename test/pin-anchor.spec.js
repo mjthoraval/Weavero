@@ -296,10 +296,18 @@ describe("Weavero — WV-TEMP-134569 / 113626: a change of the item pane's width
         const ref = topIn(d, el);
         let worst = 0;
         const widths = [];
+        // CI DIAGNOSTICS (ci-macdiag): "worst 20.6, expected at most 1.5" once on
+        // macOS + beta (reader tab). Each step's offset and the time between
+        // frames: one long gap at the worst step = a frame the runner skipped.
+        const offs = [], gaps = [];
+        let tPrev = performance.now();
         for (const step of STEPS) {
             await frame();
             await task();
+            const tNow = performance.now();
+            gaps.push(Math.round(tNow - tPrev)); tPrev = tNow;
             const off = topIn(d, el) - ref;
+            offs.push(R(off));
             if (Math.abs(off) > Math.abs(worst)) worst = off;
             pane.set(pane.get() + step);
             widths.push(Math.round(pane.get()));
@@ -308,7 +316,12 @@ describe("Weavero — WV-TEMP-134569 / 113626: a change of the item pane's width
         await task();
         if (Math.abs(topIn(d, el) - ref) > Math.abs(worst)) worst = topIn(d, el) - ref;
         await settle();
-        return { worst: R(worst), end: R(topIn(d, el) - ref), widths: widths.join(",") };
+        const res = { worst: R(worst), end: R(topIn(d, el) - ref), widths: widths.join(",") };
+        let armed = null;
+        try { armed = !!(d._wvPinAnchor && d._wvPinAnchor.armed); } catch (e) {}
+        wvT.diag("pinanchor:drag", { res, offs: offs.join(","), gaps: gaps.join(","), armed, pinned: d.pinnedPane, el: el.tagName + (el.dataset && el.dataset.pane ? ":" + el.dataset.pane : ""),
+            pane: { w: Math.round(pane.get()), ppH: d._paneParent.clientHeight, sh: d._paneParent.scrollHeight, st: d._paneParent.scrollTop }, env: wvT.diagEnv(win) });
+        return res;
     };
     const reselect = async () => { await ZP.selectItems([Q.id]); await wvT.sleep(300); await ZP.selectItems([P.id]); await wvT.sleep(1200); await settle(); };
 

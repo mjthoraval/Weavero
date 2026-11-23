@@ -376,18 +376,46 @@ describe("Weavero — split view: a tab locked on one side", function () {
         const [t1, t2] = await fresh();
         const L = libTab();
         clickTab(t2.id); await sleep(400);
-        await withTabMenu(t1.id, async (items) => { entryIn(items).dispatchEvent(new win.Event("command")); });
-        await sleep(800);
-        assert.strictEqual(wv._wvTabDockLib(win), t1.id, "the other tab locked");
+        // CI DIAGNOSTICS (ci-macdiag): "expected null to equal 'tab-...'" once on
+        // macOS + beta. Did the menu hold the entry, did the command run, and was
+        // the lock just late (the real wait, then 10 s more)?
+        const lockStep = async (tabID, want, label) => {
+            const d = { label, want };
+            const t0 = Date.now();
+            let menuMs = 0;
+            await withTabMenu(tabID, async (items) => {
+                menuMs = Date.now() - t0;
+                const mi = entryIn(items);
+                d.items = listOf(items);
+                d.entry = mi ? mi.getAttribute("label") : null;
+                d.selectedAtMenu = ZT.selectedID;
+                if (mi) mi.dispatchEvent(new win.Event("command"));
+            });
+            d.menuMs = menuMs;
+            d.lockAfterCommand = wv._wvTabDockLib(win);
+            const t1c = Date.now();
+            await sleep(800);
+            d.sleptMs = Date.now() - t1c;
+            const v = wv._wvTabDockLib(win);
+            d.lockAtCheck = v;
+            d.selectedAtCheck = ZT.selectedID;
+            if (v !== want) {
+                const late = await wvT.waitFor(() => (wv._wvTabDockLib(win) === want ? true : null), 10000, 50);
+                d.lateMs = late ? Date.now() - t1c : null;
+            }
+            d.nativeMenus = Services.prefs.getBoolPref("widget.macos.native-context-menus", false);
+            d.env = wvT.diagEnv(win);
+            wvT.diag("splitdock:lock", d);
+            return { v, entry: d.entry };
+        };
+        const s1 = await lockStep(t1.id, t1.id, "lock t1 from its menu");
+        assert.ok(s1.entry, "fixture: t1's menu has the entry");
+        assert.strictEqual(s1.v, t1.id, "the other tab locked");
         assert.strictEqual(ZT.selectedID, t2.id, "the tab you are on stays selected");
         assert.strictEqual(frameState(t1.id, t2.id), "split", "the locked tab on the left, the tab you are on on the right");
-        await withTabMenu(L.id, async (items) => {
-            const mi = entryIn(items);
-            assert.ok(mi && mi.getAttribute("label") === LABEL, "another tab's entry: Lock Tab");
-            mi.dispatchEvent(new win.Event("command"));
-        });
-        await sleep(800);
-        assert.strictEqual(wv._wvTabDockLib(win), L.id, "the lock moved to the library tab");
+        const s2 = await lockStep(L.id, L.id, "lock the library tab from its menu");
+        assert.ok(s2.entry === LABEL, "another tab's entry: Lock Tab");
+        assert.strictEqual(s2.v, L.id, "the lock moved to the library tab");
         assert.strictEqual(ZT.selectedID, t2.id, "still selected");
         assert.strictEqual(frameState(L.id, t2.id), "split", "the library on the left now");
         assert.notOk(shown(t1.id), "the tab locked before is an ordinary tab again");

@@ -1,97 +1,85 @@
 name: Test
 
-# Run the Mocha/Chai suite against a real Zotero on every PR and on every
-# push to main: the three desktop systems, each on Zotero's stable and beta
-# channels (MJT 2026-11-03, "Ok to cover all 3 OSs and both stable and beta
-# in each OS"). Each job downloads its Zotero from zotero.org's channel link
-# and points the scaffold's runner at it (ZOTERO_PLUGIN_ZOTERO_BIN_PATH).
-# On Ubuntu the scaffold's own headless setup still runs (xvfb and the
-# Ubuntu 24 libraries; it skips its beta download when a binary is given);
-# on Windows and macOS it is Linux-only and is skipped
-# (ZOTERO_SETUP_COMPLETE). The twelve jobs run side by side: the wait is
-# the slowest one's.
+# DIAGNOSTIC VERSION -- branch ci-macdiag ONLY (2026-11-23), never merge.
+#
+# Why do some cases fail only on GitHub's macOS runner with the Zotero beta
+# (1.2.1 release CI: runs 45194797794, 45200266733, 45213037676), while they
+# pass on Windows, Ubuntu, macOS with Zotero 10 and locally? This version runs
+# ONLY macOS, on a manual dispatch:
+#
+#   gh workflow run test.yml --ref ci-macdiag                     (targeted)
+#   gh workflow run test.yml --ref ci-macdiag -f scope=shards     (full halves)
+#   ... -f awake=true   keeps the display awake (caffeinate) -- the A/B for
+#                       the display-sleep / occlusion hypothesis
+#
+# targeted: the failing specs only (the beta's in two jobs, Zotero 10's two in
+#   one), the 000- helpers staged as always (zotero-plugin.config.ts).
+# shards: the four macOS halves as the failing runs had them (the earlier
+#   specs' leftovers included, which a targeted run cannot reproduce).
+#
+# The specs on this branch write diagnostic records (test/000-helpers.spec.js
+# wvT.diag) to wv-macdiag.jsonl in the uploaded folder (WV_DIAG_DIR); each
+# line also goes to the run's log as "[wv-diag] ...". A step before the tests
+# writes the runner's displays and console session (runner-display.txt), a
+# sampler every 30 s during them (runner-session-samples.txt).
 
 on:
-  # Main only: a release tag sits on a commit this has already passed, and
-  # release.yml checks that run instead of starting another (2026-11-03).
-  # A push that changes only documentation starts no run (a release bump
-  # touches package.json, so the release gate still finds its run).
-  push:
-    branches: [main]
-    paths-ignore: ["docs/**", "**/*.md"]
-  pull_request:
-    branches: [main]
-    paths-ignore: ["docs/**", "**/*.md"]
-  # Weekly, against whatever Zotero release and beta are then: no Test run
-  # happened from 10-26 to 11-03 while Zotero 10.0.7 shipped on 10-29
-  # (the 2026-11-03 study, recommendation 4). Mondays 04:00 UTC.
-  schedule:
-    - cron: "0 4 * * 1"
-  # Manual trigger from the Actions tab — handy when you want to
-  # re-run after a flaky failure without pushing an empty commit.
   workflow_dispatch:
+    inputs:
+      scope:
+        description: "targeted = only the failing specs; shards = the four full macOS halves"
+        type: choice
+        options: [targeted, shards]
+        default: targeted
+      awake:
+        description: "keep the runner's display and system awake during the tests (caffeinate -dimsu)"
+        type: boolean
+        default: false
 
-# Cancel in-flight runs for the same ref when a new commit lands —
-# saves runner minutes on rapid push-push-push iteration.
 concurrency:
   group: test-${{ github.ref }}
   cancel-in-progress: true
 
-# Opt into the Node 24 runtime for actions themselves (not just
-# the project's Node toolchain). Silences the deprecation warning
-# about actions/checkout@v7 and actions/setup-node@v7 running on
-# Node 20, which becomes the forced default on 2026-06-02.
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  plan:
+    name: Plan the macOS rows
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        shell: bash
+        env:
+          SCOPE: ${{ inputs.scope }}
+        run: |
+          # Beta, part A: feed abstract (and the 133075 tripwire), link-preview
+          # tint, count-cell tooltip, note outline. Part B: per-window filter
+          # observer, pinned-section drag, Lock Tab. Zotero 10: the Settings
+          # window width and the 133075 tripwire.
+          A="test/count-popups.spec.js,test/note-outline.spec.js,test/preview-entry-highlight.spec.js,test/upstream-fixes.spec.js"
+          B="test/per-window-state.spec.js,test/pin-anchor.spec.js,test/split-dock.spec.js"
+          R="test/prefs-search-align.spec.js,test/upstream-fixes.spec.js"
+          row() { jq -nc --arg c "$1" --arg t "$2" --arg s "$3" --arg p "$4" --arg e "$5" '{channel: $c, title: $t, shard: $s, part: $p, entries: $e}'; }
+          if [ "$SCOPE" = "shards" ]; then
+            rows="$(row beta 'shard 1/2' 1/2 -1of2 '') $(row beta 'shard 2/2' 2/2 -2of2 '') $(row release 'shard 1/2' 1/2 -1of2 '') $(row release 'shard 2/2' 2/2 -2of2 '')"
+          else
+            rows="$(row beta 'targeted A' '' -A "$A") $(row beta 'targeted B' '' -B "$B") $(row release 'targeted' '' -diag "$R")"
+          fi
+          matrix="$(echo "$rows" | jq -sc '{include: .}')"
+          echo "$matrix"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
   test:
-    name: Mocha + Chai (${{ matrix.label }}, Zotero ${{ matrix.channel }}${{ matrix.shard && format(', {0}', matrix.shard) || '' }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    # A row marked `experimental` reports but does not decide the run (a red
-    # job leaves the run -- and release.yml's gate on it -- green). The
-    # macOS rows were, from 2026-11-03 until their crash was found and fixed
-    # (lib/menubar.ts wvMenubarSafeBefore) and the rest went green, all
-    # twelve jobs (branch ci-macos, 2026-11-09): every system decides now.
-    # Except macOS with the Zotero BETA, experimental again from the 1.2.1
-    # release (2026-11-23, MJT "Publish", option 1): on GitHub's macOS runner
-    # with Zotero 11.0-beta.5 a different timing-heavy UI test failed on
-    # almost every attempt (count-cell tooltip, note outline, per-window
-    # filter observer, pinned-section drag, Lock Tab, the link-preview tint
-    # twice in a row), each passing on Windows, Ubuntu, macOS with Zotero 10
-    # and locally. Make them decide again once that runner is reliable
-    # (work/TODO.md).
-    continue-on-error: ${{ matrix.experimental == true }}
+    needs: plan
+    name: macOS diag (Zotero ${{ matrix.channel }}, ${{ matrix.title }})
+    runs-on: macos-latest
+    timeout-minutes: 40
     strategy:
-      # One red job never cancels the others: each system and channel
-      # reports on its own.
       fail-fast: false
-      # Shards (WV_TEST_SHARD, zotero-plugin.config.ts: contiguous,
-      # size-balanced slices of the spec files, the 000- helpers in each;
-      # the 2026-11-03 study, recommendation 7): two per job, for time
-      # (MJT 2026-11-04, "2 shards"). Twelve jobs, four on macOS (GitHub's
-      # free plan runs 20 at once, 5 of them macOS). The memory that once
-      # argued for more -- a run's Zotero at 5-11 GB, a macOS half killed
-      # at 6 GB on the 7 GB runner -- was the scaffold's Browser Toolbox
-      # attached to the runner's Zotero (zotero-plugin.config.ts,
-      # server.devtools), not Zotero's reader: without it the whole suite
-      # peaks near 2 GB. `part` names the shard where a "/" cannot go (the
-      # logs' artifact).
-      matrix:
-        include:
-          - { os: ubuntu-latest, label: Ubuntu, channel: release, experimental: false, shard: "1/2", part: "-1of2" }
-          - { os: ubuntu-latest, label: Ubuntu, channel: release, experimental: false, shard: "2/2", part: "-2of2" }
-          - { os: ubuntu-latest, label: Ubuntu, channel: beta, experimental: false, shard: "1/2", part: "-1of2" }
-          - { os: ubuntu-latest, label: Ubuntu, channel: beta, experimental: false, shard: "2/2", part: "-2of2" }
-          - { os: windows-latest, label: Windows, channel: release, experimental: false, shard: "1/2", part: "-1of2" }
-          - { os: windows-latest, label: Windows, channel: release, experimental: false, shard: "2/2", part: "-2of2" }
-          - { os: windows-latest, label: Windows, channel: beta, experimental: false, shard: "1/2", part: "-1of2" }
-          - { os: windows-latest, label: Windows, channel: beta, experimental: false, shard: "2/2", part: "-2of2" }
-          - { os: macos-latest, label: macOS, channel: release, experimental: false, shard: "1/2", part: "-1of2" }
-          - { os: macos-latest, label: macOS, channel: release, experimental: false, shard: "2/2", part: "-2of2" }
-          - { os: macos-latest, label: macOS, channel: beta, experimental: true, shard: "1/2", part: "-1of2" }
-          - { os: macos-latest, label: macOS, channel: beta, experimental: true, shard: "2/2", part: "-2of2" }
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     steps:
       - uses: actions/checkout@v7
@@ -102,8 +90,6 @@ jobs:
           node-version: lts/*
           cache: npm
 
-      # node_modules kept per system, Node version and lockfile, as Zotero
-      # caches its own (its ci.yml): `npm ci` took ~3 min of each Windows job.
       - name: Cache node_modules
         id: nm
         uses: actions/cache@v6
@@ -111,54 +97,14 @@ jobs:
           path: node_modules
           key: node-modules-${{ runner.os }}-${{ steps.node.outputs.node-version }}-${{ hashFiles('package-lock.json') }}
 
-      # `npm ci` honours the lockfile exactly — fails fast if the
-      # lockfile and package.json have drifted, which is what we
-      # want for reproducible CI runs.
       - name: Install dependencies
         if: steps.nm.outputs.cache-hit != 'true'
         run: npm ci
 
-      # No download but Zotero's: the scaffold's update check off, the
-      # pinned chai.js in place (ci/prepare.mjs, ci/README.md).
       - name: Prepare (no outside downloads)
         run: node ci/prepare.mjs
 
-      # Platform-independent: once, on one job.
-      - name: Type-check (tsc --noEmit)
-        if: matrix.os == 'ubuntu-latest' && matrix.channel == 'beta'
-        run: npm run typecheck
-
-      - name: Run unit tests (Node tier)
-        if: matrix.os == 'ubuntu-latest' && matrix.channel == 'beta'
-        run: npm run test:unit
-
-      - name: Install Zotero (Ubuntu)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          dir="$RUNNER_TEMP/zotero"
-          mkdir -p "$dir"
-          curl -fsSL -o "$RUNNER_TEMP/zotero.tar.xz" "https://www.zotero.org/download/client/dl?channel=${{ matrix.channel }}&platform=linux-x86_64"
-          tar -xf "$RUNNER_TEMP/zotero.tar.xz" -C "$dir"
-          exe="$(find "$dir" -maxdepth 2 -type f -name zotero | head -n 1)"
-          test -n "$exe" || { echo "zotero not found in the archive"; exit 1; }
-          echo "ZOTERO_PLUGIN_ZOTERO_BIN_PATH=$exe" >> "$GITHUB_ENV"
-
-      - name: Install Zotero (Windows, portable ZIP)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $zip = Join-Path $env:RUNNER_TEMP "zotero.zip"
-          $dir = Join-Path $env:RUNNER_TEMP "zotero"
-          Invoke-WebRequest -Uri "https://www.zotero.org/download/client/dl?channel=${{ matrix.channel }}&platform=win-x64-zip" -OutFile $zip
-          Expand-Archive -Path $zip -DestinationPath $dir
-          $exe = Get-ChildItem -Path $dir -Recurse -Filter zotero.exe | Select-Object -First 1
-          if (-not $exe) { throw "zotero.exe not found in the ZIP" }
-          "ZOTERO_PLUGIN_ZOTERO_BIN_PATH=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "ZOTERO_SETUP_COMPLETE=1" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
       - name: Install Zotero (macOS, disk image)
-        if: runner.os == 'macOS'
         shell: bash
         run: |
           dmg="$RUNNER_TEMP/zotero.dmg"
@@ -172,22 +118,53 @@ jobs:
           test -x "$exe" || { echo "zotero not found in the disk image"; exit 1; }
           echo "ZOTERO_PLUGIN_ZOTERO_BIN_PATH=$exe" >> "$GITHUB_ENV"
           echo "ZOTERO_SETUP_COMPLETE=1" >> "$GITHUB_ENV"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$RUNNER_TEMP/Zotero.app/Contents/Info.plist" || true
 
-      # A job passes only when the suite says so at its end. The scaffold
-      # exits 0 whenever Zotero closes, unless a test had already failed
-      # (scaffold-src-*.mjs ~4399-4406): in the first six-job run
-      # (41649386843) three jobs were "green" with no summary line -- Windows
-      # beta stopped after 101 tests, both macOS jobs after ~1300 (the
-      # 2026-11-03 study, work/zotero-release-ci-study-2026-11-03.md; Zotero's
-      # own runner passes only on a `success` file written at the end,
-      # test/runtests.sh). The summary line is required, without failures.
+      # The runner's screens (resolution, scale) and console session (a locked
+      # or asleep display occludes every window: no animation frames, clamped
+      # timers). The Zotero main window's own size at the start of the run is
+      # the "run-start" record (printed after the tests, step below).
+      - name: Runner display and session (diagnostic)
+        shell: bash
+        run: |
+          set +e
+          out="$RUNNER_TEMP/wv-artifacts"
+          mkdir -p "$out"
+          {
+            echo "== sw_vers"; sw_vers
+            echo "== hardware"; uname -m; sysctl -n machdep.cpu.brand_string hw.ncpu hw.memsize
+            echo "== system_profiler SPDisplaysDataType"; system_profiler SPDisplaysDataType
+            echo "== NSScreen (points, visible frame, backing scale)"
+            osascript -l JavaScript -e 'ObjC.import("AppKit"); var s = $.NSScreen.screens, o = []; for (var i = 0; i < s.count; i++) { var c = s.objectAtIndex(i), f = c.frame, v = c.visibleFrame; o.push("screen " + i + ": " + f.size.width + "x" + f.size.height + " at " + f.origin.x + "," + f.origin.y + ", visible " + v.size.width + "x" + v.size.height + ", backingScaleFactor " + c.backingScaleFactor); } o.join("\n")'
+            echo "== console session"; ioreg -n Root -d1 | grep -o -E '"(CGSSessionScreenIsLocked|kCGSSessionOnConsoleKey|kCGSessionLoginDoneKey)"=[^,}]*'
+            echo "== power"; pmset -g; pmset -g assertions
+            echo "== screensaver"; defaults -currentHost read com.apple.screensaver 2>&1; defaults read com.apple.screensaver 2>&1
+          } 2>&1 | tee "$out/runner-display.txt"
+
       - name: Run tests
         shell: bash
         env:
           WV_TEST_SHARD: ${{ matrix.shard }}
           WV_TEST_ENTRIES: ${{ matrix.entries }}
-          WV_TEST_PREFS: ${{ matrix.prefs }}
+          WV_DIAG_DIR: ${{ runner.temp }}/wv-artifacts
+          WV_AWAKE: ${{ inputs.awake }}
         run: |
+          out="$WV_DIAG_DIR"
+          mkdir -p "$out"
+          if [ "$WV_AWAKE" = "true" ]; then caffeinate -dimsu & echo "caffeinate -dimsu (pid $!)"; fi
+          # The console session and the power assertions every 30 s.
+          ( set +e +o pipefail
+            while :; do
+              {
+                printf '%s ' "$(date -u +%H:%M:%S)"
+                ioreg -n Root -d1 | grep -o -E '"(CGSSessionScreenIsLocked|kCGSSessionOnConsoleKey)"=[A-Za-z]+' | tr '\n' ' '
+                pmset -g assertions | grep -E '^ *(PreventUserIdleDisplaySleep|PreventUserIdleSystemSleep|UserIsActive) ' | tr -s ' ' | tr '\n' ' '
+                echo
+              } >> "$out/runner-session-samples.txt" 2>&1
+              sleep 30
+            done ) &
+          sampler=$!
+          trap 'kill "$sampler" 2>/dev/null || true' EXIT
           set -o pipefail
           npm test 2>&1 | tee "$RUNNER_TEMP/wv-test.log"
           summary="$(grep -a -o 'Test run completed - [0-9]* passed[^[:cntrl:]]*' "$RUNNER_TEMP/wv-test.log" | tail -n 1 || true)"
@@ -198,11 +175,33 @@ jobs:
           fi
           case "$summary" in *failed*) echo "::error::$summary"; exit 1;; esac
 
-      # The run's log and the suite's quit trace (test/000-helpers.spec.js
-      # writes every quit request with its JS stack, and every window close,
-      # to the OS temp folder): kept with each job, red or green, to see why
-      # Zotero closed mid-suite (both macOS jobs at the reader-window wiring
-      # spec, 2026-11-03).
+      # The records in one JSON array (wv-macdiag.json), and the run's start
+      # (Zotero's version, the main window and screen, frames and timers).
+      - name: Diagnostics (wv-macdiag)
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          out="$RUNNER_TEMP/wv-artifacts"
+          mkdir -p "$out"
+          f="$out/wv-macdiag.jsonl"
+          if [ ! -f "$f" ]; then
+            for d in "${TMPDIR:-}" /tmp; do
+              if [ -n "$d" ] && [ -f "$d/wv-macdiag.jsonl" ]; then cp "$d/wv-macdiag.jsonl" "$f"; break; fi
+            done
+          fi
+          if [ -f "$f" ]; then
+            jq -s . "$f" > "$out/wv-macdiag.json"
+            echo "== run start: Zotero, main window, screen, frames and timers"
+            jq -c 'select(.tag == "run-start") | .data | {version, os, abi, window: (.env | {outer, inner, pos, screen, dpr, windowState, hidden, isActiveWin, activeWin}), probe}' "$f"
+            echo "== records by tag"
+            jq -r '.tag' "$f" | sort | uniq -c
+          else
+            echo "no wv-macdiag.jsonl"
+          fi
+          echo "== session samples"
+          cat "$out/runner-session-samples.txt" 2>/dev/null | tail -n 80
+
       - name: Collect the run's logs
         if: always()
         shell: bash
@@ -213,25 +212,14 @@ jobs:
           for d in "${TMPDIR:-}" "${TEMP:-}" /tmp; do
             if [ -n "$d" ] && [ -f "$d/wv-test-quit-trace.txt" ]; then cp "$d/wv-test-quit-trace.txt" "$out/"; break; fi
           done
-          # A crash leaves no quit request in the trace (both macOS jobs,
-          # 2026-11-03, at a reader window's close): keep what the system
-          # and Gecko wrote about it -- macOS's crash reports, the test
-          # profile's minidumps.
-          # Every report from the run, not only Zotero's: a process the system
-          # killed for memory leaves a JetsamEvent report instead.
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            for d in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
-              find "$d" -maxdepth 2 -type f -mmin -45 -exec cp {} "$out/" \; 2>/dev/null || true
-              # The system folder may be root's: list it (and copy) with sudo.
-              { echo "== $d"; sudo ls -la "$d" 2>&1 | tail -n 40; } >> "$out/diagnostic-reports-listing.txt"
-              sudo find "$d" -maxdepth 2 -type f -mmin -45 -exec cp {} "$out/" \; 2>/dev/null || true
-            done
-            sudo chmod -R a+r "$out" 2>/dev/null || true
-            # The unified log: how Zotero's process ended (a signal, the
-            # kernel, a watchdog) when nothing else says so (2026-11-09).
-            log show --last 40m --style compact --predicate 'process == "zotero"' 2>&1 | tail -n 3000 > "$out/unified-zotero.log" || true
-            log show --last 40m --style compact --predicate 'eventMessage CONTAINS[c] "zotero" AND process != "zotero"' 2>&1 | tail -n 1500 > "$out/unified-about-zotero.log" || true
-          fi
+          for d in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
+            find "$d" -maxdepth 2 -type f -mmin -45 -exec cp {} "$out/" \; 2>/dev/null || true
+            { echo "== $d"; sudo ls -la "$d" 2>&1 | tail -n 40; } >> "$out/diagnostic-reports-listing.txt"
+            sudo find "$d" -maxdepth 2 -type f -mmin -45 -exec cp {} "$out/" \; 2>/dev/null || true
+          done
+          sudo chmod -R a+r "$out" 2>/dev/null || true
+          log show --last 40m --style compact --predicate 'process == "zotero"' 2>&1 | tail -n 3000 > "$out/unified-zotero.log" || true
+          log show --last 40m --style compact --predicate 'eventMessage CONTAINS[c] "zotero" AND process != "zotero"' 2>&1 | tail -n 1500 > "$out/unified-about-zotero.log" || true
           if [ -d .scaffold/test/profile/minidumps ]; then cp -R .scaffold/test/profile/minidumps "$out/" 2>/dev/null || true; fi
           ls -la "$out"
 
@@ -239,7 +227,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: test-logs-${{ matrix.label }}-${{ matrix.channel }}${{ matrix.part }}
+          name: macdiag-${{ matrix.channel }}${{ matrix.part }}
           path: ${{ runner.temp }}/wv-artifacts
           if-no-files-found: warn
           retention-days: 14

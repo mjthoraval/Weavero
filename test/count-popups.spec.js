@@ -217,14 +217,33 @@ describe("Weavero — clickable column counts open a popup of what was counted",
         if (!wv._getEnableTagsCountAuto()) this.skip();
         const cell = tagsCell("width:6px;");
         if (!cell) this.skip();
+        // CI DIAGNOSTICS (ci-macdiag): "not before the rest: expected true to be
+        // false" once on macOS + beta. A timing flake (the runner's 250 ms sleep
+        // ran past the 500 ms dwell: a background window's timers are clamped) or
+        // a tip shown early by another path? The real times, and when the show ran.
+        const shows = [];
+        const ownShow = Object.prototype.hasOwnProperty.call(wv, "_wvCountTipShow");
+        const realShow = wv._wvCountTipShow;
+        let tMove = 0;
+        wv._wvCountTipShow = function () { const r = realShow.apply(this, arguments); shows.push({ ms: Math.round(performance.now() - tMove), shown: r }); return r; };
         try {
             const [x, y] = pointOn(cell);
             assert.strictEqual(doc.elementFromPoint(x, y).closest(".wv-count-cell"), cell, "the point is on the cell");
+            const shownBeforeMove = tipShown();
+            tMove = performance.now();
             move(x, y);
+            const shownAtMove = tipShown();
             await wvT.sleep(250);
-            assert.isFalse(tipShown(), "not before the rest");
+            const sleptMs = Math.round(performance.now() - tMove);
+            const shownAtCheck = tipShown();
+            const showsAtCheck = shows.slice();
             await wvT.sleep(450);
-            assert.isTrue(tipShown(), "after 500 ms");
+            const secondMs = Math.round(performance.now() - tMove);
+            const shownAfter = tipShown();
+            wvT.diag("counttip:rest", { shownBeforeMove, shownAtMove, sleptMs, shownAtCheck, showsAtCheck, secondMs, shownAfter, shows: shows.slice(),
+                env: wvT.diagEnv(win), probe: await wvT.diagProbe(win) });
+            assert.isFalse(shownAtCheck, "not before the rest");
+            assert.isTrue(shownAfter, "after 500 ms");
             const t = doc.getElementById("wv-count-tip");
             assert.deepEqual([...t.children].map((s) => s.textContent), ["3", "|", "1"], "the cell's numbers, bar included");
             const manual = t.querySelector(".wv-tags-count-manual");
@@ -237,7 +256,10 @@ describe("Weavero — clickable column counts open a popup of what was counted",
             cell.dispatchEvent(new win.MouseEvent("mouseover", { bubbles: true }));
             assert.isNull(cell.getAttribute("title"), "no title: Gecko's one-shot tooltip never doubles it");
         }
-        finally { wv._wvCountTipHide(win); cell.remove(); }
+        finally {
+            if (ownShow) wv._wvCountTipShow = realShow; else delete wv._wvCountTipShow;
+            wv._wvCountTipHide(win); cell.remove();
+        }
     });
 
     it("a wobble keeps the tooltip, a move hides it, and the next rest shows it again", async function () {

@@ -375,11 +375,43 @@ describe("Weavero — note outline", function () {
     it("a note without headings keeps its toggle and its panel says so; the item pane starts with it folded away", async function () {
         win.Zotero_Tabs.select("zotero-pane");
         await ZP.selectItem(bare.id);
+        const tSel = Date.now();
         const b = await wvT.waitFor(() => {
             try { wv._processNoteEditors(); } catch (e) {}
             const e = editorFor(bare, (ne) => !ne.classList.contains("note-tab"));
             return e && e.d.querySelector(".wv-note-linkified") ? e : null;
         }, 30000, 400);
+        // CI DIAGNOSTICS (ci-macdiag): "item-pane editor on the bare note: expected
+        // null" once on macOS + beta. Is the item pane's editor missing (Zotero's
+        // note editor never loaded the note: selection, item pane mode, iframe
+        // state), there without Weavero's linkify pass, or just slow (30 s more)?
+        const noteDiag = { okMs: b ? Date.now() - tSel : null, lateMs: null };
+        const editors = () => Array.from(doc.querySelectorAll("note-editor")).map((ne) => {
+            const o = {};
+            try {
+                const f = ne.querySelector("iframe"), d = f && f.contentDocument;
+                const r = ne.getBoundingClientRect();
+                Object.assign(o, { item: ne.item && ne.item.id, noteTab: ne.classList.contains("note-tab"), connected: ne.isConnected, size: [Math.round(r.width), Math.round(r.height)],
+                    iframe: !!f, ready: d ? d.readyState : null, pm: !!(d && d.querySelector(".ProseMirror")), linkified: !!(d && d.querySelector(".wv-note-linkified")),
+                    text: d && d.querySelector(".ProseMirror") ? String(d.querySelector(".ProseMirror").textContent).slice(0, 60) : null });
+            } catch (e) { o.err = String(e); }
+            return o;
+        });
+        if (!b) {
+            noteDiag.at30s = editors();
+            const late = await wvT.waitFor(() => {
+                try { wv._processNoteEditors(); } catch (e) {}
+                const e = editorFor(bare, (ne) => !ne.classList.contains("note-tab"));
+                return e && e.d.querySelector(".wv-note-linkified") ? e : null;
+            }, 30000, 400);
+            noteDiag.lateMs = late ? Date.now() - tSel : null;
+        }
+        try {
+            const ip = /** @type {any} */ (doc.getElementById("zotero-item-pane"));
+            Object.assign(noteDiag, { bare: bare.id, note: note.id, selected: ZP.getSelectedItems().map((i) => i.id), tab: win.Zotero_Tabs.selectedID,
+                itemPaneMode: ip ? ip.mode : null, editors: editors(), env: wvT.diagEnv(win), probe: await wvT.diagProbe(win) });
+        } catch (e) { noteDiag.err = String(e); }
+        wvT.diag("noteoutline:bare", noteDiag);
         expect(b, "item-pane editor on the bare note").to.be.ok;
         // The sweep re-renders a note loaded into the same iframe.
         const empty = await wvT.waitFor(() => {

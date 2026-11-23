@@ -7,6 +7,7 @@
 describe("Weavero — the Settings search box stays aligned with the content column", function () {
     this.timeout(60000);
     let wv, pw;
+    let resizeDiag = null;   // CI DIAGNOSTICS (ci-macdiag)
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     const rightOf = (el) => el.getBoundingClientRect().right;
     const box = () => pw.document.getElementById("prefs-search");
@@ -32,14 +33,31 @@ describe("Weavero — the Settings search box stays aligned with the content col
         // The window starts on about:blank; wait for the real document and a loaded pane.
         assert.isTrue(await until(() => { try { return !!pw.document.getElementById("prefs-search"); } catch (e) { return false; } }, 10000), "Settings window loaded");
         assert.isTrue(await until(() => contentRight() > 0, 10000), "a pane rendered");
+        // CI DIAGNOSTICS (ci-macdiag): "expected 1024 to be above 1200" once on
+        // macOS + Zotero 10. The sizes before the resize, at once, and 500 ms on.
+        const sz = () => { const o = {}; try { Object.assign(o, { inner: [pw.innerWidth, pw.innerHeight], outer: [pw.outerWidth, pw.outerHeight], state: pw.windowState,
+            pos: [pw.screenX, pw.screenY], avail: [pw.screen.availWidth, pw.screen.availHeight], screen: [pw.screen.width, pw.screen.height], dpr: pw.devicePixelRatio }); } catch (e) { o.err = String(e); } return o; };
+        const sz0 = sz();
+        const tResize = Date.now();
         pw.resizeTo(1500, 700);
+        const sz1 = sz();
         await sleep(500);
+        resizeDiag = { before: sz0, atOnce: sz1, after500: sz(), sleptMs: Date.now() - tResize, tResize };
     });
 
     after(function () { try { pw.close(); } catch (e) {} });
 
     it("the style is injected on open and the box's right edge meets the content's", async function () {
-        assert.isAbove(pw.innerWidth, 1200, "window wide enough for the cap to matter");
+        const w0 = pw.innerWidth;
+        const d = Object.assign({}, resizeDiag, { atCase: w0, lateMs: null });
+        if (!(w0 > 1200)) {
+            // Late, or never? (the assertion still reads the first value)
+            const late = await until(() => pw.innerWidth > 1200, 5000);
+            d.lateMs = late && resizeDiag ? Date.now() - resizeDiag.tResize : null;
+            d.atEnd = pw.innerWidth;
+        }
+        wvT.diag("prefsalign:resize", Object.assign(d, { envMain: wvT.diagEnv(), envPrefs: wvT.diagEnv(pw) }));
+        assert.isAbove(w0, 1200, "window wide enough for the cap to matter");
         assert.isTrue(await until(() => !!pw.document.getElementById("wv-prefs-search-align"), 3000), "style present");
         assert.closeTo(rightOf(box()), contentRight(), 1.5, "search box right edge == content right edge " + geo());
     });

@@ -605,6 +605,145 @@
      *  reader-window wiring spec's reloads, 2026-11-03 to 11-09). */
     wvT.trace = (line) => traceWrite(String(line));
 
+    // ---- CI DIAGNOSTICS -- branch ci-macdiag ONLY, temporary, never merge --
+    // Why some cases fail only on GitHub's macOS runner with the Zotero beta
+    // (1.2.1 release CI, 2026-11-23). One JSON object per line in
+    // <WV_DIAG_DIR or the OS temp folder>/wv-macdiag.jsonl (the workflow points
+    // WV_DIAG_DIR at the folder it uploads), appended synchronously so a crash
+    // keeps what came before; each line also goes to the run's log
+    // ("[wv-diag] ..."). Non-ASCII is escaped: the stream writes bytes.
+    let diagPath = null;
+    try {
+        let dir = "";
+        try { if (Services.env.exists("WV_DIAG_DIR")) dir = Services.env.get("WV_DIAG_DIR"); } catch (e) {}
+        diagPath = PathUtils.join(dir || PathUtils.tempDir, "wv-macdiag.jsonl");
+    } catch (e) {}
+    const diagAscii = (s) => s.replace(/[\u007f-￿]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+    /** The test the next record belongs to (root beforeEach below). */
+    wvT.diagTitle = "";
+    wvT.diagRetry = 0;
+    /** One diagnostic record: `tag` names it, `data` is anything JSON can hold. */
+    wvT.diag = (tag, data) => {
+        let line;
+        try {
+            line = JSON.stringify({ at: new Date().toISOString(), test: wvT.diagTitle, retry: wvT.diagRetry, tag, data });
+        } catch (e) {
+            line = JSON.stringify({ at: new Date().toISOString(), test: wvT.diagTitle, retry: wvT.diagRetry, tag, data: "unserializable: " + e });
+        }
+        line = diagAscii(line);
+        try {
+            if (diagPath) {
+                const f = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
+                f.initWithPath(diagPath);
+                const os = Components.classes["@mozilla.org/network/file-output-stream;1"].createInstance(Components.interfaces.nsIFileOutputStream);
+                os.init(f, 0x02 | 0x08 | 0x10, 0o644, 0);   // write | create | append
+                const s = line + "\n";
+                os.write(s, s.length);
+                os.close();
+            }
+        } catch (e) {}
+        try { Zotero.debug("[wv-diag] " + line.slice(0, 4000)); } catch (e) {}
+        try { if (typeof globalThis.debug === "function") globalThis.debug("[wv-diag] " + line.slice(0, 4000)); } catch (e) {}
+    };
+    /** `ms` on an XPCOM timer: not a window's, so never throttled with one. */
+    wvT.diagDelay = (ms) => new Promise((resolve) => {
+        const t = Components.classes["@mozilla.org/timer;1"].createInstance(Components.interfaces.nsITimer);
+        t.initWithCallback({ notify: () => resolve(t) }, ms, Components.interfaces.nsITimer.TYPE_ONE_SHOT);
+    });
+    /** `p`'s outcome within `ms`: { state: "ok" | "err" | "pending", ms, value | error }. */
+    wvT.diagRace = (p, ms) => {
+        const t0 = Date.now();
+        return Promise.race([
+            Promise.resolve(p).then((value) => ({ state: "ok", ms: Date.now() - t0, value }), (e) => ({ state: "err", ms: Date.now() - t0, error: String(e) })),
+            wvT.diagDelay(ms).then(() => ({ state: "pending", ms })),
+        ]);
+    };
+    /** How long `w`'s next animation frame took to come, in ms; null if none
+     *  came within `ms` (a hidden or occluded document gets none). */
+    wvT.diagRaf = async (w, ms = 1500) => {
+        if (!w) return "no window";
+        const t0 = Date.now();
+        let r;
+        // Through the Xray (unwaived) for a content window: the callback stays chrome's.
+        try { const x = Components.utils.unwaiveXrays(w); r = new Promise((resolve) => x.requestAnimationFrame(() => resolve(Date.now() - t0))); } catch (e) { return "ERR " + e; }
+        const got = await wvT.diagRace(r, ms);
+        return got.state === "ok" ? got.value : null;
+    };
+    /** How long `w`'s setTimeout(fn, ms) really took: a background window's
+     *  timers are clamped (Firefox: 1 s). */
+    wvT.diagTimer = async (w, ms = 50) => {
+        if (!w) return "no window";
+        const t0 = Date.now();
+        let r;
+        try { const x = Components.utils.unwaiveXrays(w); r = new Promise((resolve) => x.setTimeout(() => resolve(Date.now() - t0), ms)); } catch (e) { return "ERR " + e; }
+        const got = await wvT.diagRace(r, ms + 3000);
+        return got.state === "ok" ? got.value : null;
+    };
+    const winType = (x) => { try { return (x.document.documentElement.getAttribute("windowtype") || "") + " " + String(x.location && x.location.href).slice(0, 70); } catch (e) { return "?"; } };
+    /** The window facts every case records: visibility, focus, size, screen. */
+    wvT.diagEnv = (w) => {
+        const o = {};
+        const safe = (k, f) => { try { o[k] = f(); } catch (e) { o[k] = "ERR " + e; } };
+        const x = /** @type {any} */ (w || Zotero.getMainWindow());
+        safe("runnerHidden", () => globalThis.document.hidden);
+        safe("runnerVis", () => globalThis.document.visibilityState);
+        safe("hidden", () => x.document.hidden);
+        safe("vis", () => x.document.visibilityState);
+        safe("bcActive", () => x.browsingContext && x.browsingContext.isActive);
+        safe("isActiveWin", () => Services.focus.activeWindow === x);
+        safe("activeWin", () => { const a = Services.focus.activeWindow; return a ? winType(a) : null; });
+        safe("windowState", () => x.windowState);
+        safe("outer", () => [x.outerWidth, x.outerHeight]);
+        safe("inner", () => [x.innerWidth, x.innerHeight]);
+        safe("pos", () => [x.screenX, x.screenY]);
+        safe("screen", () => ({ w: x.screen.width, h: x.screen.height, availL: x.screen.availLeft, availT: x.screen.availTop, availW: x.screen.availWidth, availH: x.screen.availHeight }));
+        safe("dpr", () => x.devicePixelRatio);
+        safe("windows", () => Array.from(Services.wm.getEnumerator(null)).map((y) => {
+            const z = /** @type {any} */ (y);
+            let s = winType(z);
+            try { s += " " + z.outerWidth + "x" + z.outerHeight + "@" + z.screenX + "," + z.screenY + " state " + z.windowState + (z.document.hidden ? " HIDDEN" : ""); } catch (e) {}
+            return s;
+        }));
+        safe("zOrder", () => Array.from(/** @type {any} */ (Services.wm).getZOrderDOMWindowEnumerator(null, true)).map(winType));
+        return o;
+    };
+    /** Animation frames and timers in the main window and the runner's. */
+    wvT.diagProbe = async (w) => {
+        const x = w || Zotero.getMainWindow();
+        const [rafMain, rafRunner, timer50Main, timer50Runner] = await Promise.all([
+            wvT.diagRaf(x), wvT.diagRaf(globalThis.window), wvT.diagTimer(x, 50), wvT.diagTimer(globalThis.window, 50)]);
+        return { rafMain, rafRunner, timer50Main, timer50Runner };
+    };
+    const prefVal = (name) => {
+        try {
+            const t = Services.prefs.getPrefType(name);
+            if (t === Services.prefs.PREF_BOOL) return Services.prefs.getBoolPref(name);
+            if (t === Services.prefs.PREF_INT) return Services.prefs.getIntPref(name);
+            if (t === Services.prefs.PREF_STRING) return Services.prefs.getStringPref(name);
+            return "(unset)";
+        } catch (e) { return "ERR " + e; }
+    };
+    beforeEach(function () {
+        const t = /** @type {any} */ (this.currentTest);
+        try { wvT.diagTitle = t ? t.fullTitle() : ""; } catch (e) {}
+        try { wvT.diagRetry = t && typeof t.currentRetry === "function" ? t.currentRetry() : 0; } catch (e) {}
+    });
+    // The visibility timeline: a record whenever the main window's or the
+    // runner's visibility, the active window or the main-window count changed
+    // during a test (the record carries that test's title).
+    let visLast = "";
+    afterEach(function () {
+        try {
+            const w = /** @type {any} */ (Zotero.getMainWindow());
+            const a = Services.focus.activeWindow;
+            const v = { mainHidden: w ? w.document.hidden : null, runnerHidden: globalThis.document.hidden,
+                active: a ? winType(a) : null, mainWins: Zotero.getMainWindows().length, state: w ? w.windowState : null,
+                size: w ? [w.outerWidth, w.outerHeight] : null };
+            const k = JSON.stringify(v);
+            if (k !== visLast) { visLast = k; wvT.diag("visibility", v); }
+        } catch (e) {}
+    });
+
     before(async function () {
         // Zotero's OWN readiness, beyond the plugin's: on a fresh profile the
         // bundled files (translators, styles) install right after startup
@@ -639,6 +778,23 @@
         try { await Zotero.DB.executeTransaction(async () => {}); } catch (e) {}
         // The main window as wired, before any spec uses it.
         try { wvT.mainAtStart = wvT.wiringSnapshot(Zotero.getMainWindow()); } catch (e) {}
+        // CI DIAGNOSTICS (ci-macdiag): the run's Zotero, its main window and
+        // screen at the start, frames and timers, the prefs that throttle them.
+        try {
+            const w = Zotero.getMainWindow();
+            const app = /** @type {any} */ (Services.appinfo);
+            const prefs = {};
+            for (const n of ["widget.macos.native-context-menus", "dom.min_background_timeout_value", "layout.throttled_frame_rate",
+                "widget.windows.window_occlusion_tracking.enabled", "dom.timeout.enable_budget_timer_throttling"]) prefs[n] = prefVal(n);
+            try { for (const n of Services.prefs.getChildList("widget.macos")) prefs[n] = prefVal(n); } catch (e) {}
+            wvT.diag("run-start", { version: Zotero.version, build: app.appBuildID, platform: app.platformVersion, os: app.OS, abi: app.XPCOMABI,
+                ci: Services.env.exists("CI"), env: wvT.diagEnv(w), probe: await wvT.diagProbe(w), prefs });
+        } catch (e) { wvT.diag("run-start", "ERR " + e); }
+    });
+
+    // CI DIAGNOSTICS (ci-macdiag): the same at the end of the run.
+    after(async function () {
+        try { const w = Zotero.getMainWindow(); wvT.diag("run-end", { env: wvT.diagEnv(w), probe: await wvT.diagProbe(w) }); } catch (e) {}
     });
 
     after(async function () {

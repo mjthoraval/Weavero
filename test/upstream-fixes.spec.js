@@ -163,17 +163,27 @@ describe("Weavero — upstream fixes", function () {
             try { win.document.activeElement && win.document.activeElement.blur(); } catch (er) {}
             await sleep(600);
             place(); await sleep(500);
+            const tPlaced = Date.now();
             win.focus();
-            await wvT.waitFor(() => Services.focus.activeWindow === win || null, 3000, 50);
+            const focusOk = await wvT.waitFor(() => Services.focus.activeWindow === win || null, 3000, 50);
+            const focusMs = Date.now() - tPlaced;
             field(source).focus(); await sleep(500);
+            const fieldFocused = (() => { try { const a = /** @type {any} */ (win.document.activeElement); const f = a && a.closest ? a.closest("editable-text") : null; return f ? f.getAttribute("fieldname") : String(a && a.localName); } catch (er) { return "?"; } })();
             if (change) { key("End"); key(String(Date.now() % 10)); await sleep(300); }
             const sc = pane(), mid = sc.scrollTop;
+            const tTab = Date.now();
             key("Tab"); await sleep(1500);
+            const tabSleptMs = Date.now() - tTab;
             const pr = sc.getBoundingClientRect(), tr = field("ISBN").getBoundingClientRect();
             const ae = /** @type {any} */ (win.document.activeElement);
             const fe = ae && ae.closest ? ae.closest("editable-text") : null;
             const out = { source, moved: Math.round(sc.scrollTop - mid), inView: tr.top >= pr.top - 1 && tr.bottom <= pr.bottom + 1,
                 focused: fe ? fe.getAttribute("fieldname") : null };
+            // CI DIAGNOSTICS (ci-macdiag): the WV-TEMP-133075 tripwire failed once on
+            // macOS + Zotero 10 -- was the window focused, sized, the pane scrolling?
+            wvT.diag("133075:run", { change, out, focusOk: !!focusOk, focusMs, fieldFocused, mid, tabSleptMs,
+                scroll: { top: sc.scrollTop, h: sc.scrollHeight, ch: sc.clientHeight }, isbn: [Math.round(tr.top), Math.round(tr.bottom)], pane: [Math.round(pr.top), Math.round(pr.bottom)],
+                env: wvT.diagEnv(win) });
             key("Escape"); await sleep(600);
             return out;
         }
@@ -185,6 +195,7 @@ describe("Weavero — upstream fixes", function () {
             try { if (win.windowState !== win.STATE_NORMAL) win.restore(); } catch (er) {}
             try { win.resizeTo(1100, 620); } catch (er) {}
             await sleep(1500);
+            wvT.diag("133075:resized", { asked: [1100, 620], was: [ow, oh], env: wvT.diagEnv(win) });
             book = new Zotero.Item("book");
             const F = { title: "WV-133075 jumping view", series: "Series", seriesNumber: "3", volume: "2", numberOfVolumes: "4", edition: "2nd",
                 place: "Paris", publisher: "Pub", date: "2001", numPages: "300", language: "en", ISBN: "978-0-00-000000-2", shortTitle: "short",
@@ -825,6 +836,123 @@ describe("Weavero — upstream fixes", function () {
             try { await d.changePaneOrder("abstract", i); } catch (er) {}
         }
 
+        // ---- CI DIAGNOSTICS (branch ci-macdiag only, temporary) ---------------
+        // Every _renderFeedItem / _ensureFeedAbstractBrowserExists / asyncRender of
+        // the Abstract section, through spies on the box itself: own properties
+        // over the class's, each calling the class's own AT CALL TIME, so the
+        // stand-in's prototype wrap and its teardown (the tripwire) act as ever.
+        // Hypotheses: (a) the wrap is not on this window's prototype; (b) Zotero
+        // never calls _renderFeedItem for B after the move (asyncRender skipped:
+        // pane out of view, render deps, a hidden document); (c) it is called but
+        // _ensureFeedAbstractBrowserExists waits behind an earlier call that never
+        // settled (it is serial; A's waits for the new browser's STATE_STOP);
+        // (d) it throws (console errors kept).
+        const fd = { calls: [], ensure: [], async: [], boxes: 0, errors: [] };
+        let spied = null, spiedEnsure = null, consoleL = null;
+        const brInfo = (b) => {
+            if (!b) return null;
+            const o = {};
+            try { o.connected = b.isConnected; o.bc = !!b.browsingContext; o.inBox = !!(box() && box().contains(b)); } catch (er) { o.err = String(er); }
+            return o;
+        };
+        const track = (list, rec, p) => {
+            list.push(rec);
+            Promise.resolve(p).then(() => { rec.state = "ok"; rec.ms = Date.now() - rec.at; },
+                (er) => { rec.state = "err " + er; rec.ms = Date.now() - rec.at; });
+            return p;
+        };
+        function unspy() {
+            const b = spied;
+            if (!b) return;
+            try { delete b._renderFeedItem; } catch (er) {}
+            try { delete b.asyncRender; } catch (er) {}
+            try { if (spiedEnsure) b._ensureFeedAbstractBrowserExists = spiedEnsure; } catch (er) {}
+            spied = null; spiedEnsure = null;
+        }
+        function spy() {
+            const b = box();
+            if (!b || b === spied) return;
+            unspy();
+            spied = b; fd.boxes++;
+            b._renderFeedItem = function () {
+                const rec = { at: Date.now(), item: this.item && this.item.id, had: brInfo(this._feedAbstractBrowser), state: "pending" };
+                return track(fd.calls, rec, Object.getPrototypeOf(this)._renderFeedItem.apply(this, arguments));
+            };
+            b.asyncRender = function () {
+                const rec = { at: Date.now(), item: this._item && this._item.id, visible: (() => { try { return det().isPaneVisible("abstract"); } catch (er) { return "?"; } })(),
+                    deps: [this._asyncRenderDependencies, this._asyncRenderPending, this.skipRender, this.hidden], state: "pending" };
+                return track(fd.async, rec, Object.getPrototypeOf(this).asyncRender.apply(this, arguments));
+            };
+            const ens = Object.prototype.hasOwnProperty.call(b, "_ensureFeedAbstractBrowserExists") ? b._ensureFeedAbstractBrowserExists : null;
+            if (typeof ens === "function") {
+                spiedEnsure = ens;
+                b._ensureFeedAbstractBrowserExists = function () {
+                    const rec = { at: Date.now(), had: brInfo(this._feedAbstractBrowser), state: "pending" };
+                    return track(fd.ensure, rec, ens.apply(this, arguments));
+                };
+            }
+        }
+        function listenConsole() {
+            if (consoleL) return;
+            consoleL = { observe: (m) => {
+                try {
+                    const s = String(m && (m.message || m.errorMessage || m));
+                    if (/abstract|FeedAbstract|browsingContext|currentWindowGlobal/i.test(s) && fd.errors.length < 30) fd.errors.push(Date.now() + " " + s.slice(0, 400));
+                } catch (er) {}
+            } };
+            try { Services.console.registerListener(/** @type {any} */ (consoleL)); } catch (er) { consoleL = null; }
+        }
+        function unlistenConsole() {
+            try { if (consoleL) Services.console.unregisterListener(/** @type {any} */ (consoleL)); } catch (er) {}
+            consoleL = null;
+        }
+        function snap(label) {
+            const o = { label, now: Date.now() };
+            const safe = (k, f) => { try { o[k] = f(); } catch (er) { o[k] = "ERR " + er; } };
+            const d = det(), b = box();
+            safe("browser", () => brInfo(b && b._feedAbstractBrowser));
+            safe("browsersInBox", () => (b ? b.querySelectorAll('browser[messagemanagergroup="feedAbstract"]').length : null));
+            safe("shown", () => shown());
+            safe("boxItem", () => b && b.item && b.item.id);
+            safe("boxFlags", () => b && { connected: b.isConnected, hidden: b.hidden, skip: b.skipRender, open: b.open, initialized: b.initialized,
+                asyncDeps: b._asyncRenderDependencies, asyncPending: b._asyncRenderPending, syncDeps: b._syncRenderDependencies });
+            safe("paneVisible", () => d.isPaneVisible("abstract"));
+            safe("rects", () => {
+                const r = (e) => { const x = e.getBoundingClientRect(); return [Math.round(x.top), Math.round(x.bottom), Math.round(x.width)]; };
+                return { box: r(b), paneParent: r(d._paneParent), scrollTop: d._paneParent.scrollTop, scrollH: d._paneParent.scrollHeight, clientH: d._paneParent.clientHeight };
+            });
+            safe("order", () => d.getPanes().map(e => e.dataset.pane).join(","));
+            safe("rendering", () => d._isRendering);
+            safe("pinned", () => d.pinnedPane);
+            safe("selected", () => win.ZoteroPane.getSelectedItems().map(i => i.id));
+            safe("counts", () => ({ renderFeedItem: fd.calls.length, ensure: fd.ensure.length, asyncRender: fd.async.length, boxes: fd.boxes }));
+            o.env = wvT.diagEnv(win);
+            return o;
+        }
+        function wrapFacts() {
+            const o = {};
+            try {
+                const cls = win.customElements.get("abstract-box"), proto = cls && cls.prototype;
+                const T = proto && Object.prototype.hasOwnProperty.call(proto, "_wvWraps") && proto._wvWraps;
+                const e = T && T._renderFeedItem;
+                o.wrapEntry = !!e;
+                o.layers = e ? e.recs.map(r => r.layer + "@" + r.tag) : [];
+                o.liveTag = typeof wv._wvWireTag === "function" ? wv._wvWireTag() : null;
+                o.protoFnIsWrapper = !!(e && proto._renderFeedItem !== e.native);
+                const native = e ? e.native : proto && proto._renderFeedItem;
+                o.gateDestroy = /isConnected|_discardFeedAbstractBrowser|_feedAbstractBrowser\s*=\s*null/.test(String(proto.destroy));
+                o.gateNative = /isConnected|browsingContext\s*\)|!this\._feedAbstractBrowser\.browsingContext/.test(String(native));
+                o.nativeSrc = String(native).slice(0, 700);
+                o.destroySrc = String(proto.destroy).slice(0, 300);
+                o.boxOfThisClass = !!box() && box() instanceof cls;
+                o.boxProtoIsClassProto = !!box() && Object.getPrototypeOf(box()) === proto;
+                o.mainWindows = Zotero.getMainWindows().length;
+                o.boxes = Array.from(win.document.querySelectorAll("abstract-box")).length;
+            } catch (er) { o.err = String(er); }
+            return o;
+        }
+        const calls = () => ({ renderFeedItem: fd.calls.slice(-8), ensure: fd.ensure.slice(-8), asyncRender: fd.async.slice(-8), errors: fd.errors.slice(-10) });
+
         before(async function () {
             feed = /** @type {any} */ (new Zotero.Feed());
             feed.name = "WV-TEST feed abstract";
@@ -839,11 +967,19 @@ describe("Weavero — upstream fixes", function () {
             await cv.selectByID("L" + feed.libraryID);
             await win.ZoteroPane.itemsView.waitForLoad();
             order0 = det().getPanes().map(e => e.dataset.pane);
+            spy(); listenConsole();
+            wvT.diag("feedabstract:fixture-start", { wrap: wrapFacts(), snap: snap("feed row selected, before A") });
             await select(A);
-            assert.ok(await wvT.waitFor(() => shown() || null, 10000, 100), "fixture: Zotero draws A's abstract");
+            const okA = await wvT.waitFor(() => shown() || null, 10000, 100);
+            // A's _ensure... still pending here with its browser drawn = the serial
+            // queue held by a load that never reported STATE_STOP (hypothesis c).
+            await wvT.diagDelay(1500);
+            wvT.diag("feedabstract:fixture-A", { okA: !!okA, snap: snap("A selected"), calls: calls(), probe: await wvT.diagProbe(win) });
+            assert.ok(okA, "fixture: Zotero draws A's abstract");
         });
 
         after(async function () {
+            unspy(); unlistenConsole();
             try { wv._wvWireFeedAbstractFix(win); } catch (er) {}
             try { const b = box(); if (b && b._feedAbstractBrowser && !b._feedAbstractBrowser.isConnected) b._feedAbstractBrowser = null; } catch (er) {}
             try {
@@ -861,10 +997,33 @@ describe("Weavero — upstream fixes", function () {
             // below (Zotero still blanks it) passes there. No regression (the same
             // blank abstract as without Weavero); Windows and Ubuntu CI and local
             // runs pass. MJT 2026-11-23: "Go" (skip and follow up, work/TODO.md).
-            if (Services.env.exists("CI") && Zotero.isMac && /^11\./.test(Zotero.version)) this.skip();
+            // CI DIAGNOSTICS (ci-macdiag): the skip on CI macOS + 11 is OFF on this
+            // branch -- the case runs there so its records say why it fails.
+            spy();
+            const sPre = snap("before the move");
+            const n0 = { renderFeedItem: fd.calls.length, ensure: fd.ensure.length, asyncRender: fd.async.length };
             await move();
+            const sMove = snap("after the move");
             await select(B);
-            assert.ok(await wvT.waitFor(() => shown() || null, 10000, 100), "B's abstract drawn after the move");
+            const sSel = snap("B selected (+300 ms)");
+            const t0 = Date.now();
+            const okB = await wvT.waitFor(() => shown() || null, 10000, 100);
+            const res = { okB10s: !!okB, msB: okB ? Date.now() - t0 : null, lateMs: null, manual: null };
+            if (!okB) {
+                // Slow, or never? 20 s more (the assertion below still reads the 10 s answer).
+                const late = await wvT.waitFor(() => shown() || null, 20000, 200);
+                res.lateMs = late ? Date.now() - t0 : null;
+                if (!late) {
+                    // Zotero's render called by hand (the stand-in's wrapper included):
+                    // drawn now = Zotero did not call it; still blank = the render itself stalls.
+                    const b = box();
+                    const before = brInfo(b && b._feedAbstractBrowser);
+                    const r = b ? await wvT.diagRace(Promise.resolve().then(() => b._renderFeedItem()), 8000) : { state: "no box", ms: 0, error: "" };
+                    res.manual = { before, outcome: r.state + (r.error ? " " + r.error : "") + " in " + r.ms + " ms", after: brInfo(b && b._feedAbstractBrowser), shown: shown() };
+                }
+            }
+            wvT.diag("feedabstract:case", { res, n0, wrap: wrapFacts(), pre: sPre, move: sMove, sel: sSel, end: snap("end"), calls: calls(), probe: await wvT.diagProbe(win) });
+            assert.ok(okB, "B's abstract drawn after the move");
             await select(A);
             assert.ok(await wvT.waitFor(() => shown() || null, 10000, 100), "and A's again");
         });
@@ -872,9 +1031,11 @@ describe("Weavero — upstream fixes", function () {
         it("torn down, the abstract stays blank after a move (tripwire: fails once Zotero fixes it -- retire WV-TEMP-feedabstract)", async function () {
             wv._wvTeardownFeedAbstractFix();
             try {
+                spy();
                 await move();
                 await select(B);
                 await sleep(2500);
+                wvT.diag("feedabstract:tripwire", { shown: shown(), wrap: wrapFacts(), end: snap("torn down, B after the move"), calls: calls() });
                 assert.isFalse(shown(), "no abstract after the move (if it shows, Zotero lets go of the dead browser now: retire WV-TEMP-feedabstract)");
             }
             finally {

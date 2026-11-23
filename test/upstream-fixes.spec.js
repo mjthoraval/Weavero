@@ -855,6 +855,13 @@ describe("Weavero — upstream fixes", function () {
         });
 
         it("the sections move, the next feed item's abstract still shows", async function () {
+            // CI only, macOS with Zotero 11 (1.2.1 release CI run 45200266733, both
+            // attempts): B's abstract was not drawn after the move -- the stand-in
+            // does not take effect on GitHub's macOS beta runner, while the tripwire
+            // below (Zotero still blanks it) passes there. No regression (the same
+            // blank abstract as without Weavero); Windows and Ubuntu CI and local
+            // runs pass. MJT 2026-11-23: "Go" (skip and follow up, work/TODO.md).
+            if (Services.env.exists("CI") && Zotero.isMac && /^11\./.test(Zotero.version)) this.skip();
             await move();
             await select(B);
             assert.ok(await wvT.waitFor(() => shown() || null, 10000, 100), "B's abstract drawn after the move");

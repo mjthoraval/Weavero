@@ -399,6 +399,40 @@ describe("Weavero — per-window state on two main windows", function () {
         }
     });
 
+    it("a data change's confirming passes reuse pass 0's verdicts, and a newer change supersedes the ladder", async function () {
+        // Each pass nulled the verdict cache, so all four re-judged every row:
+        // 2,021 ms after a "modify" of 1,000 items with a chip on, 514 without
+        // (the speed run of 2026-11-21); and a superseded ladder ran all its
+        // passes besides the newer one's. Since 1.2.1-filtimg.1 a confirming
+        // pass that finds the rows pass 0 left re-applies nothing at all
+        // (filter-ladder-bounds.spec.js): pass 1 here keeps pass 0's verdicts
+        // because it does not run.
+        await timersIdle();
+        await applyIn(B, abstractFilter());
+        await wvT.sleep(3200);   // a ladder left by the previous test runs out
+        let vc0 = null, vc1 = null;
+        const ladder = await applies(async () => {
+            wv._wvScheduleReapplyAfterDataChange(B);
+            await wvT.sleep(600);   // pass 0 at 350 ms
+            vc0 = wv._wvVerdictCache;
+            await wvT.sleep(500);   // pass 1 at 350 + 450 = 800 ms
+            vc1 = wv._wvVerdictCache;
+        });
+        assert.strictEqual(ladder.filter((s) => s.win === B && s.cascade).length, 1, "pass 0 ran; pass 1 found the same rows: " + brief(ladder));
+        assert.isOk(vc0, "pass 0 built a verdict cache");
+        assert.strictEqual(vc1, vc0, "pass 1 kept pass 0's verdicts");
+        await wvT.sleep(2600);   // passes 2 and 3 (1,600 and 3,000 ms) run out
+        const superseded = await applies(async () => {
+            wv._wvScheduleReapplyAfterDataChange(B);
+            await wvT.sleep(500);   // its pass 0 at 350 ms; its pass 1 would come at 800
+            wv._wvScheduleReapplyAfterDataChange(B);   // newer: pass 0 at 500 + 350 = 850, pass 1 at 1,300
+            await wvT.sleep(650);   // until 1,150 ms
+        });
+        assert.strictEqual(superseded.filter((s) => s.win === B && s.cascade).length, 2,
+            "the first ladder's pass 0 and the newer one's, not the first one's pass 1: " + brief(superseded));
+        await wvT.sleep(3200);
+    });
+
     // ---- the row classes ----
 
     it("each window's annotation rows get Weavero's row patch", async function () {

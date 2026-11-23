@@ -17,8 +17,23 @@ export function makeInvisibleRe(): RegExp {
 }
 
 /** Trailing punctuation to strip from detected URLs. No `g` flag — a
- *  single shared instance is stateless. */
+ *  single shared instance is stateless. Kept for tests and matching only: to
+ *  STRIP, use `wvTrimTrailing` -- this pattern is quadratic on a long run of
+ *  punctuation that is not at the end, which crafted text can hold. */
 export const TRAILING_RE = /[.,;:!?)\]\}>'"`]+$/;
+
+/** The characters `TRAILING_RE` matches. */
+export const TRAILING_CHARS = ".,;:!?)]}>'\"`";
+
+/** `s` without the run of `chars` at its end (default: a URL's trailing
+ *  punctuation, TRAILING_CHARS) -- a loop from the end, linear in the run,
+ *  where a `[…]+$` replace retries the run at every position in it. */
+export function wvTrimTrailing(s: string, chars: string = TRAILING_CHARS): string {
+    const str = String(s == null ? "" : s);
+    let end = str.length;
+    while (end > 0 && chars.indexOf(str[end - 1]) >= 0) end--;
+    return end === str.length ? str : str.slice(0, end);
+}
 
 const _INVISIBLE = makeInvisibleRe();
 

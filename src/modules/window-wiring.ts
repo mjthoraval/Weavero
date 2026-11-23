@@ -125,6 +125,11 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     // WV-TEMP-134330: the Tag Selector scoped to the rows the items view
     // shows, until Zotero's setTagScope does it itself (then it installs nothing).
     { id: "tag-scope-rows", on: "both", wire: (p, win) => p._wvWireTagScopeRowsFix(win) },
+    // WV-TEMP-134317: View > Layout shows the Tag Selector again with the tags the list
+    // is still filtered by selected (upstream register #30; upstream-fixes.ts; installs
+    // nothing once toggleTagSelector clears or keeps them). `views`: on a Zotero with
+    // library views its gate reads the view's own toggleTagSelector.
+    { id: "tag-reshow", on: "both", views: true, wire: (p, win) => p._wvWireTagReshowFix(win) },
     // WV-TEMP-134357: Zotero 11's "New Item Note" greyed by a stringified boolean
     // `disabled` (upstream register #34; installs nothing once fixed there).
     { id: "new-note-menu", on: "both", wire: (p, win) => p._wvWireNewNoteMenuFix(win) },
@@ -144,6 +149,31 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     // minimum width (upstream register #53; upstream-fixes.ts; installs nothing once
     // updateLayoutConstraints stops zeroing the fixed width there).
     { id: "narrow-pane", on: "both", wire: (p, win) => p._wvWireNarrowPaneFix(win) },
+    // WV-TEMP-133075: the item pane jumps after an Info edit when the focus moves to a
+    // field near its bottom edge (upstream-fixes.ts; installs nothing once the Info
+    // box's render no longer restores the focus inside its block layout).
+    { id: "pane-jump", on: "both", wire: (p, win) => p._wvWirePaneJumpFix(win) },
+    // WV-TEMP-feedabstract (upstream-fixes.ts): a feed abstract blank after the item
+    // pane's sections moved; the window's abstract-box prototype.
+    { id: "feed-abstract", on: "both", wire: (p, win) => p._wvWireFeedAbstractFix(win) },
+    // WV-TEMP-advsrchcollapse (upstream-fixes.ts): on the Feeds row, the Advanced Search
+    // opened from a quick search keeps its Collapse and Close buttons; the window's
+    // advanced-search-pane class (installs nothing once its setter takes a search
+    // with no library).
+    { id: "adv-search-seed", on: "both", wire: (p, win) => p._wvWireAdvSearchSeedFix(win) },
+    // WV-TEMP-FEEDHEAD (upstream-fixes.ts): no Zotero crash when the item pane renders a
+    // feed item under a non-feed row (a refresh landing across a collection switch); the
+    // window's item-pane prototype.
+    { id: "feed-head", on: "both", wire: (p, win) => p._wvWireFeedHeadFix(win) },
+    // WV-TEMP-124063: an annotation the reader shows read-only (stored in the PDF, or
+    // of an attachment the user may not edit) cannot be deleted from the items list
+    // (upstream-fixes.ts; installs nothing once canDeleteSelectedItems checks it).
+    { id: "ext-ann-delete", on: "both", wire: (p, win) => p._wvWireExtAnnDeleteFix(win) },
+    // WV-TEMP-99239: after Delete Page in the reader, the PDF is indexed again, so its
+    // page count and searchable words match the file (upstream-fixes.ts; a wrap of the
+    // Zotero.PDFWorker singleton -- idempotent per instance, so any window wires it --
+    // installs nothing once deletePages updates the full-text record itself).
+    { id: "page-count", on: "both", wire: (p) => p._wvWirePageCountFix() },
     // WV-TEMP-134772: Zotero's own reader menu entries greyed on 11.0-beta.4 (upstream
     // register #18, fixed upstream by 3e32faa0a, not in a beta yet; upstream-fixes.ts).
     // Once per plugin, from any open reader; the reader toolbar handler covers the rest.
@@ -219,6 +249,9 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     { id: "collection-tree-gestures", on: "both", wire: (p, win) => p._wvWireCollectionTreeGestures(win) },
     { id: "menu-ghost-workaround", on: "both", wire: (p, win) => p._wvWireMenuGhostWorkaround(win) },
     { id: "reader-find-key", on: "both", wire: (p, win) => p._wvWireReaderFindKey(win) },
+    // WV-TEMP-134355: a lost lookup-engine icon is downloaded again when the
+    // user first opens the Locate menu, never at startup.
+    { id: "locate-icons-first-use", on: "both", wire: (p, win) => p._wvWireLocateIconsFirstUse(win) },
     { id: "column-picker-mark", on: "both", wire: (p, win) => p._wvWireColumnPickerMark(win) },
     { id: "column-picker-native-fix", on: "both", wire: (p, win) => p._wvWireColumnPickerNativeFix(win) },
     { id: "items-cross-window-drop", on: "both", nativeOff: true, wire: (p, win) => p._wvWireItemsCrossWindowDrop(win) },
@@ -239,7 +272,8 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     { id: "overlay-focus-follow", on: "load", wire: (p, win) => p._wvWireOverlayFocusFollow(win) },
     // Restore breadcrumbs: log restoreState inputs/outputs + early closes.
     // BEFORE managed-window (see ORDER MATTERS above).
-    { id: "restore-trace-mark", on: "load", wire: (p, win) => p._wvTrace("onMainWindowLoad: " + (p._wvWindowName ? p._wvWindowName(win) : "?")) },
+    // The window by its place, never its name (a custom window title is the user's).
+    { id: "restore-trace-mark", on: "load", wire: (p, win) => p._wvTrace("onMainWindowLoad: main window #" + (p._wvWindowIndex ? p._wvWindowIndex(win) + 1 : "?")) },
     { id: "restore-tracing", on: "both", wire: (p, win) => p._wvWireRestoreTracing(win) },
     { id: "managed-window", on: "load", nativeOff: true, wire: (p, win) => p._wvAdoptPendingDevWindow(win) },
     // Scope this window's context pane to its OWN tabs, so a reader-tab select
@@ -312,6 +346,12 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     // The view half again once the view exists (the panel's wv-filter-bar
     // guard stops a second _setupItemsListFilter before it).
     { id: "items-list-filter-view", on: "both", views: true, wire: (p, win) => p._wvWireItemsFilterView(win) },
+    // WV-TEMP-132551: an expand or collapse in the items list redraws "N items in this
+    // view" (upstream register #1; upstream-fixes.ts; installs nothing once the row
+    // provider's toggles redraw it themselves). Every library view's, each further
+    // library tab too (perView). After the filter's view half: its manual-expand layer
+    // on toggleOpenState stays the inner one.
+    { id: "row-count-redraw", on: "both", views: true, perView: true, wire: (p, win) => p._wvWireRowCountFix(win) },
     { id: "tabs-menu-library-sort", on: "both", wire: (p, win) => p._setupTabsMenuLibrarySort(win) },
     { id: "libraries-box-highlight", on: "both", wire: (p, win) => p._setupLibrariesBoxHighlight(win) },
     // Re-apply CSS-class state (these set classes on root.documentElement).

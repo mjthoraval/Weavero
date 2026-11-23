@@ -221,6 +221,8 @@ describe("Weavero — default-branch registrations (characterization)", () => {
         "readerOutlineTakeover": true,
         "readerUndoButtons": true,
         "recolorAmLinks": true,
+        "remoteFileLinks": false,
+        "remoteFileLinksOpened": "s:",
         "selectedTabRing": true,
         "separateTaskbarButtons": false,
         "sessionAutoReopen": true,

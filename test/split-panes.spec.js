@@ -824,6 +824,43 @@ describe("Weavero — split view: inside each side", function () {
         await sleep(300);
     });
 
+    // MJT 2026-11-19 on 1.2.0, "When I open in split view from the library tab items list, it
+    // still opens the left pane. I would prefer opening with both sides panes closed": a PDF
+    // NOT open yet, put beside the library by the items list's Open PDF in Split View, got
+    // its reader sidebar open (Zotero's normal state) -- the split's own "closed" was applied
+    // before the new tab had a reader, and the reader then started from Zotero's state.
+    it("14. Open PDF in Split View from the items list, the PDF not open yet: the new reader side starts with its sidebar and item pane closed although Zotero's own sidebar is open", async function () {
+        const L = libTab(), t3 = tabOfItem(pdf3);
+        // Zotero's normal state: the sidebar open (every new reader starts from it).
+        ZT.select(t3.id); await sleep(800);
+        await readerReady(t3.id);
+        ZT.updateSidebarLayout({ width: 250 }); reader(t3.id)._updateLayout(); await sleep(400);
+        assert.isTrue(sidebarOpen(t3.id), "fixture: the normal sidebar open");
+        const fresh = await wvT.createTestPDFItem("wv-split-fresh");
+        const parent = Zotero.Items.get(fresh.parentItemID) || fresh;
+        let s = null;
+        try {
+            ZT.select(L.id); await sleep(800);
+            assert.notOk(tabOfItem(fresh), "fixture: the PDF is not open in a tab");
+            await wv._wvTabSplitOpenItem(win, parent);
+            const tf = await waitFor(() => tabOfItem(fresh), 10000, "the PDF's new tab");
+            s = wv._wvTabSplitOf(win, tf.id);
+            assert.ok(s, "it is in a split beside the library");
+            await readerReady(tf.id); await sleep(1200);
+            assert.isFalse(sidebarOpen(tf.id), "the new reader side's sidebar closed");
+            assert.isTrue(CP().collapsed, "the new reader side's item pane closed");
+        }
+        finally {
+            try { if (s) wv._wvTabSplitSeparate(win, s.id); } catch (er) {}
+            await sleep(400);
+            try { const tf = tabOfItem(fresh); if (tf) ZT.close(tf.id); } catch (er) {}
+            await sleep(400);
+            ZT.updateSidebarLayout({ width: false }); try { reader(t3.id)._updateLayout(); } catch (er) {}
+            await sleep(300);
+            try { await wvT.erase(fresh); } catch (er) {}
+        }
+    });
+
     // MJT 2026-11-18 on 1.1.1-dev.8, Open in Split View with a PDF and a note tab: "keeps
     // the sidebar of the PDF side, which should be hidden" -- a reader beside a note kept
     // Zotero's normal panes (open). As for a lock's split (split-dock spec), the reader

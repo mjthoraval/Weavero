@@ -499,6 +499,16 @@ export const WV_PREF_OBSERVERS: WvPrefObserver[] = [
         },
     },
     {
+        keys: ["extensions.zotero.weavero.remoteFileLinks"],
+        run(p: any, data: string) {
+            // Links to files on other computers switched off: the links the
+            // user opened are forgotten (url.ts _wvRemoteFileLinksSync).
+            if (data === "extensions.zotero.weavero.remoteFileLinks") {
+                try { p._wvRemoteFileLinksSync(); } catch (e) {}
+            }
+        },
+    },
+    {
         keys: ["extensions.zotero.weavero.enableLinksAndRelations"],
         run(p: any, data: string) {
             const winRA = Zotero.getMainWindow();
@@ -885,6 +895,19 @@ export const WV_PREF_OBSERVERS: WvPrefObserver[] = [
                 } catch (e) {
                     Zotero.debug("[Weavero] tabs filter toggle err: " + e);
                 }
+            }
+        },
+    },
+    {
+        // The item pane's detailed count (filter.ts _wvWireItemCountBreakdown) is
+        // drawn only when Zotero renders the message or the batch-edit prompt: its
+        // option, or the Sort & Filters master, draws them again in every main
+        // window. No observer until 1.2.1-countcard.1: unticked, the card stayed
+        // until the next redraw (MJT 2026-11-19; guard item-count-card.spec.js).
+        keys: ["extensions.zotero.weavero.itemCountBreakdown", "extensions.zotero.weavero.enableFilters"],
+        run(p: any) {
+            for (const w of wvMainWins()) {
+                try { p._wvCountMessageRedraw(w); } catch (e) {}
             }
         },
     },

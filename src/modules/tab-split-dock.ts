@@ -639,7 +639,14 @@ class _TabSplitDockMixin {
                 else el.removeAttribute("data-wv-tdock");
                 this._wvTabDockTipOn(win, el, id);
             }
+            // The strip's click listeners only while a lock is drawn: an unlock left them
+            // wired, and a reload (which wires them only for a lock) then counted them
+            // as lost (zz-reload-listeners, citedby picked set, 2026-11-20).
             if (lock) this._wvTabDockWireStrip(win);
+            else {
+                const cont = doc.getElementById("tab-bar-container");
+                if (cont) for (const k of STRIP_KEYS) wvUnlisten(cont, k);
+            }
         } catch (e) {}
     }
 

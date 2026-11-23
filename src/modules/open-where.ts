@@ -25,6 +25,9 @@
 // The decision is lib/keys.ts wvOpenWhere (macOS: Control+click is the context
 // click, never an open); `_wvOpenTarget` carries it out for a link or an item.
 // A surface keeps its own plain open: "here" for an item returns false.
+// Zotero's items list keeps ZOTERO's Shift rule -- the other way from the setting
+// (Settings > General, open PDFs / notes in new windows) -- and Weavero makes it
+// hold for notes too (WV-TEMP-128815, `_wvViewItemsShiftNotes` below).
 //
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
@@ -417,6 +420,72 @@ class _OpenWhereMixin {
                 } catch (er) {}
             }, true, (this as any)._wvWireTag());
         } catch (e) { Zotero.debug("[Weavero] _wvWireOpenBesideKey err: " + e); }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // WV-TEMP-128815 (forums.zotero.org/discussion/128815, upstream register #69).
+    // Shift+Enter / Shift+double-click on a NOTE in the items list should open it the
+    // OTHER way from Settings > General > "Open notes in new windows", as Shift does for
+    // a PDF (zoteroPane.js viewAttachment inverts openReaderInNewWindow). Zotero's
+    // viewItems sets the note's openInWindow from Shift alone (`event?.shiftKey ||
+    // options.forceAlternateWindowBehavior`, 11.0-beta.4 and 10.0.8), so with the
+    // setting on, Shift opens a window too. Here, called from Weavero's viewItems wrapper
+    // (reader.ts _wvSetupMultiOpenConsolidation) with Zotero's own viewItems as `orig`:
+    // the items tree's Shift (the event's shiftKey) opens each note through
+    // ZoteroPane.openNote with the setting inverted (CLAUDE.md: notes open through
+    // ZoteroPane.openNote only); the other items go to Zotero's viewItems in their order.
+    // Left to Zotero: the Locate menu's alternate entry (forceAlternateWindowBehavior --
+    // its label follows the READER's setting, locateMenu.js ViewItem; zotero PR #5866
+    // changes both together), and a view Zotero would not open a note from (not editable).
+    //
+    // RETIRE WHEN Zotero's viewItems reads openNoteInNewWindow or inverts the note's
+    // openInWindow (PR zotero#5866 does both); the gate below reads its source and
+    // stands down. Tripwire in test/open-where.spec.js.
+    // ─────────────────────────────────────────────────────────────────────────
+    /** Zotero's own `viewItems` (`orig`) still ignores the note setting on Shift. */
+    _wvShiftNoteBugIn(orig: any): boolean {
+        try {
+            const m = /\.isNote\(\)\)\s*\{([\s\S]{0,400}?)openNote\(/.exec(String(orig || ""));
+            if (!m) return false;
+            const branch = m[1];
+            return /shiftKey/.test(branch) && !/openNoteInNewWindow|=\s*!\s*openInWindow/.test(branch);
+        } catch (e) { return false; }
+    }
+
+    /** The items tree's Shift on notes, Zotero's PDF rule (WV-TEMP-128815): true when
+     *  done here, false to leave the whole call to Zotero's `orig`. */
+    async _wvViewItemsShiftNotes(zp: any, orig: any, items: any[], event: any, options: any): Promise<boolean> {
+        // Once an open is issued this call owns the outcome: false after that would
+        // make the wrapper run Zotero's viewItems on top -- every item opened twice.
+        let issued = false;
+        try {
+            if (!zp || typeof orig !== "function" || !Array.isArray(items) || !items.length) return false;
+            if (!event || !event.shiftKey || (options && options.forceAlternateWindowBehavior)) return false;
+            const isNote = (it: any) => { try { return !!(it && it.isNote && it.isNote()); } catch (e) { return false; } };
+            if (!items.some(isNote) || !this._wvShiftNoteBugIn(orig)) return false;
+            let inWindow = false;
+            try { inWindow = !!Zotero.Prefs.get("openNoteInNewWindow"); } catch (e) {}
+            Zotero.debug("[Weavero] WV-TEMP-128815: Shift on a note in the items list -> " + (inWindow ? "a tab" : "a window"));
+            issued = true;
+            let rest: any[] = [];
+            const flush = async () => {
+                if (!rest.length) return;
+                const batch = rest;
+                rest = [];
+                await orig.call(zp, batch, event, options);
+            };
+            for (const it of items) {
+                if (!isNote(it)) { rest.push(it); continue; }
+                await flush();
+                // Zotero's own rule: no note opens from a view that is not editable.
+                const cv = zp.collectionsView;
+                if (cv && cv.editable === false) continue;
+                // Not awaited, as Zotero's viewItems does not await it.
+                Promise.resolve(zp.openNote(it.id, { openInWindow: !inWindow })).catch((e: any) => Zotero.logError(e));
+            }
+            await flush();
+            return true;
+        } catch (e) { Zotero.debug("[Weavero] _wvViewItemsShiftNotes err: " + e); return issued; }
     }
 
     /** The items list's "beside": its first selected item, else Zotero's Enter. */

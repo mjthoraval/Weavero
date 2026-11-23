@@ -274,6 +274,81 @@ describe("Weavero — opening modifiers: one meaning everywhere", function () {
         }
     });
 
+    // Forum 128815, WV-TEMP-128815 (open-where.ts, upstream register #69): Shift+Enter or
+    // Shift+double-click on a NOTE in the items list opens it the OTHER way from Settings
+    // > "Open notes in new windows", as Shift does for a PDF (zoteroPane.js
+    // viewAttachment inverts openReaderInNewWindow). Zotero's viewItems sets the note's
+    // openInWindow from Shift alone (11.0-beta.4, 10.0.8): with the setting on, Shift
+    // opened a window too. Driven through the items tree's own Enter and Shift+mouseup
+    // (virtualized-table.jsx: a Shift double-click arrives as a mouseup with detail 2);
+    // ZoteroPane.openNote is recorded, not run -- what the gesture asks for is the check.
+    /** The openNote calls (`[id, openInWindow]`) of `gesture` ("enter" / "dblclick") on
+     *  note `n` selected in the items list, Settings' note option at `inWindow`. */
+    async function noteGesture(n, inWindow, gesture, shift, viewItems) {
+        const zp = /** @type {any} */ (win.ZoteroPane);
+        ZT.select(libTab().id); await sleep(300);
+        await zp.collectionsView.selectLibrary(Zotero.Libraries.userLibraryID);
+        await sleep(300);
+        await zp.selectItem(n.id);
+        await waitFor(() => { const s = zp.getSelectedItems(); return s.length === 1 && s[0].id === n.id; }, 8000, "the note selected");
+        const orig = zp.openNote;
+        const prevView = zp.viewItems;
+        const calls = [];
+        zp.openNote = function (id, o) { calls.push([id, o ? o.openInWindow : undefined]); return Promise.resolve(null); };
+        if (viewItems) zp.viewItems = viewItems;
+        try {
+            await wvT.withPref("openNoteInNewWindow", inWindow, async () => {
+                const treeId = zp.itemsView.id;
+                if (gesture === "enter") {
+                    const tree = doc.getElementById(treeId);
+                    assert.ok(tree, "fixture: the items tree");
+                    tree.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Enter", shiftKey: shift, bubbles: true, cancelable: true }));
+                }
+                else {
+                    const row = doc.getElementById(treeId + "-row-" + zp.itemsView.getRowIndexByID(n.id));
+                    assert.ok(row, "fixture: the note's row");
+                    row.dispatchEvent(new win.MouseEvent("mouseup", { button: 0, detail: 2, shiftKey: shift, bubbles: true, cancelable: true, view: win }));
+                }
+                await waitFor(() => calls.length, 8000, "an open of the note");
+                await sleep(300);
+            });
+        }
+        finally {
+            zp.openNote = orig;
+            if (viewItems) zp.viewItems = prevView;
+        }
+        return calls;
+    }
+
+    it("Shift+Enter / Shift+double-click on a note in the items list: the other way from Settings' \"open notes in new windows\" (WV-TEMP-128815)", async function () {
+        await fresh();
+        const note = new Zotero.Item("note"); note.setNote("<p>wv openwhere shift note</p>"); await note.saveTx();
+        try {
+            assert.deepEqual(await noteGesture(note, true, "enter", true), [[note.id, false]], "setting on, Shift+Enter: a tab");
+            assert.deepEqual(await noteGesture(note, false, "enter", true), [[note.id, true]], "setting off, Shift+Enter: a window");
+            assert.deepEqual(await noteGesture(note, true, "dblclick", true), [[note.id, false]], "setting on, Shift+double-click: a tab");
+            assert.deepEqual(await noteGesture(note, false, "dblclick", true), [[note.id, true]], "setting off, Shift+double-click: a window");
+            const plain = await noteGesture(note, true, "enter", false);
+            assert.strictEqual(plain.length, 1, "Enter opens it once");
+            assert.notStrictEqual(plain[0][1], false, "Enter without Shift: Zotero's own open, the setting decides");
+        }
+        finally { await wvT.erase(note); }
+    });
+
+    it("torn down, Zotero's own viewItems opens a window on Shift whatever the setting (tripwire: fails once Zotero fixes it -- retire WV-TEMP-128815)", async function () {
+        await fresh();
+        const zp = /** @type {any} */ (win.ZoteroPane);
+        const native = zp._wvOrigViewItems;
+        assert.isFunction(native, "fixture: Zotero's own viewItems under Weavero's");
+        const note = new Zotero.Item("note"); note.setNote("<p>wv openwhere shift note native</p>"); await note.saveTx();
+        try {
+            const calls = await noteGesture(note, true, "enter", true, function () { return native.apply(zp, arguments); });
+            assert.deepEqual(calls, [[note.id, true]],
+                "setting on, Shift+Enter: Zotero asks for a window (if a tab, Zotero fixed forum 128815: retire WV-TEMP-128815)");
+        }
+        finally { await wvT.erase(note); }
+    });
+
     it("a Weavero list row (Backlinks, Links): a click, Ctrl/Cmd+click, Shift+click, a middle click and Enter / Ctrl+Enter / Shift+Enter each ask for their open", async function () {
         if (typeof wv._wvBlMakeRow !== "function") wvT.absent("plugin._wvBlMakeRow");
         const host = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");

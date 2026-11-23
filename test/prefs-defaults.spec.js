@@ -59,7 +59,9 @@ describe("Weavero — Settings prefs have registered defaults", () => {
         // (splitViewFollow: its row left the pane with Follow Selected Item, archived
         // 2026-11-18; the pref keeps its default in prefs-table.ts.)
         // Link previews tint the whole reference entry (2026-11-17).
-        "previewEntryHighlight"];
+        "previewEntryHighlight",
+        // file:// links to another computer, each asking once (1.2.1, 2026-11-23).
+        "remoteFileLinks"];
         // The item pane sections' paneScope.* prefs (levels, kinds, "always
         // shown" pins) had their grid here from dev.114 to dev.161 and are
         // off the pane since (MJT 2026-11-03); registered still

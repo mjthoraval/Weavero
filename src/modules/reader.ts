@@ -28,14 +28,15 @@ import {
     WV_FUNNEL_DATA_URI,
 } from "./constants";
 import { winOf, wvIsHiddenOrCollapsed, wvSetBoolAttr, wvBoolAttrOn, wvWithin, wvHtmlEl } from "../lib/dom";
-import { wvRemoveStyle, wvFilterTileRules } from "../lib/style";
+import { wvRemoveStyle, wvFilterTileRules, wvDataColor } from "../lib/style";
 import { wvOutsideClick, wvReachableDocs, wvDismissOff } from "../lib/dismiss";
 import { wvLivePlugin } from "../lib/live";
 import { wvStoreWrite, wvStoreRead, wvStoreRemove } from "../lib/store";
 import { wvTimeout } from "../lib/timers";
 import { wvListen, wvListener, wvUnlisten, wvEventOpts } from "../lib/listen";
 import { wvWrap, wvUnwrap } from "../lib/wrap";
-import { urlPattern, wvLinkVars } from "../lib/links";
+import { urlPattern, wvLinkVars, wvLabelMisleads, MD_LINK_SRC, WV_LINK_SCAN_MAX } from "../lib/links";
+import { wvTrimTrailing } from "../lib/text";
 import { wvMainWins, wvNativeWindows, wvWinType } from "../lib/windows";
 import { wvAccel } from "../lib/keys";
 import { wvCloneFor } from "../lib/xray";
@@ -200,14 +201,18 @@ class _ReaderMixin {
             + "|~~([\\s\\S]+?)~~"
             + "|``([\\s\\S]+?)``"
             + "|`([^`\\n]+?)`"
-            + "|\\[([^\\]\\n]+?)\\]\\(([^)\\s]+)\\)"
+            + "|" + MD_LINK_SRC
             + "|(" + urlPattern(this.URL_SCHEME_ALT) + ")",
             "g"
         ) : new RegExp(
-            "\\[([^\\]\\n]+?)\\]\\(([^)\\s]+)\\)"
+            MD_LINK_SRC
             + "|(" + urlPattern(this.URL_SCHEME_ALT) + ")",
             "g"
         );
+        // Only the first WV_LINK_SCAN_MAX characters are tokenized; the rest
+        // is text (a bound on what a crafted comment can cost).
+        const scanEnd = Math.min(norm.length, WV_LINK_SCAN_MAX);
+        const scanned = scanEnd < norm.length ? norm.slice(0, scanEnd) : norm;
 
         const wrapMd = (cls, marker, inner) => {
             if (!stripMarkers) frag.appendChild(doc.createTextNode(marker));
@@ -217,17 +222,20 @@ class _ReaderMixin {
             frag.appendChild(span);
             if (!stripMarkers) frag.appendChild(doc.createTextNode(marker));
         };
-        const emitUrlSpan = (label, url) => {
+        // `srcLabel`: the label as written when another text is shown (a
+        // misleading label shows its target): the source is rebuilt from it.
+        const emitUrlSpan = (label, url, srcLabel?) => {
             const span = doc.createElement("span");
             span.className = "wv-url-span " + this._urlLinkClass(url);
             span.title = url;
             span.textContent = label;
             span.setAttribute("data-href", url);
+            if (srcLabel != null) span.setAttribute("data-wv-label", srcLabel);
             frag.appendChild(span);
         };
 
         let last = 0, m;
-        while ((m = TOKEN.exec(norm)) !== null) {
+        while ((m = TOKEN.exec(scanned)) !== null) {
             if (m.index > last) {
                 emitText(norm.slice(last, m.index));
             }
@@ -246,15 +254,20 @@ class _ReaderMixin {
                 const linkLabel = useMd ? m[6] : m[1];
                 const linkUrl   = useMd ? m[7] : m[2];
                 if (linkLabel !== undefined && linkUrl !== undefined) {
-                    const url = linkUrl.replace(this.TRAILING_RE, "");
-                    // Render as styled link only if the URL's scheme is
-                    // currently enabled (URLs / Zotero Links / App Links
-                    // each remove their alternation from URL_SCHEME_ALT
-                    // when off — `hasURI` checks via URL_REGEX). Else
-                    // render as plain text.
-                    if (this.hasURI(url)) {
+                    const url = wvTrimTrailing(linkUrl);
+                    // Render as styled link only if the URL STARTS with a
+                    // scheme currently enabled (URLs / Zotero Links / App
+                    // Links each remove their alternation from URL_SCHEME_ALT
+                    // when off -- `isLinkURL` checks via URL_REGEX, at the
+                    // address's start). Else render as plain text. A label
+                    // that spells out another address shows the real one
+                    // where the markers are stripped; with them kept the
+                    // address is written out beside it, and the text must
+                    // round-trip for in-place edits.
+                    if (this.isLinkURL(url)) {
                         if (!stripMarkers) frag.appendChild(doc.createTextNode("["));
-                        emitUrlSpan(linkLabel, url);
+                        if (stripMarkers && wvLabelMisleads(linkLabel, url)) emitUrlSpan(url, url, linkLabel);
+                        else emitUrlSpan(linkLabel, url);
                         if (!stripMarkers) frag.appendChild(doc.createTextNode("](" + linkUrl + ")"));
                     } else if (stripMarkers) {
                         emitText(linkLabel);
@@ -271,7 +284,7 @@ class _ReaderMixin {
                         last = m.index + m[0].length;
                         continue;
                     }
-                    const url   = raw.replace(this.TRAILING_RE, "");
+                    const url   = wvTrimTrailing(raw);
                     const trail = raw.slice(url.length);
                     emitUrlSpan(url, url);
                     if (trail) emitText(trail);
@@ -315,6 +328,9 @@ class _ReaderMixin {
             if (cls.indexOf("wv-md-code") !== -1)   { out += "`"  + txt + "`";  return; }
             if (cls.indexOf("wv-url-span") !== -1) {
                 const href = node.getAttribute("data-href") || txt;
+                // A misleading label was shown as its target: the label as written.
+                const srcLabel = node.getAttribute("data-wv-label");
+                if (srcLabel) { out += "[" + srcLabel + "](" + href + ")"; return; }
                 // data-href differs from the visible text → it was a
                 // markdown link [label](url); equal → bare URL.
                 if (href && href !== txt) { out += "[" + txt + "](" + href + ")"; return; }
@@ -473,8 +489,8 @@ class _ReaderMixin {
         // Order matters: longer markers first so **bold** beats *italic*,
         // [label](url) beats bare-URL, etc.
         const TOKEN = new RegExp(
-            // 1: link label, 2: link url
-            "\\[([^\\]\\n]+?)\\]\\(([^)\\s]+)\\)"
+            // 1: link label, 2: link url (lib/links.ts MD_LINK_SRC, bounded)
+            MD_LINK_SRC
             // 3: bold content
             + "|\\*\\*([\\s\\S]+?)\\*\\*"
             // 4: italic content (require non-space inner boundary so " * 3" doesn't trigger)
@@ -489,15 +505,25 @@ class _ReaderMixin {
             + "|(" + urlPattern(this.URL_SCHEME_ALT) + ")",
             "g"
         );
+        // Only the first WV_LINK_SCAN_MAX characters are tokenized; the rest
+        // is text (a bound on what a crafted comment can cost).
+        const scanned = text.length > WV_LINK_SCAN_MAX ? text.slice(0, WV_LINK_SCAN_MAX) : text;
         let last = 0, m;
-        while ((m = TOKEN.exec(text)) !== null) {
+        while ((m = TOKEN.exec(scanned)) !== null) {
             if (m.index > last)
                 frag.appendChild(doc.createTextNode(text.slice(last, m.index)));
             if (m[1] !== undefined && m[2] !== undefined) {
                 const label = m[1];
-                const url   = m[2].replace(this.TRAILING_RE, "");
+                const url   = wvTrimTrailing(m[2]);
+                // A link only when the address starts with a scheme the user
+                // has on, as in the sidebar; else the text as written.
+                if (!this.isLinkURL(url)) {
+                    frag.appendChild(doc.createTextNode(m[0]));
+                    last = m.index + m[0].length;
+                    continue;
+                }
                 if (seen) seen.add(url);
-                frag.appendChild(this._makeLink(doc, url, panel, label));
+                frag.appendChild(this._makeLink(doc, url, panel, wvLabelMisleads(label, url) ? url : label));
             } else if (m[3] !== undefined) {
                 const el = wvHtmlEl(doc, "strong");
                 el.appendChild(this._renderInlineMarkdown(m[3], doc, panel, seen));
@@ -518,7 +544,7 @@ class _ReaderMixin {
                 const el = wvHtmlEl(doc, "code", undefined, m[7], frag);
             } else if (m[8] !== undefined) {
                 const raw   = m[8];
-                const url   = raw.replace(this.TRAILING_RE, "");
+                const url   = wvTrimTrailing(raw);
                 const trail = raw.slice(url.length);
                 if (seen) seen.add(url);
                 frag.appendChild(this._makeLink(doc, url, panel));
@@ -891,9 +917,8 @@ class _ReaderMixin {
                         + aType + ".svg";
                     iconEl = this._makeChromeIcon(doc, url,
                         "annotation-icon wv-rel-icon");
-                    if (item.annotationColor) {
-                        iconEl.style.fill = item.annotationColor;
-                    }
+                    const fill = wvDataColor(item.annotationColor);
+                    if (fill) iconEl.style.fill = fill;
                 } else {
                     const name = (typeof item.getItemTypeIconName === "function")
                         ? item.getItemTypeIconName(true)
@@ -9098,6 +9123,12 @@ class _ReaderMixin {
                             if (openables.length > 1) { await lp._wvOpenItemsInOneReaderWindow(openables); return; }
                         }
                     }
+                    // WV-TEMP-128815 (open-where.ts): Shift on a note opens it the
+                    // other way from the note setting, Zotero's PDF rule.
+                    if (lp && !lp._wvDestroyed && typeof lp._wvViewItemsShiftNotes === "function"
+                        && await lp._wvViewItemsShiftNotes(ZP, orig, items, event, options)) {
+                        return;
+                    }
                 } catch (e) { Zotero.debug("[Weavero] viewItems consolidate err: " + e); }
                 return orig.call(ZP, items, event, options);
             };
@@ -10150,11 +10181,13 @@ class _ReaderMixin {
             // recreates its instance and drops our remembered reference).
             // This also makes the pair symmetric: a Shift+click in either
             // reader sends the target to the other.
+            // A reader is NEVER its own partner: a self-link (left by builds
+            // up to 1.2.1-dev.40 on Zotero 11, see _wvOpenDupReader) would
+            // drive the pane clicked from, on every Shift+click until the tab
+            // closed (MJT 2026-11-20).
             let partner: any = null;
-            const remembered =
-                (this._wvReaderAlive(reader._wvDupReader) && reader._wvDupReader)
-                || (this._wvReaderAlive(reader._wvDupSource) && reader._wvDupSource)
-                || null;
+            const other = (r: any) => (r && r !== reader && this._wvReaderAlive(r)) ? r : null;
+            const remembered = other(reader._wvDupReader) || other(reader._wvDupSource);
             if (remembered) {
                 partner = remembered;
             }
@@ -10188,20 +10221,141 @@ class _ReaderMixin {
             //  • snapshot: open at the top and scroll the #anchor in below (its
             //    init navigate() ignores href/hash, so the open-location is moot).
             const openLoc = (reader.type === "epub") ? location : null;
-            const dup: any = await Zotero.Reader.open(itemID, openLoc,
-                { openInWindow: true, allowDuplicate: true });
-            if (dup) {
-                reader._wvDupReader = dup;
-                dup._wvDupSource = reader;
-                try {
-                    if (typeof dup._waitForReader === "function") await dup._waitForReader();
-                } catch (e) {}
-                try { this._wvSetupReaderLinkClicks(dup); } catch (e) {}
-                await this._wvNavigateReaderPrimary(dup, location);
-                raise(dup);   // ensure the new window is on top
+            const dup: any = await this._wvOpenDupReader(reader, openLoc);
+            if (!dup || dup === reader) {
+                // No second reader to be had: leave the source alone rather
+                // than couple it to itself and move the pane clicked from.
+                Zotero.debug("[Weavero] _wvOpenInDupWindow: no second reader window opened");
+                return;
             }
+            reader._wvDupReader = dup;
+            dup._wvDupSource = reader;
+            try {
+                if (typeof dup._waitForReader === "function") await dup._waitForReader();
+            } catch (e) {}
+            try { this._wvSetupReaderLinkClicks(dup); } catch (e) {}
+            await this._wvNavigateReaderPrimary(dup, location);
+            raise(dup);   // ensure the new window is on top
         } catch (e) {
             Zotero.debug("[Weavero] _wvOpenInDupWindow err: " + e);
+        }
+    }
+
+    /** A NEW reader of `reader`'s document, in a window of its own, for the
+     *  Shift+click pair; null or `reader` itself when none could be opened.
+     *
+     *  Zotero 11 (zotero#6035): `Reader.open(id, loc, { openInWindow: true })`
+     *  hands back ANY open tab of the item -- "a tab for the item in any window
+     *  stands in for a window of its own" (xpcom/reader.js, 11.0-beta.4 and
+     *  main), whatever `allowDuplicate` says -- so the Shift+click's own source
+     *  tab came back as its "duplicate" (MJT 2026-11-20, 1.2.1-dev.40: the
+     *  target shown in the pane clicked from, with a red dot). The window it
+     *  would have opened is Zotero's own `_openInNewWindow`: a main window
+     *  whose one tab is an unloaded reader tab, loaded with `allowDuplicate`.
+     *  Zotero 9/10 keep `Reader.open`, which opens a ReaderWindow unless one of
+     *  the item is open -- a tab source always gets one. */
+    async _wvOpenDupReader(reader: any, openLoc: any) {
+        const R: any = Zotero.Reader;
+        const itemID = reader.itemID;
+        if (wvNativeWindows() && typeof R._openInNewWindow === "function") {
+            const item = Zotero.Items.get(itemID);
+            if (!item) return null;
+            return await R._openInNewWindow(item, { location: openLoc || undefined });
+        }
+        return await R.open(itemID, openLoc, { openInWindow: true, allowDuplicate: true });
+    }
+
+    /** Where a modified click (Ctrl/Cmd, Shift, middle) on `overlay` -- the
+     *  reader's own pick, `_getSelectableOverlay` -- sends the target: an
+     *  internal link's destination, a citation's first reference; null for
+     *  anything else.
+     *
+     *  A PDF's own link to a bare POINT (an XYZ destination) that crosses one
+     *  of Zotero 11's citation overlays takes that citation's entry instead:
+     *  the reference on the link's destination page whose top edge is nearest
+     *  the point, within 20 pt. The reader picks the SMALLEST overlay under the
+     *  pointer, and the PDF's link box is usually smaller than the citation's:
+     *  on "[13]" in Liu et al. 2021 (Sensors 21, 2687; 11.0-beta.4) the link,
+     *  108.9 pt2, beat the citation, 145.7 pt2, at every point, and the target
+     *  was (36, 526.3) on page 15, 5.3 pt above entry 13 -- a red dot beside
+     *  the entry, where the hover shows the entry's card (WV-TEMP-134867) (MJT
+     *  2026-11-20). Nearest, not first: in "[12-14]" with one PDF link per
+     *  number, "13" still lands on entry 13. A link going elsewhere (no entry
+     *  near its point) keeps its point and the dot. The plain click is
+     *  Zotero's and goes to the point. */
+    _wvLinkClickTarget(view: any, overlay: any): any {
+        try {
+            if (!overlay) return null;
+            if (overlay.type === "citation") {
+                const ref = overlay.references && overlay.references[0];
+                return ref && ref.position ? { position: ref.position } : null;
+            }
+            if (overlay.type !== "internal-link" || !overlay.destinationPosition) return null;
+            const dest = overlay.destinationPosition;
+            const entry = this._wvLinkEntryNear(view, overlay);
+            return { position: entry || dest };
+        }
+        catch (e) {
+            Zotero.debug("[Weavero] _wvLinkClickTarget err: " + e);
+            return null;
+        }
+    }
+
+    /** The entry (a citation reference's position) a PDF link to a bare point
+     *  stands for, or null -- see _wvLinkClickTarget. */
+    _wvLinkEntryNear(view: any, link: any): any {
+        try {
+            const Cu = (Components as any).utils;
+            const v = Cu.waiveXrays(view);
+            const l = Cu.waiveXrays(link);
+            const rectsOf = (p: any): number[][] => {
+                const out: number[][] = [];
+                const rs = p && p.rects;
+                const n = rs && typeof rs.length === "number" ? rs.length : 0;
+                for (let i = 0; i < n; i++) {
+                    const r = rs[i];
+                    if (r && r.length >= 4) out.push([Number(r[0]), Number(r[1]), Number(r[2]), Number(r[3])]);
+                }
+                return out;
+            };
+            const dest = l.destinationPosition;
+            const d0 = rectsOf(dest)[0];
+            // The same "no text region" test as _wvNavigateView's dot.
+            if (!d0 || !(Math.abs(d0[2] - d0[0]) < 5 || Math.abs(d0[3] - d0[1]) < 5)) return null;
+            const px = d0[0], py = d0[3];
+            const destPage = Number(dest.pageIndex);
+            const pageIndex = Number(l.position && l.position.pageIndex);
+            const mine = rectsOf(l.position);
+            const page = v._pdfPages && v._pdfPages[pageIndex];
+            const overlays = page && page.overlays;
+            const n = overlays && typeof overlays.length === "number" ? overlays.length : 0;
+            if (!mine.length || !n) return null;
+            const crosses = (rs: number[][]) => rs.some((r) => mine.some((m) =>
+                Math.min(r[2], m[2]) > Math.max(r[0], m[0]) && Math.min(r[3], m[3]) > Math.max(r[1], m[1])));
+            let best: any = null, bestD = 20;
+            for (let i = 0; i < n; i++) {
+                const o = overlays[i];
+                if (!o || o.type !== "citation" || !o.position || Number(o.position.pageIndex) !== pageIndex) continue;
+                if (!crosses(rectsOf(o.position))) continue;
+                const refs = o.references;
+                const k = refs && typeof refs.length === "number" ? refs.length : 0;
+                for (let j = 0; j < k; j++) {
+                    const pos = refs[j] && refs[j].position;
+                    if (!pos || Number(pos.pageIndex) !== destPage) continue;
+                    const rs = rectsOf(pos);
+                    if (!rs.length) continue;
+                    const x0 = Math.min(...rs.map((r) => r[0])), x1 = Math.max(...rs.map((r) => r[2]));
+                    const top = Math.max(...rs.map((r) => r[3]));
+                    if (px < x0 - 20 || px > x1 + 20) continue;
+                    const dist = Math.abs(top - py);
+                    if (dist <= bestD) { best = pos; bestD = dist; }
+                }
+            }
+            return best;
+        }
+        catch (e) {
+            Zotero.debug("[Weavero] _wvLinkEntryNear err: " + e);
+            return null;
         }
     }
 
@@ -10300,15 +10454,7 @@ class _ReaderMixin {
                     if (!overlay || overlay !== downOverlay) return;
                     // Resolve the target: internal-link (figures / section refs)
                     // and citation (in-text references).
-                    let targetLoc = null;
-                    if (overlay.type === "internal-link" && overlay.destinationPosition) {
-                        targetLoc = { position: overlay.destinationPosition };
-                    }
-                    else if (overlay.type === "citation"
-                        && overlay.references && overlay.references[0]
-                        && overlay.references[0].position) {
-                        targetLoc = { position: overlay.references[0].position };
-                    }
+                    const targetLoc = plugin._wvLinkClickTarget(sourceView, overlay);
                     if (!targetLoc) return;
                     // Keep the source pane put: no-op its navigate() for this
                     // one synchronous pointerup pass (the reader's handler still
@@ -10847,9 +10993,16 @@ class _ReaderMixin {
                 }
             } catch(err) {}
 
+            // When the annotation popup's own pointerdown handler (below) took a
+            // press; a mousedown of the same press is then not run again.
+            let popupPressAt = -1;
+            const popupPressTaken = (e: any) => popupPressAt >= 0 && e && typeof e.timeStamp === "number"
+                && Math.abs(e.timeStamp - popupPressAt) < 1000 && !!(e.target && e.target.closest
+                && e.target.closest(".annotation-popup .wv-md-preview"));
             // mousedown handler in the iframe — fires URL action on first click,
             // independent of whatever Zotero does on row selection.
             const sidebarMouseDown = (e) => {
+                if (e.type === "mousedown" && popupPressTaken(e)) return;
                 if (e.button !== 0 && e.button !== 1) return;
                 if (!e.target || !e.target.closest) return;
                 // A comment link opened where its modifiers say (open-where.ts):
@@ -11146,6 +11299,7 @@ class _ReaderMixin {
             // event bubbles up to Zotero's row-select handler.
             const sidebarPreviewClick = (e) => {
                 try {
+                    if (e && e.type === "mousedown" && popupPressTaken(e)) return;
                     const target = e && e.target;
                     if (!target || !target.closest) return;
                     if (target.closest(".wv-url-span")) {
@@ -11204,6 +11358,30 @@ class _ReaderMixin {
             };
             idoc.addEventListener("mousedown", sidebarPreviewClick, true);
 
+            // The annotation popup in the view (the "pop-down" under a highlight
+            // while the sidebar is closed). The reader's FocusManager cancels every
+            // pointerdown in reader.html outside its exemption list (zotero/reader
+            // focus-manager.js _handlePointerDown: inputs, [contenteditable="true"],
+            // .annotation, ...), and the preview drawn over the comment is none of
+            // them: a cancelled pointerdown sends no mousedown, so neither the link
+            // handler nor the edit forwarder above heard the press -- "Nothing
+            // happens when you click on the text" (issue #68; links in that popup,
+            // issue #62, the same reporter). The sidebar's preview sits inside
+            // `.annotation` (exempt) and keeps its mousedown path. Here the press
+            // itself is taken: both handlers cancel it when they act, which keeps a
+            // mousedown from following, and `popupPressAt` covers a browser that
+            // sends one anyway.
+            const popupPointerDown = (e: any) => {
+                try {
+                    const t = e && e.target;
+                    if (!t || !t.closest || !t.closest(".annotation-popup .wv-md-preview")) return;
+                    popupPressAt = e.timeStamp;
+                    sidebarMouseDown(e);
+                    if (!e.defaultPrevented) sidebarPreviewClick(e);
+                } catch (er) {}
+            };
+            idoc.addEventListener("pointerdown", popupPointerDown, true);
+
             // Proactive Delete/Backspace handler — see
             // _makeProactiveDeleteKeydown for the rationale (skips the
             // ~100–300 ms wait between keystroke and the notifier
@@ -11228,7 +11406,7 @@ class _ReaderMixin {
             // handler can find the data record.
             this._readerObservers.set(reader, {
                 observer, sidebarMouseDown, sidebarFocusIn, sidebarFocusOut,
-                sidebarPreviewClick,
+                sidebarPreviewClick, popupPointerDown,
                 proactiveOuterDoc, proactiveOuterWin,
                 proactiveOuterWindow: iwin
             });
@@ -11436,7 +11614,7 @@ class _ReaderMixin {
             const want = [];
             let mNow;
             while ((mNow = reNow.exec(textNow)) !== null) {
-                want.push(mNow[0].replace(this.TRAILING_RE, ""));
+                want.push(wvTrimTrailing(mNow[0]));
             }
             const have = [];
             for (const s of existing) have.push((s.textContent || "").trim());
@@ -13942,6 +14120,40 @@ class _ReaderMixin {
         return null;
     }
 
+    /** A rich comment's preview (issue #68): Zotero's own formatting elements
+     *  of `contentEl` (b, i, sub, sup) kept as they are, every text run in them
+     *  linkified (and given Markdown) by `_buildCommentFragment`, `<br>` kept,
+     *  a block wrapper (div / p) on its own line as _readCommentTextWithBreaks
+     *  reads it. Built in the comment's own document. */
+    _wvBuildFormattedCommentFragment(contentEl: any, ctx: any) {
+        const doc = ctx.doc;
+        const frag = doc.createDocumentFragment();
+        const FORMATS = new Set(["B", "I", "SUB", "SUP"]);
+        const walk = (node: any, parent: any) => {
+            for (const c of Array.from(node.childNodes) as any[]) {
+                if (c.nodeType === 3) {
+                    const t = c.nodeValue || "";
+                    if (t) parent.appendChild(this._buildCommentFragment(t, ctx));
+                    continue;
+                }
+                if (c.nodeType !== 1) continue;
+                const tag = String(c.tagName || "").toUpperCase();
+                if (tag === "BR") { parent.appendChild(doc.createElement("br")); continue; }
+                if (FORMATS.has(tag)) {
+                    const el = doc.createElement(tag.toLowerCase());
+                    parent.appendChild(el);
+                    walk(c, el);
+                    continue;
+                }
+                const block = tag === "P" || tag === "DIV";
+                if (block && parent.lastChild && parent.lastChild.nodeName !== "BR") parent.appendChild(doc.createElement("br"));
+                walk(c, parent);
+            }
+        };
+        walk(contentEl, frag);
+        return frag;
+    }
+
     /**
      * Render a sibling .wv-md-preview panel inside `commentEl` mirroring the
      * .content text with URLs and markdown formatted for display. Keeps
@@ -14108,8 +14320,17 @@ class _ReaderMixin {
         // Cache key encodes the markdown toggle + the current set of
         // enabled URL schemes (via URL_SCHEME_ALT) so flipping any
         // link-related pref invalidates the cache and forces a rebuild.
+        // Zotero 11's rich comments keep their formatting IN the text ("Zotero
+        // HTML-flavored plain-text": `<b>`, `<i>`, `<sub>`, `<sup>`), drawn in
+        // .content as those elements (zotero/reader editor.js walkFormat). The
+        // text read above has none of it, so the preview showed a formatted
+        // comment as plain text the moment it held a link (issue #68). A comment
+        // with formatting is drawn from .content's own elements instead, each
+        // text run linkified on its own; one without keeps the text path below.
+        const fmtEl = contentEl.querySelector("b, i, sub, sup");
         const cacheKey = (useMd ? "m" : "") + ":"
-            + this.URL_SCHEME_ALT + ":" + norm;
+            + this.URL_SCHEME_ALT + ":" + norm
+            + (fmtEl ? ":f:" + contentEl.innerHTML : "");
         if (preview && preview.getAttribute("data-source") === cacheKey) return false;
 
         // Per-comment rebuild rate limit. When Zotero's React reconciliation
@@ -14174,11 +14395,13 @@ class _ReaderMixin {
         // Sidebar preview shows STRIPPED markers (formatted view; raw
         // stays visible in .content during edit mode) and supports
         // multi-line comments via \n → <br> in plain-text segments.
-        const frag = this._buildCommentFragment(text, {
+        const fragCtx = {
             doc, useMd, isTreeMode: false,
             stripMarkers: true,
             lineBreaks: true,
-        });
+        };
+        const frag = fmtEl ? this._wvBuildFormattedCommentFragment(contentEl, fragCtx)
+            : this._buildCommentFragment(text, fragCtx);
 
         while (preview.firstChild) preview.removeChild(preview.firstChild);
         preview.appendChild(frag);
@@ -14519,7 +14742,7 @@ class _ReaderMixin {
         }
         if (dead.length && srcComment) {
             const map = new Map();
-            const re = /\[([^\]\n]+?)\]\(([^)\s]+)\)/g;
+            const re = new RegExp(MD_LINK_SRC, "g");
             let m;
             while ((m = re.exec(srcComment)) !== null) {
                 if (!map.has(m[1])) map.set(m[1], m[2]);
@@ -14527,8 +14750,8 @@ class _ReaderMixin {
             for (const a of dead) {
                 const label = (a.textContent || "").trim();
                 const url = map.get(label);
-                if (url && this.hasURI(url)) {
-                    const link = this._makeLink(doc, url, { hidePopup() {} }, a.textContent);
+                if (url && this.isLinkURL(url)) {
+                    const link = this._makeLink(doc, url, { hidePopup() {} }, wvLabelMisleads(label, url) ? url : a.textContent);
                     if (a.parentNode) a.parentNode.replaceChild(link, a);
                 }
             }
@@ -17506,6 +17729,16 @@ class _ReaderMixin {
                     // previews, VS Code hovers), so reappearing is the correct
                     // behaviour.
                     if (!popup) { try { (this as any)._selectedOverlay = null; } catch (_) {} }
+                    // WV-TEMP-134867 (preview-highlight.ts _wvCitCardFor): a PDF link's
+                    // picture over a reference card shows the card -- one popup per
+                    // citation. Before the hold below, which then leaves the card alone.
+                    try {
+                        const lp0: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (lp0 && popup && popup.type === "internal-link" && typeof lp0._wvCitCardFor === "function") {
+                            const cit = lp0._wvCitCardFor(pv, popup);
+                            if (cit) lp0._wvCitCardSwap(pv, popup, cit);
+                        }
+                    } catch (_) {}
                     // The entry highlight (preview-highlight.ts) HOLDS an
                     // internal-link preview until its own picture is ready. Every
                     // call settles a held one first: a close or a newer popup

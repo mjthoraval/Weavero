@@ -37,7 +37,8 @@ import { wvLivePlugin } from "../lib/live";
 import { wvInjectStyle, wvRemoveStyle } from "../lib/style";
 import { wvMenuItem, wvMenuSeparator } from "../lib/menu";
 import { wvMainWins } from "../lib/windows";
-import { urlPattern, schemeAltPart, joinSchemeAlt, urlLinkClass } from "../lib/links";
+import { urlPattern, schemeAltPart, joinSchemeAlt, urlLinkClass, WV_LINK_SCAN_MAX, WV_NOTE_SCAN_MAX } from "../lib/links";
+import { wvTrimTrailing } from "../lib/text";
 import { URL_SCHEMES } from "./url";
 import { wvTimeout, wvClearTimeout } from "../lib/timers";
 import { wvListen } from "../lib/listen";
@@ -490,7 +491,7 @@ function blBrokenKey(o: WvLkOut): string | null {
     return (o.lib != null ? String(o.lib) : "g" + o.group) + "/" + o.key;
 }
 /** The key an item URI ends with, and the group it names (if any). */
-function blUriKey(uri: string): string { return String(uri || "").replace(/\/+$/, "").split("/").pop() || ""; }
+function blUriKey(uri: string): string { return wvTrimTrailing(String(uri || ""), "/").split("/").pop() || ""; }
 function blUriGroup(uri: string): number | null { const m = /\/groups\/(\d+)\//.exec(String(uri || "")); return m ? Number(m[1]) : null; }
 
 /** One parsed link: the library token, the item keys (or legacy ids) it
@@ -508,7 +509,47 @@ function unescapeEntities(s: string): string {
 }
 /** HTML (a note body) to the text the reader sees. */
 function htmlToText(s: string): string {
-    return unescapeEntities(s.replace(/<br\s*\/?>/gi, " ").replace(/<\/(p|div|li|h\d|blockquote|tr)>/gi, " ").replace(/<[^>]+>/g, "")).replace(/\s+/g, " ");
+    return unescapeEntities(stripTags(s.replace(/<br\s*\/?>/gi, " ").replace(/<\/(p|div|li|h\d|blockquote|tr)>/gi, " "))).replace(/\s+/g, " ");
+}
+
+/** `s` with its tags removed, as `s.replace(/<[^>]+>/g, "")` -- in one pass:
+ *  that pattern retries the rest of the text at each `<` with no `>` after
+ *  it, quadratic on crafted HTML. */
+function stripTags(s: string): string {
+    let out = "", at = 0;
+    for (;;) {
+        const lt = s.indexOf("<", at);
+        if (lt < 0) break;
+        const gt = s.indexOf(">", lt + 1);
+        if (gt < 0) break;
+        if (gt === lt + 1) { out += s.slice(at, lt + 1); at = lt + 1; continue; }
+        out += s.slice(at, lt);
+        at = gt + 1;
+    }
+    return out + s.slice(at);
+}
+
+const isWordCode = (c: number) => (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95;
+
+/** The label of every `<a …>label</a>` in a note's HTML, as [start, end) --
+ *  what `/<a\b[^>]*>([\s\S]*?)<\/a>/gi` finds, in one pass: that pattern
+ *  scanned the rest of the note from every anchor left open (quadratic). */
+function anchorLabelRanges(text: string): Array<[number, number]> {
+    const out: Array<[number, number]> = [];
+    const lower = text.toLowerCase();
+    let i = 0;
+    for (;;) {
+        i = lower.indexOf("<a", i);
+        if (i < 0) break;
+        if (isWordCode(lower.charCodeAt(i + 2))) { i += 2; continue; }
+        const gt = lower.indexOf(">", i + 2);
+        if (gt < 0) break;
+        const close = lower.indexOf("</a>", gt + 1);
+        if (close < 0) break;
+        out.push([gt + 1, close]);
+        i = close + 4;
+    }
+    return out;
 }
 
 /** The link forms the index understands (the ones Weavero emits and
@@ -523,7 +564,7 @@ function htmlToText(s: string): string {
  *  Collection and search links name no item: null. */
 export function wvBlParseLink(raw: string): WvBlLink | null {
     try {
-        const url = unescapeEntities(String(raw || "")).replace(/[.,;:)\]]+$/, "");
+        const url = wvTrimTrailing(unescapeEntities(String(raw || "")), ".,;:)]");
         const m = /^zotero:\/\/(select|open|open-pdf|note)\/([^?#]*)(?:\?([^#]*))?/.exec(url);
         if (!m) return null;
         const host = m[1];
@@ -591,6 +632,52 @@ export interface WvBlRef {
     annotationKey?: string;
 }
 
+/** The `<span …>`, `</span …>` and `<img …>` tags of a note's lowercased
+ *  HTML, in order: each from its `<` to the first `>` after it (the extent
+ *  `/<\/?span\b[^>]*>/` gives), the scan going on after it. */
+function blTags(lower: string): Array<{ at: number; end: number; name: string; close: boolean }> {
+    const out: Array<{ at: number; end: number; name: string; close: boolean }> = [];
+    let i = 0;
+    for (;;) {
+        const lt = lower.indexOf("<", i);
+        if (lt < 0) break;
+        let j = lt + 1, close = false;
+        if (lower.charCodeAt(j) === 47) { close = true; j++; }
+        const name = lower.startsWith("span", j) && !isWordCode(lower.charCodeAt(j + 4)) ? "span"
+            : !close && lower.startsWith("img", j) && !isWordCode(lower.charCodeAt(j + 3)) ? "img" : "";
+        if (!name) { i = lt + 1; continue; }
+        const gt = lower.indexOf(">", j + name.length);
+        if (gt < 0) break;
+        out.push({ at: lt, end: gt + 1, name, close });
+        i = gt + 1;
+    }
+    return out;
+}
+
+/** The first `data-citation="…"` / `data-annotation="…"` in html[from, to)
+ *  (`lower` is html lowercased), as `/\bdata-(citation|annotation)\s*=\s*"([^"]*)"/i`
+ *  finds it, in one pass. */
+function blDataAttr(html: string, lower: string, from: number, to: number): { kind: string; value: string } | null {
+    let i = from;
+    for (;;) {
+        const d = lower.indexOf("data-", i);
+        if (d < 0 || d >= to) return null;
+        i = d + 5;
+        if (d > 0 && isWordCode(lower.charCodeAt(d - 1))) continue;
+        const kind = lower.startsWith("citation", d + 5) ? "citation" : lower.startsWith("annotation", d + 5) ? "annotation" : "";
+        if (!kind) continue;
+        let p = d + 5 + kind.length;
+        while (p < to && /\s/.test(html[p])) p++;
+        if (html[p] !== "=") continue;
+        p++;
+        while (p < to && /\s/.test(html[p])) p++;
+        if (html[p] !== "\"") continue;
+        const q = html.indexOf("\"", p + 1);
+        if (q < 0 || q >= to) return null;
+        return { kind, value: html.slice(p + 1, q) };
+    }
+}
+
 function wvBlDecodeAttr(v: string): any {
     try { return JSON.parse(decodeURIComponent(unescapeEntities(v))); } catch (e) { return null; }
 }
@@ -603,25 +690,39 @@ function wvBlDecodeAttr(v: string): any {
 export function wvBlExtractRefs(html: string): WvBlRef[] {
     const out: WvBlRef[] = [];
     if (!html || (html.indexOf("data-citation") < 0 && html.indexOf("data-annotation") < 0)) return out;
-    const open = /<(span|img)\b[^>]*?\bdata-(citation|annotation)\s*=\s*"([^"]*)"[^>]*>/gi;
-    let m: RegExpExecArray | null;
-    while ((m = open.exec(html)) !== null) {
-        const tag = m[1].toLowerCase();
-        const data = wvBlDecodeAttr(m[3]);
+    html = blScanned(html, true);
+    // The tags are listed in one pass and each span's close found by
+    // matching (blTags): a pattern that retried the rest of the note at every
+    // tag left open, and a depth count re-run to the end for every unclosed
+    // span, were quadratic on crafted HTML.
+    const lower = html.toLowerCase();
+    const tags = blTags(lower);
+    const closeOf = new Map<number, number>();
+    const stack: number[] = [];
+    tags.forEach((t, k) => {
+        if (t.name !== "span") return;
+        if (!t.close) stack.push(k);
+        else if (stack.length) closeOf.set(stack.pop()!, k);
+    });
+    let from = 0;
+    for (let k = 0; k < tags.length; k++) {
+        const tg = tags[k];
+        if (tg.close || tg.at < from) continue;
+        const a = blDataAttr(html, lower, tg.at, tg.end - 1);
+        if (!a) continue;
+        const tag = tg.name;
+        const data = wvBlDecodeAttr(a.value);
         if (!data) continue;
-        let end = open.lastIndex;
+        let end = tg.end;
         let inner = "";
         if (tag === "span") {
-            const re = /<\/?span\b[^>]*>/gi;
-            re.lastIndex = open.lastIndex;
-            let depth = 1, t: RegExpExecArray | null;
-            while (depth > 0 && (t = re.exec(html)) !== null) {
-                depth += t[0][1] === "/" ? -1 : 1;
-                if (depth === 0) { inner = html.slice(open.lastIndex, t.index); end = re.lastIndex; }
-            }
-            if (depth !== 0) continue;
-            open.lastIndex = end;
+            const c = closeOf.get(k);
+            if (c === undefined) continue;
+            inner = html.slice(tg.end, tags[c].at);
+            end = tags[c].end;
+            from = end;
         }
+        const m = { index: tg.at, 2: a.kind };
         const label = tag === "img" ? "[image]" : htmlToText(inner).trim();
         if (m[2].toLowerCase() === "citation") {
             const cites = (Array.isArray(data.citationItems) ? data.citationItems : [])
@@ -679,6 +780,14 @@ function blNoteText(stored: string): string {
     return m && /<\/div>$/.test(stored) ? stored.slice(m[0].length, stored.length - 6) : stored;
 }
 
+/** What of a source the index scans: a note up to WV_NOTE_SCAN_MAX
+ *  characters, an annotation comment up to WV_LINK_SCAN_MAX (what the
+ *  comment renderers draw links in). */
+function blScanned(text: string, html: boolean): string {
+    const max = html ? WV_NOTE_SCAN_MAX : WV_LINK_SCAN_MAX;
+    return text.length > max ? text.slice(0, max) : text;
+}
+
 /** Every zotero:// link in `text` as written, with its position: each one
  *  its own, the same address written twice included (MJT 2026-10-28, "Do
  *  one row per written link"; until then a repeat was dropped). In a note
@@ -687,15 +796,8 @@ function blNoteText(stored: string): string {
 export function wvBlExtractLinks(text: string, html = false): { url: string; at: number }[] {
     const out: { url: string; at: number }[] = [];
     if (!text || text.indexOf("zotero://") < 0) return out;
-    const labels: Array<[number, number]> = [];
-    if (html) {
-        const ra = /<a\b[^>]*>([\s\S]*?)<\/a>/gi;
-        let a: RegExpExecArray | null;
-        while ((a = ra.exec(text)) !== null) {
-            const s = a.index + a[0].length - a[1].length - 4;
-            labels.push([s, s + a[1].length]);
-        }
-    }
+    text = blScanned(text, html);
+    const labels: Array<[number, number]> = html ? anchorLabelRanges(text) : [];
     const re = new RegExp(urlPattern(schemeAltPart("zotero", "://")), "g");
     let m: RegExpExecArray | null;
     while ((m = re.exec(text)) !== null) {
@@ -720,20 +822,13 @@ const BL_EXT_ALT = joinSchemeAlt(["https?:\\/\\/", "\\bwww\\."].concat(URL_SCHEM
 export function wvBlExtractExternal(text: string, html = false): { url: string; at: number }[] {
     const out: { url: string; at: number }[] = [];
     if (!text) return out;
-    const labels: Array<[number, number]> = [];
-    if (html) {
-        const ra = /<a\b[^>]*>([\s\S]*?)<\/a>/gi;
-        let a: RegExpExecArray | null;
-        while ((a = ra.exec(text)) !== null) {
-            const s = a.index + a[0].length - a[1].length - 4;
-            labels.push([s, s + a[1].length]);
-        }
-    }
+    text = blScanned(text, html);
+    const labels: Array<[number, number]> = html ? anchorLabelRanges(text) : [];
     const re = new RegExp(urlPattern(BL_EXT_ALT), "g");
     let m: RegExpExecArray | null;
     while ((m = re.exec(text)) !== null) {
         if (m.index === re.lastIndex) re.lastIndex++;
-        const url = m[0].replace(/[.,;:!?]+$/, ""), at = m.index;
+        const url = wvTrimTrailing(m[0], ".,;:!?"), at = m.index;
         if (!url || labels.some(([s, e]) => at >= s && at < e)) continue;
         out.push({ url, at });
     }
@@ -757,9 +852,7 @@ function textSegs(s: string): WvBlSeg[] {
     const re = new RegExp(BARE_URL.source, "gi");
     let last = 0, m: RegExpExecArray | null;
     while ((m = re.exec(s)) !== null) {
-        let url = m[0];
-        const trail = /[.,;:!?)]+$/.exec(url);
-        if (trail) url = url.slice(0, url.length - trail[0].length);
+        const url = wvTrimTrailing(m[0], ".,;:!?)");
         if (!url) continue;
         if (m.index > last) out.push({ t: s.slice(last, m.index) });
         out.push({ t: url, href: url });

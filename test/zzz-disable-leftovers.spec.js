@@ -55,7 +55,8 @@ describe("Weavero — a disable leaves no Weavero code in Zotero", function () {
         const Z = /** @type {any} */ (Zotero);
         for (const [o, l] of [[Z.Reader, "Zotero.Reader"], [Z.Notes, "Zotero.Notes"], [Z.Utilities && Z.Utilities.Internal, "Zotero.Utilities.Internal"],
             [Z.Item && Z.Item.prototype, "Zotero.Item.prototype"], [Z.Session, "Zotero.Session"], [Z.Prefs, "Zotero.Prefs"], [Z.Notifier, "Zotero.Notifier"],
-            [Z.ItemTreeManager, "Zotero.ItemTreeManager"], [Z.ItemPaneManager, "Zotero.ItemPaneManager"], [Z.MenuManager, "Zotero.MenuManager"]]) scan(o, l);
+            [Z.ItemTreeManager, "Zotero.ItemTreeManager"], [Z.ItemPaneManager, "Zotero.ItemPaneManager"], [Z.MenuManager, "Zotero.MenuManager"],
+            [Z.PDFWorker, "Zotero.PDFWorker"]]) scan(o, l);
         // The Zotero global itself: Weavero objects kept there die with a nuked scope.
         for (const n of Object.getOwnPropertyNames(Z)) {
             if (!/^_?_wv|^_weavero/.test(n)) continue;
@@ -71,6 +72,20 @@ describe("Weavero — a disable leaves no Weavero code in Zotero", function () {
             try { scan(w.Zotero_Tabs.tabHooks, L + ".Zotero_Tabs.tabHooks"); for (const k of Object.keys(w.Zotero_Tabs.tabHooks || {})) scan(w.Zotero_Tabs.tabHooks[k], L + ".tabHooks." + k); } catch (e) {}
             scan(w.ZoteroContextPane, L + ".ZoteroContextPane");
             scan(w.document.getElementById("zotero-context-pane-inner"), L + "#zotero-context-pane-inner");
+            // The window's own custom-element classes Weavero wraps (each window has its own
+            // registry): the Abstract section's feed render (WV-TEMP-feedabstract) and the
+            // Advanced Search pane's `search` setter (WV-TEMP-advsrchcollapse, an ACCESSOR,
+            // which scan() passes over).
+            for (const tag of ["abstract-box", "advanced-search-pane"]) {
+                try { const C = w.customElements && w.customElements.get(tag); if (C) scan(C.prototype, L + "." + tag + ".prototype"); } catch (e) {}
+                try {
+                    const C = w.customElements && w.customElements.get(tag);
+                    for (const n of (C ? Object.getOwnPropertyNames(C.prototype) : [])) {
+                        const d = Object.getOwnPropertyDescriptor(C.prototype, n);
+                        if (d && ((d.get && looksOurs(d.get)) || (d.set && looksOurs(d.set)))) H.push(L + "." + tag + ".prototype." + n + " accessor is Weavero's");
+                    }
+                } catch (e) {}
+            }
             const views = (w.ZoteroPane && w.ZoteroPane.libraryViews) ? [...w.ZoteroPane.libraryViews] : [w.ZoteroPane];
             let vi = 0;
             for (const v of views) {

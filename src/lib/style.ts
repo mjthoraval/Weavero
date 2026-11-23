@@ -86,6 +86,26 @@ export function wvFilterTileRules(prefix: string, dark: "class" | "media" | "non
     return out;
 }
 
+/** A colour taken from a library's data (a tag's colour: a synced setting any
+ *  editor of a group writes; an annotation's colour: Zotero checks it
+ *  unanchored) as a hex colour -- #rgb, #rgba, #rrggbb or #rrggbbaa -- or null
+ *  for anything else. Such a colour goes to a colour property
+ *  (`backgroundColor`, `fill`, a variable read only by one), never into a
+ *  `background` shorthand or a style string. */
+export function wvDataColor(c: unknown): string | null {
+    return typeof c === "string" && /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(c) ? c : null;
+}
+
+/** A context-filled icon (`-moz-context-properties: fill`) painted `fill`:
+ *  "currentColor", or a data colour through `wvDataColor`; nothing when it is
+ *  neither. Set as properties, never as a style string. */
+export function wvSetIconFill(img: any, fill: unknown): void {
+    const c = fill === "currentColor" ? "currentColor" : wvDataColor(fill);
+    if (!img || !c) return;
+    img.style.setProperty("-moz-context-properties", "fill");
+    img.style.setProperty("fill", c);
+}
+
 /** Remove the stylesheet `id` from `doc` if present. */
 export function wvRemoveStyle(doc: any, id: string): void {
     try {

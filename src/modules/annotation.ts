@@ -1,4 +1,4 @@
-import { MD_REGEX } from "../lib/links";
+import { MD_REGEX, wvIsWebURL } from "../lib/links";
 import { wvListen } from "../lib/listen";
 import { wvSelectLibraryTab } from "../lib/windows";
 import { normalize as wvNormalize } from "../lib/text";
@@ -35,6 +35,16 @@ class _AnnotationMixin {
     // Thin adapter over src/lib/text.ts normalize() (pure, Node-testable).
     normalize(t) { return wvNormalize(t); }
     hasURI(t)    { return !!t && this.URL_REGEX.test(this.normalize(t)); }
+
+    /** Whether `t` IS a link Weavero draws: a scheme the user has on at its
+     *  very start (the rule of plugin-api.ts openLink). A markdown link's
+     *  address is checked with this, never with `hasURI`: an enabled scheme
+     *  further in (`other:…&x=https://…`) does not make the address one. */
+    isLinkURL(t) {
+        if (!t) return false;
+        const m = this.URL_REGEX.exec(this.normalize(t));
+        return !!m && m.index === 0;
+    }
 
     /** A URL that leaves Zotero -- any but zotero:// -- in `t`: what the
      *  filters' Has External Link looks for (MJT 2026-10-30, "Make the Has
@@ -798,11 +808,13 @@ class _AnnotationMixin {
                         }
                     });
             }
-            // View Online — only when the item has a URL field.
-            // Mirrors Zotero's `ViewOptions.online` check.
+            // View Online — only when the item's URL field is a web page
+            // (an http(s) address; a file or an application link is not
+            // opened from here). Mirrors Zotero's `ViewOptions.online` check.
             let onlineUrl = "";
             try {
-                onlineUrl = (item.getField && item.getField("url")) || "";
+                const u = String((item.getField && item.getField("url")) || "").trim();
+                if (wvIsWebURL(u)) onlineUrl = u;
             } catch (e) {}
             if (onlineUrl) {
                 append("weavero-menu-tab-view-online", () => {

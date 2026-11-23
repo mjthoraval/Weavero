@@ -5,7 +5,25 @@
 // The in-Zotero normalize.spec.js remains as the thin adapter check
 // (verifies the plugin methods delegate here correctly).
 import { expect } from "chai";
-import { normalize, makeInvisibleRe, TRAILING_RE } from "../../src/lib/text";
+import { normalize, makeInvisibleRe, TRAILING_RE, wvTrimTrailing } from "../../src/lib/text";
+
+describe("lib/text — wvTrimTrailing()", () => {
+    it("drops a URL's trailing punctuation, as TRAILING_RE does", () => {
+        for (const s of ["https://x.org.", "https://x.org)", 'https://x.org)."', "https://x.org/a1", "", "...", "a.b,c"]) {
+            expect(wvTrimTrailing(s), s).to.equal(s.replace(TRAILING_RE, ""));
+        }
+    });
+    it("takes its own character set", () => {
+        expect(wvTrimTrailing("a//b///", "/")).to.equal("a//b");
+        expect(wvTrimTrailing("x.;)", ".;")).to.equal("x.;)");
+    });
+    it("stays linear on a long run of punctuation that is not at the end", () => {
+        const s = "https://a" + ".".repeat(200000) + "a";
+        const t0 = Date.now();
+        expect(wvTrimTrailing(s)).to.equal(s);
+        expect(Date.now() - t0).to.be.below(200);
+    });
+});
 
 describe("lib/text — normalize()", () => {
     it("returns empty string for null/undefined/empty input", () => {

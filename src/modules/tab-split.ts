@@ -3137,10 +3137,32 @@ class _TabSplitMixin {
             const id = side === "left" ? s.left : s.right;
             const own = (p as any)[side];
             const r: any = id && own && Zotero.Reader.getByTabID(id);
-            if (!r || typeof r.toggleSidebar !== "function") continue;
+            if (!r) continue;
+            // A reader opened INTO the split (Open PDF in Split View from the items
+            // list, the PDF not open yet) exists before its internal reader, and the
+            // ReaderInstance proxy (xpcom/reader.js) forwards toggleSidebar to
+            // `_internalReader` only once that exists: until init `r.toggleSidebar`
+            // is undefined, the side was skipped, and the reader started with
+            // Zotero's own sidebarOpen -- the new side came up with its sidebar open
+            // (MJT 2026-11-19, item 14). Apply this side's state once it is up, if
+            // the same split still keeps its own panes.
+            if (!r._internalReader && r._initPromise && typeof r._initPromise.then === "function") {
+                const sid = s.id;
+                this._wvTabSplitRing("sidebar " + side + " waits for its reader to start (" + id + ")");
+                r._initPromise.then(() => {
+                    try {
+                        const lp: any = wvLivePlugin();
+                        const st = win._wvTSplitPanes;
+                        if (!lp || win.closed || !st || st.id !== sid || !r._internalReader) return;
+                        const live = lp._wvTabSplits(win).find((x: any) => x.id === sid);
+                        if (live) lp._wvTabSplitSidebarsApply(win, live);
+                    } catch (e) { Zotero.debug("[Weavero] split sidebar after init err: " + e); }
+                }, () => {});
+                continue;
+            }
+            if (typeof r.toggleSidebar !== "function") continue;
             try { r.toggleSidebar(!!own.sb); if (own.sbW) r.setSidebarWidth(own.sbW); } catch (e) {}
         }
-        void win;
     }
 
     /** Zotero_Tabs.updateSidebarLayout while a split that keeps its own panes is on

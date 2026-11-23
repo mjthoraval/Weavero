@@ -49,6 +49,15 @@ import { wvLinkVars } from "../lib/links";
 import { wvAltReveal } from "../lib/menubar";
 import { wvStorePath, wvStoreWrite, wvStoreRead } from "../lib/store";
 
+/** The right-click "Copy Link" menu's state, PER MAIN WINDOW (its listeners on
+ *  that window's document and frames, its element, the window). It was one
+ *  plugin field until 2026-11-20: only the first window ever got the menu, and
+ *  the field kept that window after it closed (reader-leak.spec.js, "a plugin
+ *  field keeps the closed window": plugin._urlMenuState). Built by
+ *  _setupTreeClickDelegate, removed by _wvUrlMenuTeardown at the window's close
+ *  and in destroy() (through _teardownTreeClickDelegate). */
+const URL_MENUS: WeakMap<any, any> = new WeakMap();
+
 
 /** about:addons page rules for the Zotero 11 sidebar (see _wvPMEnsureSidebar).
  *  Zotero's build appends `.main-search, #sidebar { display: none; }`,
@@ -97,6 +106,9 @@ const WV_STICKY_HEADS_CSS = [
     ".zotero-view-item collapsible-section > .head[data-wv-stuck] { box-shadow: inset 0 -1px 0 var(--color-panedivider); }",
     ".zotero-view-item :is(.wv-bl-hgroup, .wv-scope-block .wv-count-group) > .wv-count-group-head { position: sticky; top: var(--wv-head-h, 26px); z-index: 2; background: var(--material-sidepane); }",
 ].join("\n");
+
+/** WV-TEMP-134569: what tells the anchor the user's hand is on the item pane. */
+const WV_PIN_ANCHOR_INPUTS = ["wheel", "keydown", "pointerdown", "touchstart"];
 
 /** WV-TEMP-REG41: per window, the observer of its item pane's view switch
  *  (`_wvWireStalePreviewFix`), disconnected at teardown. */
@@ -5995,15 +6007,35 @@ class _PaneMixin {
 
     /** The tags the items list is filtered by: Zotero keeps them on the
      *  collection row (collectionTreeRow.setTags), whatever the selector
-     *  shows. Plural rows first (Zotero 11), the singular before it. */
-    _wvTagFilterTags(win: any): string[] {
+     *  shows. Plural rows first (Zotero 11), the singular before it. `view`: a
+     *  library view (zotero#6035), default the window's active one. */
+    _wvTagFilterTags(win: any, view?: any): string[] {
         try {
-            const iv = win.ZoteroPane && win.ZoteroPane.itemsView;
+            const iv = (view && view.itemsView) || (win.ZoteroPane && win.ZoteroPane.itemsView);
             if (!iv) return [];
             const row = (iv.collectionTreeRows && iv.collectionTreeRows[0]) || iv.collectionTreeRow;
             const t = row && row.tags;
             return t ? Array.from(t) : [];
         } catch (_) { return []; }
+    }
+
+    /** Zotero rebuilt the Tag Selector over a list still filtered by tags and it shows
+     *  none selected: those tags selected in it again, so the filter is visible and can
+     *  be turned off (upstream register #30). Called after the handle's rebuild here and
+     *  after Zotero's own View -> Layout re-show (upstream-fixes.ts WV-TEMP-134317).
+     *  `view`: the library view it was rebuilt in (default: the window's active one).
+     *  True when it selected them. */
+    _wvTagSelectorReselect(win: any, view?: any): boolean {
+        try {
+            const host = view || (win && win.ZoteroPane);
+            const ts = host && host.tagSelector;
+            if (!ts || typeof ts.getTagSelection !== "function") return false;
+            const tags = this._wvTagFilterTags(win, view);
+            if (!tags.length || ts.getTagSelection().size) return false;
+            ts.selectedTags = new Set(tags);
+            try { ts.forceUpdate(); } catch (_) {}
+            return true;
+        } catch (e) { Zotero.debug("[Weavero] _wvTagSelectorReselect err: " + e); return false; }
     }
 
     /** The pill's place, mark and tooltip. Place: on the divider line (the
@@ -6077,13 +6109,7 @@ class _PaneMixin {
                 await ZP.setTagScope();
                 const ts = ZP.tagSelector;
                 if (ts) {
-                    if (!had) {
-                        const tags = this._wvTagFilterTags(win);
-                        if (tags.length && ts.getTagSelection && !ts.getTagSelection().size) {
-                            ts.selectedTags = new Set(tags);
-                            try { ts.forceUpdate(); } catch (_) {}
-                        }
-                    }
+                    if (!had) this._wvTagSelectorReselect(win);
                     try { ts.handleResize(); } catch (_) {}
                 }
             }
@@ -7179,8 +7205,53 @@ class _PaneMixin {
     // preview above the pinned section whose stored width is stale is sized
     // then and there (its own _handleResize, a tick early): no growth at
     // all; (2) a preview's _handleResize is wrapped to settle the anchor in
-    // the same call (`_wvFixPreviewFit`): a resize of the pane is held in
-    // the same frame.
+    // the same call (`_wvFixPreviewFit`) -- for the calls made through the
+    // property (`disableResize`, the presize): Zotero's own observer calls
+    // the bound original (see the width paragraph below).
+    //
+    // THE PANE'S WIDTH (MJT 2026-11-19, "Can you fix the bug that the item
+    // pane scrolls when resizing?" -- the library pane with a section pinned,
+    // and reader tabs' item pane). A drag of the splitter re-wraps every
+    // section above the pinned one and changes the header's height, so the
+    // scroller's. Measured in the spec runner (11.0-beta.4), the delta anchor
+    // above missed it twice. (1) A reader tab, Related pinned, one pin
+    // scroll then six resizes. The pinned section's spacer ends the scroll
+    // range exactly at it, so when the header loses a line the taller
+    // scroller CLAMPS scrollTop (1795 -> 1778). Widths written as a drag
+    // writes them (a mousemove task): the clamp's scroll event came first,
+    // read as the user's, the anchor let go -- Related 95 / 191.5 / 116 px off
+    // the top. Written inside a frame: the sum of the sections' changes
+    // (-112) went onto the clamped value -- 17, then 41 px. (2) The library,
+    // 1000 x 600: one painted frame with
+    // the pinned section off by the preview's whole change (60 / 120 / 180
+    // px), held a frame later -- attachmentPreview.js observes with
+    // `this._handleResize.bind(this)`, bound in the constructor, so the
+    // `_handleResize` wrap never runs from it, and the section's notice of a
+    // change made in that callback waits for the next frame. So outside
+    // Zotero's own scroll the anchor is ABSOLUTE: each callback puts the
+    // pinned section back where that scroll left it (`target`, its top when
+    // the scroll settled), and the scroller is observed too -- its size
+    // change makes every deeper change of the frame reach the observer in
+    // the same frame, and covers the header. A scroll the anchor did not
+    // make still disarms it, unless it is a clamp (scrollTop pushed down to
+    // the range's new end): a splitter's mousemove flushes the layout
+    // (updateLayoutConstraints reads scrollHeight), and the clamp's scroll
+    // event then comes BEFORE the observer's callback.
+    //
+    // WV-TEMP-113626 (register #45, MJT's forum 113626; same request): with
+    // no pin held -- none set, or the user scrolled away from it -- a width
+    // change still moves what the user is reading: the box at the top edge
+    // moved 17-35 px (library and reader tab) for 60-180 px width steps.
+    // Zotero turned the browser's own scroll anchoring off on
+    // the scroller (`overflow-anchor: none`, _itemDetails.scss, "Work around
+    // tags box causing scroll to jump"), and that anchoring is what holds
+    // content across a width change everywhere else. Weavero holds the box at
+    // the scroller's top edge (picked as that anchoring picks it) at its
+    // offset across a change of the scroller's WIDTH only: the box and its
+    // offset are kept from the last scroll or layout change, and put back on
+    // the observer's callback for the width change and for 250 ms after it --
+    // never across a user's scroll or a content change. Only while the
+    // scroller's computed `overflow-anchor` is "none".
     // ─────────────────────────────────────────────────────────────────────────
 
     /** Does Zotero's item pane still pin with one scroll and no size watch? */
@@ -7194,7 +7265,8 @@ class _PaneMixin {
     }
 
     /** One item-details: its scrollToPane wrapped (the arming), a
-     *  ResizeObserver on its sections, a scroll listener for the user. */
+     *  ResizeObserver on its sections and its scroller, a scroll listener
+     *  for the user. */
     _wvFixPinAnchor(det: any) {
         try {
             const win = winOf(det);
@@ -7204,11 +7276,18 @@ class _PaneMixin {
             const old = det._wvPinAnchor;
             if (old && old.tag === tag) return;
             if (old) this._wvUnfixPinAnchor(det);   // a dead instance's: replaced
-            const S: any = { tag, armed: false, busy: false, expected: pp.scrollTop, pinnedId: "", heights: new WeakMap(), ro: null, onScroll: null, moves: 0, settle: null, presize: null };
+            const S: any = {
+                tag, armed: false, busy: false, expected: pp.scrollTop, pinnedId: "", heights: new WeakMap(), ro: null, onScroll: null, moves: 0, settle: null, presize: null,
+                target: 0, where: null, topOf: null, hold: null, onResize: null, onInput: null, inputAt: -Infinity, busySince: 0,
+                w: 0, resizingUntil: 0, view: null, viewMoves: 0, capture: null,   // WV-TEMP-113626
+            };
             det._wvPinAnchor = S;
             const panes = (): any[] => { try { return det.getPanes() || []; } catch (e) { return []; } };
-            const observe = () => { for (const p of panes()) { try { S.ro.observe(p); } catch (e) {} } };
+            // The scroller too: its height follows the header's (2026-11-19).
+            const observe = () => { for (const el of [pp, ...panes()]) { try { S.ro.observe(el); } catch (e) {} } };
             const seed = () => { for (const p of panes()) { try { S.heights.set(p, p.getBoundingClientRect().height); } catch (e) {} } };
+            const topOf = (el: any): number => el.getBoundingClientRect().top - pp.getBoundingClientRect().top;
+            S.topOf = topOf;
             /** The pinned section and the sections before it, while armed. */
             const where = (): { pinned: any; order: any[]; pi: number } => {
                 const live = S.armed && S.pinnedId && det.pinnedPane === S.pinnedId;
@@ -7216,10 +7295,38 @@ class _PaneMixin {
                 const order: any[] = pinned ? det.getEnabledPanes() : [];
                 return { pinned, order, pi: pinned ? order.indexOf(pinned) : -1 };
             };
-            /** What changed above the pinned section, added to scrollTop:
-             *  from the observer's entries, or -- `entries` null, a resize
-             *  callback's own call -- measured now, so the observer's later
-             *  notice finds nothing left to add. */
+            S.where = where;
+            /** scrollTop moved by `by`, the spacer widened first when the
+             *  scroller is too short for the pinned section at its top. */
+            const move = (pinned: any, by: number) => {
+                // Zotero's spacer rule (_getMinScrollHeightForPane): the
+                // pane's offset plus the scroller's height.
+                const need = topOf(pinned) + pp.scrollTop + pp.getBoundingClientRect().height;
+                if (det._minScrollHeight < need) det._minScrollHeight = need;
+                pp.scrollTop += by;
+                S.expected = pp.scrollTop;
+                S.moves++;
+            };
+            /** scrollTop below where the anchor left it AND at the range's
+             *  end: the range shrank under it (a clamp), no scroll took it. */
+            const clamped = (): boolean => pp.scrollTop < S.expected - 1 && pp.scrollTop >= pp.scrollHeight - pp.clientHeight - 1;
+            /** Outside Zotero's own scroll: the pinned section back where
+             *  that scroll left it, whatever moved it -- a section above, the
+             *  header through the scroller's height, a clamp. A scroll the
+             *  anchor did not make and no clamp explains is one on its way
+             *  (its event disarms): never fought. */
+            S.hold = (pinned: any) => {
+                if (!pp.clientHeight) { S.armed = false; return; }   // hidden: re-armed by the next render's scroll
+                if (Math.abs(pp.scrollTop - S.expected) > 1 && !clamped()) return;
+                const by = Math.round(topOf(pinned) - S.target);
+                if (by) move(pinned, by);
+                else S.expected = pp.scrollTop;
+            };
+            /** Inside Zotero's own scroll (busy): what changed above the
+             *  pinned section, added to scrollTop -- from the observer's
+             *  entries, or (`entries` null, a resize callback's own call)
+             *  measured now, so the observer's later notice finds nothing
+             *  left to add. Outside it: `hold`. */
             S.settle = (entries: any[] | null) => {
                 try {
                     const { pinned, order, pi } = where();
@@ -7234,15 +7341,11 @@ class _PaneMixin {
                         const i = order.indexOf(pane);
                         if (i >= 0 && i < pi) total += h - was;
                     }
-                    if (!pinned || Math.abs(total) < 0.5) return;
-                    if (!pp.clientHeight) { S.armed = false; return; }   // hidden: re-armed by the next render's scroll
-                    // Zotero's spacer rule (_getMinScrollHeightForPane): the
-                    // pane's offset plus the scroller's height.
-                    const need = pinned.getBoundingClientRect().top - pp.getBoundingClientRect().top + pp.scrollTop + pp.getBoundingClientRect().height;
-                    if (det._minScrollHeight < need) det._minScrollHeight = need;
-                    pp.scrollTop += total;
-                    S.expected = pp.scrollTop;
-                    S.moves++;
+                    if (!pinned) return;
+                    if (!S.busy) { S.hold(pinned); return; }
+                    if (Math.abs(total) < 0.5) return;
+                    if (!pp.clientHeight) { S.armed = false; return; }
+                    move(pinned, total);
                 } catch (e) {}
             };
             /** Before Zotero's pin scroll: every preview above the pinned
@@ -7268,17 +7371,109 @@ class _PaneMixin {
                     }
                 } catch (e) {}
             };
-            S.ro = new win.ResizeObserver((entries: any[]) => S.settle(entries));
-            S.onScroll = () => { try { if (S.busy || !S.armed) return; if (Math.abs(pp.scrollTop - S.expected) > 1) S.armed = false; } catch (e) {} };
+            // WV-TEMP-113626: no pin held -- what is at the scroller's top
+            // edge and its offset, kept for a width change. The box the
+            // browser's own anchoring would pick (CSS Scroll Anchoring): the
+            // first one crossing or below the edge, descended into while it
+            // crosses -- a section's top would hold nothing while its rows
+            // above the edge re-wrap (Info scrolled 917 px in, measured
+            // 2026-11-19). Sticky boxes stay put: skipped.
+            const anchorIn = (root: any, edge: number, depth: number): any => {
+                for (const c of Array.from(root.children || []) as any[]) {
+                    const r = c.getBoundingClientRect();
+                    if (!r.height) {   // display: contents, or nothing drawn
+                        const a = depth < 12 && c.firstElementChild ? anchorIn(c, edge, depth + 1) : null;
+                        if (a) return a;
+                        continue;
+                    }
+                    if (r.bottom <= edge + 0.5 || win.getComputedStyle(c).position === "sticky") continue;
+                    if (r.top >= edge - 0.5 || depth >= 12 || !c.firstElementChild) return c;
+                    return anchorIn(c, edge, depth + 1) || c;
+                }
+                return null;
+            };
+            S.capture = () => {
+                try {
+                    S.view = null;
+                    if (!pp.clientHeight) return;
+                    const edge = pp.getBoundingClientRect().top;
+                    for (const p of det.getEnabledPanes()) {
+                        const h = p.getBoundingClientRect().height, t = topOf(p);
+                        if (!(h > 0 && t + h > 1)) continue;
+                        const el = (t < -0.5 && anchorIn(p, edge, 0)) || p;
+                        S.view = { pane: p, off: t, el, elOff: topOf(el), st: pp.scrollTop };
+                        return;
+                    }
+                } catch (e) {}
+            };
+            const restore = () => {
+                const v = S.view;
+                if (!v || !v.pane.isConnected || v.pane.hidden || !pp.clientHeight) return;
+                // The box itself while it is drawn; else its section.
+                const el = v.el && v.el.isConnected && v.el.getBoundingClientRect().height ? v.el : null;
+                const by = Math.round(el ? topOf(el) - v.elOff : topOf(v.pane) - v.off);
+                if (!by) return;
+                pp.scrollTop += by;   // clamped at the ends, as the browser's own anchoring is
+                S.expected = pp.scrollTop;
+                S.viewMoves++;
+            };
+            /** Zotero's scroller still without the browser's anchoring. */
+            const unanchored = (): boolean => { try { return win.getComputedStyle(pp).overflowAnchor === "none"; } catch (e) { return false; } };
+            S.onResize = (entries: any[]) => {
+                try {
+                    let widthChanged = false;
+                    for (const en of entries) {
+                        if (en.target !== pp) continue;
+                        const w = en.contentRect ? en.contentRect.width : pp.clientWidth;
+                        if (S.w > 0 && w > 0 && Math.abs(w - S.w) >= 0.5) widthChanged = true;   // from or to 0: hidden, not resized
+                        S.w = w;
+                    }
+                    S.settle(entries);
+                    if (where().pinned) return;
+                    const now = win.performance.now();
+                    if (widthChanged) S.resizingUntil = now + 250;
+                    if (now < S.resizingUntil && unanchored()) restore();
+                    else S.capture();
+                } catch (e) {}
+            };
+            S.ro = new win.ResizeObserver((entries: any[]) => S.onResize(entries));
+            S.onScroll = () => {
+                try {
+                    if (S.busy) return;
+                    const moved = Math.abs(pp.scrollTop - S.expected) > 1;
+                    if (S.armed && moved) {
+                        // The range shrank under scrollTop in a layout flush the
+                        // observer has not reached yet (a splitter's mousemove
+                        // flushes): layout's, held -- anything else is the user's.
+                        const { pinned } = where();
+                        if (pinned && clamped()) { S.hold(pinned); return; }
+                        S.armed = false;
+                    }
+                    if (where().pinned) return;
+                    if (!moved && win.performance.now() < S.resizingUntil) return;   // the width anchor's own move
+                    // A clamp (at the range's end, below where the view was
+                    // kept), ahead of the observer's callback for the same
+                    // width change: the kept view is what it puts back.
+                    const v = S.view;
+                    if (v && pp.scrollTop < v.st - 1 && pp.scrollTop >= pp.scrollHeight - pp.clientHeight - 1) return;
+                    S.capture();
+                } catch (e) {}
+            };
             pp.addEventListener("scroll", S.onScroll, { passive: true });
+            // The user's hand on the pane (a scrollbar press included: it
+            // reaches the scroller), for `done` below.
+            S.onInput = () => { S.inputAt = win.performance.now(); };
+            for (const type of WV_PIN_ANCHOR_INPUTS) pp.addEventListener(type, S.onInput, { passive: true, capture: true });
             observe();
             seed();
+            S.capture();
             wvWrap(det, "scrollToPane", "pinAnchor", tag, (orig: any) => function (this: any, id: any, ...rest: any[]) {
                 const st = det._wvPinAnchor;
                 if (st) {
                     try {
                         observe();   // sections added since (renderCustomSections)
                         st.busy = true;
+                        st.busySince = win.performance.now();
                         st.pinnedId = id ? String(id) : "";
                         st.armed = false;
                         if (id && id === det.pinnedPane && !det._collapsed) {
@@ -7291,7 +7486,27 @@ class _PaneMixin {
                 let r: any;
                 try { r = orig.call(this, id, ...rest); }
                 catch (e) { if (st) st.busy = false; throw e; }
-                const done = () => { try { if (st) { st.busy = false; st.expected = pp.scrollTop; } } catch (e) {} };
+                // Where Zotero's scroll left the pinned section (its top, to
+                // the sub-pixel) is what the anchor holds from here. More than
+                // a pixel off: the user's scroll if their input reached the
+                // pane meanwhile (scroll events are not read while busy), else
+                // a late change the observer has not delivered yet (#43's
+                // banner can show in the idle gap before this) -- held at 0.
+                const done = () => {
+                    try {
+                        if (!st) return;
+                        st.busy = false;
+                        st.expected = pp.scrollTop;
+                        const { pinned } = st.where ? st.where() : { pinned: null };
+                        if (pinned) {
+                            const t = st.topOf(pinned);
+                            if (Math.abs(t) < 1.5) st.target = t;
+                            else if (st.inputAt >= st.busySince) st.armed = false;
+                            else { st.target = 0; st.hold(pinned); }
+                        }
+                        if (!(pinned && st.armed) && st.capture) st.capture();
+                    } catch (e) {}
+                };
                 Promise.resolve(r).then(done, done);
                 return r;
             });
@@ -7305,6 +7520,7 @@ class _PaneMixin {
         if (!S) return;
         try { if (S.ro) S.ro.disconnect(); } catch (e) {}
         try { if (S.onScroll && det._paneParent) det._paneParent.removeEventListener("scroll", S.onScroll); } catch (e) {}
+        try { if (S.onInput && det._paneParent) for (const type of WV_PIN_ANCHOR_INPUTS) det._paneParent.removeEventListener(type, S.onInput, { capture: true }); } catch (e) {}
         try { delete det._wvPinAnchor; } catch (e) {}
     }
 
@@ -7375,7 +7591,11 @@ class _PaneMixin {
     /** One preview element: its status setter wrapped; and its resize
      *  callback, for WV-TEMP-134569's anchor (the same wiring, the two
      *  previews of a window): the growth it makes is settled in the same
-     *  call, so the pinned section below is held in the same frame. */
+     *  call, so the pinned section below is held in the same frame. Only
+     *  for calls through the property (`disableResize`, the anchor's
+     *  presize): Zotero's own observer calls the original it BOUND in the
+     *  constructor (2026-11-19) -- the anchor's observer on the scroller
+     *  holds those changes in the same frame. */
     _wvFixPreviewFit(pv: any) {
         try {
             if (!pv || typeof pv.setPreviewStatus !== "function") return;
@@ -7477,9 +7697,13 @@ class _PaneMixin {
                     write(en && en.borderBoxSize && en.borderBoxSize[0] ? en.borderBoxSize[0].blockSize : head.getBoundingClientRect().height);
                 } catch (e) {}
             });
+            // No height read here: a ResizeObserver reports every observed box
+            // once at the next layout, before the paint -- the height is there for
+            // the first frame. A read per section laid the item pane out once per
+            // section in the middle of its render (2026-11-21 profile of an item
+            // selection: ~18 ms each).
             ro.observe(head);
             WV_STICKY_RO.set(sec, ro);
-            write(head.getBoundingClientRect().height);
         } catch (e) {}
     }
 
@@ -7857,16 +8081,18 @@ class _PaneMixin {
     // (weavero-dev: "Zotero weavero-dev\locate\Google Scholar.ico" after the
     // folder became "Zotero-dev"). At startup each engine whose icon file is
     // missing points at the file of the same name in the current locate
-    // folder, or, without one, has Zotero download it again from its source
-    // (Zotero's own _updateIcon, as Restore Defaults does -- minus deleting
-    // the custom engines). Setting `icon` makes Zotero rewrite engines.json,
-    // so the repair holds without Weavero. Does nothing while every path
-    // loads.
+    // folder. One without a copy there has Zotero download it again from its
+    // source (Zotero's own _updateIcon, as Restore Defaults does -- minus
+    // deleting the custom engines) only when the user first opens the Locate
+    // menu in a session (`_wvLocateIconsFirstUse`): no request leaves the
+    // machine at startup without a click. Setting `icon` makes Zotero rewrite
+    // engines.json, so the repair holds without Weavero. Does nothing while
+    // every path loads.
     //
     // RETIRE WHEN Zotero stores the path relative to the data directory or
     // re-checks it; test/locate-icons.spec.js's tripwire says when.
     // ─────────────────────────────────────────────────────────────────────────
-    async _wvRepairLocateIcons(): Promise<number> {
+    async _wvRepairLocateIcons(download: boolean = true): Promise<number> {
         const LM: any = (Zotero as any).LocateManager;
         if (!LM || typeof LM.getEngines !== "function") return 0;
         const engines: any[] = LM.getEngines();   // throws while LocateManager.init is still reading
@@ -7884,7 +8110,7 @@ class _PaneMixin {
                     e.icon = PathUtils.toFileURI(here);
                     n++;
                 }
-                else if (typeof e._iconSourceURI === "string" && e._iconSourceURI && typeof e._updateIcon === "function") {
+                else if (download && typeof e._iconSourceURI === "string" && e._iconSourceURI && typeof e._updateIcon === "function") {
                     await e._updateIcon();
                     if (e.icon !== icon) n++;
                 }
@@ -7898,7 +8124,8 @@ class _PaneMixin {
      *  engines may not be read yet -- retry, bounded. */
     _wvRepairLocateIconsAtStartup(tries?: number) {
         const t = tries || 0;
-        this._wvRepairLocateIcons().catch((e: any) => {
+        // Local re-pointing only: a download waits for the Locate menu.
+        this._wvRepairLocateIcons(false).catch((e: any) => {
             if (t < 10) {
                 wvTimeout(() => {
                     const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
@@ -7907,6 +8134,37 @@ class _PaneMixin {
             }
             else Zotero.debug("[Weavero] WV-TEMP-134355 gave up: " + e);
         });
+    }
+
+    /** The Locate menu's first opening in this session: a lost engine icon
+     *  with no copy in the locate folder is downloaded again now, on the
+     *  user's click (`reset` starts the session's count again, for the
+     *  suite). Once per instance. */
+    async _wvLocateIconsFirstUse(reset?: boolean): Promise<number> {
+        if (reset) this._wvLocateIconsFetched = false;
+        if (this._wvLocateIconsFetched) return 0;
+        this._wvLocateIconsFetched = true;
+        try { return await this._wvRepairLocateIcons(true); }
+        catch (e) { Zotero.debug("[Weavero] WV-TEMP-134355 first-use repair err: " + e); return 0; }
+    }
+
+    /** Watch main window `win` for the Locate menu's opening (Zotero's
+     *  buildLocateMenu puts `#zotero-manage-locate-menu` in it) to run
+     *  `_wvLocateIconsFirstUse`. */
+    _wvWireLocateIconsFirstUse(win: any) {
+        try {
+            if (!win || !win.document) return;
+            wvListen(win, "locateIcons:popupshown", "popupshown", (e: any) => {
+                try {
+                    const lp: any = wvLivePlugin();
+                    if (!lp || lp._wvLocateIconsFetched) return;
+                    const t: any = e.originalTarget || e.target;
+                    if (!t || t.localName !== "menupopup" || typeof t.querySelector !== "function") return;
+                    if (!t.querySelector("#zotero-manage-locate-menu")) return;
+                    Promise.resolve(lp._wvLocateIconsFirstUse()).catch(() => {});
+                } catch (er) {}
+            }, true, this._wvWireTag());
+        } catch (e) { Zotero.debug("[Weavero] _wvWireLocateIconsFirstUse err: " + e); }
     }
 
     _wvTeardownTagSelectorHandle() {
@@ -10566,6 +10824,33 @@ class _PaneMixin {
                 } catch (e) {}
                 return { manual: m, auto: a };
             };
+            // One subtree walk per item for the Tags and Related columns. Both
+            // walked an item's whole subtree -- every attachment, annotation and
+            // note, each getTags() a copy -- in their data function (Zotero computes
+            // every registered column, hidden ones too, whenever a row's display
+            // cache is rebuilt) and again in each cell render, scrolling included;
+            // the Tags column has no pref gate (2026-11-21). Emptied on any item,
+            // tag, relation or trash change by a notifier observer that runs before
+            // the items tree's own (priority 20 < its 50), so a re-render after an
+            // edit never reads an old count; taken away with the columns.
+            // One pair of maps per plugin instance: a re-registration of the
+            // columns (a column option toggled) keeps the maps the observer clears.
+            const M = this._wvCountMemo || (this._wvCountMemo = { tags: new Map<number, { manual: number; auto: number }>(), rel: new Map<number, number>() });
+            const memoTags: Map<number, { manual: number; auto: number }> = M.tags;
+            const memoRel: Map<number, number> = M.rel;
+            if (!this._wvCountMemoObsID) {
+                try {
+                    this._wvCountMemoObsID = Zotero.Notifier.registerObserver({
+                        notify: () => { memoTags.clear(); memoRel.clear(); },
+                    }, ["item", "item-tag", "tag", "relation", "trash", "collection-item"], "weavero-count-memo", 20);
+                } catch (e) { this._wvCountMemoObsID = null; }
+            }
+            const tagSubtreeCached = (item) => {
+                if (!item || !this._wvCountMemoObsID) return tagSubtreeCount(item);
+                let v = memoTags.get(item.id);
+                if (!v) { v = tagSubtreeCount(item); memoTags.set(item.id, v); }
+                return v;
+            };
             const ownTagCount = (item) => {
                 let m = 0, a = 0;
                 try {
@@ -10602,7 +10887,7 @@ class _PaneMixin {
                 // renderCell which has access to row context.
                 dataProvider: (item) => {
                     try {
-                        const c = tagSubtreeCount(item);
+                        const c = tagSubtreeCached(item);
                         return c.manual + c.auto;
                     } catch (e) { return 0; }
                 },
@@ -10617,7 +10902,7 @@ class _PaneMixin {
                     let info: any = null;
                     try {
                         info = rowInfo(index, document);
-                        if (info) counts = info.isOpen ? ownTagCount(info.item) : tagSubtreeCount(info.item);
+                        if (info) counts = info.isOpen ? ownTagCount(info.item) : tagSubtreeCached(info.item);
                     } catch (e) {}
                     const scope = info && info.isOpen ? "own" : "subtree";
                     // The live plugin's getter: the auto count is an Extras
@@ -10719,7 +11004,12 @@ class _PaneMixin {
                 // item's whole subtree. renderCell may swap to the
                 // own count when the row's container is open.
                 dataProvider: (item) => {
-                    try { return relatedSubtreeCount(item); }
+                    try {
+                        if (!item || !this._wvCountMemoObsID) return relatedSubtreeCount(item);
+                        let v = memoRel.get(item.id);
+                        if (v === undefined) { v = relatedSubtreeCount(item); memoRel.set(item.id, v); }
+                        return v;
+                    }
                     catch (e) { return 0; }
                 },
                 // We CAN'T rely on `this` inside renderCell — Zotero's
@@ -10960,6 +11250,12 @@ class _PaneMixin {
                 }
             }
             this._weaveroColumnKeys = [];
+            // The count columns' cache observer goes with them.
+            if (this._wvCountMemoObsID) {
+                try { Zotero.Notifier.unregisterObserver(this._wvCountMemoObsID); } catch (e) {}
+                this._wvCountMemoObsID = null;
+            }
+            if (this._wvCountMemo) { this._wvCountMemo.tags.clear(); this._wvCountMemo.rel.clear(); }
         } catch (e) {
             Zotero.debug("[Weavero] _unregisterItemTreeColumns err: " + e);
         }
@@ -11142,10 +11438,15 @@ class _PaneMixin {
         const cells: any = doc.querySelectorAll(
             ".annotation-row.tight .cell.annotation-comment[data-has-rich]");
         let n = 0;
+        // Every read first, then the writes: a write between two reads laid the
+        // window out again per cell (src-ts.md read/write rule; 2026-11-21).
+        const verdicts: Array<[any, boolean]> = [];
         for (const cell of cells) {
             const wrap = cell.querySelector(".wv-text-wrap");
             if (!wrap) continue;
-            const isTrunc = wrap.scrollWidth > wrap.clientWidth + 1;
+            verdicts.push([cell, wrap.scrollWidth > wrap.clientWidth + 1]);
+        }
+        for (const [cell, isTrunc] of verdicts) {
             if (isTrunc) {
                 if (cell.getAttribute("data-truncated") !== "true") {
                     cell.setAttribute("data-truncated", "true");
@@ -11298,7 +11599,7 @@ class _PaneMixin {
         // documentElement, shown on contextmenu over a `.wv-url-span`
         // or `.wv-link` element. Suppresses Zotero's own row context
         // menu so the user gets just the link-relevant action.
-        if (!this._urlMenuState) {
+        if (!URL_MENUS.has(win)) {
             const ms: any = { el: null, url: "" };
             const ensureMenu = () => {
                 if (ms.el) return ms.el;
@@ -11517,7 +11818,7 @@ class _PaneMixin {
             ms.win = win;
             ms.handlers = { onCtx, onAnyClick, onKey, onWheel, onPointerDown, onWinBlur };
             ms.collectPointerTargets = collectPointerTargets;
-            this._urlMenuState = ms;
+            URL_MENUS.set(win, ms);
         }
 
         // Click handler: only fires if mousedown didn't already handle it
@@ -11797,6 +12098,35 @@ class _PaneMixin {
      *  not removed (removing it made a re-run of the init path change the
      *  window's marks: window-wiring-table.spec.js, red since the tooltip
      *  came in on 2026-10-23, found by the 2026-10-26 full run). */
+    /** `win`'s Copy Link menu: its listeners off, its element out, forgotten. */
+    _wvUrlMenuTeardown(win: any) {
+        const ms = win && URL_MENUS.get(win);
+        if (!ms) return;
+        URL_MENUS.delete(win);
+        try {
+            if (ms.root && ms.handlers) {
+                try { ms.root.removeEventListener("contextmenu", ms.handlers.onCtx, true); } catch (e) {}
+                try { ms.root.removeEventListener("click", ms.handlers.onAnyClick, true); } catch (e) {}
+                try { ms.root.removeEventListener("keydown", ms.handlers.onKey, true); } catch (e) {}
+                try { ms.root.removeEventListener("wheel", ms.handlers.onWheel, { capture: true, passive: true }); } catch (e) {}
+                try { ms.root.classList.remove("wv-context-menu-open"); } catch (e) {}
+            }
+            if (ms.pointerTargets && ms.handlers && ms.handlers.onPointerDown) {
+                for (const t of ms.pointerTargets) {
+                    try { t.removeEventListener("pointerdown", ms.handlers.onPointerDown, { capture: true }); } catch (e) {}
+                }
+            }
+            if (ms.firstMoveHandler) {
+                try { win.document.removeEventListener("mousemove", ms.firstMoveHandler, true); } catch (e) {}
+            }
+            if (ms.handlers && ms.handlers.onWinBlur) {
+                try { win.removeEventListener("blur", ms.handlers.onWinBlur); } catch (e) {}
+            }
+            if (ms.el && ms.el.parentNode) ms.el.parentNode.removeChild(ms.el);
+        } catch (e) {}
+        ms.win = null; ms.root = null; ms.pointerTargets = null; ms.el = null;
+    }
+
     _teardownTreeClickDelegate(win?: any, keepTip = false) {
         if (!win) {
             for (const w of (Zotero.getMainWindows() || [])) {
@@ -11807,6 +12137,8 @@ class _PaneMixin {
         // No count tooltip or rest timer outlives this instance (its
         // listeners go with destroy()).
         try { if (keepTip) this._wvCountTipHide(win); else this._wvCountTipTeardown(win); } catch (e) {}
+        // The window's Copy Link menu goes with it (kept across a re-setup).
+        if (!keepTip) { try { this._wvUrlMenuTeardown(win); } catch (e) {} }
         const H: any = win._wvTreeDelegate;
         if (!H) return;
         try {
@@ -12732,6 +13064,14 @@ class _PaneMixin {
             let needsNotesScan = false;
             let needsScopeScan = false;
             for (const m of mutations) {
+                // The items and collections trees (virtualized tables) hold none
+                // of the item-pane surfaces below, and they change on every row
+                // they draw -- a scroll, a selection, a refresh. Their rows are
+                // `.row`s, which read as Related rows here: each drawn row scanned
+                // every Related box of the window, and every record ran five
+                // closest() walks (2026-11-21 profile of a scroll and a selection).
+                const mt: any = m.target && m.target.nodeType === 3 ? (m.target as any).parentElement : m.target;
+                if (mt && mt.closest && mt.closest(".virtualized-table")) continue;
                 for (const node of m.addedNodes) {
                     if (node.nodeType !== 1) continue;
                     const tag = node.tagName?.toLowerCase();

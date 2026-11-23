@@ -196,6 +196,11 @@ describe("Weavero — a link preview tints the whole reference entry", function 
             } catch (e) { return null; }
         }, 30000);
         assert.isOk(pv, "the PDF view is up and its popup callback wrapped");
+        // Zotero 11 gives the fixture's "[2]" a reference card of its own (structure
+        // data, on page 2) under the PDF's link, and since WV-TEMP-134867 a hover there
+        // shows that card instead of the link's picture. These cases are about the
+        // picture: the stand-in is off here, and its own case turns it back on.
+        wv._wvCitCardFor = () => null;
         // A white page whatever the runner's desktop theme (the pixel checks
         // read white and tinted backgrounds).
         appearance = { forced: pv._forcedColorScheme, light: pv._lightTheme };
@@ -205,6 +210,7 @@ describe("Weavero — a link preview tints the whole reference entry", function 
     });
 
     after(async function () {
+        if (wv) delete wv._wvCitCardFor;
         try { await close(); } catch (e) {}
         try { if (appearance) { pv.setLightTheme(appearance.light || null); pv.setColorScheme(appearance.forced || null); } } catch (e) {}
         try { wvT.closeReaderTab(reader); } catch (e) {}
@@ -456,6 +462,80 @@ describe("Weavero — a link preview tints the whole reference entry", function 
         const bg = lineBackground(px, map, 700, 72, 420);
         assert.isTrue(white(bg), "the link's own line unmarked: " + show(bg));
         if (zot) assert.notEqual(got.image, zot.image, "not Zotero's boxed picture");
+    });
+
+    // WV-TEMP-134867 (register #67, forum 134867): Zotero 11 builds a reference card for
+    // a citation the PDF also links, with a different box, and the hover takes the
+    // smaller of the two -- one citation opened the card on its digits and the PDF
+    // link's page picture at its edges (Gupta & Kumar 2020, plain 11.0-beta.4). Here a
+    // card is laid over the fixture's own link on "[2]" (2 pt narrower on the right,
+    // 1 pt lower), its reference on page 2.
+    it("a PDF link over a reference card: the card wherever the pointer rests, a link going elsewhere keeps its picture (WV-TEMP-134867)", async function () {
+        delete wv._wvCitCardFor;   // the describe's stub off: the real stand-in
+        wvT.method("_wvCitCardFor");
+        wvT.method("_wvCitCardSwap");
+        const rwin = reader._iframeWindow;
+        const ovs = pv._pdfPages[0].overlays;
+        // The PDF's own link on "[2]" ([128 697 140 709]): found by its box -- Zotero 10.0.8
+        // gives its links no `source`, Zotero 11 'annotation'.
+        const onTwo = (o) => { try { const r = o.position.rects[0]; return Math.abs(r[0] - 128) < 1 && Math.abs(r[2] - 140) < 1 && Math.abs(r[1] - 697) < 1; } catch (e) { return false; } };
+        const link = Array.from(ovs).find(o => o.type === "internal-link" && o.source !== "matched" && o.source !== "sdt" && onTwo(o));
+        // Zotero 10.0.8 builds no overlay for the PDF's link where it has a card of its
+        // own (measured 2026-11-19: page 1 holds the card alone), so it never had two
+        // popups on one citation: the card is all there is.
+        if (!link && parseInt(String(Zotero.version), 10) < 11) {
+            const crossesTwo = (o) => { try { return Array.from(o.position.rects).some(r => Math.min(r[2], 140) > Math.max(r[0], 128) && Math.min(r[3], 709) > Math.max(r[1], 697)); } catch (e) { return false; } };
+            const seen = JSON.stringify(Array.from(ovs).map(o => o.type + " " + JSON.stringify(o.position && o.position.rects)));
+            assert.isOk(Array.from(ovs).some(o => o.type === "citation" && crossesTwo(o)), "Zotero 10: its own card on [2]; page 1: " + seen);
+            assert.notOk(Array.from(ovs).some(o => o.type === "internal-link" && crossesTwo(o)), "Zotero 10: no link overlay under it; page 1: " + seen);
+            return;
+        }
+        assert.ok(link, "fixture: the PDF's own link on [2]; page 1 has " + JSON.stringify(Array.from(ovs).map(o => o.type + "/" + o.source)));
+        const linkOverlay = JSON.parse(JSON.stringify(link));
+        const CARD = [128, 697, 138, 708];
+        const text = "B. Second, C. Third, and D. Fourth, A long reference entry that runs over";
+        const card = (refPage) => ({ type: "citation", source: "sdt", wvTest: 134867, position: { pageIndex: 0, rects: [CARD] },
+            references: [{ position: { pageIndex: refPage, rects: [AREA] }, text, chars: [...text].map(c => ({ c })) }] });
+        // Zotero's own cards on page 1 are set aside, so the test card alone meets the link.
+        const theirs = Array.from(ovs).filter(o => o.type === "citation");
+        const without = () => { for (let i = ovs.length - 1; i >= 0; i--) if (ovs[i].type === "citation") ovs.splice(i, 1); };
+        without();
+        ovs.push(Cu.cloneInto(card(1), rwin));
+        try {
+            // Zotero's own pick, the hover's: the card on the digits, the PDF link at the
+            // right edge (only the link there). TRIPWIRE: when the edge no longer gives the
+            // link, Zotero settled forum 134867 -- retire WV-TEMP-134867 (upstream-check).
+            if (typeof pv._getSelectableOverlay === "function") {
+                const pick = (x, y) => { const o = pv._getSelectableOverlay(Cu.cloneInto({ pageIndex: 0, rects: [[x, y, x, y]] }, rwin)); return o ? o.type : null; };
+                assert.equal(pick(133, 702), "citation", "Zotero: the digits give the card");
+                assert.equal(pick(139.2, 702), "internal-link",
+                    "TRIPWIRE: Zotero still picks the PDF link at the citation's edge; if this fails, Zotero fixed forum 134867 -- retire WV-TEMP-134867");
+            }
+            // What the edge opens, the PDF link's popup: Weavero shows the card.
+            await close();
+            await fire(linkOverlay);
+            const st = await wvT.waitFor(() => { const s = state(); return s && s.type ? s : null; }, 15000, 50);
+            assert.equal(st && st.type, "citation", "the card, not the page picture");
+            assert.lengthOf(Array.from(st.references || []), 1, "the card's reference");
+            assert.equal(st.references[0].text, text, "its text");
+            assert.notOk(st.image, "no picture left on the popup");
+            const shown = await wvT.waitFor(() => rwin.document.querySelector(".citation-popup"), 5000, 50);
+            assert.ok(shown, "the card is drawn");
+            // A link going elsewhere (the card's reference not on the link's destination
+            // page, as an affiliation mark Zotero took for a citation): its picture stays.
+            without();
+            ovs.push(Cu.cloneInto(card(0), rwin));
+            await close();
+            await fire(linkOverlay);
+            const st2 = await wvT.waitFor(() => { const s = state(); return s && s.image ? s : null; }, 15000, 50);
+            assert.equal(st2 && st2.type, "internal-link", "the PDF link's own picture");
+        }
+        finally {
+            try { await close(); } catch (e) {}
+            without();
+            for (const o of theirs) ovs.push(o);
+            wv._wvCitCardFor = () => null;
+        }
     });
 
     /** As `open`, without waiting for the DOI's link zone (page 1 has none). */

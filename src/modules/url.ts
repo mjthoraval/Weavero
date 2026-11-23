@@ -17,10 +17,11 @@
  *  Ordering: alphabetical within tier (bare-colon `name:` first,
  *  then slash `name://`). Keep in sync with the SCHEMES list in
  *  prefs.js and the grid in prefs.html. */
-import { schemeAltPart, joinSchemeAlt, buildUrlRegex, urlLinkClass } from "../lib/links";
+import { schemeAltPart, joinSchemeAlt, buildUrlRegex, urlLinkClass, wvIsWebURL, wvRemoteFileHost, wvRemoteFileTarget } from "../lib/links";
 import { wvTimeout } from "../lib/timers";
 import { wvCloneFor } from "../lib/xray";
-import { wvL10n } from "../lib/l10n";
+import { wvL10n, wvStr } from "../lib/l10n";
+import { wvIsRunnableFile } from "../lib/open-guard";
 
 export const URL_SCHEMES = [
     // ---- Tier 1: bare-colon schemes (name:) -------------------------------
@@ -72,6 +73,15 @@ export const WV_LOADURI_WIRE_V = 4;   // 2: also the paper-key open links (0.22.
 // Wire version for the Zotero.CommandLineIngester.ingest wrap (stolen-focus
 // fix). Same bump discipline as WV_LOADURI_WIRE_V.
 export const WV_CMDLINE_WIRE_V = 1;
+
+/** App-link schemes that always get the confirmation prompt, Open without
+ *  confirmation or not: Weavero never skips it for them, nor turns off the
+ *  profile-wide ask-before-opening (`_applyAppLinkConfirmPref`). */
+export const WV_ALWAYS_ASK_SCHEMES: readonly string[] = ["file"];
+
+/** How many file:// links to another computer Weavero remembers as opened
+ *  (weavero.remoteFileLinksOpened, a JSON list): past it the oldest goes. */
+export const WV_REMOTE_FILE_LINKS_MAX = 500;
 
 export const BBT_BIBTEX_TRANSLATOR_ID = "ca65189f-8815-4afe-8c8b-8c7c15f0edca";
 export const BBT_BIBLATEX_TRANSLATOR_ID = "f895aa0d-f28e-47fe-b247-2ea77c6ed583";
@@ -176,6 +186,20 @@ export const urlMethods = {
             if (!Zotero.Prefs.get("weavero.enableAppLinks")) return false;
             const s = String(scheme).toLowerCase();
             return URL_SCHEMES.some((def: any) => def.name === s && !!Zotero.Prefs.get("weavero." + def.pref));
+        } catch (e) { return false; }
+    },
+
+    /** Whether a link of `scheme` opens without the confirmation prompt: the
+     *  user asked for that (Open without confirmation, under Links & Relations)
+     *  for a scheme they enabled -- and never a scheme in WV_ALWAYS_ASK_SCHEMES,
+     *  whatever is ticked: a file link always gets the prompt. */
+    _wvSkipConfirmFor(scheme: string): boolean {
+        try {
+            const s = String(scheme || "").toLowerCase();
+            if (!s || WV_ALWAYS_ASK_SCHEMES.includes(s)) return false;
+            if (!(this as any)._getEnableLinksAndRelations()) return false;
+            if (!Zotero.Prefs.get("weavero.enableAppLinksSkipConfirm")) return false;
+            return this._wvAppSchemeEnabled(s);
         } catch (e) { return false; }
     },
 
@@ -324,6 +348,77 @@ export const urlMethods = {
             }
             return !!(att.isFileAttachment && att.isFileAttachment());
         } catch (e) { return false; }
+    },
+
+    /** Whether a link, a row or a card may open the attachment `att` (security
+     *  review 2026-11-22). A file Zotero's own reader shows opens. A file the
+     *  system would run (lib/open-guard.ts) is never opened from there: it is
+     *  refused with a notice. Any other file -- one Zotero cannot show, or
+     *  shows only through an external viewer the user set -- opens in another
+     *  application only after the user confirms, the real file name in front
+     *  of them. Anything that is not a stored file is not this check's. */
+    async _wvMayOpenAttachment(att: any, win?: any): Promise<boolean> {
+        try {
+            if (!att || !att.isAttachment || !att.isAttachment()) return true;
+            if (!this._isOpenableFileAttachment(att)) return true;
+            const type = att.attachmentReaderType || "";
+            let viewer = "";
+            try { viewer = type ? String(Zotero.Prefs.get("fileHandler." + type) || "") : ""; } catch (e) {}
+            if (type && !viewer) return true;
+            let name = "";
+            try { const p = await att.getFilePathAsync(); if (p) name = PathUtils.filename(p); } catch (e) {}
+            if (!name) { try { name = String(att.attachmentFilename || ""); } catch (e) {} }
+            if (wvIsRunnableFile(name)) {
+                (this as any)._wvShowLinkRefused(wvStr("weavero-misc-link-refused-runnable", { name }), win);
+                return false;
+            }
+            if (type) return true;   // the external viewer the user chose for this type
+            return !!(this as any)._wvAskOpenExternal(win, name);
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvMayOpenAttachment err: " + e);
+            return false;
+        }
+    },
+
+    /** The question before a file opens in another application: Open or
+     *  Cancel, Cancel the default. True: Open. */
+    _wvAskOpenExternal(win: any, name: string): boolean {
+        try {
+            const w = (win && win.document) ? win : Zotero.getMainWindow();
+            const ps: any = Services.prompt;
+            const flags = ps.BUTTON_POS_0 * ps.BUTTON_TITLE_IS_STRING
+                + ps.BUTTON_POS_1 * ps.BUTTON_TITLE_CANCEL
+                + ps.BUTTON_POS_1_DEFAULT;
+            return ps.confirmEx(w, wvStr("weavero-misc-open-external-title"),
+                wvStr("weavero-misc-open-external-message", { name: name || "?" }),
+                flags, wvStr("weavero-misc-open-external-button"), "", "", null, {}) === 0;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvAskOpenExternal err: " + e);
+            return false;
+        }
+    },
+
+    /** The web page a paper with no file of its own opens: its URL field when
+     *  that is an http(s) address, else its DOI at doi.org, else the first
+     *  http(s) URL of its attachments -- what Zotero's View Online offers
+     *  (locateMenu.js), never a file or an application link. Null: none. */
+    _wvItemWebURL(item: any): string | null {
+        try {
+            if (!item || !item.getField) return null;
+            const url = String(item.getField("url") || "").trim();
+            if (wvIsWebURL(url)) return url;
+            const doi = item.getField("DOI");
+            const clean = doi && (Zotero.Utilities as any).cleanDOI ? (Zotero.Utilities as any).cleanDOI(doi) : null;
+            if (clean) return "https://doi.org/" + encodeURIComponent(clean);
+            if (item.isRegularItem && item.isRegularItem()) {
+                for (const id of item.getAttachments() || []) {
+                    const a: any = Zotero.Items.get(id);
+                    const u = a ? String(a.getField("url") || "").trim() : "";
+                    if (wvIsWebURL(u)) return u;
+                }
+            }
+        } catch (e) {}
+        return null;
     },
 
     /** For a regular item, pick the attachment an "Open" link should
@@ -1433,6 +1528,15 @@ export const urlMethods = {
         // Schemeless `www.` links (uniform autolink -- URL_REGEX matches them
         // as web links): give them an https scheme before dispatch.
         if (/^www\./i.test(url)) url = "https://" + url;
+        // A file on another computer is not opened from a link: on Windows
+        // the attempt alone connects to that computer and signs in to it --
+        // unless the user allowed such links in Settings, and then each one
+        // asks once (`_wvOpenRemoteFileLink`).
+        const remote = wvRemoteFileHost(url);
+        if (remote !== null) {
+            this._wvOpenRemoteFileLink(url, remote);
+            return;
+        }
         try {
             // zotero:// URLs must NOT go through the OS dispatch
             // (which would trigger Firefox's "Allow this site to open
@@ -1446,32 +1550,25 @@ export const urlMethods = {
             }
             const cls = this._urlLinkClass(url);
             if (cls === "wv-link-app") {
-                // An option of Links & Relations (Settings greys it with that
-                // master): off with it (prefs.4, MJT 2026-10-17).
-                let skip = false;
-                try { skip = !!(this as any)._getEnableLinksAndRelations() && !!Zotero.Prefs.get(
-                    "weavero.enableAppLinksSkipConfirm"); }
-                catch (e) {}
-                if (skip) {
-                    const m = /^([a-z][a-z0-9+.-]+):/i.exec(url);
-                    const scheme = m && m[1].toLowerCase();
-                    // ONLY a scheme the user enabled in Settings (and the App
-                    // links master) takes the no-prompt path: `wv-link-app`
-                    // is every non-web scheme, so "open without confirmation"
-                    // for one scheme used to hand ANY scheme in a shared note
-                    // (ms-msdt:, search-ms:, ...) straight to the OS handler
-                    // (survey 2026-10-06). Everything else falls through to
-                    // Zotero.launchURL and its prompt.
-                    if (scheme && this._wvAppSchemeEnabled(scheme)) {
-                        const svc = Components.classes[
-                            "@mozilla.org/uriloader/external-protocol-service;1"]
-                            .getService(Components.interfaces.nsIExternalProtocolService);
-                        const handlerInfo = svc.getProtocolHandlerInfo(scheme);
-                        if (handlerInfo) {
-                            const uri = Services.io.newURI(url, null, null);
-                            handlerInfo.launchWithURI(uri, null);
-                            return;
-                        }
+                const m = /^([a-z][a-z0-9+.-]+):/i.exec(url);
+                const scheme = m && m[1].toLowerCase();
+                // ONLY a scheme the user enabled in Settings (and the App
+                // links master, under Links & Relations: prefs.4, MJT
+                // 2026-10-17) takes the no-prompt path, and never a file link
+                // (`_wvSkipConfirmFor`): `wv-link-app` is every non-web scheme,
+                // so "open without confirmation" for one scheme used to hand
+                // ANY scheme in a shared note (ms-msdt:, search-ms:, ...)
+                // straight to the OS handler (survey 2026-10-06). Everything
+                // else falls through to Zotero.launchURL and its prompt.
+                if (scheme && this._wvSkipConfirmFor(scheme)) {
+                    const svc = Components.classes[
+                        "@mozilla.org/uriloader/external-protocol-service;1"]
+                        .getService(Components.interfaces.nsIExternalProtocolService);
+                    const handlerInfo = svc.getProtocolHandlerInfo(scheme);
+                    if (handlerInfo) {
+                        const uri = Services.io.newURI(url, null, null);
+                        handlerInfo.launchWithURI(uri, null);
+                        return;
                     }
                 }
             }
@@ -1492,6 +1589,145 @@ export const urlMethods = {
                 Zotero.debug("[Weavero] _launchURL fallback err: " + e);
             }
         }
+    },
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // file:// links to another computer (MJT 2026-11-23: "Should be possible to
+    // activate from the settings. Still clickable, but just ask confirmation the
+    // first time using such a link"). Off (the default): refused with a notice,
+    // as since the security review. On (weavero.remoteFileLinks, under the file
+    // scheme in Settings): a link not opened before asks once -- Weavero's own
+    // question, the full target and the server in front of the user, Cancel the
+    // default -- and Open launches it and remembers it; a remembered link opens
+    // with no question. Remembered per LINK (wvRemoteFileTarget's key), never per
+    // server: another link planted to the same server asks again. At most
+    // WV_REMOTE_FILE_LINKS_MAX, the oldest dropped; switching the setting off
+    // forgets them (prefs-observers.ts, and here at the next click). A file the
+    // system would run (lib/open-guard.ts) is refused even then, as from any
+    // link. Guard: test/file-links.spec.js.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** Whether file:// links to another computer may open: the setting, under
+     *  the switches the file scheme itself needs (Links & Relations, App links,
+     *  file://). */
+    _wvRemoteFileLinksOn(): boolean {
+        try {
+            if (!Zotero.Prefs.get("weavero.remoteFileLinks")) return false;
+            if (!(this as any)._getEnableLinksAndRelations()) return false;
+            return this._wvAppSchemeEnabled("file");
+        } catch (e) { return false; }
+    },
+
+    /** The links to another computer the user has opened (their keys), oldest
+     *  first. */
+    _wvRemoteFileLinksList(): string[] {
+        try {
+            const raw = String(Zotero.Prefs.get("weavero.remoteFileLinksOpened") || "");
+            if (!raw) return [];
+            const a = JSON.parse(raw);
+            return Array.isArray(a) ? a.filter((k: any) => typeof k === "string" && k) : [];
+        } catch (e) { return []; }
+    },
+
+    /** Remember the link `key` (the oldest dropped past the cap). */
+    _wvRemoteFileLinksRemember(key: string) {
+        try {
+            const list = this._wvRemoteFileLinksList().filter((k: string) => k !== key);
+            list.push(key);
+            while (list.length > WV_REMOTE_FILE_LINKS_MAX) list.shift();
+            Zotero.Prefs.set("weavero.remoteFileLinksOpened", JSON.stringify(list));
+        } catch (e) { Zotero.debug("[Weavero] remote file links: remember err: " + e); }
+    },
+
+    /** The setting off: the remembered links are forgotten. */
+    _wvRemoteFileLinksSync() {
+        try {
+            if (Zotero.Prefs.get("weavero.remoteFileLinks")) return;
+            if (Services.prefs.prefHasUserValue("extensions.zotero.weavero.remoteFileLinksOpened")) {
+                Zotero.Prefs.clear("weavero.remoteFileLinksOpened");
+            }
+        } catch (e) {}
+    },
+
+    /** A click on a file:// link to another computer (`host`, as
+     *  wvRemoteFileHost reads it). */
+    _wvOpenRemoteFileLink(url: string, host: string) {
+        try {
+            const t = wvRemoteFileTarget(url);
+            if (!this._wvRemoteFileLinksOn() || !t || t.host === "?") {
+                this._wvRemoteFileLinksSync();
+                (this as any)._wvShowLinkRefused(wvStr("weavero-misc-link-refused-remote-file", { host: (t && t.host !== "?") ? t.host : host }));
+                return;
+            }
+            if (wvIsRunnableFile(t.path)) {
+                (this as any)._wvShowLinkRefused(wvStr("weavero-misc-link-refused-runnable", { name: t.unc }));
+                return;
+            }
+            if (!this._wvRemoteFileLinksList().includes(t.key)) {
+                // The one question of this click: the launch below goes to the
+                // system directly, never through Zotero.launchURL (whose
+                // loadURI would ask again).
+                if (!this._wvAskOpenRemoteFile(null, t)) return;
+                this._wvRemoteFileLinksRemember(t.key);
+            }
+            this._wvLaunchRemoteFile(t, url);
+        } catch (e) { Zotero.debug("[Weavero] _wvOpenRemoteFileLink err: " + e); }
+    },
+
+    /** The question before a link to another computer opens the first time:
+     *  Open or Cancel, Cancel the default. True: Open. */
+    _wvAskOpenRemoteFile(win: any, t: { host: string; unc: string }): boolean {
+        try {
+            const w = (win && win.document) ? win : Zotero.getMainWindow();
+            const ps: any = Services.prompt;
+            const flags = ps.BUTTON_POS_0 * ps.BUTTON_TITLE_IS_STRING
+                + ps.BUTTON_POS_1 * ps.BUTTON_TITLE_CANCEL
+                + ps.BUTTON_POS_1_DEFAULT;
+            return ps.confirmEx(w, wvStr("weavero-misc-open-remote-file-title"),
+                wvStr("weavero-misc-open-remote-file-message", { host: t.host, target: t.unc }),
+                flags, wvStr("weavero-misc-open-remote-file-button"), "", "", null, {}) === 0;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvAskOpenRemoteFile err: " + e);
+            return false;
+        }
+    },
+
+    /** Launch a link to another computer the user has allowed. Windows: the
+     *  UNC path, launched as a file (nsIFile.launch, what Zotero.launchFile
+     *  does first -- the system opens it, Gecko asks nothing). Elsewhere: the
+     *  system's own handler for the address (launchWithURI on the OS handler,
+     *  no Gecko prompt either). Never Zotero.launchURL: its loadURI shows
+     *  Gecko's "open this link?" prompt -- a second question. */
+    _wvLaunchRemoteFile(t: { unc: string }, url: string): boolean {
+        try {
+            if (Zotero.isWin) return this._wvLaunchPath(t.unc);
+            return this._wvLaunchViaOS(url);
+        } catch (e) { Zotero.debug("[Weavero] _wvLaunchRemoteFile err: " + e); return false; }
+    },
+
+    /** Windows: hand the path to the system (ShellExecute through
+     *  nsIFile.launch); a failure is logged, never handed on to a prompt. */
+    _wvLaunchPath(path: string): boolean {
+        try {
+            const f: any = Zotero.File.pathToFile(path);
+            f.launch();
+            return true;
+        } catch (e) { Zotero.debug("[Weavero] remote file link: launch err: " + e); return false; }
+    },
+
+    /** Elsewhere: the system's handler for `url`, without Gecko's prompt. */
+    _wvLaunchViaOS(url: string): boolean {
+        try {
+            const Ci = Components.interfaces;
+            const svc = Components.classes["@mozilla.org/uriloader/external-protocol-service;1"]
+                .getService(Ci.nsIExternalProtocolService);
+            const found: any = {};
+            const hi = svc.getProtocolHandlerInfoFromOS("file", found);
+            if (!hi) return false;
+            hi.preferredAction = Ci.nsIHandlerInfo.useSystemDefault;
+            hi.launchWithURI(Services.io.newURI(url, null, null), null);
+            return true;
+        } catch (e) { Zotero.debug("[Weavero] remote file link: OS launch err: " + e); return false; }
     },
 
     /** Launch a NON-HTTP URL through the external protocol service WITH a
@@ -1591,7 +1827,12 @@ export const urlMethods = {
                 let enabledThis = false;
                 try { enabledThis = !!Zotero.Prefs.get("weavero." + def.pref); }
                 catch (e) {}
-                const shouldSkip = masterAppLinks && skip && enabledThis;
+                // A scheme that always asks (file) is never switched to "don't
+                // ask": that switch is profile-wide and would also take the
+                // prompt off Zotero's own file-link opens. An earlier switch of
+                // Weavero's is given back below like any other.
+                const shouldSkip = masterAppLinks && skip && enabledThis
+                    && !WV_ALWAYS_ASK_SCHEMES.includes(def.name);
 
                 // ---- (1) warn-external pref --------------------------------
                 try {

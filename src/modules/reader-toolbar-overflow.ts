@@ -242,15 +242,44 @@ class _ToolbarOverflowMixin {
             const more = idoc.getElementById(MORE_ID);
             if (!g || !more) return;
             this._wvTbOverflowPlaceMore(idoc);
-            // Everything back, then measure (one write, one read, then the writes).
-            for (const el of Array.from(g.tb.querySelectorAll("[" + HIDE + "]")) as any[]) el.removeAttribute(HIDE);
-            more.hidden = true;
-            if (this._wvTbOverflowFits(idoc)) return;
-            more.hidden = false;
-            for (const el of this._wvTbOverflowOrder(idoc)) {
-                el.setAttribute(HIDE, "");
-                this._wvTbOverflowDividers(idoc);
-                if (this._wvTbOverflowFits(idoc)) break;
+            // The answer is the shortest head of the collapse order that fits: hiding
+            // more never makes the toolbar fit less. A pass starts from the head hidden
+            // now and moves one control at a time, up while it does not fit, down while
+            // one fewer still fits -- two reads when nothing changed, where starting
+            // from everything shown laid the reader's page out once per hidden control,
+            // on every pass (3 per PDF opened, and every step of a resize; 2026-11-21
+            // profile: ~25 ms before page 1). A hidden control that is not part of that
+            // head (a control added before it) starts from everything shown.
+            const order = this._wvTbOverflowOrder(idoc);
+            let k = 0;
+            while (k < order.length && order[k].hasAttribute(HIDE)) k++;
+            const head = new Set(order.slice(0, k));
+            const extra = (Array.from(g.tb.querySelectorAll("[" + HIDE + "]")) as any[]).some((el: any) =>
+                !head.has(el) && kindOf(el) !== "divider" && !el.classList.contains("custom-sections"));
+            if (extra) k = 0;
+            const setK = (n: number) => {
+                for (let i = 0; i < order.length; i++) {
+                    const on = i < n;
+                    if (on !== order[i].hasAttribute(HIDE)) { if (on) order[i].setAttribute(HIDE, ""); else order[i].removeAttribute(HIDE); }
+                }
+                if (extra || n === 0) for (const el of Array.from(g.tb.querySelectorAll("[" + HIDE + "]")) as any[]) { if (n === 0 || !order.includes(el)) el.removeAttribute(HIDE); }
+                more.hidden = n === 0;
+                if (n > 0) this._wvTbOverflowDividers(idoc);
+            };
+            setK(k);
+            if (this._wvTbOverflowFits(idoc)) {
+                while (k > 0) {
+                    setK(k - 1);
+                    if (!this._wvTbOverflowFits(idoc)) { setK(k); break; }
+                    k--;
+                }
+            }
+            else {
+                while (k < order.length) {
+                    k++;
+                    setK(k);
+                    if (this._wvTbOverflowFits(idoc)) break;
+                }
             }
         } catch (e) { Zotero.debug("[Weavero] _wvTbOverflowApply err: " + e); }
     }

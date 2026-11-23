@@ -30,7 +30,7 @@ import { wvLivePlugin } from "../lib/live";
 import { wvStoreWrite, wvStoreRead } from "../lib/store";
 import { wvTimeout, wvClearTimeout } from "../lib/timers";
 import { wvMenuItem, wvMenuItemByLabel } from "../lib/menu";
-import { wvInjectStyle, wvRemoveStyle, wvFilterTileRules } from "../lib/style";
+import { wvInjectStyle, wvRemoveStyle, wvFilterTileRules, wvDataColor, wvSetIconFill } from "../lib/style";
 import { wvListen, wvUnlisten, wvListenKeys } from "../lib/listen";
 import { wvMainWins, wvWinType } from "../lib/windows";
 import { wvAccel, wvAccelAny } from "../lib/keys";
@@ -314,7 +314,8 @@ const RP_POPUP_CSS = [
     "#" + RP_FILTER_POPUP_ID + " .wv-rf-hideann:hover{opacity:.85;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt.wv-filter-tag-colored{font-weight:600;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt.wv-filter-tag-colored::before{content:\" \";display:inline-block;",
-    "  width:8px;height:8px;margin-right:4px;border-radius:50%;background:var(--wv-tag-color,currentColor);",
+    // A synced tag colour: read by background-color alone (never the shorthand).
+    "  width:8px;height:8px;margin-right:4px;border-radius:50%;background-color:var(--wv-tag-color,currentColor);",
     "  border:1px solid rgba(127,127,127,0.3);vertical-align:-1px;flex:0 0 auto;}",
     // ---- toolbar button ----
     "." + RP_FILTER_BTN_CLASS + " .wv-filter-svg,.wv-al-btn .wv-filter-svg,.wv-bm-filter-btn .wv-filter-svg{width:20px;height:20px;-moz-context-properties:fill,stroke;fill:currentColor;stroke:currentColor;}",
@@ -16365,7 +16366,7 @@ class _ReaderPanelsMixin {
             const tagsSorted = [...tagsColored, ...tagsNormal, ...tagsSpecial];
             addRow((opts: any) => {
                 for (const tg of tagsSorted) {
-                    const col = tagColors[tg];
+                    const col = wvDataColor(tagColors[tg]);
                     opts.appendChild(mkNativeOpt("tags", nat.tags, st.tagsExcl, tg,
                         "Tag: " + tg + " — Alt+click to exclude",
                         (b: any) => {
@@ -20125,10 +20126,11 @@ class _ReaderPanelsMixin {
                         chip.className = "wv-bm-chip" + (st.tags.has(t) ? " selected" : "")
                             + (this._wvBmChipExcl(st, "tags").has(t) ? " excluded" : "");
                         chip.setAttribute("title", t + " — " + info.count + " bookmark(s) — Alt+click to exclude");
-                        if (info.color) {
+                        const tagColor = wvDataColor(info.color);
+                        if (tagColor) {
                             const dot = wvHtmlEl(idoc, "span");
                             dot.className = "wv-bm-chip-tag-dot";
-                            dot.style.background = info.color;
+                            dot.style.backgroundColor = tagColor;
                             chip.appendChild(dot);
                         }
                         const lbl = wvHtmlEl(idoc, "span", undefined, t, chip);
@@ -21668,7 +21670,7 @@ class _ReaderPanelsMixin {
                     const img = wvHtmlEl(idoc, "img");
                     img.setAttribute("src", src);
                     img.setAttribute("width", "16"); img.setAttribute("height", "16");
-                    if (info.fill) img.setAttribute("style", "-moz-context-properties:fill;fill:" + info.fill + ";");
+                    wvSetIconFill(img, info.fill);
                     ic.appendChild(img); done = true;
                 }
             } catch (_) {}
@@ -21975,7 +21977,8 @@ class _ReaderPanelsMixin {
             try { card.style.colorScheme = (this._bmIsDark && this._bmIsDark(idoc.defaultView)) ? "dark" : "light"; } catch (_) {}
             // Expose the annotation color to the CSS so the text/comment blocks
             // get a coloured left bar (matching the reader Annotations sidebar).
-            if (info.color) { try { card.style.setProperty("--wv-ann-color", info.color); } catch (_) {} }
+            const annColor = wvDataColor(info.color);
+            if (annColor) { try { card.style.setProperty("--wv-ann-color", annColor); } catch (_) {} }
             // Header layout mirrors the reader Annotations tab:
             //   annotations         → [icon] [Page X] ............ [author]
             //   other bookmarks     → [icon] [name]   ............ [page]

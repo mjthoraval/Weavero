@@ -458,6 +458,14 @@
           <checkbox data-l10n-id="weavero-pref-links-scheme-vscode" native="true" preference="extensions.zotero.weavero.enableVscodeScheme"/>
           <checkbox data-l10n-id="weavero-pref-links-scheme-zoom" native="true" preference="extensions.zotero.weavero.enableZoomScheme"/>
         </html:div>
+        <!-- file:// links to another computer (a network share): off, refused;
+             on, each link asks once (url.ts _wvOpenRemoteFileLink). A
+             dependent row of the file:// scheme above (greys with it). -->
+        <vbox class="wv-dep" data-gated-by="enableFileScheme">
+          <checkbox data-l10n-id="weavero-pref-links-remote-file" native="true"
+            preference="extensions.zotero.weavero.remoteFileLinks"/>
+          <html:p class="wv-desc" data-l10n-id="weavero-pref-links-remote-file-desc"/>
+        </vbox>
       </html:details>
 
   <vbox class="wv-block" data-gated-by="enableLinksAndRelations" data-wv-in="links">

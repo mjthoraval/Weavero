@@ -380,6 +380,83 @@ class _PreviewHighlightMixin {
         }, () => { if (still()) { try { deliver(popup); } catch (e) {} } });
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // WV-TEMP-134867 (forums.zotero.org/discussion/134867, upstream register #67).
+    // Zotero 11 makes a reference card ('citation' overlay) for citations it reads, and
+    // the PDF often has its own link (an 'internal-link', source 'annotation') on the
+    // same number with a slightly different box. The hover takes the SMALLEST overlay
+    // under the pointer (pdf-view.js _getSelectableOverlay), so one citation gives the
+    // card on its digits and a page picture at its edges -- or, on a range "1–5" with a
+    // PDF link per number, the picture on the digits and the card on the dash (Gupta &
+    // Kumar 2020, plain 11.0-beta.4: 47 of 65 cards). Zotero 10.0.8 made no card there.
+    // Here: an internal-link preview whose link crosses a card that has a reference on
+    // the link's destination page becomes that card. Hovers only -- a click still takes
+    // the link (pdf-view.js _handlePointerUp picks again), so "5" in "1–5" still jumps
+    // to [5]. A link going elsewhere (an affiliation mark Zotero took for a citation)
+    // keeps its picture. RETIRE WHEN a plain beta opens the same popup over the whole
+    // citation; the tripwire in test/preview-entry-highlight.spec.js says when (and the
+    // case never arises then: behaviour gate).
+    // ─────────────────────────────────────────────────────────────────────────
+    /** The 'citation' overlay to show instead of an internal-link `popup`, or null. */
+    _wvCitCardFor(this: any, pv: any, popup: any): any {
+        try {
+            if (!popup || popup.type !== "internal-link" || !popup.position || !popup.destinationPosition) return null;
+            const Cu = (Components as any).utils;
+            const v = Cu.waiveXrays(pv);
+            const pageIndex = num(popup.position.pageIndex);
+            const destPage = num(popup.destinationPosition.pageIndex);
+            const page = v._pdfPages && v._pdfPages[pageIndex];
+            const overlays = page && page.overlays;
+            if (!overlays || typeof overlays.length !== "number") return null;
+            const mine = rectsOf(popup.position);
+            if (!mine.length) return null;
+            const shared = (rs: number[][]) => {
+                let a = 0;
+                for (const r of rs) for (const m of mine) {
+                    const ix = Math.min(r[2], m[2]) - Math.max(r[0], m[0]);
+                    const iy = Math.min(r[3], m[3]) - Math.max(r[1], m[1]);
+                    if (ix > 0 && iy > 0) a += ix * iy;
+                }
+                return a;
+            };
+            let best: any = null, bestA = 0;
+            for (let i = 0; i < overlays.length; i++) {
+                const o = overlays[i];
+                if (!o || o.type !== "citation" || !o.position || num(o.position.pageIndex) !== pageIndex) continue;
+                const refs = o.references;
+                const n = refs ? refs.length : 0;
+                let there = false;
+                for (let k = 0; k < n && !there; k++) { try { there = num(refs[k].position.pageIndex) === destPage; } catch (e) {} }
+                if (!there) continue;
+                const a = shared(rectsOf(o.position));
+                if (a > bestA) { best = o; bestA = a; }
+            }
+            return best;
+        }
+        catch (e) { return null; }
+    }
+
+    /** Turn the internal-link `popup` into the card of `cit` in place, as pdf-view.js
+     *  _openOverlayPopup builds one (`{ ...overlay, rect }`); the popup object stays the
+     *  reader's own. False when it could not. */
+    _wvCitCardSwap(this: any, pv: any, popup: any, cit: any): boolean {
+        try {
+            const Cu = (Components as any).utils;
+            const v = Cu.waiveXrays(pv);
+            const w = Cu.waiveXrays(popup);
+            const c = Cu.waiveXrays(cit);
+            const rect = v.getClientRect(c.position.rects[0], c.position.pageIndex);
+            if (!rect) return false;
+            for (const k of Object.keys(w)) if (!(k in c)) delete w[k];
+            for (const k of Object.keys(c)) w[k] = c[k];
+            w.rect = rect;
+            this._wvCitCardLast = { at: Date.now(), page: num(c.position.pageIndex) };
+            Zotero.debug("[Weavero] WV-TEMP-134867: a PDF link over a reference card -> the card");
+            return true;
+        }
+        catch (e) { Zotero.debug("[Weavero] WV-TEMP-134867: card swap err: " + e); return false; }
+    }
+
     /** Does a destination (`rects`, PDF space, page `pageIndex`) hold the link
      *  the popup opened from -- the popup's own `position` (pdf-view.js
      *  _openOverlayPopup spreads the overlay into it), crossing one of them on

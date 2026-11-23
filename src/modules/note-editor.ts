@@ -272,7 +272,9 @@ class _NoteEditorMixin {
      *  colouring: zotero:// → enableZoteroLinks, http(s):// → enableInlineUrls,
      *  app schemes → enableAppLinks + the per-scheme tickbox. When a scheme's
      *  toggle is OFF, Weavero steps aside and the native popup-then-click works.
-     *  Unknown schemes keep the default takeover. */
+     *  A scheme Weavero does not know is never taken over: Zotero's own popup
+     *  shows it first, as it would without Weavero (security review
+     *  2026-11-22: a single click opened it). */
     _noteTakeoverForHref(href) {
         try {
             const h = String(href || "").trim();
@@ -282,14 +284,14 @@ class _NoteEditorMixin {
                 catch (e) { return true; }
             };
             if (/^zotero:\/\//i.test(h)) return on("enableZoteroLinks");
-            if (/^https?:\/\//i.test(h)) return on("enableInlineUrls");
+            if (/^https?:\/\//i.test(h) || /^www\./i.test(h)) return on("enableInlineUrls");
             for (const def of URL_SCHEMES) {
                 if (h.toLowerCase().startsWith((def.name + def.sep).toLowerCase())) {
                     return on("enableAppLinks") && on(def.pref);
                 }
             }
-            return true;
-        } catch (e) { return true; }
+            return false;
+        } catch (e) { return false; }
     }
 
     /** Per-`<note-editor>` setup. CSS-only approach — we inject our

@@ -52,7 +52,16 @@
 //     1.0.1-dev.4: a colour drawn from the pool, which a window's saved colour
 //     may take back on a Zotero with its own windows). And with the maximize
 //     button's right-click (`maxSpan:contextmenu`, `maxSpan:rbup` on the window,
-//     1.0.5-maxspan.1: maximize across monitors, max-span.ts). Set
+//     1.0.5-maxspan.1: maximize across monitors, max-span.ts). And with
+//     WV-TEMP-132551's redraw of the item count after an expand or collapse
+//     (`countRedraw` on the row provider's five toggles, outside the
+//     manual-expand tracker; 1.2.1-countcard.1, upstream-fixes.ts). And with
+//     WV-TEMP-134317's re-selection after View > Layout shows the Tag Selector
+//     again (`wrap toggleTagSelector:tagReshow` on ZoteroPane, 1.2.1-queue2.1,
+//     upstream-fixes.ts; it goes when that workaround retires). And with the
+//     Locate menu's first opening (`locateIcons:popupshown` on the window,
+//     1.2.1-hotfix: a lost lookup-engine icon is downloaded then, never at
+//     startup; pane.ts). Set
 //     WV_WIRING_RECORD=<path> to dump a new recording instead of comparing.
 //     A deliberate change edits the affected lines here, in the same commit,
 //     with the reason.
@@ -251,6 +260,7 @@ const WIRING_EXPECTED = {
             "_wvTSplitRestoreArmed:boolean", "_wvTSplitSyncing:boolean", "_wvTSplits:object", "_wvTabBarDecoMo:object",
             "_wvTabExtRepositioner:object", "_wvTabGroupWinDnDOff:function", "_wvTabMultiSelOff:function",
             "_wvThemeMQ:object", "_wvTreeDelegate:object", "_wvWinOrder:number", "listen countTip:blur", "listen countTip:keydown",
+            "listen locateIcons:popupshown",
             "listen maxSpan:contextmenu", "listen maxSpan:rbup", "listen newWindowKey", "listen openBesideKey", "listen ovFollow:unload",
             "listen reopenClosedKey", "listen stuckDropRow:dragend", "listen stuckDropRow:dragenter", "listen stuckDropRow:dragexit", "listen stuckDropRow:dragleave",
             "listen stuckDropRow:dragover", "listen stuckDropRow:drop", "listen tabGroupDnD:escKey", "listen tabGroupWinDnD:dragover",
@@ -260,10 +270,15 @@ const WIRING_EXPECTED = {
             "_wvLoadURIWired", "_wvOrigCopySelectedToClipboard", "_wvOrigLoadURI",
             "_wvOrigToggleAdvancedSearchState", "_wvOrigViewItems", "_wvQuickCopyWired",
             "_wvViewItemsWrapped", "wrap buildCollectionContextMenu:wv-hid",
+            // WV-TEMP-124063: external annotations kept from the items list's Delete.
+            "wrap canDeleteSelectedItems:extAnnDelete",
             // Split view: a reader|reader split's own panes (tab-split.ts, 1.0.5);
             // a library side's own panes (item 15).
             "wrap serializePersist:splitPersist",
-            "wrap setTagScope:tagScopeRows", "wrap unserializePersist:splitLibPersist", "wrap updateNewNoteMenu:newNoteMenu",
+            "wrap setTagScope:tagScopeRows",
+            // WV-TEMP-134317: View > Layout shows the Tag Selector again with its tags.
+            "wrap toggleTagSelector:tagReshow",
+            "wrap unserializePersist:splitLibPersist", "wrap updateNewNoteMenu:newNoteMenu",
         ],
         Zotero_Tabs: [
             "_wvOrigCanUnloadTS", "wrap close:trace+lastView", "wrap getState:normalize", "wrap markAsLoaded:trace",
@@ -278,7 +293,10 @@ const WIRING_EXPECTED = {
         rowProvider: [
             "_wvExpandMatchParentsPatched", "_wvNotifyForFilterPatched", "_wvOrigNotifyForFilter",
             "_wvOrigRefreshForChevronCompute", "_wvRefreshChevronComputePatched",
-            "wrap toggleOpenState:userOpenTracking",
+            // WV-TEMP-132551 (`countRedraw`): an expand / collapse redraws the item count.
+            "wrap collapseAllRows:countRedraw", "wrap collapseRows:countRedraw",
+            "wrap expandAllRows:countRedraw", "wrap expandRows:countRedraw",
+            "wrap toggleOpenState:userOpenTracking+countRedraw",
         ],
         collectionsView: [
             // `_wvHidOrigContainerEmpty`: the hidden-collections rule over Zotero's
@@ -288,6 +306,8 @@ const WIRING_EXPECTED = {
         ],
         itemPane: [
             "_wvCountWired", "_wvOrigRenderBatchPrompt", "_wvOrigSetItemPaneMessage",
+            // WV-TEMP-FEEDHEAD: on the window's item-pane prototype, seen through it.
+            "wrap setReadLabel:feedHead", "wrap setTranslateButton:feedHead",
         ],
         document: [
             "_wvAdvSearchCtxHandler", "_wvAdvSearchKeyHandler", "_wvAdvSearchMidHandler",
@@ -323,6 +343,7 @@ const WIRING_EXPECTED = {
         ],
         "#zotero-item-pane": [
             "_wvCountWired", "_wvOrigRenderBatchPrompt", "_wvOrigSetItemPaneMessage",
+            "wrap setReadLabel:feedHead", "wrap setTranslateButton:feedHead",
         ],
         "#zotero-context-pane": [
             "_wvCtxNoteWatchBy", "_wvCtxNoteWatchOff",
@@ -373,7 +394,7 @@ const WIRING_EXPECTED = {
             "_wvTSplitRestoreArmed:boolean", "_wvTSplitSyncing:boolean", "_wvTSplits:object", "_wvTabBarDecoMo:object",
             "_wvTabExtRepositioner:object", "_wvTabGroupWinDnDOff:function", "_wvTabMultiSelOff:function",
             "_wvThemeMQ:object", "_wvTitleGlyphIdx:number", "_wvTreeDelegate:object", "_wvWinIconName:string",
-            "_wvWinOrder:number", "_wvWindowId:number", "listen countTip:blur", "listen countTip:keydown", "listen maxSpan:contextmenu", "listen maxSpan:rbup",
+            "_wvWinOrder:number", "_wvWindowId:number", "listen countTip:blur", "listen countTip:keydown", "listen locateIcons:popupshown", "listen maxSpan:contextmenu", "listen maxSpan:rbup",
             "listen newWindowKey", "listen openBesideKey", "listen ovFollow:unload", "listen reopenClosedKey",
             "listen stuckDropRow:dragend", "listen stuckDropRow:dragenter", "listen stuckDropRow:dragexit", "listen stuckDropRow:dragleave", "listen stuckDropRow:dragover",
             "listen stuckDropRow:drop", "listen tabGroupDnD:escKey", "listen tabGroupWinDnD:dragover", "listen tabGroupWinDnD:drop",
@@ -383,7 +404,9 @@ const WIRING_EXPECTED = {
             "_wvLoadURIWired", "_wvOrigCopySelectedToClipboard", "_wvOrigLoadURI",
             "_wvOrigToggleAdvancedSearchState", "_wvOrigViewItems", "_wvPanePersistIsolated",
             "_wvPanePersistKey", "_wvQuickCopyWired", "_wvViewItemsWrapped",
-            "wrap buildCollectionContextMenu:wv-hid", "wrap serializePersist:splitPersist", "wrap setTagScope:tagScopeRows",
+            "wrap buildCollectionContextMenu:wv-hid", "wrap canDeleteSelectedItems:extAnnDelete",
+            "wrap serializePersist:splitPersist", "wrap setTagScope:tagScopeRows",
+            "wrap toggleTagSelector:tagReshow",
             "wrap unserializePersist:splitLibPersist", "wrap updateNewNoteMenu:newNoteMenu",
         ],
         Zotero_Tabs: [
@@ -396,7 +419,10 @@ const WIRING_EXPECTED = {
             "wrap handleRowModelUpdate:stuckDropRow", "wrap notify:scrollAnchor6023", "wrap selectItems:filterParity",
         ],
         rowProvider: [
-            "_wvExpandMatchParentsPatched", "wrap toggleOpenState:userOpenTracking",
+            "_wvExpandMatchParentsPatched",
+            "wrap collapseAllRows:countRedraw", "wrap collapseRows:countRedraw",
+            "wrap expandAllRows:countRedraw", "wrap expandRows:countRedraw",
+            "wrap toggleOpenState:userOpenTracking+countRedraw",
         ],
         collectionsView: [
             // `_wvHidOrigContainerEmpty`: the hidden-collections rule over Zotero's
@@ -406,6 +432,8 @@ const WIRING_EXPECTED = {
         ],
         itemPane: [
             "_wvCountWired", "_wvOrigRenderBatchPrompt", "_wvOrigSetItemPaneMessage",
+            // WV-TEMP-FEEDHEAD: on the window's item-pane prototype, seen through it.
+            "wrap setReadLabel:feedHead", "wrap setTranslateButton:feedHead",
         ],
         document: [
             "_wvAdvSearchCtxHandler", "_wvAdvSearchKeyHandler", "_wvAdvSearchMidHandler",
@@ -441,6 +469,7 @@ const WIRING_EXPECTED = {
         ],
         "#zotero-item-pane": [
             "_wvCountWired", "_wvOrigRenderBatchPrompt", "_wvOrigSetItemPaneMessage",
+            "wrap setReadLabel:feedHead", "wrap setTranslateButton:feedHead",
         ],
         "#zotero-context-pane": [
             "_wvCtxNoteWatchBy", "_wvCtxNoteWatchOff",

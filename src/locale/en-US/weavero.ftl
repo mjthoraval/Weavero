@@ -126,7 +126,12 @@ weavero-pref-links-scheme-figma =
     .tooltiptext = Figma files
 weavero-pref-links-scheme-file =
     .label = file://
-    .tooltiptext = Local files
+    .tooltiptext = Local files (always asks before opening)
+# file:// links to a file on another computer (a network share): refused
+# unless this is on.
+weavero-pref-links-remote-file =
+    .label = Allow links to files on other computers (network shares)
+weavero-pref-links-remote-file-desc = Each link asks once before it opens; Weavero remembers the links you open. Turning this off forgets them.
 weavero-pref-links-scheme-ftp =
     .label = ftp://
     .tooltiptext = FTP servers
@@ -1428,3 +1433,31 @@ weavero-maxspan-monitor = { $position ->
     }
 weavero-maxspan-tip = The window fills these monitors, leaving the taskbar free. Restore, or a double-click on the title bar, puts it back.
 weavero-maxspan-tip-mixed = The window fills these monitors, leaving the taskbar free. Restore, or a double-click on the title bar, puts it back. These monitors use different display scales: the window is drawn at the scale of one of them.
+
+# ---- Links Weavero does not open as they are (1.2.1) ----------------------
+# A zotero:// link of a kind Weavero does not open from a note or a
+# comment (only select, open and note links). $url: the link.
+weavero-misc-link-refused-zotero = This kind of Zotero link isn't opened from a note or a comment: { $url }
+# A file:// link to a file on another computer, from a note or a comment:
+# never opened. $host: that computer's name.
+weavero-misc-link-refused-remote-file = A link to a file on another computer ({ $host }) was not opened.
+# With "Allow links to files on other computers" on, the first click on such
+# a link asks first: the question's title, its text and its button (the other
+# one is Cancel). $host: the computer's name; $target: the full address.
+weavero-misc-open-remote-file-title = Open a file on another computer?
+weavero-misc-open-remote-file-message = This link reaches another computer, “{ $host }”:
+
+    { $target }
+
+    Opening it connects to that computer. Open it only if you trust where the link came from. Weavero will not ask again for this link.
+weavero-misc-open-remote-file-button = Open
+# A link, a row or a card Weavero did not open, for safety: the toast's title.
+weavero-misc-link-refused-title = Weavero — link not opened
+# A link to a file the system would run (a program, a script, a shortcut).
+# $name: the file's name.
+weavero-misc-link-refused-runnable = “{ $name }” was not opened: files of this type can run programs on your computer.
+# Before a link opens a file Zotero can't show itself: the question's title,
+# its text and its button (the other one is Cancel). $name: the file's name.
+weavero-misc-open-external-title = Open in another application?
+weavero-misc-open-external-message = Zotero can't show “{ $name }”, so it would open in the application your computer uses for this type of file. Open it only if you trust where it came from.
+weavero-misc-open-external-button = Open

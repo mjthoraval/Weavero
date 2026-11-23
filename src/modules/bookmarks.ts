@@ -44,6 +44,7 @@ import { wvMenuItem } from "../lib/menu";
 import { wvMainWins, wvOpenLibraryView } from "../lib/windows";
 import { wvAccel } from "../lib/keys";
 import { wvSvgEl } from "../lib/svg";
+import { wvDataColor, wvSetIconFill } from "../lib/style";
 import { wvLinkColor, wvLinkClassRules } from "../lib/links";
 import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
 
@@ -2396,10 +2397,12 @@ class _BookmarksMixin {
                 chip.className = "wv-bm-chip" + (st.tags.has(t) ? " selected" : "")
                     + ((this as any)._wvBmChipExcl(st, "tags").has(t) ? " excluded" : "");
                 chip.setAttribute("title", t + " — " + info.count + " bookmark(s) — Alt+click to exclude");
-                if (info.color) {
+                // A synced tag colour: a hex colour, as a colour property.
+                const tagColor = wvDataColor(info.color);
+                if (tagColor) {
                     const dot = wvHtmlEl(doc, "span");
                     dot.className = "wv-bm-chip-tag-dot";
-                    dot.style.background = info.color;
+                    dot.style.backgroundColor = tagColor;
                     chip.appendChild(dot);
                 }
                 const lbl = wvHtmlEl(doc, "span", undefined, t, chip);
@@ -4497,9 +4500,9 @@ class _BookmarksMixin {
         icon.setAttribute("src", ic.image);
         icon.setAttribute("width", "16");
         icon.setAttribute("height", "16");
-        let st = "flex:0 0 auto;";
-        if (ic.fill) st += "-moz-context-properties:fill;fill:" + ic.fill + ";";
-        icon.setAttribute("style", st);
+        icon.style.flex = "0 0 auto";
+        // An annotation's colour: a hex colour, as the fill property.
+        wvSetIconFill(icon, ic.fill);
         icon.addEventListener("error", () => {
             try {
                 if (icon.getAttribute("src") !== BM_FALLBACK_DATA_URI) {

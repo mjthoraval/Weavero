@@ -3,7 +3,97 @@
 // check (URL_REGEX assembly is pref-driven there; here we test the pure
 // assembly and classification directly).
 import { expect } from "chai";
-import { MD_REGEX, schemeAltPart, joinSchemeAlt, buildUrlRegex, urlLinkClass, urlPattern } from "../../src/lib/links";
+import { MD_REGEX, MD_LINK_SRC, schemeAltPart, joinSchemeAlt, buildUrlRegex, urlLinkClass, urlPattern, wvRemoteFileHost, wvRemoteFileTarget, wvIsWebURL, wvLabelMisleads } from "../../src/lib/links";
+
+describe("lib/links — the URL pattern stays linear on crafted text", () => {
+    const ALT = joinSchemeAlt(["https?:\\/\\/", "\\bwww\\.", "zotero:\\/\\/"]);
+    const scan = (s: string) => { const re = new RegExp(urlPattern(ALT), "g"); let n = 0, m; while ((m = re.exec(s))) { n++; if (m.index === re.lastIndex) re.lastIndex++; } return n; };
+    it("a 288 KB run of scheme starts with no space scans in well under a second", () => {
+        const s = "https://)".repeat(32000);
+        const t0 = Date.now();
+        expect(scan(s)).to.equal(32000);
+        expect(Date.now() - t0).to.be.below(1500);
+    });
+    it("a run of [ is no markdown link and scans quickly", () => {
+        const re = new RegExp(MD_LINK_SRC, "g");
+        const t0 = Date.now();
+        expect(re.exec("[".repeat(20000))).to.equal(null);
+        expect(Date.now() - t0).to.be.below(500);
+        expect(new RegExp(MD_LINK_SRC).exec("see [a label](https://x.org/a) here")!.slice(1)).to.deep.equal(["a label", "https://x.org/a"]);
+    });
+});
+
+describe("lib/links — wvLabelMisleads()", () => {
+    it("an address label on a link to another site misleads", () => {
+        expect(wvLabelMisleads("https://doi.org/10.1038/nature12345", "https://evil.example/login")).to.equal(true);
+        expect(wvLabelMisleads("www.nature.com/articles/x", "https://evil.example")).to.equal(true);
+        expect(wvLabelMisleads("10.1038/nature12345", "https://evil.example")).to.equal(true);
+        expect(wvLabelMisleads("https://doi.org/x", "https://doi.org@evil.example/x")).to.equal(true);
+        expect(wvLabelMisleads("https://example.org", "zotero://open/library/items/ABCD2345")).to.equal(true);
+    });
+    it("the same site, a DOI at doi.org, or a label that is no address does not", () => {
+        expect(wvLabelMisleads("https://doi.org/10.1/x", "https://doi.org/10.1/x?via=mail")).to.equal(false);
+        expect(wvLabelMisleads("https://www.example.org/a", "https://example.org/b")).to.equal(false);
+        expect(wvLabelMisleads("10.1038/nature12345", "https://dx.doi.org/10.1038/nature12345")).to.equal(false);
+        expect(wvLabelMisleads("doi:10.1038/x", "https://doi.org/10.1038/x")).to.equal(false);
+        expect(wvLabelMisleads("Smith 2020, p. 4", "zotero://open/library/items/ABCD2345")).to.equal(false);
+        expect(wvLabelMisleads("the dataset", "https://evil.example")).to.equal(false);
+    });
+});
+
+describe("lib/links — wvRemoteFileHost()", () => {
+    it("a host in a file: URL is another computer", () => {
+        expect(wvRemoteFileHost("file://server/share/paper.pdf")).to.equal("server");
+        expect(wvRemoteFileHost("FILE://Server.example/x")).to.equal("Server.example");
+    });
+    it("a UNC path after an empty host, however it is spelled", () => {
+        expect(wvRemoteFileHost("file:////server/share")).to.equal("server");
+        expect(wvRemoteFileHost("file:///\\\\server\\share")).to.equal("server");
+        expect(wvRemoteFileHost("file://\\\\server\\share")).to.equal("server");
+        expect(wvRemoteFileHost("file:\\\\server\\share")).to.equal("server");
+        expect(wvRemoteFileHost("file:///%5C%5Cserver/share")).to.equal("server");
+        expect(wvRemoteFileHost("file://localhost//server/share")).to.equal("server");
+    });
+    it("a file on this computer is not", () => {
+        for (const u of ["file:///C:/Users/x/a.pdf", "file://localhost/C:/a.pdf", "file:///home/x/a.pdf", "file:/C:/a.pdf", "https://server/x", "", "zotero://open/x"]) {
+            expect(wvRemoteFileHost(u), u).to.equal(null);
+        }
+    });
+});
+
+describe("lib/links — wvRemoteFileTarget()", () => {
+    it("every spelling of one link gives one key, the host in lower case", () => {
+        const keys = ["file://Server/share/a%20b.pdf", "file:////server/share/a b.pdf", "file:///\\\\server\\share\\a b.pdf",
+            "file://\\\\server\\share\\a b.pdf", "file:\\\\server\\share\\a b.pdf", "file:///%5C%5Cserver/share/a%20b.pdf",
+            "file://localhost//server/share//a b.pdf", "file://server/share/a%20b.pdf?x=1#page=2"]
+            .map((u) => { const t = wvRemoteFileTarget(u); return t && t.key; });
+        expect([...new Set(keys)]).to.deep.equal(["\\\\server\\share\\a b.pdf"]);
+    });
+    it("the UNC path keeps the host as written; another file of the server is another key", () => {
+        const t = wvRemoteFileTarget("file://Server.example/share/x.pdf")!;
+        expect(t.host).to.equal("Server.example");
+        expect(t.unc).to.equal("\\\\Server.example\\share\\x.pdf");
+        expect(t.path).to.equal("/share/x.pdf");
+        expect(wvRemoteFileTarget("file://server.example/share/y.pdf")!.key).to.not.equal(t.key);
+    });
+    it("a file on this computer is none; an unreadable one is refused", () => {
+        for (const u of ["file:///C:/Users/x/a.pdf", "file://localhost/C:/a.pdf", "https://server/x", ""]) {
+            expect(wvRemoteFileTarget(u), u).to.equal(null);
+        }
+        expect(wvRemoteFileTarget("file://server/%E0%A4%A")!.host).to.equal("?");
+        expect(wvRemoteFileTarget("file://?x")!.host).to.equal("?");
+    });
+});
+
+describe("lib/links — wvIsWebURL()", () => {
+    it("http(s) with a host only", () => {
+        expect(wvIsWebURL("https://example.org/a")).to.equal(true);
+        expect(wvIsWebURL("HTTP://example.org")).to.equal(true);
+        for (const u of ["file:///C:/x", "ms-settings:privacy", "https://", "https:///x", "javascript:alert(1)", "www.example.org", "", null]) {
+            expect(wvIsWebURL(u), String(u)).to.equal(false);
+        }
+    });
+});
 
 describe("lib/links — urlLinkClass()", () => {
     it("zotero:// → wv-link-zotero", () => {

@@ -31,6 +31,11 @@ describe("Weavero — filter translation as wrap layers", () => {
         iv = win && win.ZoteroPane && win.ZoteroPane.itemsView;
         rp = iv && iv.rowProvider;
         if (!wv || !lib || !rp) this.skip();   // v10 machinery only
+        // The filter's own layers only: WV-TEMP-132551 (upstream-fixes.ts) wraps the same
+        // toggles on the row provider, and the dead-instance case below would evict its
+        // live layer for the rest of the run (wvWrap drops every other tag). Off here, back
+        // in after() (2026-11-19).
+        wv._wvTeardownRowCountFix();
         tag = wv._wvWireTag();
         stateSnap = wv._filterState ? JSON.parse(JSON.stringify(wv._filterState)) : null;
         const libID = Zotero.Libraries.userLibraryID;
@@ -45,6 +50,7 @@ describe("Weavero — filter translation as wrap layers", () => {
 
     after(async () => {
         try { apply(stateSnap || CLEAR()); } catch (e) {}
+        try { for (const w of Zotero.getMainWindows()) wv._wvWireRowCountFix(w); } catch (e) {}
         try { if (item) await item.eraseTx(); } catch (e) {}
     });
 

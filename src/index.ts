@@ -19,7 +19,7 @@ import {
 import { makeInvisibleRe, TRAILING_RE as TRAILING_RE_LIB } from "./lib/text";
 import { wvLivePlugin } from "./lib/live";
 import { wvTimeout, wvClearTimeout, wvSleep } from "./lib/timers";
-import { wvInjectStyle, wvRemoveStyle, wvFilterTileRules, wvViewIdsCss } from "./lib/style";
+import { wvInjectStyle, wvRemoveStyle, wvFilterTileRules, wvViewIdsCss, wvDataColor, wvSetIconFill } from "./lib/style";
 import { wvWrap, wvUnwrap, wvWrapLayers } from "./lib/wrap";
 import { wvWhenWindowLoaded, wvBoolAttrOn, wvReaderMenuEvent, wvWithin, wvIsTextEntry, wvHtmlEl, WV_XHTML_NS } from "./lib/dom";
 import { wvListen, wvUnlisten, wvUnlistenAll, wvListenKeys, wvUnlistenAllOn, wvSweepTagOnChrome, wvListenRegistry } from "./lib/listen";
@@ -42,7 +42,10 @@ const WV_LIB = { wvLivePlugin, wvLibraryTabPinned, wvZoteroPinsLibraryTabs, wvZo
     wvWhenWindowLoaded, wvBoolAttrOn, wvReaderMenuEvent, wvWithin,
     wvListen, wvUnlisten, wvUnlistenAll, wvListenKeys, wvListenRegistry,
     wvStoreDir, wvStorePath, wvStoreChain, wvStoreWrite, wvStoreRead, wvStoreRemove,
-    wvScreenLayout, wvScreenNames, wvSpanCombos, wvSpanByRect };
+    wvScreenLayout, wvScreenNames, wvSpanCombos, wvSpanByRect,
+    wvFileExt, wvIsRunnableFile, wvIsImageFileName, wvIsWebURL,
+    wvDataColor, wvSetIconFill, wvIsRemoteFileURL, wvRemoteFileHost, wvRemoteFileTarget };
+import { wvFileExt, wvIsRunnableFile, wvIsImageFileName } from "./lib/open-guard";
 import { URL_SCHEMES, urlMethods } from "./modules/url";
 import { annotationMethods } from "./modules/annotation";
 import { tabsMethods } from "./modules/tabs";
@@ -77,7 +80,7 @@ import { wvScreenLayout, wvScreenNames, wvSpanCombos, wvSpanByRect } from "./lib
 import { prefsTableMethods } from "./modules/prefs-table";
 import { pluginApiMethods } from "./modules/plugin-api";
 import { WV_PREF_OBSERVERS } from "./modules/prefs-observers";
-import { WV_LINK_PALETTE, wvLinkVars, wvLinkColor, wvLinkClassRules } from "./lib/links";
+import { WV_LINK_PALETTE, wvLinkVars, wvLinkColor, wvLinkClassRules, wvIsWebURL, wvIsRemoteFileURL, wvRemoteFileHost, wvRemoteFileTarget } from "./lib/links";
 import { wvMakePublicApi } from "./lib/public-api";
 
 /** The `unload` watch of a window whose last library view closed while it stays
@@ -250,6 +253,23 @@ class WeaveroPlugin {
         });
     }
 
+    /** A link Weavero refused to open, for safety: said in a toast of its
+     *  own (not "broken link"). The log names no file or address. */
+    _wvShowLinkRefused(messages, win?) {
+        const arr = (Array.isArray(messages) ? messages : [messages])
+            .map((m) => (m == null ? "" : String(m).trim())).filter(Boolean);
+        if (!arr.length) return;
+        Zotero.debug("[Weavero] link refused");
+        let w: any = null;
+        try { w = win && win.document && win.Zotero_Tabs ? win : null; } catch (e) {}
+        this._wvToast(wvStr("weavero-misc-link-refused-title"), arr, {
+            id: "wv-link-refused-toast",
+            accent: "amber",
+            autoCloseMs: 11000,
+            win: w || undefined,
+        });
+    }
+
     /** Self-contained DOM toast in a main window.
      *
      *  Exists because the obvious alternatives do not work here:
@@ -388,15 +408,17 @@ class WeaveroPlugin {
         } catch (e) {}
         return null;
     }
-    _wvResolveItemByKey(lib: number, rawKey: string): any {
+    _wvResolveItemByKey(lib: number, rawKey: string, keysOnly?: boolean): any {
         const o = this._wvResolveByKey(
             (l, k) => Zotero.Items.getByLibraryAndKey(l, k), lib, rawKey);
         if (o) return o;
         // Oldest-style form (Zotero's SelectExtension `items/:id` route): a
         // PURE-NUMERIC id is a local database itemID, not a key. Deprecated
         // and "not consistent across synced machines", but handled for full
-        // native parity.
-        if (/^\d+$/.test(rawKey)) {
+        // native parity -- for a select only (`keysOnly` off): a number names
+        // an item in any library and is easy to guess, so an open or note link
+        // takes a key, as Zotero's own OpenExtension does.
+        if (!keysOnly && /^\d+$/.test(rawKey)) {
             try { const byId = Zotero.Items.get(parseInt(rawKey, 10)); if (byId) return byId; } catch (e) {}
         }
         return null;
@@ -655,10 +677,10 @@ class WeaveroPlugin {
                 let zotfilePage: string | null = null;
                 if (parts.length === 2 && /_/.test(parts[0]) && /^\d+$/.test(parts[1])
                     && parts[0] !== "library" && parts[0] !== "groups") {
-                    openItem = this._wvResolveItemByKey(getLib(), parts[0]);
+                    openItem = this._wvResolveItemByKey(getLib(), parts[0], true);
                     if (openItem) zotfilePage = parts[1];
                 }
-                let item = openItem || this._wvResolveItemByKey(getLib(), lastKey);
+                let item = openItem || this._wvResolveItemByKey(getLib(), lastKey, true);
                 if (!item) {
                     this._showLinkWarning("The file this link points to no longer exists (key "
                         + (openItem === null && zotfilePage === null ? lastKey : parts[0]) + ").");
@@ -674,13 +696,19 @@ class WeaveroPlugin {
                     try { best = await item.getBestAttachment(); } catch (e) { best = null; }
                     if (best && this._isOpenableFileAttachment(best)) item = best;
                     else {
+                        // No file: the paper's web page, never another kind of
+                        // address its URL field may hold (a file, an application
+                        // link) -- Zotero's viewItems would hand any of them on.
                         try {
-                            const zp: any = Zotero.getActiveZoteroPane();
-                            if (zp && typeof zp.viewItems === "function") await zp.viewItems([item]);
+                            const web = (this as any)._wvItemWebURL(item);
+                            if (web) Zotero.launchURL(web);
                         } catch (e) { Zotero.debug("[Weavero] paper-key open err: " + e); }
                         return;
                     }
                 }
+                // A file Zotero cannot show is opened by another application:
+                // a program never, anything else once the user confirms.
+                if (!(await (this as any)._wvMayOpenAttachment(item, opts && opts.win))) return;
                 let openTrashed = false;
                 try { openTrashed = !!(item as any).deleted; } catch (e) {}
                 const loc: any = {};
@@ -835,7 +863,7 @@ class WeaveroPlugin {
                     key = lastKey;
                 }
                 if (!key) return;
-                const note = this._wvResolveItemByKey(lib, key);
+                const note = this._wvResolveItemByKey(lib, key, true);
                 if (!note) {
                     this._showLinkWarning("The note this link points to no longer exists (key " + key + ").");
                     return;
@@ -870,7 +898,20 @@ class WeaveroPlugin {
                 }
                 return;
             }
-            Zotero.launchURL(url);
+            // Another kind of zotero:// link: one a registered extension acts
+            // on in place (noContent, as ZoteroPane.loadURI dispatches it) runs
+            // there; anything else is never handed to the system, which would
+            // only pass it back to Zotero's command line.
+            try {
+                const nsURI = Services.io.newURI(url, null, null);
+                const handler: any = Services.io.getProtocolHandler("zotero").wrappedJSObject;
+                const ext = handler && typeof handler.getExtension === "function" ? handler.getExtension(nsURI) : null;
+                if (ext && ext.noContent && typeof ext.doAction === "function") {
+                    ext.doAction(nsURI);
+                    return;
+                }
+            } catch (e) {}
+            this._wvShowLinkRefused(wvStr("weavero-misc-link-refused-zotero", { url: String(url).slice(0, 120) }));
         } catch (err) {
             Zotero.debug("[Weavero] handleZoteroURI error: " + err.message);
         }
@@ -4632,9 +4673,17 @@ class WeaveroPlugin {
         try { (this as any)._wvTeardownNoteWindowFix(); } catch (e) {}   // WV-TEMP-134831 (upstream-fixes.ts)
         try { (this as any)._wvTeardownCtxHeaderFix(); } catch (e) {}   // WV-TEMP-134823 (upstream-fixes.ts)
         try { (this as any)._wvTeardownNarrowPaneFix(); } catch (e) {}   // WV-TEMP-134826 (upstream-fixes.ts)
+        try { (this as any)._wvTeardownPaneJumpFix(); } catch (e) {}   // WV-TEMP-133075 (upstream-fixes.ts)
+        try { (this as any)._wvTeardownExtAnnDeleteFix(); } catch (e) {}   // WV-TEMP-124063 (upstream-fixes.ts)
+        try { (this as any)._wvTeardownPageCountFix(); } catch (e) {}   // WV-TEMP-99239 (upstream-fixes.ts)
         try { (this as any)._wvTeardownReaderMenuFix(); } catch (e) {}   // WV-TEMP-134772 (upstream-fixes.ts)
         try { (this as any)._wvTeardownAddSelectFix(); } catch (e) {}   // WV-TEMP-134824 (upstream-fixes.ts)
+        try { (this as any)._wvTeardownRowCountFix(); } catch (e) {}   // WV-TEMP-132551 (upstream-fixes.ts)
         try { (this as any)._wvTeardownRestoreFocusFix(); } catch (e) {}   // WV-TEMP-134825 (upstream-fixes.ts)
+        try { (this as any)._wvTeardownTagReshowFix(); } catch (e) {}   // WV-TEMP-134317 (upstream-fixes.ts)
+        try { (this as any)._wvTeardownFeedAbstractFix(); } catch (e) {}   // WV-TEMP-feedabstract (upstream-fixes.ts)
+        try { (this as any)._wvTeardownAdvSearchSeedFix(); } catch (e) {}   // WV-TEMP-advsrchcollapse (upstream-fixes.ts)
+        try { (this as any)._wvTeardownFeedHeadFix(); } catch (e) {}   // WV-TEMP-FEEDHEAD (upstream-fixes.ts)
         try { (this as any)._wvTeardownLayoutMenus(); } catch (e) {}
         try { (this as any)._wvTeardownPaneDragNoCollapse(); } catch (e) {}
         try { (this as any)._wvTeardownCollectionsTreeAids(); } catch (e) {}
@@ -4784,31 +4833,9 @@ class WeaveroPlugin {
             doc.getElementById(PANEL_ID)?.remove();
             this.removeStyles();
 
-            // Clean up the right-click Copy Link menu.
-            if (this._urlMenuState) {
-                try {
-                    const ms = this._urlMenuState;
-                    if (ms.root && ms.handlers) {
-                        try { ms.root.removeEventListener("contextmenu", ms.handlers.onCtx, true); } catch(e) {}
-                        try { ms.root.removeEventListener("click", ms.handlers.onAnyClick, true); } catch(e) {}
-                        try { ms.root.removeEventListener("keydown", ms.handlers.onKey, true); } catch(e) {}
-                        try { ms.root.removeEventListener("wheel", ms.handlers.onWheel, { capture: true, passive: true }); } catch(e) {}
-                    }
-                    if (ms.pointerTargets && ms.handlers && ms.handlers.onPointerDown) {
-                        for (const t of ms.pointerTargets) {
-                            try { t.removeEventListener("pointerdown", ms.handlers.onPointerDown, { capture: true }); } catch(e) {}
-                        }
-                    }
-                    if (ms.firstMoveHandler) {
-                        try { doc.removeEventListener("mousemove", ms.firstMoveHandler, true); } catch(e) {}
-                    }
-                    if (ms.win && ms.handlers && ms.handlers.onWinBlur) {
-                        try { ms.win.removeEventListener("blur", ms.handlers.onWinBlur); } catch(e) {}
-                    }
-                    if (ms.el && ms.el.parentNode) ms.el.parentNode.removeChild(ms.el);
-                } catch(e) {}
-                this._urlMenuState = null;
-            }
+            // The right-click Copy Link menus went with every window's tree
+            // delegate above (_teardownTreeClickDelegate -> _wvUrlMenuTeardown,
+            // per window since 2026-11-20).
             // Make sure the suppress class doesn't outlive the menu —
             // would otherwise leave links stuck with default cursor
             // after a teardown that didn't go through hideMenu.
@@ -4943,6 +4970,10 @@ class WeaveroPlugin {
                 if (data.sidebarPreviewClick) {
                     try { idoc.removeEventListener("mousedown",
                         data.sidebarPreviewClick, true); } catch(e) {}
+                }
+                if (data.popupPointerDown) {
+                    try { idoc.removeEventListener("pointerdown",
+                        data.popupPointerDown, true); } catch(e) {}
                 }
                 // Proactive Delete/Backspace listeners (both
                 // window and document on each iframe frame).

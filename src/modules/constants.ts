@@ -1641,7 +1641,9 @@ export const PLUGIN_CSS = [
     //   coloured (non-emoji) → bold + a small coloured dot before
     //   the name; coloured emoji → bold (the emoji is the visual);
     //   plain → no styling. Dot color comes from `--wv-tag-color`
-    //   set inline by the tag mode's `styleButton` hook.
+    //   set inline by the tag mode's `styleButton` hook -- a synced
+    //   tag colour, so it is read by `background-color` alone (a
+    //   `background` shorthand would also take an image).
     ".wv-filter-opt.wv-filter-tag-colored {",
     "  font-weight: 600;",
     "}",
@@ -1651,7 +1653,7 @@ export const PLUGIN_CSS = [
     "  width: 8px; height: 8px;",
     "  margin-right: 4px;",
     "  border-radius: 50%;",
-    "  background: var(--wv-tag-color, currentColor);",
+    "  background-color: var(--wv-tag-color, currentColor);",
     "  border: 1px solid rgba(127,127,127,0.3);",
     "  vertical-align: -1px;",
     "  flex: 0 0 auto;",

@@ -24,6 +24,7 @@
 
 import { wvHtmlEl } from "../lib/dom";
 import { wvStr } from "../lib/l10n";
+import { wvDataColor } from "../lib/style";
 import { wvListener } from "../lib/listen";
 import { wvLivePlugin } from "../lib/live";
 import { WV_BL_ICON_CONTEXT, wvBlAttFile, wvBlDrawSegs } from "./backlinks";
@@ -381,7 +382,8 @@ class _CountPopupsMixin {
             if (item.isAnnotation && item.isAnnotation()) {
                 const t = item.annotationType || "highlight";
                 const el = self._makeChromeIcon(doc, "chrome://zotero/skin/16/universal/annotate-" + (t === "image" ? "area" : t) + ".svg", "annotation-icon wv-rel-icon");
-                if (item.annotationColor) el.style.fill = item.annotationColor;
+                const fill = wvDataColor(item.annotationColor);
+                if (fill) el.style.fill = fill;
                 return el;
             }
             const name = (typeof item.getItemTypeIconName === "function") ? item.getItemTypeIconName(true) : "document";

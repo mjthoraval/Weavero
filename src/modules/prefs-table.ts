@@ -250,6 +250,10 @@ export const WV_PREFS: Record<string, WvPrefRow> = {
     enableZoteroLinks: { def: true, gate: ["enableLinksAndRelations"] },
     previewLinkZones: { def: true },
     enableAppLinksSkipConfirm: { def: false, gate: ["enableAppLinks"] },
+    // file:// links to another computer: off = refused; on = each link asks
+    // once (url.ts _wvOpenRemoteFileLink; MJT 2026-11-23). Under the file
+    // scheme's own switch.
+    remoteFileLinks: { def: false, gate: ["enableFileScheme"] },
     enableTabSessions: { def: true, gate: ["enableTabsAndWindows"] },
     sessionAutoReopen: { def: true, gate: ["newMainWindow"] },
     sessionSortReverse: { def: false },
@@ -311,6 +315,9 @@ export const WV_PREF_VALUES: Record<string, string | number> = {
     titleLinesMode: "off",
     // Lines of a title: 2 to 10 (title-lines.ts clamps a stored value).
     titleLinesCount: 2,
+    // The file:// links to another computer the user opened (remoteFileLinks
+    // on), a JSON list of their keys, oldest first; "" = none.
+    remoteFileLinksOpened: "",
 };
 
 class _PrefsTableMixin {

@@ -23,11 +23,12 @@ import { wvOutsideClick, wvReachableDocs, wvDismissOff } from "../lib/dismiss";
 import { wvWrap, wvUnwrap } from "../lib/wrap";
 import { wvListen, wvListener, wvUnlisten } from "../lib/listen";
 import { wvStoreWrite, wvStoreRead, wvStoreRemove } from "../lib/store";
-import { wvTimeout } from "../lib/timers";
+import { wvTimeout, wvSleep } from "../lib/timers";
 import { wvMenuItem, wvMMRegister } from "../lib/menu";
 import { wvFirstDocTab, wvFirstMovableIndex, wvIsFixedLibraryTab, wvIsLibraryTabID, wvLibraryTabPinned, wvMainWins, wvNativeWindows, wvSelectLibraryTab, wvStoredFromSaved, wvWinType, wvZoteroPinsLibraryTabs, wvZoteroPinsTabs } from "../lib/windows";
 import { wvAccel } from "../lib/keys";
 import { wvSvgEl } from "../lib/svg";
+import { wvIsWebURL } from "../lib/links";
 import { WV_FUNNEL_DATA_URI } from "./constants";
 import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
 
@@ -94,6 +95,18 @@ export const WV_TAB_MENU_ENTRIES: WvTabMenuEntry[] = [
         },
     },
 ];
+
+/** A window as the restore/quit trace names it: its kind and its window id,
+ *  never its title -- a reader window's title is the item's. */
+function wvTraceWin(w: any): string {
+    try {
+        const de = w && w.document && w.document.documentElement;
+        const kind = (de && de.getAttribute("windowtype")) || "window";
+        let id: any = "?";
+        try { id = w.docShell.outerWindowID; } catch (e) {}
+        return kind + "#" + id;
+    } catch (e) { return "window"; }
+}
 
 // Zotero_Tabs is the per-window globals — it's declared as `any`
 // rather than imported from zotero-types because zotero-types
@@ -1902,7 +1915,6 @@ class _TabsMixin {
 
     _wvEnsureMvWinGlyphStyles(doc: any) {
         try {
-            wvRemoveStyle(doc, "wv-mvwin-glyph-styles");   // always replaced (src-ts.md sheet replace)
             const style = wvHtmlEl(doc, "style");
             style.id = "wv-mvwin-glyph-styles";
             const anchorSvg = encodeURIComponent(
@@ -1943,6 +1955,12 @@ class _TabsMixin {
                 "  mask: url(\"data:image/svg+xml," + anchorSvg + "\") center/contain no-repeat;",
                 "}",
             ].join("\n");
+            // Replaced when its text differs (src-ts.md sheet replace), never with the
+            // same text: this runs for every window entry of a menu, and each swap
+            // restyles the whole window (2026-11-21).
+            const old = doc.getElementById("wv-mvwin-glyph-styles");
+            if (old && old.textContent === style.textContent) return;
+            wvRemoveStyle(doc, "wv-mvwin-glyph-styles");
             (doc.head || doc.documentElement).appendChild(style);
         } catch (e) {}
     }
@@ -5278,25 +5296,61 @@ class _TabsMixin {
         let donor: any = null;
         try {
             try { if (targetWin.focus) targetWin.focus(); } catch (e) {}
+            // Zotero 10's Reader.open has no window option: the donor goes to the
+            // main window most recently ACTIVATED (ReaderTab's constructor reads
+            // Services.wm.getMostRecentWindow, xpcom/reader.js 10.0.8), and focus()
+            // activates later on GTK and macOS, or never (a foreground lock; by
+            // every sign GitHub's macOS and Ubuntu runners). A donor opened in the
+            // source was swapped into all the same: the tab stayed, its reader
+            // re-homed on a window that did not hold it (2026-11-20). Wait for the
+            // target, bounded; without it, no swap (the classic move lands it).
+            // Guard: test/move-tab-context-pane.spec.js.
+            if (!(await this._wvAwaitFrontMain(targetWin, 1000)) || (this as any)._wvDestroyed) return null;
             donor = await Reader.open(itemID, null, { openInWindow: false, allowDuplicate: true, openInBackground: background });
             if (await this._wvSwapWaitShell(donor, targetWin)) return donor;
-            try { if (donor && donor.tabID) { this._wvBlindAutomationTabClose(donor.tabID); targetWin.Zotero_Tabs.close(donor.tabID); } } catch (er) {}
+            this._wvSwapDropDonor(donor, targetWin);
             return null;
         } catch (e) {
             Zotero.debug("[Weavero] _wvSwapOpenDonor err: " + e);
-            try { if (donor && donor.tabID) { this._wvBlindAutomationTabClose(donor.tabID); targetWin.Zotero_Tabs.close(donor.tabID); } } catch (er) {}
+            this._wvSwapDropDonor(donor, targetWin);
             return null;
         }
     }
 
+    /** True once `w` is the main window Zotero 10's Reader.open and Notes.open
+     *  open in (the most recently activated one), waiting up to `ms`. */
+    async _wvAwaitFrontMain(w: any, ms: number): Promise<boolean> {
+        const front = () => { try { return Services.wm.getMostRecentWindow("navigator:browser") === w; } catch (e) { return false; } };
+        const t0 = Date.now();
+        while (!front()) {
+            if (!w || w.closed || Date.now() - t0 >= ms) return false;
+            await wvSleep(50);
+        }
+        return true;
+    }
+
+    /** Close a donor that will not be swapped into, in the window it opened in
+     *  (not necessarily the target: see _wvSwapOpenDonor). */
+    _wvSwapDropDonor(donor: any, targetWin: any) {
+        try {
+            if (!donor || !donor.tabID) return;
+            const w: any = donor._window || targetWin;
+            this._wvBlindAutomationTabClose(donor.tabID);
+            w.Zotero_Tabs.close(donor.tabID);
+        } catch (e) {}
+    }
+
     /** Poll a freshly-opened donor until its shell (iframe + content window +
-     *  tab container) is ready for a docshell swap. Returns false on timeout. */
+     *  tab container) is ready for a docshell swap. Returns false on timeout,
+     *  and at once for a donor Zotero opened in another window than the target
+     *  (the swap would re-home the reader on a window not holding its tab). */
     async _wvSwapWaitShell(donor, targetWin) {
         const sleep = (ms: number) => new Promise<void>((res) => {
             try { if (targetWin.setTimeout) targetWin.setTimeout(res, ms); else setTimeout(res, ms); }
             catch (e) { setTimeout(res, ms); }
         });
         for (let i = 0; i < 90; i++) {
+            if (donor && donor._window && donor._window !== targetWin) return false;
             if (donor && donor._iframe && donor._iframe.contentWindow && donor.tabID && donor._tabContainer) return true;
             await sleep(120);
         }
@@ -5787,7 +5841,15 @@ class _TabsMixin {
             };
             const open = () => {
                 try {
-                    if (noFocus) {
+                    // A target still not in front (focus() activates later on
+                    // GTK and macOS, or never -- see _wvSwapOpenDonor) would get
+                    // nothing from Reader.open / Notes.open on Zotero 10: they
+                    // open in the window in front, which reopened the tab in
+                    // the SOURCE (2026-11-20). It lands window-explicitly, as a
+                    // popup move does. Guard: test/move-tab-context-pane.spec.js.
+                    let front = true;
+                    try { front = Services.wm.getMostRecentWindow("navigator:browser") === targetWin; } catch (e) {}
+                    if (noFocus || !front) {
                         // Background arrival (popup move): a window-explicit
                         // UNLOADED add — no Reader.open (routes by focus +
                         // selects the new tab). Loads lazily when the user
@@ -5915,6 +5977,12 @@ class _TabsMixin {
             // then `new ReaderTab`), so firing them all without awaiting between
             // makes them appear in one paint. Then wait for each shell.
             if (swapJobs.length) {
+                // The donors open in the window in front (see _wvSwapOpenDonor):
+                // wait for the target, bounded. A donor elsewhere is refused by
+                // _wvSwapWaitShell, dropped in its own window, and its tab goes
+                // the classic way.
+                try { if (targetWin.focus) targetWin.focus(); } catch (e) {}
+                await this._wvAwaitFrontMain(targetWin, 1000);
                 for (const job of swapJobs) {
                     try { if (targetWin.focus) targetWin.focus(); } catch (e) {}
                     try { job.donorPromise = Reader.open(job.pl.itemID, null, { openInWindow: false, allowDuplicate: true, openInBackground: true }); }
@@ -5923,7 +5991,7 @@ class _TabsMixin {
                 for (const job of swapJobs) {
                     try { job.donor = await job.donorPromise; } catch (e) { job.donor = null; }
                     job.ready = job.donor ? await this._wvSwapWaitShell(job.donor, targetWin) : false;
-                    if (job.donor && !job.ready) { try { this._wvBlindAutomationTabClose(job.donor.tabID); targetWin.Zotero_Tabs.close(job.donor.tabID); } catch (e) {} }
+                    if (job.donor && !job.ready) this._wvSwapDropDonor(job.donor, targetWin);
                 }
                 // PHASE 2 — commit the swaps SEQUENTIALLY (concurrent docshell
                 // surgery corrupts readers) while every tab stays HIDDEN: swap the
@@ -7514,18 +7582,24 @@ class _TabsMixin {
     }
 
     /** The page "View Online" opens for a tab's item: the top-level item's URL,
-     *  else its DOI, else the attachment's own URL. */
+     *  else its DOI, else the attachment's own URL -- a web page only (an
+     *  http(s) address): a URL field holding a file or an application link is
+     *  skipped, as Zotero's own View Online skips it. */
     _wvViewOnlineURL(item: any): string | null {
         try {
             const { att, top } = this._wvTabItemParts(item);
-            let url = (top && top.getField) ? (top.getField("url") || "") : "";
+            let url = (top && top.getField) ? String(top.getField("url") || "").trim() : "";
+            if (!wvIsWebURL(url)) url = "";
             if (!url && top && top.getField) {
                 const doi = top.getField("DOI");
                 const clean = doi && (Zotero.Utilities as any).cleanDOI
                     ? (Zotero.Utilities as any).cleanDOI(doi) : null;
                 if (clean) url = "https://doi.org/" + clean;
             }
-            if (!url && att && att.getField) url = att.getField("url") || "";
+            if (!url && att && att.getField) {
+                const own = String(att.getField("url") || "").trim();
+                if (wvIsWebURL(own)) url = own;
+            }
             return url || null;
         } catch (e) { return null; }
     }
@@ -9286,7 +9360,6 @@ class _TabsMixin {
 
     _wvEnsureSavedWindowStyles(doc: any) {
         try {
-            wvRemoveStyle(doc, "wv-savedwin-styles");   // always replaced (src-ts.md sheet replace)
             const style = wvHtmlEl(doc, "style");
             style.id = "wv-savedwin-styles";
             style.textContent = [
@@ -9318,6 +9391,11 @@ class _TabsMixin {
                 ".row:hover > .wv-row-close { opacity: 0.6; }",
                 ".wv-row-close:hover { opacity: 1 !important; }",
             ].join("\n");
+            // Replaced when its text differs, never with the same text: List all tabs
+            // calls this on every refresh (src-ts.md sheet replace; 2026-11-21).
+            const old = doc.getElementById("wv-savedwin-styles");
+            if (old && old.textContent === style.textContent) return;
+            wvRemoveStyle(doc, "wv-savedwin-styles");
             (doc.head || doc.documentElement).appendChild(style);
         } catch (e) {}
     }
@@ -9800,10 +9878,15 @@ class _TabsMixin {
     }
 
     /** Persist the trace buffer (fire-and-forget; same write mechanism as the
-     *  window store, so a quit-time flush rides the shutdown I/O barrier). */
+     *  window store, so a quit-time flush rides the shutdown I/O barrier) --
+     *  a diagnostics file, written only with the developer setting
+     *  `weavero.devBootTrace` on, as the boot-groups trace is. */
     _wvTraceFlush(tag: string) {
         try {
             if (!this._wvTraceLog || !this._wvTraceLog.length) return;
+            let on = false;
+            try { on = Zotero.Prefs.get("weavero.devBootTrace") === true; } catch (e) {}
+            if (!on) return;
             const path = PathUtils.join(Zotero.DataDirectory.dir, "weavero", "trace-" + tag + ".json");
             wvStoreWrite(path, { t0: this._wvTraceT0, entries: this._wvTraceLog }, { pretty: 1 });
         } catch (e) {}
@@ -10239,8 +10322,10 @@ class _TabsMixin {
                     const wanted = rec && rec.grp === gid ? rec.n : 1;
                     const have = Z._tabs.filter((x: any) => x.data && x.data.itemID === iid
                         && (this as any)._wvTabGroupStamp(x) === gid).length;
+                    // A copy whose stamp names no live group counts as unstamped
+                    // (issue #35: Zotero's session can restore an older id).
                     const lt = have < wanted ? Z._tabs.find((x: any) => x.data && x.data.itemID === iid
-                        && !(this as any)._wvTabGroupStamp(x)) : null;
+                        && !(this as any)._wvTabGroupLiveStamp(x)) : null;
                     if (lt) { (this as any)._wvTabGroupSetStamp(lt, gid); restamped++; }
                     // KEEP the entry: stamping this tab is not the end of
                     // the story -- Zotero's native restore REPLACES these
@@ -10888,7 +10973,7 @@ class _TabsMixin {
                     const t = atIndex || (Z && Z._tabs.find((x: any) => x.data && x.data.itemID === iid));
                     if (t && Z.selectedID !== t.id) {
                         Z.select(t.id);
-                        self._wvTrace("deferred select: loading " + t.type + " in " + self._wvWindowName(win) + (atIndex ? " (by position " + di + ")" : ""));
+                        self._wvTrace("deferred select: loading " + t.type + " in " + wvTraceWin(win) + (atIndex ? " (by position " + di + ")" : ""));
                     }
                 } catch (e) {}
             };
@@ -11197,8 +11282,7 @@ class _TabsMixin {
                 (w as any)._wvBgUserClaimed = true;
                 (self as any)._wvBgUserChosenWin = w;
                 try {
-                    (self as any)._wvTrace("bg-restore: user claimed '"
-                        + String(w.document.title || "").slice(0, 30) + "' (" + how + ") — redirect target");
+                    (self as any)._wvTrace("bg-restore: user claimed " + wvTraceWin(w) + " (" + how + ") — redirect target");
                 } catch (e) {}
             };
             // Claim listeners — wired on windows opened DURING the restore
@@ -11228,7 +11312,7 @@ class _TabsMixin {
                                 (w as any)._wvBgUserClaimed = true;
                                 lp._wvBgUserChosenWin = w;
                                 lp._wvBgPress = { win: w, until: Date.now() + BG_PRESS_MS };
-                                try { lp._wvTrace("bg-restore: user claimed '" + String(w.document.title || "").slice(0, 30) + "' (mousedown) — redirect target"); } catch (e3) {}
+                                try { lp._wvTrace("bg-restore: user claimed " + wvTraceWin(w) + " (mousedown) — redirect target"); } catch (e3) {}
                             }
                             w.focus();
                         } catch (e2) {}
@@ -11250,11 +11334,11 @@ class _TabsMixin {
                             if (liveP !== self) return;
                             if (!(self as any)._wvBgRestoreOn) return;
                             if ((w as any)._wvBgUserClaimed) return;   // the user chose this window
-                            const title = String(w.document.title || "").slice(0, 30);
+                            const title = wvTraceWin(w);
                             // The intended target activating is neither a claim
                             // nor a steal — it's the restore working.
                             if (w === resolveTarget()) {
-                                try { (self as any)._wvTrace("bg-restore: target '" + title + "' activated (ok)"); } catch (e3) {}
+                                try { (self as any)._wvTrace("bg-restore: target " + title + " activated (ok)"); } catch (e3) {}
                                 return;
                             }
                             const pressed = pressElsewhere(w);
@@ -11499,9 +11583,8 @@ class _TabsMixin {
                             // manual switching impossible during loading).
                             if (self._wvUserRecentlyActive(1500)) {
                                 (self as any)._wvBgUserChosenWin = fw;
-                                (this as any)._wvTrace("focus-shepherd: user switched to '"
-                                    + String(fw.document.title || "").slice(0, 30)
-                                    + "' — adopted as target");
+                                (this as any)._wvTrace("focus-shepherd: user switched to "
+                                    + wvTraceWin(fw) + " — adopted as target");
                             } else {
                                 target.focus();
                                 (this as any)._wvTrace("focus-shepherd: re-asserted the "
@@ -11528,8 +11611,7 @@ class _TabsMixin {
                 const chosen = (this as any)._wvBgUserChosenWin;
                 if (chosen && !chosen.closed) {
                     chosen.focus();
-                    (this as any)._wvTrace("restore: focused the user-chosen window '"
-                        + String(chosen.document && chosen.document.title || "").slice(0, 30) + "'");
+                    (this as any)._wvTrace("restore: focused the user-chosen window " + wvTraceWin(chosen));
                     return;
                 }
             } catch (e) {}
@@ -11546,8 +11628,7 @@ class _TabsMixin {
                     const cur: any = Services.wm.getMostRecentWindow(null);
                     if (cur && cur.document && typeof cur.document.hasFocus === "function"
                             && cur.document.hasFocus()) {
-                        (this as any)._wvTrace("restore: focus re-assert skipped -- user active in '"
-                            + String(cur.document.title || "").slice(0, 30) + "'");
+                        (this as any)._wvTrace("restore: focus re-assert skipped -- user active in " + wvTraceWin(cur));
                         return;
                     }
                 }
@@ -12832,7 +12913,11 @@ class _TabsMixin {
                 .map(t => `#tab-bar-container .tab[data-id="${
                     escape(t.id)}"] .tab-icon::after`)
                 .join(",\n");
-            style.textContent =
+            // Written only when it differs: this runs on every tab-bar pass, and
+            // any write to a <style> -- even of the same text -- has Gecko parse
+            // it again and restyle the whole main window (the tab-group sheet's
+            // twin, 2026-11-21).
+            const css =
                 selIcon + " {\n"
                 + "  position: relative;\n"
                 + "  overflow: visible;\n"
@@ -12853,6 +12938,7 @@ class _TabsMixin {
                 + "  filter: drop-shadow(0 0 0.7px #1c1c1e) drop-shadow(0 0 0.7px #1c1c1e);\n"
                 + "  pointer-events: none;\n"
                 + "}\n";
+            if (style.textContent !== css) style.textContent = css;
         }
 
         // Tooltip resolution is now handled at the title-bar level

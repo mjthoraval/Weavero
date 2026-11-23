@@ -1,4 +1,4 @@
-/* global describe, it, before, after, assert, Zotero, IOUtils */
+/* global describe, it, before, after, assert, Zotero, IOUtils, ChromeUtils */
 
 // src/lib/store.ts (survey 2026-10-06 §3.4): one persistence writer/reader
 // for the JSON files under <data dir>/weavero. Contracts: atomic writes on a
@@ -90,6 +90,35 @@ describe("Weavero — lib/store: one writer, three read answers", () => {
         assert.strictEqual(calls, 2, "one retry");
         assert.isTrue(await IOUtils.exists(path), "the file was not moved");
         assert.deepEqual((await lib.wvStoreRead(path)).doc, { keep: "me" }, "and is intact");
+    });
+
+    // On Windows the atomic replace (the tmp file renamed over the store) needs
+    // delete access to the target: a process holding the file open without
+    // sharing it -- an antivirus scan or an indexer reading the file just
+    // written -- refuses it for a moment. The write was logged and dropped,
+    // the awaited persist resolved, and the file kept the previous document
+    // (bookmark-page-numbers.spec.js read outlines.json back without the
+    // settings just written, Zotero 10 full run, 2026-11-20; a 250 ms hold
+    // reproduced it). Held here through kernel32 for 250 ms.
+    it("a write refused while another process holds the file lands once it is released (Windows)", async function () {
+        if (!Zotero.isWin) this.skip();   // platform: the replace is refused on Windows only
+        this.timeout(10000);
+        await lib.wvStoreWrite(path, { held: 1 });
+        const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
+        const k32 = ctypes.open("kernel32.dll");
+        try {
+            const CreateFileW = k32.declare("CreateFileW", ctypes.winapi_abi, ctypes.voidptr_t, ctypes.char16_t.ptr,
+                ctypes.uint32_t, ctypes.uint32_t, ctypes.voidptr_t, ctypes.uint32_t, ctypes.uint32_t, ctypes.voidptr_t);
+            const CloseHandle = k32.declare("CloseHandle", ctypes.winapi_abi, ctypes.int32_t, ctypes.voidptr_t);
+            // GENERIC_READ, FILE_SHARE_READ only (no delete sharing), OPEN_EXISTING.
+            const h = CreateFileW(path, 0x80000000, 1, null, 3, 0x80, null);
+            assert.notStrictEqual(String(h), String(ctypes.voidptr_t(-1)), "fixture: the file is held");
+            const released = /** @type {Promise<void>} */ (new Promise(r => setTimeout(() => { CloseHandle(h); r(undefined); }, 250)));
+            await lib.wvStoreWrite(path, { held: 2 });
+            await released;
+            assert.deepEqual(JSON.parse(await IOUtils.readUTF8(path)), { held: 2 }, "the awaited write is on disk");
+        }
+        finally { k32.close(); }
     });
 
     it("rotateBak copies the previous file to .bak only when the caller says the new document loses something", async () => {

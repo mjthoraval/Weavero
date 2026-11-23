@@ -889,12 +889,14 @@ class _TabGroupsMixin {
     _ensureTabGroupStyles(doc: any) {
         try { this._wvEnsureSelectedTabRing(doc); } catch (e) {}
         try {
-            // Always replaced (src-ts.md sheet replace): stale rules from a
-            // previous build go whether or not anyone bumped a version.
-            wvRemoveStyle(doc, "wv-tab-group-styles");
-            const st = wvHtmlEl(doc, "style");
-            st.id = "wv-tab-group-styles";
-            st.textContent = [
+            // Replaced when its text differs (src-ts.md sheet replace: stale
+            // rules from a previous build go whether or not anyone bumped a
+            // version) -- never removed and added again with the same text: this
+            // runs on every tab-bar mutation (_applyTabGroups), and each swap
+            // rebuilt the main window's style set and restyled the whole window,
+            // three times per PDF opened (2026-11-21 profile, "Update stylesheet
+            // information" 17 ms with Weavero vs 2-4 without).
+            const css = [
                 // Member underline — a ::after bar that extends LEFT across the
                 // 4px flex gap to the previous member (7px for the first member,
                 // reaching the chip), so the group reads as ONE continuous line,
@@ -1297,7 +1299,17 @@ class _TabGroupsMixin {
                 ".wv-tg-btn:hover { background: rgba(127,127,127,0.15); }",
                 ".wv-tg-sep { border-top: 1px solid rgba(127,127,127,0.3); margin: 2px 0; }",
             ].join("\n");
-            doc.documentElement.appendChild(st);
+            const st = wvInjectStyle(doc, "wv-tab-group-styles", css, doc.documentElement);
+            // Still the last of Weavero's sheets, as every pass left it when it was
+            // added again each time: its rules win their ties with the selected-tab
+            // ring's and the pinned tabs' (a drag's card stack over the ring's inset,
+            // selected-tab-ring.spec.js). Moved only when a sheet came in after it -- a
+            // setting turned on, a window wired -- not on every pass.
+            let later = false;
+            for (let n = st ? st.nextElementSibling : null; n; n = n.nextElementSibling) {
+                if (n.localName === "style" && /^(wv-|weavero)/.test(n.id || "")) { later = true; break; }
+            }
+            if (later) doc.documentElement.appendChild(st);
         } catch (e) { Zotero.debug("[Weavero] _ensureTabGroupStyles err: " + e); }
     }
 
@@ -1412,6 +1424,12 @@ class _TabGroupsMixin {
                         // member stays out; a replaced tab object still gets its
                         // stamp back because the replacement lowers the count.
                         const stampedNow = new Map<any, number>();
+                        // A stamp naming no live group counts as none (issue #35,
+                        // 2026-11-19): Zotero's restored session can bring a tab back
+                        // with an OLDER group id than the store's, and skipping it as
+                        // "stamped" left the group with no tab -- no chip, while the
+                        // menu still offered "Remove from Tab Group".
+                        const liveB = this._wvTabGroupLiveIds();
                         for (const t of Z_Tabs._tabs) {
                             const iid = t && t.data && t.data.itemID;
                             const rec = iid != null ? bm.get(iid) : null;
@@ -1421,7 +1439,7 @@ class _TabGroupsMixin {
                             const t = Z_Tabs._tabs[i];
                             const iid = t && t.data && t.data.itemID;
                             const rec = iid != null ? bm.get(iid) : null;
-                            if (!rec || this._wvTabGroupStamp(t)) continue;
+                            if (!rec || this._wvTabGroupLiveStamp(t, liveB)) continue;
                             if ((stampedNow.get(iid) || 0) >= rec.n) continue;   // enough copies grouped: this one is a duplicate on purpose
                             this._wvTabGroupSetStamp(t, rec.grp);
                             stampedNow.set(iid, (stampedNow.get(iid) || 0) + 1);
@@ -1517,9 +1535,12 @@ class _TabGroupsMixin {
                     let set = claimedByGroup.get(s); if (!set) { set = new Set(); claimedByGroup.set(s, set); }
                     set.add(k.libraryID + ":" + k.itemKey);
                 }
+                // A stamp naming no live group does not hold a tab back from its
+                // real group (issue #35, 2026-11-19; see the boot-stamp pass above).
+                const liveC = this._wvTabGroupLiveIds();
                 for (let i = wvFirstDocTab(Z_Tabs._tabs); i < Z_Tabs._tabs.length; i++) {
                     const t = Z_Tabs._tabs[i];
-                    if (this._wvTabGroupStamp(t) || (t as any)._wvGroupExcluded) continue;
+                    if (this._wvTabGroupLiveStamp(t, liveC) || (t as any)._wvGroupExcluded) continue;
                     const k = this._wvTabGroupDeckKey(t);
                     if (!k) continue;
                     const kk = k.libraryID + ":" + k.itemKey;
@@ -5623,7 +5644,8 @@ class _TabGroupsMixin {
                     try { const it: any = Zotero.Items.get(o.itemID); if (it) { rt = String(it.attachmentReaderType || "(none)"); isN = String(!!(it.isNote && it.isNote())); itype = it.itemType; } } catch (e) {}
                     return { itemID: o.itemID, tabType: o.tabType, flaggedNote: !!o.isNote, attachmentReaderType: rt, realIsNote: isN, itemType: itype };
                 });
-                Zotero.debug("[Weavero][move-group] START groupID=" + groupID + " name=\"" + (g.name || "") + "\" homeIsReader=" + homeIsReader + " openCount=" + open.length + " members=" + JSON.stringify(dbg));
+                // The group's name is the user's words: its length only.
+                Zotero.debug("[Weavero][move-group] START groupID=" + groupID + " nameLength=" + String(g.name || "").length + " homeIsReader=" + homeIsReader + " openCount=" + open.length + " members=" + JSON.stringify(dbg));
             } catch (eLog) {}
             if (!entries.length) { Zotero.debug("[Weavero][move-group] ABORT — no openable entries (group left intact)"); return; }
             // Keep the group alive across the close→reopen gap (closing the last
@@ -6940,9 +6962,12 @@ class _TabGroupsMixin {
                                 }
                                 const win = ctx.menuElem.ownerDocument.defaultView;
                                 // Per-tab: show "Remove from Group" only when THIS tab
-                                // is stamped (a duplicate whose twin is grouped isn't).
+                                // is in a LIVE group (a duplicate whose twin is grouped
+                                // isn't; nor a tab whose stamp names a group that no
+                                // longer exists -- issue #35 offered removal from a
+                                // group drawn nowhere).
                                 const ctxTab = win && win.Zotero_Tabs && win.Zotero_Tabs._tabs.find((x: any) => x && x.id === ctx.tabID);
-                                const grouped = ctxTab && self._wvTabGroupStamp(ctxTab);
+                                const grouped = ctxTab && self._wvTabGroupLiveStamp(ctxTab);
                                 if (!grouped) { ctx.setVisible(false); return; }
                                 ctx.setVisible(true);
                                 const n = self._wvTabMultiSelTargets(win, ctx.tabID).length;

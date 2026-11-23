@@ -9,11 +9,11 @@
     "repo": "PikaPei/zotero-default-attachment"
   },
   "zotero-reading-list": {
-    "file": "zotero-reading-list-1.7.2.xpi",
-    "version": "1.7.2",
+    "file": "zotero-reading-list-1.7.3.xpi",
+    "version": "1.7.3",
     "addonID": "reading-list@hotmail.com",
-    "sha256": "c03828c0e9b646efe059e21f2866810739ff294230fb3612a581495e152e368f",
-    "source": "https://github.com/Dominic-DallOsto/zotero-reading-list/releases/tag/v1.7.2",
+    "sha256": "107964d0528457fa538085def1e1f4dfb537e92bfe7e69156023d4bd0bcf04e3",
+    "source": "https://github.com/Dominic-DallOsto/zotero-reading-list/releases/tag/v1.7.3",
     "repo": "Dominic-DallOsto/zotero-reading-list",
     "note": "1.6/1.7 added optional read-status<->tag synchronisation and configurable shortcuts; the Read_Status Extra line and the statuses pref are unchanged (checked in the 1.7.0 bundle, 2026-09-17)"
   },

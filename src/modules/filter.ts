@@ -40,8 +40,9 @@ import { wvLivePlugin } from "../lib/live";
 import { wvWrap, wvUnwrap } from "../lib/wrap";
 import { wvTimeout, wvClearTimeout } from "../lib/timers";
 import { wvListen, wvUnlisten } from "../lib/listen";
-import { wvMainWins, wvNativeWindows, wvViewEl } from "../lib/windows";
+import { wvLibraryViews, wvMainWins, wvNativeWindows, wvViewEl } from "../lib/windows";
 import { wvSvgEl } from "../lib/svg";
+import { wvDataColor } from "../lib/style";
 import { wvExternalLinkGlyphEl } from "../lib/link-glyph";
 import { WV_BL_ICON_CONTEXT } from "./backlinks";
 import { WV_LK_ICON_CONTEXT } from "./links";
@@ -70,8 +71,20 @@ import {
 // (the prefs "Debug" toggle). Module-scoped (not `this`-bound) so it works
 // inside patched row-provider methods / callbacks where `this` is not the
 // plugin. Error / `catch` paths keep Zotero.debug() so they always surface.
+// The `weavero.debug` flag, re-read at most once a second: `dbg` runs per KEPT
+// ROW in an apply, and a pref read per call cost 675 ms of a 35-s profile of
+// three file-type clicks on MJT's 42k-item library (2026-11-22).
+let WV_DBG_ON = false, WV_DBG_AT = 0;
+function wvDbgOn(): boolean {
+    const now = Date.now();
+    if (now - WV_DBG_AT > 1000) {
+        WV_DBG_AT = now;
+        try { WV_DBG_ON = !!Zotero.Prefs.get("weavero.debug"); } catch (_) { WV_DBG_ON = false; }
+    }
+    return WV_DBG_ON;
+}
 function dbg(...args: any[]) {
-    try { if (Zotero.Prefs.get("weavero.debug")) (Zotero.debug as any)(...args); } catch (_) {}
+    try { if (wvDbgOn()) (Zotero.debug as any)(...args); } catch (_) {}
 }
 
 // One items-list filter apply's working context, handed from phase to phase
@@ -100,6 +113,7 @@ interface WvApplyWinSt {
     swapping: boolean;                // `_collectionSwapping`
     swapApplied: boolean;             // the rebuild's own re-apply ran during this swap
     skipObserverRefreshUntil: number; // `_wvSkipObserverRefreshUntil` (Zotero 9)
+    lastApplyMs: number;              // how long this window's last apply held the main thread
 }
 
 // The memos and sets of one VIEW (`_FilterMixin._wvApplyViewStOf`): one items
@@ -184,6 +198,10 @@ function wvTrace(ev: string, data?: any) {
         if (ring.length > 400) ring.splice(0, ring.length - 400);
     } catch (e) {}
 }
+
+// A filter panel's suggestion list longer than this is built when shown, not
+// at every panel re-render (_renderUnifiedSearchSection).
+const WV_SUGGEST_EAGER_MAX = 500;
 
 function wvEvictFacets(ids: any[]) {
     try {
@@ -577,8 +595,31 @@ const _ANNOTATION_TYPES_DATA = [
       icon: "chrome://zotero/skin/16/universal/annotate-text.svg" },
 ];
 
-// `attachmentLinkedFile` is a pseudo-kind: it doesn't come from
-// `getItemTypeIconName(true)` (which collapses link-mode); it's
+// The kind an attachment's file-type tile matches: the icon Zotero DRAWS for
+// it (`getItemTypeIconName()`, what the items tree renders) with the link mode
+// folded out. Never `getItemTypeIconName(true)`: for images and videos Zotero
+// tests `linkMode == (!skipLinkMode && LINK_MODE_LINKED_FILE)`, i.e.
+// `linkMode == false`, TRUE for a STORED file (link mode 0) -- every stored
+// image came back `attachmentImageLink` and Image matched nothing in MJT's
+// library (56 DjVu, 3 JPEG, 2 GIF; 2026-11-22, item.js 11.0-beta.5). The same
+// call gave a linked file of any other type the bare `attachment`, so Other
+// File never matched one. Guard: test/filter-file-type-kinds.spec.js.
+const WV_ATT_KIND_FOLD: Record<string, string> = {
+    attachmentPDFLink: "attachmentPDF",
+    attachmentEPUBLink: "attachmentEPUB",
+    attachmentImageLink: "attachmentImage",
+    attachmentVideoLink: "attachmentVideo",
+    attachmentLink: "attachmentFile",
+};
+function wvAttachmentFileKind(item: any): string {
+    try {
+        const k = String((item && item.getItemTypeIconName && item.getItemTypeIconName()) || "");
+        return WV_ATT_KIND_FOLD[k] || k;
+    } catch (e) { return ""; }
+}
+
+// `attachmentLinkedFile` is a pseudo-kind: it doesn't come from the
+// drawn icon (`wvAttachmentFileKind` folds link-mode out); it's
 // matched by `_attachmentMatchesFileTypeList` via
 // `attachmentLinkMode === LINK_MODE_LINKED_FILE`. Orthogonal to
 // the content-type entries — picking it shows linked files of
@@ -733,7 +774,7 @@ class _FilterMixin {
         const key = win || self;
         let st = m.get(key);
         if (!st) {
-            st = { suppressUntil: 0, applying: false, applyingTimer: null, swapping: false, swapApplied: false, skipObserverRefreshUntil: 0 };
+            st = { suppressUntil: 0, applying: false, applyingTimer: null, swapping: false, swapApplied: false, skipObserverRefreshUntil: 0, lastApplyMs: 0 };
             m.set(key, st);
         }
         return st;
@@ -863,21 +904,19 @@ class _FilterMixin {
      *  So "PDF + Linked File" returns only linked PDFs, "PDF +
      *  EPUB" returns PDFs and EPUBs of any link mode, "PDF + EPUB
      *  + Linked File" returns linked PDFs and linked EPUBs. The
-     *  pseudo-kind is pseudo because Zotero's
-     *  `getItemTypeIconName(skipLinkMode=true)` collapses link-
-     *  mode (a linked PDF still reports `attachmentPDF`); we
-     *  check `attachmentLinkMode === LINK_MODE_LINKED_FILE`
-     *  directly. With nothing on the content-type axis but
-     *  `attachmentLinkedFile` selected, the list matches every
-     *  linked file regardless of content type. */
+     *  pseudo-kind is pseudo because the kind folds link-mode out
+     *  (`wvAttachmentFileKind`: a linked PDF reports
+     *  `attachmentPDF`); we check `attachmentLinkMode ===
+     *  LINK_MODE_LINKED_FILE` directly. With nothing on the
+     *  content-type axis but `attachmentLinkedFile` selected, the
+     *  list matches every linked file regardless of content type. */
     _attachmentMatchesFileTypeList(item, list) {
         if (!item || !list || !list.length) return false;
         const wantsLinked = list.includes("attachmentLinkedFile");
         const contentList = wantsLinked
             ? list.filter(v => v !== "attachmentLinkedFile")
             : list;
-        const kind = (item.getItemTypeIconName
-            && item.getItemTypeIconName(true)) || "";
+        const kind = wvAttachmentFileKind(item);
         // Content-type axis: pass if either no content type is
         // selected (only the linked-file constraint matters) or
         // the item's kind is among the selected ones.
@@ -1291,8 +1330,78 @@ class _FilterMixin {
                 }
             } catch (e) {}
         };
+        // The selection a toggle leaves, by IDENTITY. The tree's selection holds
+        // FILTERED indices, and Zotero's own toggle runs under SELF, where getRow
+        // answers raw rows: it reads and moves the selection in the wrong index
+        // space -- `_cacheState`, the selection adjustments and the 'update'
+        // listener's `_restoreSelection` on Zotero 10 and 11.0-beta.4, the batched
+        // toggles' by-ID remap (`_batchRowChanges`, zotero 0cd866f79d) on 11.0-beta.5.
+        // A twisty under a filter that hid rows above the selection emptied it or
+        // moved it to another item, on 10.0.8, 11.0-beta.4 and 11.0-beta.5 alike;
+        // collapsing a parent whose child was selected selected some other row
+        // (found by the beta.5 upstream check, 2026-11-22;
+        // test/filter-twisty-selection.spec.js).
+        // So: the selected rows are read through the translation before the call,
+        // and once the view is rebuilt and Zotero's listeners have run they are put
+        // back where they are now shown; a row the toggle hid hands its selection to
+        // its nearest shown ancestor -- Zotero's own rule for a collapse. Nothing
+        // changes when the tree already shows the right rows.
+        const treeSel = (): any => {
+            try { const t = rp.itemTree && rp.itemTree.tree; return t && t.selection ? t.selection : null; }
+            catch (e) { return null; }
+        };
+        const shownRow = (i: number): any => {
+            try { const r = rp.getRow(i); return r && r.ref ? r : null; } catch (e) { return null; }
+        };
+        const selBefore = function (): any {
+            const sel = treeSel();
+            if (!sel || stale()) return null;
+            const rows: any[] = [];
+            for (const i of Array.from(sel.selected) as number[]) {
+                const r = shownRow(i);
+                if (r) rows.push({ id: r.id, ref: r.ref });
+            }
+            const f = shownRow(sel.focused);
+            return { rows, focused: f ? { id: f.id, ref: f.ref } : null };
+        };
+        const selRestore = function (before: any) {
+            const sel = treeSel();
+            if (!before || !sel || stale()) return;
+            const keep = rp._wvFilterView.keep;
+            const filtOf = new Map<number, number>();
+            for (let f = 0; f < keep.length; f++) filtOf.set(keep[f] as number, f);
+            const at = (rowID: any): number | undefined => {
+                const real = rp._rowMap ? rp._rowMap[rowID] : undefined;
+                return real === undefined ? undefined : filtOf.get(real);
+            };
+            const place = (b: any): number | undefined => {
+                let f = at(b.id);
+                let p: any = b.ref;
+                for (let n = 0; f === undefined && p && n < 4; n++) {
+                    const pid = p.parentItemID;
+                    p = pid ? Zotero.Items.get(pid) : null;
+                    if (p) f = at(p.treeViewID != null ? p.treeViewID : p.id);
+                }
+                return f;
+            };
+            const want = new Set<number>();
+            for (const b of before.rows) { const f = place(b); if (f !== undefined) want.add(f); }
+            let focused = before.focused ? place(before.focused) : undefined;
+            if (focused === undefined && want.size) focused = Array.from(want)[0];
+            const idsOf = (set: Iterable<number>) => Array.from(set, (i: number) => { const r = shownRow(i); return r ? String(r.id) : "?"; }).sort().join(",");
+            const now = idsOf(sel.selected);
+            const wanted = idsOf(want);
+            if (now === wanted && (focused === undefined || sel.focused === focused)) return;
+            sel.selected = want;
+            if (focused !== undefined) { sel.focused = focused; sel.pivot = focused; }
+            try { if (rp.itemTree.tree && rp.itemTree.tree.invalidate) rp.itemTree.tree.invalidate(); } catch (e) {}
+            // The pane may have been told about the wrong rows meanwhile: tell it again.
+            if (now !== wanted) { try { sel._updateTree(); } catch (e) {} }
+        };
         const runQueued = function (origFn, callArgs, realIdxs) {
             for (const r of realIdxs) noteUserToggle(r);
+            // Zotero 9's toggles are async (their rows change after this returns): left as they were.
+            const before = isV9 ? null : selBefore();
             const wasFlag = this[SELF];
             this[SELF] = true;
             const queued = [];
@@ -1309,6 +1418,7 @@ class _FilterMixin {
                     try { rp.runListeners.apply(rp, args); }
                     catch (e) { dbg("[Weavero][filter] listener err: " + e); }
                 }
+                try { selRestore(before); } catch (e) { dbg("[Weavero][filter] selection hand-back err: " + e); }
             }
         };
         if (rp._wvOrigToggleOpenState) {
@@ -1611,9 +1721,18 @@ class _FilterMixin {
                 delete host._wvHiddenBadgeHandlerDown;
                 delete host._wvHiddenBadgeHandlerUp;
                 delete host._wvHiddenBadgeHandlerInstalled;
+                delete host._wvHiddenBadgeHandlerTag;
             };
             const innerHost = doc && doc.getElementById("item-tree-main");
             const wrapHost = doc && wvViewEl(doc, "zotero-items-tree");
+            // This instance's handlers already on the host: nothing to redo. The
+            // tree observer calls this on every row change, and each call listed
+            // the tree's listeners and read every capturing mouse listener's
+            // source (2026-11-21 profile). Another instance's tag strips and
+            // re-attaches, as before.
+            const hostNow: any = innerHost || wrapHost;
+            const badgeTag = (this as any)._wvWireTag();
+            if (hostNow && hostNow._wvHiddenBadgeHandlerTag === badgeTag && hostNow._wvHiddenBadgeHandlerDown) return;
             stripHost(innerHost);
             stripHost(wrapHost);
             const treeInner: any = innerHost || wrapHost;
@@ -1939,6 +2058,7 @@ class _FilterMixin {
             treeInner.addEventListener("mouseup", onBadgeUp, true);
             treeInner._wvHiddenBadgeHandlerDown = onBadgeDown;
             treeInner._wvHiddenBadgeHandlerUp = onBadgeUp;
+            treeInner._wvHiddenBadgeHandlerTag = badgeTag;
         } catch (e) {
             Zotero.debug(
                 "[Weavero] _installHiddenBadgeClickHandler err: " + e);
@@ -2279,7 +2399,8 @@ class _FilterMixin {
                         && plugin._wvWinOfRowProvider(this, hostWin);
                     if (plugin && ownWin && plugin._wvWithFilterWin
                         && plugin._wvWithFilterWin(ownWin, () => plugin._isFilterActive(plugin._filterState))) {
-                        plugin._wvScheduleReapplyAfterDataChange(ownWin);
+                        plugin._wvScheduleReapplyAfterDataChange(ownWin,
+                            { ev: args[0], type: args[1], ids: args[2], extra: args[3] });
                     }
                 } catch (e) {
                     Zotero.debug("[Weavero][filter] post-notify reapply arm err: " + e);
@@ -2883,43 +3004,64 @@ class _FilterMixin {
             const itemsView = win && win.ZoteroPane && win.ZoteroPane.itemsView;
             if (!itemsView) return;
             const self = this;
+            // What the gate needs that no row changes -- the option, the
+            // resolved target, the filter state and whether it is on --
+            // resolved ONCE per Select All: Zotero asks `isSelectable(i, true)`
+            // for every row in one synchronous loop, and these were resolved
+            // per row (the option a pref read, the state a per-window accessor:
+            // 17,962 rows, Select All 352 ms vs 35 without Weavero on MJT's
+            // library, 2026-11-21). Dropped at the next microtask, after the
+            // loop; bound to THIS view's window (the accessors otherwise
+            // answer for the focused one).
+            let pass: any = null;
+            const passOf = () => {
+                if (pass) return pass;
+                const read = () => {
+                    const on = self._getEnableSelectionTarget ? !!self._getEnableSelectionTarget() : true;
+                    let eff: any = null;
+                    try { eff = self._effectiveSelectionTargetKinds(); } catch (e) {}
+                    if (eff && eff.parent && eff.attachment && eff.note && eff.annotation) eff = null;
+                    const state = self._filterState;
+                    const active = !!(state && self._wvUserFilterActive(state));
+                    return { on, eff, state, active };
+                };
+                try { pass = (self._wvWithFilterWin && win) ? self._wvWithFilterWin(win, read) : read(); }
+                catch (e) { pass = { on: false, eff: null, state: null, active: false }; }
+                Promise.resolve().then(() => { pass = null; });
+                return pass;
+            };
             const gateFn = (orig) => function (index, selectAll) {
                 // Use the resolved Selection Target (explicit chips, or the
                 // smart default derived from the active filters — see
                 // `_effectiveSelectionTargetKinds`). Same source the items
                 // tree uses for dimming (`_applySelectionTargetVisuals`),
                 // so Ctrl+A and the dimmed rows always agree.
-                if (selectAll && (self._getEnableSelectionTarget
-                        ? self._getEnableSelectionTarget() : true)) {
+                const p = selectAll ? passOf() : null;
+                // Nothing to gate: no kind narrowing, no filter (the common
+                // Select All) -- no per-row work at all.
+                if (p && p.on && (p.eff || p.active)) {
                     let row = null;
                     try { row = itemsView.getRow(index); } catch (e) {}
                     const item = row && row.ref;
                     if (item) {
-                        // Canonical kind mapping (`_rowKindOf` —
-                        // child notes → attachment, standalone
-                        // notes → parent). Re-deriving here would
-                        // mis-classify item notes as parent and
-                        // wrongly let Ctrl+A pick them when
-                        // Selection Target is restricted to Parent.
-                        const kind = self._rowKindOf(item) || "parent";
+                        // Canonical kind mapping (`_rowKindOf`: a note
+                        // is its own kind, child or standalone -- the
+                        // four types of 2026-08-19). Re-deriving here
+                        // would let Ctrl+A pick notes when Selection
+                        // Target is restricted to Parent.
                         // Kind gate — only selectable if the row's
                         // kind is in the resolved target.
-                        let eff: any = null;
-                        try { eff = self._effectiveSelectionTargetKinds(); } catch (e) {}
-                        if (eff && !(eff.parent && eff.attachment && eff.note && eff.annotation)) {
-                            if (!eff[kind]) return false;
-                        }
+                        if (p.eff && !p.eff[self._rowKindOf(item) || "parent"]) return false;
                         // Primary gate — when the filter is active,
                         // only ACTUAL primary matches are selectable.
                         // Ancestor rows (kept for tree shape) are
                         // excluded so Ctrl+A picks exactly what the
                         // filter targets, not their containers.
-                        const state = self._filterState;
                         // (Not for the ∩ mode alone: it only narrows the
                         // rows, and Ctrl+A takes what is shown.)
-                        if (state && self._wvUserFilterActive(state)) {
+                        if (p.active) {
                             try {
-                                if (!self._rowIsPrimary(item, state)) return false;
+                                if (!self._rowIsPrimary(item, p.state)) return false;
                             } catch (e) {}
                         }
                     }
@@ -3001,7 +3143,17 @@ class _FilterMixin {
         };
         const prevCtx = WV_GCI_CTX;
         WV_GCI_CTX = ctx;
+        // ONE BATCH on Zotero 11: its `_refreshContainer(index)` runs in
+        // `_batchRowChanges` and ignores Zotero 10's `skipRowMapRefresh`, so
+        // outside a batch EVERY refreshed parent rebuilt the whole row map
+        // and the selection (the clear-collapse freeze of 2026-11-22, same
+        // cause; ~2,400 refreshes on an Everything search under a chip).
+        // Nested calls join the outer batch: one refresh at its end.
+        const batch = typeof rp._batchRowChanges === "function"
+            ? (fn: () => void) => rp._batchRowChanges(fn)
+            : (fn: () => void) => fn();
         try {
+            batch(() => {
             for (let i = rows.length - 1; i >= 0; i--) {
                 const r = rows[i];
                 if (!r || !r.isOpen || !r.ref || !r.ref.isRegularItem || !r.ref.isRegularItem()) continue;
@@ -3025,6 +3177,7 @@ class _FilterMixin {
                 if (!stale) continue;
                 try { rp._refreshContainer(i, true); refreshed++; } catch (e) {}
             }
+            });
         } finally { WV_GCI_CTX = prevCtx; }
         return refreshed;
     }
@@ -3072,6 +3225,19 @@ class _FilterMixin {
                 || typeof ZIRProto.getChildItems !== "function") {
                 return;
             }
+            // Already this instance's, whole: nothing to redo. The tree observer
+            // calls this on every row change (a scroll, a selection), and each
+            // call peeled and re-installed every wrapper of both row classes and,
+            // with no attachment row in the list, walked all of `_rows` looking for
+            // one (2026-11-21 profile; ~18,000 rows collapsed). A wrapper someone
+            // took away fails its marker check and the pass runs again; with no
+            // file row yet, the walk runs again only when the row count moved.
+            const stampTag = (this as any)._wvWireTag();
+            const F: any = ZIRProto._wvHideFirProto;
+            const zirOk = ZIRProto._wvHidePatchTag === stampTag && ZIRProto.getChildItems._wvWeaveroWrapper && ZIRProto._wvRenderPrimaryWrapped;
+            const firOk = !!F && F._wvHidePatchTag === stampTag && F.getChildItems && F.getChildItems._wvFIRWrapperGCI
+                && F.isContainerEmpty && F.isContainerEmpty._wvFIRWrapperEmpty;
+            if (zirOk && (firOk || (!F && ZIRProto._wvHideFirScanLen === rp._rows.length))) return;
             // Recognise our own wrapper to avoid double-wrapping
             // across plugin reloads. The flag may have been cleared
             // (manual reset, dev iteration) but our wrapper is
@@ -3296,7 +3462,12 @@ class _FilterMixin {
             }
             if (FIRProto) {
                 this._patchFileItemTreeRow(FIRProto, win);
+                FIRProto._wvHidePatchTag = stampTag;
+                ZIRProto._wvHideFirProto = FIRProto;
+                delete ZIRProto._wvHideFirScanLen;
             }
+            else ZIRProto._wvHideFirScanLen = rp._rows.length;
+            ZIRProto._wvHidePatchTag = stampTag;
             // Patch the rowProvider's `_refresh` to honour reveals
             // when surfacing children otherwise filtered out by the
             // quick search. Idempotent — re-runs are bail-outs.
@@ -3699,8 +3870,8 @@ class _FilterMixin {
     // both dark and light themes.
     get _ANNOTATION_TYPES() { return _ANNOTATION_TYPES_DATA; }
 
-    // Attachment file kinds — values match `item.getItemTypeIconName(true)`
-    // (camelCase, skipLinkMode=true). Notes are intentionally excluded
+    // Attachment file kinds — values match `wvAttachmentFileKind(item)`
+    // (the drawn icon, link mode folded out). Notes are intentionally excluded
     // since Zotero handles them as their own row kind.
     get _ATTACHMENT_FILE_TYPES() { return _ATTACHMENT_FILE_TYPES_DATA; }
 
@@ -4607,11 +4778,17 @@ class _FilterMixin {
         const itemsView = win.ZoteroPane && win.ZoteroPane.itemsView;
         const rp = itemsView && itemsView.rowProvider;
         if (!rp || !rp._rows) return;
+        // With no annotation row in the list, the walk below covered every row on
+        // each tree change (a scroll, a selection): walk again only once the row
+        // count moved (2026-11-21 profile).
+        const scanned: WeakMap<any, number> = (this as any)._wvAnnRowScanLen
+            || ((this as any)._wvAnnRowScanLen = new WeakMap());
+        if (scanned.get(win) === rp._rows.length) return;
         let annRow = null;
         for (const r of rp._rows) {
             if (r && r.type === "annotation") { annRow = r; break; }
         }
-        if (!annRow) return;
+        if (!annRow) { scanned.set(win, rp._rows.length); return; }
         const proto = Object.getPrototypeOf(annRow);
         if (!proto || typeof proto.renderRow !== "function") return;
         if (proto._wvRenderRowOrig) {
@@ -4699,9 +4876,15 @@ class _FilterMixin {
             const iv: any = v && v.itemsView;
             if (!iv) continue;
             try {
+                const hadGate = !!iv._wvIsSelectableOrig;
                 if (iv._wvIsSelectableOrig) { restore(iv, "isSelectable", iv._wvIsSelectableOrig); delete iv._wvIsSelectableOrig; }
                 const props = iv.tree && iv.tree.props;
                 if (props && props.isSelectable && props.isSelectable._wvWrapped && props.isSelectable._wvOrig) props.isSelectable = props.isSelectable._wvOrig;
+                // The table's props hold `this.isSelectable.bind(this)` from the last render
+                // (itemTree.jsx render): the gate's bound copy until the view renders again.
+                // Render now (test/zzz-disable-leftovers.spec.js; seen 2026-11-22 when no
+                // spec happened to re-render the view after the disable).
+                if (hadGate && typeof iv.forceUpdate === "function") iv.forceUpdate();
             } catch (e) {}
             this._wvUnpatchSelectionChangeForCapture(iv);
             // Every view's, not only the one on screen (a library tab keeps the
@@ -4737,6 +4920,7 @@ class _FilterMixin {
                 }
             }
             try { delete p._wvRenderPrimaryWrapped; } catch (e) {}
+            for (const k of ["_wvHidePatchTag", "_wvHideFirProto", "_wvHideFirScanLen"]) { try { delete p[k]; } catch (e) {} }
         }
     }
 
@@ -8669,10 +8853,11 @@ class _FilterMixin {
             // CSS rule via a `::before` pseudo, painted with the
             // `--wv-tag-color` CSS variable we set inline.
             styleButton: (btn, id /*, selected */) => {
-                let color = null;
+                let color: string | null = null;
                 try {
+                    // A synced tag colour: a hex colour or none (lib/style.ts).
                     const c: any = Zotero.Tags.getColor(libraryID, id);
-                    if (c && c.color) color = c.color;
+                    if (c && c.color) color = wvDataColor(c.color);
                 } catch (e) {}
                 let isEmoji = false;
                 try {
@@ -9074,6 +9259,7 @@ class _FilterMixin {
             this._wvActiveSuggest = { box, hide: hideBox };
             if (box.style.display !== "none") return;
             box.style.display = "";
+            if (listStale) { listStale = false; renderButtons(); }
             if (!dismissOff) {
                 dismissOff = wvOutsideClick({ panel: box, keep: [topRow], owner: this,
                     onOutside: () => { try { search.blur(); } catch (err) {} hideBox(); } });
@@ -9109,6 +9295,8 @@ class _FilterMixin {
         };
 
         let cached = null;
+        // The list is waiting to be built until the box is shown (renderButtons).
+        let listStale = false;
         // Keyboard navigation of the suggestion list (ArrowUp/Down + Enter).
         // `kbActive` is the highlighted index among the live option buttons;
         // it resets on every re-render (the box is rebuilt) — see renderButtons.
@@ -9301,6 +9489,16 @@ class _FilterMixin {
             if (!cached) return;
             kbActive = -1;   // box is rebuilt below — drop any keyboard highlight
             while (box.firstChild) box.removeChild(box.firstChild);
+            // A long list is built when it is SHOWN (showBox), not on every
+            // panel re-render: every filter click re-renders the panel, and
+            // MJT's 19,309 tags were 19k hidden buttons rebuilt per click and
+            // 2.3 s at every panel open (2026-11-22). Short lists are built at
+            // once, as before (specs read them without focusing).
+            if (box.style.display === "none" && cached.length > WV_SUGGEST_EAGER_MAX) {
+                listStale = true;
+                return;
+            }
+            listStale = false;
             // Vertical mode (Item Type / Collection / Saved Search):
             // one row per value, icon + label. `columns` (default 1)
             // turns the box into a grid for facets with many short
@@ -12299,6 +12497,7 @@ class _FilterMixin {
             }
         } catch (e) {}
         wvTrace("apply", { cascade: !!(opts && opts.cascade), via: !!(this as any)._wvViaSetFilter });
+        const applyT0 = Date.now();
         this._filterApplying = true;
         this._filterApplyDirty = false;
         this._filterApplyDirtyCascade = !!(opts && opts.cascade);
@@ -12318,9 +12517,23 @@ class _FilterMixin {
             // row mutation has run since the last apply.
             this._wvPatchSelectionChangeForCapture(_iv2);
         } catch (e) {}
-        const prevSelectedIDs = this._captureSelectedItemIDs();
+        // Only the reconcile below reads the capture, and it returns at once
+        // with no filter on: no capture then. It asked Zotero for every selected
+        // item on every apply -- the tree observer's too, filter on or off --
+        // 200 ms per apply after a Select All of 17,962 rows (2026-11-21 profile).
+        const prevSelectedIDs = this._isFilterActive(this._filterState) ? this._captureSelectedItemIDs() : [];
         try {
             this._applyItemsListFilterInner(opts);
+            // The inner apply's no-op exit (the same full state signature, the
+            // same raw row count, the translation live): keep[] did not move, so
+            // every selected index still names the same item and the rows'
+            // dimming is what it was. The reconcile mapped every filtered row
+            // through getRow to find that out, and the paints below re-derived
+            // it -- on every tree change while a filter is on, i.e. ~3 times a
+            // second while scrolling (2026-11-21: 2,049 ms of main-thread blocks
+            // in a 3-s scroll of 15,362 filtered rows, 356 ms with Zotero's own
+            // filter on the same rows).
+            if ((this as any)._wvLastApplyNoop) return;
             // Reconcile selection against the freshly-filtered view:
             // re-select the items that still match (at their new
             // indices) and drop the ones the filter excluded. Mirrors
@@ -12373,6 +12586,8 @@ class _FilterMixin {
             const wst = this._wvApplyWinSt();
             if (wst.applyingTimer != null) wvClearTimeout(wst.applyingTimer);
             wst.applyingTimer = wvTimeout(() => { wst.applyingTimer = null; wst.applying = false; }, 80);
+            // The data-change ladder spaces its passes by this (DUTY CYCLE).
+            wst.lastApplyMs = Date.now() - applyT0;
         }
     }
 
@@ -13234,7 +13449,7 @@ class _FilterMixin {
             }
             g._wvFilterCacheObsVer = tag;
             const obs = {
-                notify: (_ev: string, type: string, ids: any[]) => {
+                notify: (_ev: string, type: string, ids: any[], extra?: any) => {
                     try {
                         wvTrace("notify", { ev: _ev, type, n: (ids && ids.length) || 0 });
                         const lp: any = (Zotero as any).Weavero
@@ -13259,7 +13474,7 @@ class _FilterMixin {
                         // filter-matrix section D: `_rowIsPrimary` already
                         // answered false while the row stayed visible and
                         // the count never moved).
-                        if (lp) lp._wvScheduleReapplyAfterDataChange();
+                        if (lp) lp._wvScheduleReapplyAfterDataChange(undefined, { ev: _ev, type, ids, extra });
                     } catch (e) { try { WV_FACETS.clear(); } catch (e2) {} }
                 },
             };
@@ -13290,31 +13505,76 @@ class _FilterMixin {
      *  cancels a sandbox timer (another clock's id -- at worst it cancelled
      *  an unrelated window timer of that number), so every notification
      *  since 0.22.0 started a ladder of its own instead of resetting one. */
-    _wvScheduleReapplyAfterDataChange(win?: any) {
+    _wvScheduleReapplyAfterDataChange(win?: any, note?: any) {
         try {
             const self: any = this;
             if (self._wvDestroyed) return;
             if (!win) {
                 for (const w of wvMainWins()) {
-                    if (w && !w.closed) this._wvScheduleReapplyAfterDataChange(w);
+                    if (w && !w.closed) this._wvScheduleReapplyAfterDataChange(w, note);
                 }
                 return;
             }
             if (win.closed) return;
+            // Only a change that can move THIS view's rows starts (or
+            // supersedes) its ladder. Zotero's items view hears every feed's
+            // housekeeping and every library's sync: in MJT's 42k-item library
+            // one feed cleanup ("delete feedItem", a library the window does
+            // not show) cost six full re-applies, 7.3 s of main thread, and the
+            // ladders took two thirds of a 35-s profile of three file-type
+            // clicks (2026-11-22). Guard: test/filter-ladder-bounds.spec.js.
+            if (note && !this._wvNotifyCanMoveView(win, note)) {
+                wvTrace("ladder-skip", { ev: note.ev, type: note.type, n: (note.ids && note.ids.length) || 0 });
+                return;
+            }
             const timers: Map<any, any> = self._wvDataChangeTimers
                 || (self._wvDataChangeTimers = new Map());
+            // One ladder per window: a newer data change supersedes the
+            // ladder in flight, whose remaining passes stop (the newer one
+            // runs its own, later). Each superseded ladder used to run all
+            // its passes, so a sync's bursts stacked cold re-applies.
+            // A WeakMap: it must not keep a closed window alive.
+            const ladders: WeakMap<any, any> = self._wvDataChangeLadders
+                || (self._wvDataChangeLadders = new WeakMap());
+            const ladder = {};
+            ladders.set(win, ladder);
             const prev = timers.get(win);
             if (prev != null) wvClearTimeout(prev);
+            // DUTY CYCLE: a heavy apply (a big library: 0.5-5 s each, measured
+            // 2026-11-22) is followed by at least twice its time of idle main
+            // thread before the next pass, so input is handled between them
+            // and a stream of changes cannot chain applies back to back. A
+            // light apply keeps the original 350/450/800/1400 ms ladder.
+            const wst0 = this._wvApplyWinStOf(win);
+            const spaced = (base: number) => {
+                const ms = wst0.lastApplyMs || 0;
+                return ms > 250 ? Math.max(base, 2 * ms) : base;
+            };
+            const lad: any = ladder;
             const pass = (n: number) => {
                 try {
                     const lp: any = (Zotero as any).Weavero
                         && (Zotero as any).Weavero.plugin;
                     if (!lp) return;
                     if (n === 0 && timers.get(win) === handle) timers.delete(win);
+                    if (ladders.get(win) !== ladder) return;
                     if (win.closed || !lp._wvWithFilterWin) return;
                     const again = lp._wvWithFilterWin(win, () => {
                         wvTrace("pass", { n, active: !!(lp._isFilterActive && lp._isFilterActive(lp._filterState)) });
                         if (!lp._isFilterActive || !lp._isFilterActive(lp._filterState)) return false;
+                        // A CONFIRMING pass re-applies only when Zotero's row
+                        // work changed the rows since the previous pass (or
+                        // dropped the published view): same rows, same view
+                        // = the keep[] pass 0 built from post-edit verdicts
+                        // still holds. Each unchanged pass re-judged 40k rows
+                        // for nothing (0.5-0.8 s each, 2026-11-22).
+                        const rpL: any = lp._wvApplyRpOf(win);
+                        if (n > 0 && lad.rowsSig != null && rpL
+                            && lad.view === rpL._wvFilterView
+                            && lad.rowsSig === lp._wvRowsSig(rpL)) {
+                            wvTrace("pass-skip", { n });
+                            return true;
+                        }
                         // AUTHORITATIVE, like the setFilter wrapper's re-apply.
                         // An edit fires a burst of notifications, and the
                         // applies they provoke bounce off the in-flight guards
@@ -13326,11 +13586,24 @@ class _FilterMixin {
                         // is in flight; the verdict caches are re-nulled here
                         // because an apply that raced the notify may have
                         // repopulated them from pre-edit data.
-                        lp._wvVerdictCache = null;
+                        // Pass 0 only: the confirming passes below re-derive
+                        // keep[] against rows Zotero rebuilt after it, from
+                        // the verdicts pass 0 took from post-edit data (an
+                        // apply is synchronous, and a newer change nulls the
+                        // cache in the notifier and supersedes this ladder).
+                        // Re-nulling it made each of the 4 passes re-judge
+                        // every row: 2,021 ms after a "modify" of 1,000 items
+                        // with a chip on vs 514 without one (2026-11-21).
+                        if (n === 0) lp._wvVerdictCache = null;
                         lp._wvLastApplySig = null;
                         lp._filterApplying = false;
                         lp._suppressTreeObserverUntil = 0;
                         lp._applyItemsListFilter({ cascade: true });
+                        try {
+                            const rpA: any = lp._wvApplyRpOf(win);
+                            lad.rowsSig = rpA ? lp._wvRowsSig(rpA) : null;
+                            lad.view = rpA ? rpA._wvFilterView : null;
+                        } catch (e) { lad.rowsSig = null; }
                         return true;
                     });
                     // LADDER OF CONFIRMING PASSES. Zotero's work for a
@@ -13347,15 +13620,100 @@ class _FilterMixin {
                     // debounced per edit burst, and an apply that finds
                     // nothing to change is cheap.
                     if (again && n < 3) {
-                        wvTimeout(() => pass(n + 1), n === 0 ? 450 : (n === 1 ? 800 : 1400));
+                        wvTimeout(() => pass(n + 1), spaced(n === 0 ? 450 : (n === 1 ? 800 : 1400)));
                     }
                 } catch (e) {
                     Zotero.debug("[Weavero][filter] post-edit reapply err: " + e);
                 }
             };
-            const handle = wvTimeout(() => pass(0), 350);
+            const handle = wvTimeout(() => pass(0), spaced(350));
             timers.set(win, handle);
         } catch (e) {}
+    }
+
+    /** Does `win`'s items view show Zotero's Feeds row or one feed? Zotero's
+     *  own answer (the items view's isFeedsOrFeed; without it, its first
+     *  collection-tree row's -- plural since Zotero 10). */
+    _wvFilterWinIsFeed(win: any): boolean {
+        try {
+            const v: any = win && win.ZoteroPane && win.ZoteroPane.itemsView;
+            if (!v) return false;
+            if (typeof v.isFeedsOrFeed === "function") return !!v.isFeedsOrFeed();
+            const r = (Array.isArray(v.collectionTreeRows) && v.collectionTreeRows[0]) || v.collectionTreeRow;
+            return !!(r && typeof r.isFeedsOrFeed === "function" && r.isFeedsOrFeed());
+        } catch (e) { return false; }
+    }
+
+    /** Can a notification change what `win`'s filtered view keeps? Feed
+     *  traffic moves only a feed view; an item, item-tag or collection-item
+     *  event moves only a view showing one of its items' libraries (Zotero's
+     *  own notify finds their rows through `_rowMap` and touches nothing else,
+     *  collectionViewItemTree.jsx). Anything else, or anything it cannot tell
+     *  (an id it does not know, no library), counts as a change. */
+    _wvNotifyCanMoveView(win: any, note: any): boolean {
+        try {
+            if (!win || !note) return true;
+            const type = String(note.type || "");
+            const feedView = this._wvFilterWinIsFeed(win);
+            if (type === "feed" || type === "feedItem") return feedView;
+            if (type !== "item" && type !== "item-tag" && type !== "collection-item") return true;
+            if (feedView) return true;
+            const ids: any[] = Array.isArray(note.ids) ? note.ids : [];
+            if (!ids.length) return true;
+            const libs = this._wvViewLibraryIDs(win);
+            if (!libs.size) return true;
+            const extra: any = note.extra || {};
+            for (const raw of ids) {
+                const s = String(raw);
+                const itemID = type === "item" ? parseInt(s, 10)
+                    : type === "item-tag" ? parseInt(s.split("-")[0], 10)
+                    : parseInt(s.split("-")[1], 10);   // collection-item: "<collectionID>-<itemID>"
+                let lib: any = null;
+                try {
+                    const lk: any = (Zotero.Items as any).getLibraryAndKeyFromID(itemID);
+                    if (lk) lib = lk.libraryID;
+                } catch (e) {}
+                if (lib == null) {
+                    const x = extra[raw] || extra[itemID];
+                    if (x && x.libraryID != null) lib = x.libraryID;
+                }
+                if (lib == null || libs.has(lib)) return true;
+            }
+            return false;
+        } catch (e) { return true; }
+    }
+
+    /** The libraries `win`'s items view shows (several on a multi-library
+     *  selection). */
+    _wvViewLibraryIDs(win: any): Set<number> {
+        const out = new Set<number>();
+        try {
+            const zp = win && win.ZoteroPane;
+            if (zp && typeof zp.getSelectedLibraryIDs === "function") {
+                for (const id of (zp.getSelectedLibraryIDs() || [])) if (id != null) out.add(id);
+            }
+            else {
+                const id = this._wvSelectedLibraryID(win);
+                if (id != null) out.add(id);
+            }
+        } catch (e) {}
+        return out;
+    }
+
+    /** A cheap identity of a row provider's raw rows: count, then every row's
+     *  item id and level, hashed (a few ms for 40k rows). */
+    _wvRowsSig(rp: any): string | null {
+        try {
+            const rows: any[] = rp && rp._rows;
+            if (!rows) return null;
+            let h = 0;
+            for (let i = 0; i < rows.length; i++) {
+                const r = rows[i];
+                h = (Math.imul(h, 31) + ((r && r.ref && r.ref.id) || 0)) | 0;
+                h = (Math.imul(h, 31) + ((r && r.level) || 0)) | 0;
+            }
+            return rows.length + ":" + h;
+        } catch (e) { return null; }
     }
 
     _wvUnwireFilterCacheInvalidator() {
@@ -13376,6 +13734,40 @@ class _FilterMixin {
         // the master off (survey 2026-10-06).
         try { return this._getEnableFilters() && Zotero.Prefs.get("weavero.itemCountBreakdown") !== false; }
         catch (e) { return true; }
+    }
+
+    /** Draw the item pane's count again in main window `win`, after the
+     *  detailed count's option or its Sort & Filters master changed (the pref
+     *  observer table). The card is added only when Zotero renders the message
+     *  or the batch-edit prompt, and nothing else re-rendered them: unticking
+     *  "Detailed item count" left the card up until the next selection or
+     *  refresh (MJT 2026-11-19). Every library view's item pane that shows the
+     *  message or the batch-edit prompt (nothing selected, or several items) is
+     *  rendered by Zotero's own `itemPane.render()` -- what libraryView.js's
+     *  row-count listener calls; a pane showing an item, a note or annotations
+     *  is left alone. Not ZoteroPane.itemSelected(): with the same non-empty
+     *  selection it returns before rendering (10.0.8 zoteroPane.js and 11's
+     *  libraryView.js compare `_lastSelectedItems`), so the batch prompt would
+     *  keep its card. Guard: test/item-count-card.spec.js. */
+    _wvCountMessageRedraw(win: any) {
+        try {
+            const panes = new Set<any>();
+            for (const v of wvLibraryViews(win)) {
+                try { if (v && v.itemPane) panes.add(v.itemPane); } catch (e) {}
+            }
+            if (!panes.size) {
+                const el = win && win.document && wvViewEl(win.document, "zotero-item-pane");
+                if (el) panes.add(el);
+            }
+            for (const pane of panes) {
+                try {
+                    const mode = pane.getAttribute("view-type");
+                    if (mode !== "message" && mode !== "batch-edit-prompt") continue;
+                    if (typeof pane.render !== "function" || !pane.data) continue;
+                    Promise.resolve(pane.render()).catch(() => {});
+                } catch (e) {}
+            }
+        } catch (e) { dbg("[Weavero][filter] count redraw err: " + e); }
     }
 
     /** Build the replacement for the item pane's "N items in this view".
@@ -13780,10 +14172,11 @@ class _FilterMixin {
         // One apply, in phases over a context (survey 2026-10-06 step 4):
         // the bodies are the former single method's, moved verbatim, each
         // reading and extending `ctx`. Behaviour is unchanged by design.
+        (this as any)._wvLastApplyNoop = false;
         const ctx = this._wvFilterApplyBegin(opts);
         if (!ctx) return;
         if (!ctx.active) { this._wvFilterApplyInactive(ctx); return; }
-        if (this._wvFilterApplySkip(ctx)) return;
+        if (this._wvFilterApplySkip(ctx)) { (this as any)._wvLastApplyNoop = true; return; }
         this._wvFilterApplyPrepare(ctx);
         this._wvFilterApplyCascade(ctx);
         this._wvFilterApplyKeep(ctx);
@@ -14475,10 +14868,15 @@ class _FilterMixin {
                 // filter — the next debug line in the apply pass is
                 // the one that added it.
                 try {
+                    // Only when someone is looking: a row read and a string per
+                    // kept row on every apply otherwise (2026-11-22 profile).
+                    const watch: any = (Zotero as any)._wvTraceWatchIDs;
+                    const dbgOn = wvDbgOn();
+                    if (!dbgOn && !watch) { keepSet.add(i); return; }
                     const r = origGetRow(i);
                     const rid = r && r.ref && r.ref.id;
                     const rlvl = r && r.level;
-                    if (rid != null && (rlvl == null || rlvl >= 0)) {
+                    if (dbgOn && rid != null && (rlvl == null || rlvl >= 0)) {
                         dbg("[Weavero][keep+] id=" + rid
                             + " lvl=" + rlvl);
                     }
@@ -14487,7 +14885,6 @@ class _FilterMixin {
                     // in the persistent trace ring -- the only way the
                     // 2026-09-14 stale-row-after-edit bug could be seen,
                     // since every bridge probe made it disappear.
-                    const watch: any = (Zotero as any)._wvTraceWatchIDs;
                     if (watch && rid != null && watch.has(rid)) {
                         let rule = "?";
                         try { rule = String(new Error().stack || "").split("\n")[2] || "?"; } catch (e) {}
@@ -15219,9 +15616,109 @@ class _FilterMixin {
             return false;
         };
         // Fully collapse: close every open container regardless of
-        // who opened it (filter or user) or which level it sits
-        // at. Iterating from the bottom keeps indices stable as
-        // containers close.
+        // who opened it (filter or user) or which level it sits at.
+        //
+        // IN ONE PASS where the rows carry their level (Zotero 10 and
+        // later): the end state of closing every container is the level-0
+        // rows, closed. The per-container close below cost a full row-map
+        // rebuild PER CONTAINER on Zotero 11 -- its `_toggleOpenState(index)`
+        // runs in `_batchRowChanges`, which refreshes the map (and the
+        // selection) on every call outside a batch, and ignores the
+        // `skipRowMapRefresh` flag Zotero 10 took -- so clearing a file-type
+        // filter that had opened ~20,000 parents over 40,186 rows held the
+        // main thread for minutes: MJT's freeze on Clear and on deselecting
+        // the last type, caught by the filter trace (an apply that never
+        // ended), 2026-11-22. The selection follows as each Zotero's own
+        // close moves it: a removed row's selection goes to its container,
+        // i.e. to its level-0 ancestor (11: `_moveSelection`; 10:
+        // `adjustForRowRemoval(index, true)`). Guard:
+        // test/filter-clear-collapse.spec.js.
+        const isV9 = !(itemsView && itemsView.rowProvider);
+        // THE PROPER WAY (MJT 2026-11-22, "Can you do the proper fix?"): Zotero's
+        // own PUBLIC bulk close, `collapseAllRows(acrossAllLevels)` -- exactly
+        // "close every open container". Zotero keeps it fast itself: one
+        // `_batchRowChanges` on Zotero 11 (0cd866f), `_toggleOpenState(i, true)`
+        // + one `refreshRowMap` on 10.0.8 (both read in the shipped omni.ja); it
+        // caches and restores the selection and scroll by Zotero's own rule,
+        // without re-expanding parents (`expandCollapsedParents: false`). Our
+        // loops over its private methods broke when 0cd866f dropped the skip
+        // flag; a public method is Zotero's to keep working. The one-pass code
+        // below stays only for a Zotero whose collapseAllRows lacks the
+        // `acrossAllLevels` argument (it closed one level per call there).
+        // ZOTERO's function, under Weavero's own layers on it (the filter's
+        // gesture queue, WV-TEMP-132551's redraw): this is no user gesture to
+        // queue, and the source test must read Zotero's, not a wrapper's. Run
+        // with the filter's self-call mark, as its own `all` layer does, so
+        // the row probes pass straight through.
+        const carT = Object.prototype.hasOwnProperty.call(rp, "_wvWraps") ? rp._wvWraps : null;
+        const carNative: any = (carT && carT.collapseAllRows && carT.collapseAllRows.native)
+            || rp._wvOrigCollapseAllRows || rp.collapseAllRows;
+        if (!isV9 && typeof carNative === "function" && /acrossAllLevels/.test(String(carNative))) {
+            const wasSelf = rp._wvFilterSelfCall;
+            rp._wvFilterSelfCall = true;
+            try {
+                carNative.call(rp, true);
+                return;
+            }
+            catch (e) {
+                Zotero.debug("[Weavero][filter] collapse-on-clear (collapseAllRows) err: " + e);
+            }
+            finally { rp._wvFilterSelfCall = wasSelf; }
+        }
+        const rows0: any[] = rp._rows;
+        if (!isV9 && rows0.length && typeof (rows0[0] && rows0[0].level) === "number") {
+            const collapse = (move: (fromID: any, toID: any) => void) => {
+                const next: any[] = [];
+                let top: any = null;
+                for (let i = 0; i < rows0.length; i++) {
+                    const r = rows0[i];
+                    if (!r) continue;
+                    if (!r.level) {
+                        if (r.isOpen) r.isOpen = false;
+                        next.push(r);
+                        top = r;
+                    }
+                    else if (top) move(r.id, top.id);
+                }
+                rp._rows = next;
+            };
+            try {
+                if (typeof rp._batchRowChanges === "function" && typeof rp._moveSelection === "function") {
+                    // Zotero 11: one row-map refresh, the selection kept by id.
+                    rp._batchRowChanges(() => collapse((a, b) => rp._moveSelection(a, b)));
+                }
+                else {
+                    // Zotero 10: the same moves, by id, then one map refresh.
+                    const sel: any = (rp.itemTree && rp.itemTree.selection) || (itemsView && itemsView.selection);
+                    const idAt = (i: any) => (rows0[i] ? rows0[i].id : undefined);
+                    const before = sel && sel.selected
+                        ? { selected: Array.from(sel.selected as Set<number>, idAt), focused: idAt(sel.focused), pivot: idAt(sel.pivot) }
+                        : null;
+                    const up = new Map<any, any>();
+                    collapse((a, b) => up.set(a, b));
+                    if (typeof rp.refreshRowMap === "function") rp.refreshRowMap();
+                    else if (typeof rp._refreshRowMap === "function") rp._refreshRowMap();
+                    if (before) {
+                        const at = (id: any) => (id === undefined ? undefined : rp._rowMap[up.has(id) ? up.get(id) : id]);
+                        const s = new Set<number>();
+                        for (const id of before.selected) { const k = at(id); if (k !== undefined) s.add(k); }
+                        sel.selected = s;
+                        const f = at(before.focused); if (f !== undefined) sel.focused = f;
+                        const p = at(before.pivot); if (p !== undefined) sel.pivot = p;
+                    }
+                }
+            }
+            catch (e) {
+                Zotero.debug("[Weavero][filter] collapse-on-clear (one pass) err: " + e);
+            }
+            try { rp.runListeners && rp.runListeners("update", true, {
+                restoreSelection: true,
+            }); } catch (e) {}
+            return;
+        }
+        // Zotero 9 (rows without levels): one container at a time.
+        // Iterating from the bottom keeps indices stable as containers
+        // close.
         for (let i = rp._rows.length - 1; i >= 0; i--) {
             const row = rp._rows[i];
             if (!row) continue;

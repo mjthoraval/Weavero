@@ -82,6 +82,18 @@ export function wvStoreChain(path: string): Promise<void> {
     return c ? c.catch(() => {}) : Promise.resolve();
 }
 
+/** Waits before each new attempt of a refused write (ms). On Windows the
+ *  atomic replace -- the tmp file renamed over the store -- needs delete
+ *  access to the target, and a process holding the file open without
+ *  sharing it (an antivirus scan or an indexer reading the file just written)
+ *  refuses it for a moment. The refused write was logged and DROPPED: the
+ *  awaited persist resolved and the file kept the previous document
+ *  (bookmark-page-numbers.spec.js read outlines.json back without the
+ *  settings just written, Zotero 10 full run, 2026-11-20; a 250 ms hold
+ *  reproduced it). Guard: test/lib-store.spec.js "a write refused while
+ *  another process holds the file". */
+const WV_STORE_WRITE_RETRY_MS = [100, 300, 1000];
+
 /** Issue an atomic, serialised write of `doc` to `path`. The snapshot is
  *  taken NOW; the I/O runs on the path's chain. Returns the chain so a
  *  caller can await durability; it never rejects. */
@@ -99,7 +111,14 @@ export function wvStoreWrite(path: string, doc: any, opts?: WvStoreWriteOptions)
                 try { prev = JSON.parse(await IOUtils.readUTF8(path)); } catch (e) {}   // none / unreadable: nothing to rotate
                 try { if (rotate(prev)) await IOUtils.copy(path, path + ".bak"); } catch (e) {}
             }
-            await IOUtils.writeUTF8(path, snapshot, { tmpPath: path + ".tmp" });
+            for (let attempt = 0; ; attempt++) {
+                try { await IOUtils.writeUTF8(path, snapshot, { tmpPath: path + ".tmp" }); return; }
+                catch (e) {
+                    if (attempt >= WV_STORE_WRITE_RETRY_MS.length) throw e;
+                    try { Zotero.debug("[Weavero] store write refused, retrying (" + path + "): " + e); } catch (_) {}
+                    await new Promise((r) => setTimeout(r, WV_STORE_WRITE_RETRY_MS[attempt]));
+                }
+            }
         })
         .catch((e: any) => { try { Zotero.debug("[Weavero] store write failed (" + path + "): " + e); } catch (_) {} })
         .then(() => {

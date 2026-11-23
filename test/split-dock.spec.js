@@ -1713,6 +1713,12 @@ describe("Weavero — split view: a tab locked on one side", function () {
             assert.notOk(dockRec(), what + ": nothing recorded");
             assert.lengthOf(pairs(), 1, what + ": the pair untouched");
             assert.lengthOf(recs(), 1, what + ": the pair's record alone: " + JSON.stringify(recs()));
+            // The strip's click listeners go with the lock: an unlock left them, and
+            // a reload (which wires them only for a lock) counted them as lost
+            // (zz-reload-listeners, 2026-11-20).
+            const stripKeys = wvT.lib().wvListenKeys(doc.getElementById("tab-bar-container"))
+                .map(k => k.key).filter(k => k.startsWith("tdock:strip"));
+            assert.deepEqual(stripKeys, [], what + ": no click listener left on the strip");
         };
         clean("Separate Split View");
         await dockOn();

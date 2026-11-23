@@ -17,7 +17,8 @@
 // colours `.wv-note-linkified` via CSS and launches `[data-wv-href]` on click.
 import { Decoration, DecorationSet } from "prosemirror-view";
 import { Plugin, PluginKey, TextSelection } from "prosemirror-state";
-import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
+import { buildUrlRegex, joinSchemeAlt, WV_NOTE_SCAN_MAX } from "./lib/links";
+import { wvTrimTrailing } from "./lib/text";
 
 (function () {
     const KEY = new PluginKey("wvNoteLinkify");
@@ -253,12 +254,15 @@ import { buildUrlRegex, joinSchemeAlt } from "./lib/links";
         const re = currentRe();
         doc.descendants((node: any, pos: number) => {
             if (!node.isText) return;
-            const text: string = node.text || "";
+            // A text run is scanned up to WV_NOTE_SCAN_MAX characters.
+            const full: string = node.text || "";
+            const text = full.length > WV_NOTE_SCAN_MAX ? full.slice(0, WV_NOTE_SCAN_MAX) : full;
             re.lastIndex = 0;
             let m: RegExpExecArray | null;
             while ((m = re.exec(text))) {
-                // Trim trailing punctuation that's rarely part of the URL.
-                let url = m[0].replace(/[.,;:)\]}>'"]+$/, "");
+                // Trim trailing punctuation that's rarely part of the URL (a
+                // loop: a `[…]+$` replace is quadratic on a punctuation run).
+                let url = wvTrimTrailing(m[0], ".,;:)]}>'\"");
                 if (!url) continue;
                 const from = pos + m.index;
                 const to = from + url.length;

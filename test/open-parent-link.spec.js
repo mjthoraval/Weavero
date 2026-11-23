@@ -57,16 +57,24 @@ describe("Weavero — open links to a paper carry the paper's key", function () 
         assert.deepEqual(opened, [A.id], "the paper's PDF opened");
     });
 
-    it("a paper with no file falls back to what a double-click does (its URL / DOI)", async function () {
-        const zp = win.ZoteroPane;
-        const orig = zp.viewItems;
-        const viewed = [];
-        zp.viewItems = async (items) => { viewed.push(...items.map((i) => i.id)); };
+    // A double-click's fallback (its URL, else its DOI), web pages only: the
+    // URL field may hold any address (security review 2026-11-22,
+    // open-guard.spec.js covers the other kinds).
+    it("a paper with no file opens its web page: its URL when http(s), else its DOI", async function () {
+        const orig = Zotero.launchURL;
+        const launched = [];
+        Zotero.launchURL = (u) => { launched.push(u); };
         try {
+            N.setField("url", "https://example.org/wv-open-parent");
+            await N.saveTx();
             await wv.handleZoteroURI("zotero://open/" + lib + "/items/" + N.key);
         }
-        finally { zp.viewItems = orig; }
-        assert.deepEqual(viewed, [N.id], "handed to the double-click action");
+        finally {
+            Zotero.launchURL = orig;
+            N.setField("url", "");
+            await N.saveTx();
+        }
+        assert.deepEqual(launched, ["https://example.org/wv-open-parent"], "its web page opened");
     });
 
     it("an open link with the paper's key arriving from outside Zotero is taken by Weavero, not dropped", function () {

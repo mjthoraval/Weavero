@@ -96,16 +96,22 @@ describe("Weavero — file links always ask, and never reach another computer", 
     });
 
     it("the profile-wide ask-before-opening for file links is never turned off", () => {
+        // What WEAVERO writes, not the platform's value: Windows and macOS define
+        // no warn-external.file (the read falls back to true) while Linux reads
+        // false with nothing written -- the 1.2.1 release CI's Ubuntu jobs, Zotero
+        // 10 and 11, 2026-11-23. Weavero must never leave a "don't ask" of its own
+        // (a user value false), nor turn the file handler's ask off.
+        const PREF = "network.protocol-handler.warn-external.file";
+        const svc = Components.classes["@mozilla.org/uriloader/external-protocol-service;1"]
+            .getService(Components.interfaces.nsIExternalProtocolService);
+        const askedBefore = svc.getProtocolHandlerInfo("file").alwaysAskBeforeHandling;
         allOn();
         wv._applyAppLinkConfirmPref();
-        assert.isTrue(Services.prefs.getBoolPref("network.protocol-handler.warn-external.file", true),
+        assert.isFalse(Services.prefs.prefHasUserValue(PREF) && Services.prefs.getBoolPref(PREF) === false,
             "warn-external.file is not set to false");
         assert.isFalse(Services.prefs.getBoolPref("network.protocol-handler.warn-external.mailto", true),
             "an enabled app scheme is still switched as the user asked");
-        const svc = Components.classes["@mozilla.org/uriloader/external-protocol-service;1"]
-            .getService(Components.interfaces.nsIExternalProtocolService);
-        const hi = svc.getProtocolHandlerInfo("file");
-        assert.isTrue(hi.alwaysAskBeforeHandling, "the file handler still asks");
+        if (askedBefore) assert.isTrue(svc.getProtocolHandlerInfo("file").alwaysAskBeforeHandling, "the file handler still asks");
     });
 
     // ---- "Allow links to files on other computers" (weavero.remoteFileLinks)

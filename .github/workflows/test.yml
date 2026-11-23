@@ -54,6 +54,14 @@ jobs:
     # macOS rows were, from 2026-11-03 until their crash was found and fixed
     # (lib/menubar.ts wvMenubarSafeBefore) and the rest went green, all
     # twelve jobs (branch ci-macos, 2026-11-09): every system decides now.
+    # Except macOS with the Zotero BETA, experimental again from the 1.2.1
+    # release (2026-11-23, MJT "Publish", option 1): on GitHub's macOS runner
+    # with Zotero 11.0-beta.5 a different timing-heavy UI test failed on
+    # almost every attempt (count-cell tooltip, note outline, per-window
+    # filter observer, pinned-section drag, Lock Tab, the link-preview tint
+    # twice in a row), each passing on Windows, Ubuntu, macOS with Zotero 10
+    # and locally. Make them decide again once that runner is reliable
+    # (work/TODO.md).
     continue-on-error: ${{ matrix.experimental == true }}
     strategy:
       # One red job never cancels the others: each system and channel
@@ -82,8 +90,8 @@ jobs:
           - { os: windows-latest, label: Windows, channel: beta, experimental: false, shard: "2/2", part: "-2of2" }
           - { os: macos-latest, label: macOS, channel: release, experimental: false, shard: "1/2", part: "-1of2" }
           - { os: macos-latest, label: macOS, channel: release, experimental: false, shard: "2/2", part: "-2of2" }
-          - { os: macos-latest, label: macOS, channel: beta, experimental: false, shard: "1/2", part: "-1of2" }
-          - { os: macos-latest, label: macOS, channel: beta, experimental: false, shard: "2/2", part: "-2of2" }
+          - { os: macos-latest, label: macOS, channel: beta, experimental: true, shard: "1/2", part: "-1of2" }
+          - { os: macos-latest, label: macOS, channel: beta, experimental: true, shard: "2/2", part: "-2of2" }
 
     steps:
       - uses: actions/checkout@v7

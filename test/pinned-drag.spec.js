@@ -20,7 +20,7 @@
 // hang this runner, which is the point.
 describe("Weavero — pinned tabs reorder by drag and every drag settles", function () {
     this.timeout(120000);
-    let wv, win, ZT, doc, cont, a, b, c, d, e, group, prevGroups, prevTW;
+    let wv, win, ZT, doc, cont, a, b, c, d, e, group, prevGroups, prevTW, libWasPinned = false;
     const names = new Map();   // item -> "A".."E"
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     const tabOf = (it) => ZT._tabs.find(t => t && t.data && t.data.itemID === it.id) || null;
@@ -136,9 +136,19 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
             if (typeof wv[m] !== "function") wvT.absent("plugin." + m);
         }
         win = Zotero.getMainWindow(); doc = win.document; ZT = win.Zotero_Tabs;
-        F = wvT.lib().wvFirstDocTab(ZT._tabs);
         cont = doc.getElementById("tab-bar-container");
         if (!cont || typeof win.DragEvent !== "function" || typeof win.DataTransfer !== "function") this.skip();
+        // Since 11.0-beta.5 the first main window starts with its library tab
+        // pinned (zotero 0883f08887), the runner's too. These cases start from an
+        // unpinned My Library, as Zotero's own tabsTest.js does; after() puts the
+        // pin back. Seen only on CI, where the suite runs in halves and this spec
+        // opens the second one: My Library's mirror led the pins and 3 cases
+        // failed on every beta job (2026-11-23); locally an earlier spec had
+        // unpinned it. Same fix as library-tab-zotero-pin.spec.js (bc22cccc).
+        const libTab = ZT._tabs.find(t => t && t.id === "zotero-pane");
+        libWasPinned = !!(typeof ZT.setPinned === "function" && libTab && libTab.pinned);
+        if (libWasPinned) { ZT.setPinned("zotero-pane", false); await sleep(300); }
+        F = wvT.lib().wvFirstDocTab(ZT._tabs);
         prevGroups = Zotero.Prefs.get("weavero.enableTabGroups");
         prevTW = Zotero.Prefs.get("weavero.enableTabsAndWindows");
         Zotero.Prefs.set("weavero.enableTabGroups", true);
@@ -190,6 +200,9 @@ describe("Weavero — pinned tabs reorder by drag and every drag settles", funct
             if (prevTW === undefined) Zotero.Prefs.clear("weavero.enableTabsAndWindows"); else Zotero.Prefs.set("weavero.enableTabsAndWindows", prevTW);
         } catch (er) {}
         try { delete win._wvStabilizeBurst; } catch (er) {}
+        // The pin the run started with (beta.5's first-window default), back for
+        // the specs after this one.
+        if (libWasPinned) { try { ZT.setPinned("zotero-pane", true); apply(); } catch (er) {} }
     });
 
     it("fixture: A and B are loose pins drawn as icon mirrors, D and E grouped", function () {

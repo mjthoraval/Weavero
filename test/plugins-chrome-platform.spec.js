@@ -52,20 +52,25 @@ describe("Weavero -- Plugins Manager title bar is one row on every platform", ()
 		// between tasks, and by then every observer of that mutation has run):
 		// a list without its box there is a frame the user can see.
 		let listTasks = 0, listWithoutBox = 0, watched = null;
+		const look = (cd) => {
+			try {
+				if (!cd.querySelector("addon-list")) return;
+				listTasks++;
+				if (!cd.getElementById("wv-pm-searchbox")) listWithoutBox++;
+			}
+			catch (e) {}
+		};
 		const watchPage = (cd) => {
 			if (watched === cd) return;
 			watched = cd;
-			const mo = new mw.MutationObserver(() => {
-				mw.setTimeout(() => {
-					try {
-						if (!cd.querySelector("addon-list")) return;
-						listTasks++;
-						if (!cd.getElementById("wv-pm-searchbox")) listWithoutBox++;
-					}
-					catch (e) {}
-				}, 0);
-			});
+			const mo = new mw.MutationObserver(() => { mw.setTimeout(() => look(cd), 0); });
 			mo.observe(cd.documentElement, { childList: true, subtree: true });
+			// The page as it already stands counts too: on a fast machine (GitHub's
+			// macOS runner, 1.2.2 release CI run 45374264807) the whole page was
+			// built before the watcher attached, no mutation followed, and "the page
+			// was watched" failed although the box was there. A list already on
+			// screen without the box still counts against it.
+			look(cd);
 		};
 		try {
 			// Wait for Weavero's injection to have run: the search box is the

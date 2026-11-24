@@ -488,6 +488,7 @@
             { re: /^Weavero — split view: inside each side 4\. a note side at the floor keeps its toolbar's context-pane toggle/, why: "companion run only: Better Notes adds buttons to the note toolbar, which pushes the toggle past a 142px side (known limit, tracking registers)" },
             { re: /^Weavero — public API: a plugin that draws comments itself \(declareCommentRenderer\) /, why: "companion run only: Annotation Markdown is installed and draws the sidebar comment itself, so the suite's baseline (Weavero's own preview) is absent" },
             { re: /^Weavero — native windows \(zotero#6035\) on a real native build/, why: "version: needs a Zotero with its own windows" },
+            { re: /^Weavero — upstream fixes WV-TEMP-INTROCRASH: /, why: "version: a Zotero 10 crash (Zotero 11's windows are its own, the stand-in installs nothing there); or precondition: the intro shows only for an empty My Library with no groups" },
             { re: /^Weavero — Advanced Search in New Window on a Zotero with its own windows real windows/, why: "version: needs a Zotero with its own windows" },
             { re: /^Weavero — a window keeps its colour \(zotero#6035\) on a real native build/, why: "version: needs a Zotero with its own windows" },
             { re: /^Weavero — each window keeps its own pane widths on a real native build/, why: "version: needs a Zotero with its own windows" },

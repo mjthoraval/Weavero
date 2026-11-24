@@ -156,6 +156,11 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     // WV-TEMP-feedabstract (upstream-fixes.ts): a feed abstract blank after the item
     // pane's sections moved; the window's abstract-box prototype.
     { id: "feed-abstract", on: "both", wire: (p, win) => p._wvWireFeedAbstractFix(win) },
+    // WV-TEMP-INTROCRASH (upstream-fixes.ts): Zotero 10 crashes when a main window closes
+    // while its items list loads over an empty library -- the intro text written into the
+    // closed window. Each window's own items-list class (one loader per window); Zotero 10
+    // and older only.
+    { id: "intro-crash", on: "both", wire: (p, win) => p._wvWireIntroCrashFix(win) },
     // WV-TEMP-advsrchcollapse (upstream-fixes.ts): on the Feeds row, the Advanced Search
     // opened from a quick search keeps its Collapse and Close buttons; the window's
     // advanced-search-pane class (installs nothing once its setter takes a search

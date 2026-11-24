@@ -347,6 +347,45 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         await wv._wvAnnPaneClear(reader);
     });
 
+    it("issue #69: with the pane funnel off, a pane scan leaves the READER funnel's popup open; the pane's own popup still closes with its funnel", async function () {
+        // Every annotation render runs a pane scan (_wvAnnListEnsure). With the pane
+        // funnel switched off, the scan's button removal closed ANY filter popup --
+        // the two share one id -- so the reader funnel's popup opened and vanished at
+        // once (GitHub issue #69, 2026-11-23).
+        const idoc = reader._iframeWindow.document;
+        const POP = "wv-reader-filter-popup-v2";
+        try {
+            Zotero.Prefs.set("weavero.enableAnnPaneFilter", false);
+            await waitFor(() => !idoc.querySelector(".wv-al-actions"), 15000, "pane funnel gone");
+            if (idoc.getElementById(POP)) wv._wvCloseReaderFilterPopup(idoc);
+            const rbtn = await waitFor(() => idoc.querySelector(".wv-reader-filter-btn"), 5000, "the reader funnel button");
+            wv._wvToggleReaderFilterPopup(reader, idoc, rbtn);
+            const rp = await waitFor(() => idoc.getElementById(POP), 5000, "reader popup");
+            assert.equal(rp.dataset.wvKind, "filter");
+            wv._wvAnnListEnsure(reader, idoc);
+            await wvT.sleep(300);
+            assert.isOk(idoc.getElementById(POP), "the reader funnel's popup stays open after a pane scan");
+            wv._wvCloseReaderFilterPopup(idoc);
+        }
+        finally {
+            Zotero.Prefs.set("weavero.enableAnnPaneFilter", true);
+        }
+        await waitFor(() => !!idoc.querySelector(".wv-al-actions"), 15000, "pane funnel back");
+        // The pane's OWN popup still goes with its funnel.
+        if (idoc.getElementById(POP)) wv._wvCloseReaderFilterPopup(idoc);
+        wv._wvAnnListTogglePopup(reader, idoc, idoc.querySelector("#sidebarContainer .wv-al-btn"));
+        const pp = await waitFor(() => idoc.getElementById(POP), 5000, "pane popup");
+        assert.equal(pp.dataset.wvKind, "list");
+        try {
+            Zotero.Prefs.set("weavero.enableAnnPaneFilter", false);
+            await waitFor(() => !idoc.getElementById(POP), 15000, "the pane popup closes with its funnel");
+        }
+        finally {
+            Zotero.Prefs.set("weavero.enableAnnPaneFilter", true);
+        }
+        await waitFor(() => !!idoc.querySelector(".wv-al-actions"), 15000, "pane funnel back again");
+    });
+
     it("the native selector is shown by default and folds on request (the handle's state)", async function () {
         // Shown since 0.22.2 (MJT 2026-10-14; up to 0.22.1 the default hid
         // it); the fold is the handle's own state, global.

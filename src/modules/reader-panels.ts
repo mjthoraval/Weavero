@@ -15100,7 +15100,15 @@ class _ReaderPanelsMixin {
      *  filtering (the funnel switch turned off). */
     _wvAnnListRemoveButton(reader: any, idoc: any) {
         try { for (const el of idoc.querySelectorAll(".wv-al-actions")) el.remove(); } catch (_) {}
-        try { if (idoc.getElementById(RP_FILTER_POPUP_ID)) this._wvCloseReaderFilterPopup(idoc); } catch (_) {}
+        // Only the PANE funnel's popup (wvKind "list") goes with its button. The
+        // reader toolbar's funnel opens a popup under the same id (wvKind
+        // "filter"), and every pane scan runs this while the switch is off:
+        // closing any popup by id shut the toolbar's a moment after it opened
+        // (issue #69, 2026-11-23).
+        try {
+            const op = idoc.getElementById(RP_FILTER_POPUP_ID);
+            if (op && op.dataset && op.dataset.wvKind === "list") this._wvCloseReaderFilterPopup(idoc);
+        } catch (_) {}
         wvUnlisten(idoc, "annListSearch:pointerdown");
         wvUnlisten(idoc, "annListSearch:click");
     }

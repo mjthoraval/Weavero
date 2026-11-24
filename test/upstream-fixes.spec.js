@@ -18,7 +18,7 @@ describe("Weavero — upstream fixes", function () {
     before(async function () {
         wv = wvT.plugin();
         if (!wv) wvT.absent("plugin");
-        for (const m of ["_wvWireNoteWindowFix", "_wvTeardownNoteWindowFix", "_wvNoteWindowFromTab", "_wvWireCtxHeaderFix", "_wvTeardownCtxHeaderFix", "_wvWireNarrowPaneFix", "_wvTeardownNarrowPaneFix", "_wvWireReaderMenuFix", "_wvTeardownReaderMenuFix", "_wvWireAddSelectFix", "_wvTeardownAddSelectFix", "_wvWirePaneJumpFix", "_wvTeardownPaneJumpFix", "_wvWireExtAnnDeleteFix", "_wvTeardownExtAnnDeleteFix", "_wvWirePageCountFix", "_wvTeardownPageCountFix", "_wvPageCountRefresh","_wvWireRowCountFix", "_wvTeardownRowCountFix", "_wvWireTagReshowFix", "_wvTeardownTagReshowFix", "_wvTagSelectorReselect", "_wvWireFeedAbstractFix", "_wvTeardownFeedAbstractFix", "_wvWireAdvSearchSeedFix", "_wvTeardownAdvSearchSeedFix", "_wvAdvSearchSeedBugIn"]) {
+        for (const m of ["_wvWireNoteWindowFix", "_wvTeardownNoteWindowFix", "_wvNoteWindowFromTab", "_wvWireCtxHeaderFix", "_wvTeardownCtxHeaderFix", "_wvWireNarrowPaneFix", "_wvTeardownNarrowPaneFix", "_wvWireReaderMenuFix", "_wvTeardownReaderMenuFix", "_wvWireAddSelectFix", "_wvTeardownAddSelectFix", "_wvWirePaneJumpFix", "_wvTeardownPaneJumpFix", "_wvWireExtAnnDeleteFix", "_wvTeardownExtAnnDeleteFix", "_wvWirePageCountFix", "_wvTeardownPageCountFix", "_wvPageCountRefresh","_wvWireRowCountFix", "_wvTeardownRowCountFix", "_wvWireTagReshowFix", "_wvTeardownTagReshowFix", "_wvTagSelectorReselect", "_wvWireFeedAbstractFix", "_wvTeardownFeedAbstractFix", "_wvWireAdvSearchSeedFix", "_wvTeardownAdvSearchSeedFix", "_wvAdvSearchSeedBugIn", "_wvWireIntroCrashFix", "_wvTeardownIntroCrashFix"]) {
             if (typeof wv[m] !== "function") wvT.absent("plugin." + m);
         }
         win = Zotero.getMainWindow(); ZT = win.Zotero_Tabs;
@@ -1027,6 +1027,67 @@ describe("Weavero — upstream fixes", function () {
             finally {
                 for (const w of mainWins()) { try { wv._wvWireAdvSearchSeedFix(w); } catch (er) {} }
             }
+        });
+    });
+
+    // Found by Weavero's own suite (2026-11-24, merge agent): Zotero 10 CRASHED (WER APPCRASH,
+    // xul.dll+0x19f329d) when a main window closed while its items list loaded over an empty
+    // My Library -- _updateIntroText() awaits hasItems(), then writes "Welcome to Zotero!" into
+    // the closed window's document. Weavero gives Zotero 10 several main windows, hence the
+    // stand-in. The crash case runs the method on a CLOSED window: on unfixed code Zotero dies
+    // (the merge agent's probe, D:/tmp/zz-wvprobe-intro.spec.js, crashed within seconds).
+    describe("WV-TEMP-INTROCRASH: no intro text is written into a closed main window (Zotero 10)", function () {
+        const z10 = () => parseInt(String(Zotero.version), 10) <= 10;
+        const protoOf = (w) => { try { return w.require("zotero/collectionViewItemTree").prototype; } catch (e) { return null; } };
+        const emptyLib = async () => !Zotero.Groups.getAll().length && !(await Zotero.Libraries.userLibrary.hasItems());
+
+        it("is wired on Zotero 10 and older only", function () {
+            const proto = protoOf(win);
+            assert.isOk(proto, "the main window's items-list class");
+            const wired = !!(Object.prototype.hasOwnProperty.call(proto, "_wvWraps") && proto._wvWraps && proto._wvWraps._updateIntroText);
+            assert.equal(wired, z10(), "wrapped on " + Zotero.version + ": " + wired);
+        });
+
+        it("a window closed while its list loads gets no intro text, and Zotero stays up", async function () {
+            if (!z10()) this.skip();
+            if (!(await emptyLib())) this.skip();   // the intro shows only for an empty My Library with no groups
+            const s = wv._wvSpawnMainWindowStart(undefined, { restore: true });
+            const w = await wv._wvSpawnMainWindowWait(s, { wait: "init", timeoutMs: 25000, timerWin: win, dropOnTimeout: true });
+            assert.isOk(w, "a second main window");
+            // The new window restores the last view: put it on My Library, the one view whose
+            // intro takes the await.
+            await w.ZoteroPane.collectionsView.selectLibrary(Zotero.Libraries.userLibraryID);
+            const iv = await wvT.waitFor(() => (w.ZoteroPane && w.ZoteroPane.itemsView) || null, 10000);
+            await iv.waitForLoad();
+            await wvT.waitFor(() => iv._introText === true || null, 8000, "the intro shown in the open window first");
+            w._wvSavedParkClose = true;
+            w.close();
+            await wvT.waitFor(() => (w.closed && mainWins().length === 1) || null, 8000);
+            let err = null;
+            try { await iv._updateIntroText(); } catch (e) { err = e; }
+            assert.isNull(err, "the method ends quietly: " + err);
+            assert.isTrue(iv._introText === true, "nothing written after the await: the intro state is still the open window's (" + iv._introText + ")");
+            assert.isTrue(await Zotero.Libraries.userLibrary.hasItems() === false, "Zotero still answers after the call");
+        });
+
+        it("an open window still gets its intro text", async function () {
+            if (!z10()) this.skip();
+            if (!(await emptyLib())) this.skip();
+            await win.ZoteroPane.collectionsView.selectLibrary(Zotero.Libraries.userLibraryID);
+            const iv = win.ZoteroPane.itemsView;
+            await iv.waitForLoad();
+            iv._introText = false;
+            await iv._updateIntroText();
+            assert.isTrue(iv._introText === true, "the intro set by Zotero's own code (" + iv._introText + ")");
+        });
+
+        it("Zotero 10's method still awaits hasItems() and then writes in the document taken before (tripwire: fails once Zotero checks the window -- retire WV-TEMP-INTROCRASH)", function () {
+            if (!z10()) this.skip();
+            const proto = protoOf(win);
+            const own = Object.prototype.hasOwnProperty.call(proto, "_wvWraps") && proto._wvWraps && proto._wvWraps._updateIntroText;
+            const src = String(own ? own.native : proto._updateIntroText);
+            assert.match(src, /this\._ownerDocument[\s\S]{0,600}await\s+this\.collectionTreeRows\[0\]\.ref\.hasItems\(\)[\s\S]{0,400}createElement/, "the await between the document and its use");
+            assert.notMatch(src, /\.closed\b/, "no check of the window after the await (if there is one now: retire WV-TEMP-INTROCRASH)");
         });
     });
 });

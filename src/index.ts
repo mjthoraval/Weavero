@@ -4682,6 +4682,7 @@ class WeaveroPlugin {
         try { (this as any)._wvTeardownRestoreFocusFix(); } catch (e) {}   // WV-TEMP-134825 (upstream-fixes.ts)
         try { (this as any)._wvTeardownTagReshowFix(); } catch (e) {}   // WV-TEMP-134317 (upstream-fixes.ts)
         try { (this as any)._wvTeardownFeedAbstractFix(); } catch (e) {}   // WV-TEMP-feedabstract (upstream-fixes.ts)
+        try { (this as any)._wvTeardownIntroCrashFix(); } catch (e) {}   // WV-TEMP-INTROCRASH (upstream-fixes.ts)
         try { (this as any)._wvTeardownAdvSearchSeedFix(); } catch (e) {}   // WV-TEMP-advsrchcollapse (upstream-fixes.ts)
         try { (this as any)._wvTeardownFeedHeadFix(); } catch (e) {}   // WV-TEMP-FEEDHEAD (upstream-fixes.ts)
         try { (this as any)._wvTeardownLayoutMenus(); } catch (e) {}

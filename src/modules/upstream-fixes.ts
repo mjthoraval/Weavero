@@ -1057,6 +1057,102 @@ class _UpstreamFixesMixin {
             } catch (e) {}
         }
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // WV-TEMP-INTROCRASH (no forum thread: found by Weavero's suite on 2026-11-24 -- the
+    // Zotero 10 runs that died in bg-restore-guard; upstream register entry). Zotero 10
+    // CRASHES (WER APPCRASH, xul.dll+0x19f329d, a null read in nsNodeInfoManager::Allocate,
+    // minidump D:/tmp/3b6414b6-...dmp with "<b>Welcome to Zotero!</b>" on the stack) when a
+    // main window closes while its items list is still loading over an EMPTY My Library
+    // with no groups: collectionViewItemTree.js _updateIntroText() takes the window's
+    // document, awaits `collectionTreeRows[0].ref.hasItems()`, then builds the intro with
+    // createElement + innerHTML in that document -- by then a closed window's. (My
+    // Publications never reaches the await: its row is not a library row.) Weavero is
+    // what gives Zotero 10 several main windows, so this stand-in is Weavero's to carry
+    // (MJT 2026-11-24, "Ok"). Here: for that one branch, the method's synchronous start
+    // sees a stand-in for `_ownerDocument` whose createElement refuses a closed window;
+    // Zotero's own code runs otherwise, and the refusal ends it quietly. Zotero 10 and
+    // older only (11's windows are Zotero's own, #6035).
+    //
+    // RETIRE WHEN Weavero drops Zotero 10, or the method checks its window after the
+    // await (the gate reads its source and installs nothing then). Guard:
+    // test/upstream-fixes.spec.js ("WV-TEMP-INTROCRASH").
+    // ─────────────────────────────────────────────────────────────────────────
+    _wvWireIntroCrashFix(win: any) {
+        try {
+            if (!(parseInt(String(Zotero.version), 10) <= 10)) return;
+            const proto: any = wvIntroTreeProto(win);
+            if (!proto || typeof proto._updateIntroText !== "function") return;
+            const wraps = Object.prototype.hasOwnProperty.call(proto, "_wvWraps") && proto._wvWraps && proto._wvWraps._updateIntroText;
+            const src = String(wraps ? wraps.native : proto._updateIntroText);
+            // The bug's shape: the document taken, an await on hasItems(), then nodes made in it.
+            if (!/this\._ownerDocument[\s\S]{0,600}await\s+this\.collectionTreeRows\[0\]\.ref\.hasItems\(\)[\s\S]{0,400}createElement/.test(src)) return;
+            if (/\.closed\b/.test(src)) return;   // Zotero checks the window itself now
+            wvWrap(proto, "_updateIntroText", "introCrash", (this as any)._wvWireTag(), (orig: any) => function (this: any, ...args: any[]) {
+                const real = this._ownerDocument;
+                let swapped = false;
+                try {
+                    // Only the branch that awaits: rows all libraries, no groups, an empty list.
+                    const rows = this.collectionTreeRows;
+                    if (real && rows && rows.length && !this.rowCount
+                            && rows.every((r: any) => r && typeof r.isLibrary === "function" && r.isLibrary())
+                            && !Zotero.Groups.getAll().length) {
+                        const guard = new Proxy(real, {
+                            get(t: any, k: any) {
+                                if (k === "createElement" || k === "createElementNS") {
+                                    return (...a: any[]) => {
+                                        const w = t.defaultView;
+                                        if (!w || w.closed) throw WV_INTRO_CLOSED;
+                                        return t[k](...a);
+                                    };
+                                }
+                                const v = t[k];
+                                return typeof v === "function" ? v.bind(t) : v;
+                            },
+                        });
+                        this._ownerDocument = guard;
+                        swapped = this._ownerDocument === guard;
+                    }
+                } catch (e) { swapped = false; }
+                let r: any;
+                // The method reads `_ownerDocument` once, before its first await: the real
+                // document is back before anything else can see the stand-in.
+                try { r = orig.apply(this, args); }
+                finally { if (swapped) { try { this._ownerDocument = real; } catch (e) {} } }
+                return Promise.resolve(r).catch((e: any) => {
+                    if (e === WV_INTRO_CLOSED) { Zotero.debug("[Weavero] WV-TEMP-INTROCRASH: no intro text written into a closed window"); return undefined; }
+                    throw e;
+                });
+            });
+        } catch (e) { Zotero.debug("[Weavero] _wvWireIntroCrashFix err: " + e); }
+    }
+
+    _wvTeardownIntroCrashFix() {
+        for (const w of wvMainWins() as any[]) {
+            try {
+                const proto: any = wvIntroTreeProto(w);
+                if (proto) wvUnwrap(proto, "_updateIntroText", "introCrash");
+            } catch (e) {}
+        }
+    }
+}
+
+/** WV-TEMP-INTROCRASH: what the stand-in document throws in a closed window. */
+const WV_INTRO_CLOSED = { wvIntroClosed: true };
+
+/** The items-list class of main window `win` (each window loads its own copy:
+ *  require.js makes one loader per window); its items view's prototype when the
+ *  window has no `require`. */
+function wvIntroTreeProto(win: any): any {
+    if (!win || win.closed) return null;
+    try {
+        const C = typeof win.require === "function" ? win.require("zotero/collectionViewItemTree") : null;
+        if (C && C.prototype) return C.prototype;
+    } catch (e) {}
+    try {
+        const iv = win.ZoteroPane && win.ZoteroPane.itemsView;
+        return iv ? Object.getPrototypeOf(iv) : null;
+    } catch (e) { return null; }
 }
 
 const _upstreamFixesDescriptors = Object.getOwnPropertyDescriptors(_UpstreamFixesMixin.prototype);

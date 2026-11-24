@@ -861,7 +861,11 @@ describe("Weavero — upstream fixes", function () {
             // below (Zotero still blanks it) passes there. No regression (the same
             // blank abstract as without Weavero); Windows and Ubuntu CI and local
             // runs pass. MJT 2026-11-23: "Go" (skip and follow up, work/TODO.md).
-            if (Services.env.exists("CI") && Zotero.isMac && /^11\./.test(Zotero.version)) this.skip();
+            // Also CI on Linux with Zotero 11 (1.2.2 release CI run 45384510446, both
+            // attempts; it had passed on the commit before): the same undrawn
+            // abstract on GitHub's Ubuntu beta runner. MJT 2026-11-24: "Skip on CI
+            // Ubuntu beta". Windows CI and local runs pass.
+            if (Services.env.exists("CI") && (Zotero.isMac || Zotero.isLinux) && /^11\./.test(Zotero.version)) this.skip();
             await move();
             await select(B);
             assert.ok(await wvT.waitFor(() => shown() || null, 10000, 100), "B's abstract drawn after the move");

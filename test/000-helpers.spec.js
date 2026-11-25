@@ -451,9 +451,15 @@
             // And the maximize button's right-click (max-span.ts: macOS's
             // button is the system's; no span there).
             const noMacMain = /^(_wvCompactTitleBar:object|wv-compact-titlebar-styles|wv-early-compact-css|wv-hamburger-popup|wv-win-name-tooltip|_wvCompactMenubar:object|wv-reader-compact-menubar-styles|wv-reader-menubar-icon|wv-reader-iframe-nodrag|wv-menubar-zicon)( x\d+)?$|^listen (hamburgerPromo|maxSpan):/;
+            // The maximize button's right-click off Windows: max-span.ts wires
+            // it only where a window may span monitors (_wvMaxSpanSupported),
+            // never on Linux Wayland -- the recording's two window marks were
+            // missing on Ubuntu (Zotero 10.0.8, GNOME Wayland, 2026-11-24).
+            // maximize-span.spec.js checks them where they are wired.
+            const spanOffWin = /^listen maxSpan:(contextmenu|rbup)( x\d+)?$/;
             const fixStr = (s) => typeof s === "string" ? s.replace(/menu_fileQuitItem(Win|Unix)/g, "menu_fileQuitItem") : s;
             const keep = (s) => typeof s !== "string"
-                || !(/^wv-ui-dark( x\d+)?$/.test(s) || lazyPane.test(s) || (!Zotero.isWin && winOnly.test(s)) || (Zotero.isMac && noMacMain.test(s)));
+                || !(/^wv-ui-dark( x\d+)?$/.test(s) || lazyPane.test(s) || (!Zotero.isWin && (winOnly.test(s) || spanOffWin.test(s))) || (Zotero.isMac && noMacMain.test(s)));
             const walk = (v) => {
                 if (Array.isArray(v)) return v.filter(keep).map(fixStr).map(walk);
                 if (v && typeof v === "object") {
@@ -513,6 +519,8 @@
             { re: /^Weavero — split view: inside each side 9b\. two library sides/, why: "version: needs a Zotero with its own windows (an older Zotero has one library tab)" },
             { re: /^Weavero — split view: inside each side 15\. two library sides/, why: "version: needs a Zotero with its own windows (an older Zotero has one library tab)" },
             { re: /^Weavero — split view: a tab locked on one side a Zotero with its own windows/, why: "version: needs a Zotero with its own windows (an older Zotero has one library tab and one window of tabs)" },
+            { re: /^Weavero — a tab moved between main windows leaves no item pane behind a reader moved to another window holds the focus there/, why: "CI only, macOS and Ubuntu with Zotero 10: needs a target window that comes to the front (the next entries' reason)" },
+            { re: /^Weavero — a tab moved between main windows leaves no item pane behind several readers moved together/, why: "CI only, macOS and Ubuntu with Zotero 10: needs a target window that comes to the front (the next entry's reason)" },
             { re: /^Weavero — a tab moved between main windows leaves no item pane behind a reader tab moved to a second window and back/, why: "CI only, macOS and Ubuntu with Zotero 10: the case needs a target window that comes to the front, and GitHub's runners never brought one forward (the move never landed within 20 s, 1.2.0 gate, two runs each -- reproduced locally by a target whose focus() does nothing); the next case of the spec, a target that never comes to the front, runs everywhere" },
             { re: /^Weavero — upstream fixes WV-TEMP-feedabstract: a feed abstract shows after the item pane's sections moved the sections move, the next feed item's abstract still shows/, why: "CI only, macOS and Linux with Zotero 11: the stand-in did not draw B's abstract after the move on GitHub's macOS beta runner (1.2.1 release CI run 45200266733, both attempts) and on its Ubuntu beta runner (1.2.2 release CI run 45384510446, both attempts) while the tripwire passes there; no regression (Zotero alone blanks it too); Windows CI and local runs pass; to investigate on a Mac and on Linux (work/TODO.md)" },
             { re: /^Weavero — a link preview tints the whole reference entry /, why: "CI only, Ubuntu with the Zotero beta: the whole spec is skipped there (its before() hook) -- the preview popup never opened on GitHub's Linux runner (1.2.0 gate, CI run 44537151777, both attempts); Windows and macOS CI and local runs pass; to fix (work/TODO.md)" },

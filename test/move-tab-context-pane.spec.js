@@ -160,4 +160,155 @@ describe("Weavero — a tab moved between main windows leaves no item pane behin
         assert.deepEqual(during, { home: [], away: [] }, "item panes under a tab id that is gone");
         assert.deepEqual({ home: orphans(home), away: orphans(away) }, { home: [], away: [] }, "item panes under a tab id that is gone, after the tab closed");
     });
+
+    // The focus after a move (W14 Q3, Zotero 10.0.8 on Ubuntu GNOME,
+    // 2026-11-24): the target came forward with its library tab selected and
+    // its quick search took the focus back (the element it last had) until the
+    // moved tab covered it, and the moved reader never took the focus -- keys
+    // did not reach the PDF. Zotero focuses a reader when its tab is selected
+    // (tabs.js refocus hook): here that was the donor's, swapped away. The
+    // target last had its quick search focused, as a window does after its
+    // user searched in it.
+    it("a reader moved to another window holds the focus there, and the target's quick search never takes it", async function () {
+        // CI only: needs a target that comes to the front (the first case's reason).
+        if (Services.env.exists("CI") && (Zotero.isMac || Zotero.isLinux)) this.skip();
+        await closeTestTabs();
+        const { r, home, away } = await openHome();
+        away.focus();
+        assert.isOk(await wvT.waitFor(() => front() === away || null, 5000), "fixture: " + name(away) + " in front");
+        const search = away.document.getElementById("zotero-tb-search-textbox");
+        assert.isOk(search, "fixture: the quick search of " + name(away));
+        search.focus();
+        await wvT.sleep(300);
+        home.focus();
+        assert.isOk(await wvT.waitFor(() => front() === home || null, 5000), "fixture: " + name(home) + " back in front");
+        home.Zotero_Tabs.select(r.tabID);
+        await wvT.sleep(1500);
+        const inSearch = (t) => { try { return !!(t && t.closest && t.closest("#zotero-tb-search")); } catch (e) { return false; } };
+        const searchFocus = [];
+        const onFocusIn = (e) => { if (inSearch(e.target)) searchFocus.push(e.target.localName + (e.target.id ? "#" + e.target.id : "")); };
+        away.document.addEventListener("focusin", onFocusIn, true);
+        let landed = null, focused = null, moved = null;
+        try {
+            await wv._wvMoveTabToTarget(home, r.tabID, { win: away, isReader: false, groupId: null });
+            landed = await wvT.waitFor(() => (!tabOf(home) && tabOf(away)) || null, 20000);
+            await wvT.sleep(1500);
+            moved = landed && /** @type {any} */ (Zotero.Reader).getByTabID(tabOf(away).id);
+            const a = away.document.activeElement;
+            focused = { front: name(front()), selected: away.Zotero_Tabs.selectedID === (tabOf(away) || {}).id, active: a ? a.localName + (a.id ? "#" + a.id : "") : null, reader: !!(moved && a && a === moved._iframe) };
+        }
+        finally {
+            away.document.removeEventListener("focusin", onFocusIn, true);
+        }
+        assert.isOk(landed, "the tab is in " + name(away));
+        assert.deepEqual({ searchFocus, focused }, { searchFocus: [], focused: { front: name(away), selected: true, active: focused && focused.active, reader: true } },
+            "in " + name(away) + ": the quick search never took the focus during the move, and the moved reader holds it after");
+    });
+
+    // Several tabs dragged together (_wvMoveSelectionBetweenMains): the dragged
+    // one is selected in the target and holds the focus there, and the moved
+    // tabs stay multi-selected, as Firefox's drop handler does.
+    it("several readers moved together: the dragged one is selected there and holds the focus, and the moved tabs stay multi-selected", async function () {
+        // CI only: needs a target that comes to the front (the first case's reason).
+        if (Services.env.exists("CI") && (Zotero.isMac || Zotero.isLinux)) this.skip();
+        wvT.method("_wvMoveSelectionBetweenMains");
+        await closeTestTabs();
+        const pdf2 = await wvT.createTestPDFItem("wv-move-ctx-2");
+        const tab2Of = (w) => w.Zotero_Tabs._tabs.find(t => t && t.data && t.data.itemID === pdf2.id) || null;
+        const inSearch = (t) => { try { return !!(t && t.closest && t.closest("#zotero-tb-search")); } catch (e) { return false; } };
+        const searchFocus = [];
+        const onFocusIn = (e) => { if (inSearch(e.target)) searchFocus.push(e.target.localName + (e.target.id ? "#" + e.target.id : "")); };
+        let awayDoc = null;
+        try {
+            const { r, home, away } = await openHome();
+            // The target last had its quick search focused (the previous case's fixture).
+            away.focus();
+            assert.isOk(await wvT.waitFor(() => front() === away || null, 5000), "fixture: " + name(away) + " in front");
+            away.document.getElementById("zotero-tb-search-textbox").focus();
+            await wvT.sleep(300);
+            home.focus();
+            assert.isOk(await wvT.waitFor(() => front() === home || null, 5000), "fixture: " + name(home) + " back in front");
+            const r2 = await wvT.openReaderTab(pdf2.id);
+            assert.isOk(r2 && r2._window === home, "fixture: the second reader opened in " + name(home));
+            home.Zotero_Tabs.select(r.tabID);
+            await wvT.sleep(1500);
+            home._wvSelTabIDs = new Set([r.tabID, r2.tabID]);
+            wv._wvTabMultiSelSync(home);
+            awayDoc = away.document;
+            awayDoc.addEventListener("focusin", onFocusIn, true);
+            await wv._wvMoveSelectionBetweenMains(home, away, [r.tabID, r2.tabID], 1, 0, r.tabID);
+            const landed = await wvT.waitFor(() => (!tabOf(home) && !tab2Of(home) && tabOf(away) && tab2Of(away)) || null, 20000);
+            await wvT.sleep(1500);
+            assert.isOk(landed, "both tabs are in " + name(away));
+            const moved = /** @type {any} */ (Zotero.Reader).getByTabID(tabOf(away).id);
+            const a = away.document.activeElement;
+            const sel = away._wvSelTabIDs ? [...away._wvSelTabIDs].sort() : [];
+            assert.deepEqual({
+                front: name(front()),
+                selected: away.Zotero_Tabs.selectedID === tabOf(away).id,
+                multi: sel,
+                reader: !!(moved && a && a === moved._iframe),
+                searchFocus,
+            }, {
+                front: name(away),
+                selected: true,
+                multi: [tabOf(away).id, tab2Of(away).id].sort(),
+                reader: true,
+                searchFocus: [],
+            }, "in " + name(away) + " (selected " + away.Zotero_Tabs.selectedID + ", focus " + (a ? a.localName + (a.id ? "#" + a.id : "") : null) + ")");
+        }
+        finally {
+            try { if (awayDoc) awayDoc.removeEventListener("focusin", onFocusIn, true); } catch (e) {}
+            for (const w of [win, W2]) {
+                try { const t = w && !w.closed && tab2Of(w); if (t) w.Zotero_Tabs.close(t.id); } catch (e) {}
+            }
+            await wvT.sleep(800);
+            await wvT.erase(pdf2);
+        }
+    });
+});
+
+// GNOME (Wayland) ignored the one focus() asked at the drop: the target of a
+// tab dragged to another main window never came to the front (1 s and 3 s
+// waits, Zotero 10.0.8, Ubuntu 26.04 / GNOME 50, 2026-11-24), and every such
+// drag fell back to the reloading move. A focus() asked again 200 ms later
+// brought it in 0.3 s and the swap went through. The wait asks again while
+// it waits, and stops asking once it gives up. A stand-in window is never
+// the most recent one, so the wait runs to its bound.
+describe("Weavero — the wait for a move's target window asks for it again", function () {
+    this.timeout(20000);
+
+    it("asks for the window again while waiting, stops when it gives up, and returns at once for the window in front", async function () {
+        const wv = wvT.plugin();
+        if (!wv) wvT.absent("plugin");
+        wvT.method("_wvAwaitFrontMain");
+        let asked = 0;
+        const target = { closed: false, focus() { asked++; } };
+        const t0 = Date.now();
+        const ok = await wv._wvAwaitFrontMain(target, 1000);
+        const took = Date.now() - t0;
+        assert.isFalse(ok, "a window that never comes to the front");
+        assert.isAtLeast(took, 1000, "the wait runs to its bound");
+        assert.isAtLeast(asked, 3, "the wait asks for the window again while it waits (asked " + asked + " times in " + took + " ms)");
+        const atEnd = asked;
+        await wvT.sleep(600);
+        assert.strictEqual(asked, atEnd, "no request after the wait gave up");
+        const front = /** @type {any} */ (Services.wm.getMostRecentWindow("navigator:browser"));
+        let frontAsked = 0;
+        const ownFocus = Object.getOwnPropertyDescriptor(front, "focus");
+        front.focus = function () { frontAsked++; };
+        let ok2, took2;
+        try {
+            const t1 = Date.now();
+            ok2 = await wv._wvAwaitFrontMain(front, 1000);
+            took2 = Date.now() - t1;
+        }
+        finally {
+            if (ownFocus) Object.defineProperty(front, "focus", ownFocus);
+            else delete front.focus;
+        }
+        assert.isTrue(ok2, "the window in front");
+        assert.isBelow(took2, 200, "returns at once for the window in front");
+        assert.strictEqual(frontAsked, 0, "nothing asked of the window already in front");
+    });
 });

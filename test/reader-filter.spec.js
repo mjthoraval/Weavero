@@ -129,4 +129,22 @@ describe("Weavero — reader annotation filter hides annotations", function () {
         const vis = visibleKeys();
         expect(vis.sort()).to.eql([annHl1.key, annHl2.key, annNote.key].sort());
     });
+
+    it("an apply that starts while the previous one's removal is in flight still restores what it took out", async function () {
+        // Two applies in a row (a chip clicked twice, the funnel switch's re-apply
+        // then a chip): the second must see the first's removals, or it puts
+        // nothing back and the reader stays filtered under an empty filter
+        // (2026-11-24, found verifying the per-funnel Settings boxes).
+        const st = p._wvReaderFilterState(reader);
+        st.types = []; st.colorsExcl = [];
+        st.typesExcl = ["note"];
+        p._wvApplyReaderFilter(reader);   // not awaited: its removal is in flight
+        st.typesExcl = [];
+        await p._wvApplyReaderFilter(reader);
+        const back = await wvT.waitFor(() => {
+            const k = visibleKeys();
+            return k && k.length === 3 ? k : null;
+        }, 5000).catch(() => null);
+        expect(back, "every annotation back under an empty filter, got " + JSON.stringify(visibleKeys())).to.exist;
+    });
 });

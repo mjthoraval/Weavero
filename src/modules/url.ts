@@ -21,7 +21,7 @@ import { schemeAltPart, joinSchemeAlt, buildUrlRegex, urlLinkClass, wvIsWebURL, 
 import { wvTimeout } from "../lib/timers";
 import { wvCloneFor } from "../lib/xray";
 import { wvL10n, wvStr } from "../lib/l10n";
-import { wvIsRunnableFile } from "../lib/open-guard";
+import { wvIsRunnableFile, wvHasNoExtension, wvIsProgramHeader } from "../lib/open-guard";
 
 export const URL_SCHEMES = [
     // ---- Tier 1: bare-colon schemes (name:) -------------------------------
@@ -80,7 +80,8 @@ export const WV_CMDLINE_WIRE_V = 1;
 export const WV_ALWAYS_ASK_SCHEMES: readonly string[] = ["file"];
 
 /** How many file:// links to another computer Weavero remembers as opened
- *  (weavero.remoteFileLinksOpened, a JSON list): past it the oldest goes. */
+ *  (weavero.remoteFileLinksOpened, a JSON list): past it the oldest goes.
+ *  The same cap for the local ones (weavero.localFileLinksOpened). */
 export const WV_REMOTE_FILE_LINKS_MAX = 500;
 
 export const BBT_BIBTEX_TRANSLATOR_ID = "ca65189f-8815-4afe-8c8b-8c7c15f0edca";
@@ -350,13 +351,57 @@ export const urlMethods = {
         } catch (e) { return false; }
     },
 
+    /** Off Windows: whether `path` is a PROGRAM by what it is rather than by
+     *  its name -- the name rule (lib/open-guard.ts) cannot see a script
+     *  without an extension (Ubuntu W15, 2026-11-24: a `#!/bin/sh` file
+     *  without one, opened from a link after Open, went to the desktop's
+     *  application for shell scripts). MJT 2026-11-24, "Bit + program
+     *  content": the executable bit AND either a program's first bytes
+     *  (wvIsProgramHeader: `#!`, ELF, Mach-O, universal binary) or a name with
+     *  no extension (macOS Terminal runs an extension-less +x text file as a
+     *  shell script). The bit alone is not enough: NTFS and exFAT drives are
+     *  often mounted with every file +x, and a PDF there must still be asked
+     *  about, not refused. A folder is never one: Unix's isExecutable has no
+     *  folder check (nsLocalFileUnix.cpp: access(X_OK), which a searchable
+     *  folder passes), and a folder link opens the file manager. A file that
+     *  is not there is not one either (the callers say "not found" or let
+     *  Zotero do). Windows: false -- the extension decides there, as the
+     *  system does (`_wvExecBitApplies`, which the guard specs switch on).
+     *  Cannot tell -- the bit, or the first bytes of a file that has it: true,
+     *  never run. Guards: file-links.spec.js, open-guard.spec.js. */
+    async _wvRunsAsProgram(path: string): Promise<boolean> {
+        try {
+            if (!this._wvExecBitApplies()) return false;
+            const f: any = Zotero.File.pathToFile(path);
+            if (!f.exists() || f.isDirectory()) return false;
+            if (!f.isExecutable()) return false;
+        } catch (e) {
+            Zotero.debug("[Weavero] executable-bit check err: " + e);
+            return true;
+        }
+        if (wvHasNoExtension(path)) return true;
+        try {
+            const head = await IOUtils.read(path, { maxBytes: 4 });
+            return wvIsProgramHeader(head);
+        } catch (e) {
+            Zotero.debug("[Weavero] program-header read err: " + e);
+            return true;
+        }
+    },
+
+    /** Whether the executable bit decides anything here (not on Windows). */
+    _wvExecBitApplies(): boolean {
+        return !Zotero.isWin;
+    },
+
     /** Whether a link, a row or a card may open the attachment `att` (security
      *  review 2026-11-22). A file Zotero's own reader shows opens. A file the
-     *  system would run (lib/open-guard.ts) is never opened from there: it is
-     *  refused with a notice. Any other file -- one Zotero cannot show, or
-     *  shows only through an external viewer the user set -- opens in another
-     *  application only after the user confirms, the real file name in front
-     *  of them. Anything that is not a stored file is not this check's. */
+     *  system would run (lib/open-guard.ts, or off Windows a program by its
+     *  bit and content: `_wvRunsAsProgram`) is never opened from there: it is
+     *  refused with a notice. Any other file -- one Zotero cannot show, or shows only through
+     *  an external viewer the user set -- opens in another application only
+     *  after the user confirms, the real file name in front of them. Anything
+     *  that is not a stored file is not this check's. */
     async _wvMayOpenAttachment(att: any, win?: any): Promise<boolean> {
         try {
             if (!att || !att.isAttachment || !att.isAttachment()) return true;
@@ -366,9 +411,10 @@ export const urlMethods = {
             try { viewer = type ? String(Zotero.Prefs.get("fileHandler." + type) || "") : ""; } catch (e) {}
             if (type && !viewer) return true;
             let name = "";
-            try { const p = await att.getFilePathAsync(); if (p) name = PathUtils.filename(p); } catch (e) {}
+            let path = "";
+            try { const p = await att.getFilePathAsync(); if (p) { path = String(p); name = PathUtils.filename(p); } } catch (e) {}
             if (!name) { try { name = String(att.attachmentFilename || ""); } catch (e) {} }
-            if (wvIsRunnableFile(name)) {
+            if (wvIsRunnableFile(name) || (path && await this._wvRunsAsProgram(path))) {
                 (this as any)._wvShowLinkRefused(wvStr("weavero-misc-link-refused-runnable", { name }), win);
                 return false;
             }
@@ -1585,9 +1631,16 @@ export const urlMethods = {
             // 133709). Until then, every mailto:/obsidian:// click on the
             // default (confirm) path died in this catch. Do what the fix
             // does. Retire when strict_min_version >= 10.0.3.
-            if (!this._wvLaunchNonHttpWithPrincipal(url)) {
-                Zotero.debug("[Weavero] _launchURL fallback err: " + e);
+            if (this._wvLaunchNonHttpWithPrincipal(url)) return;
+            // A file on this computer, and the system has no handler for
+            // file links (stock Ubuntu): Weavero's own question, then the
+            // file itself (`_wvOpenLocalFileLink`). A link to another
+            // computer never gets here (returned above). Its promise is
+            // handed back for the guard spec; callers need not wait.
+            if (/^\s*file:/i.test(String(url))) {
+                return this._wvOpenLocalFileLink(url);
             }
+            Zotero.debug("[Weavero] _launchURL fallback err: " + e);
         }
     },
 
@@ -1659,6 +1712,9 @@ export const urlMethods = {
                 (this as any)._wvShowLinkRefused(wvStr("weavero-misc-link-refused-remote-file", { host: (t && t.host !== "?") ? t.host : host }));
                 return;
             }
+            // The name rule only: off Windows such a link names no path on this
+            // computer whose executable bit could be read (`_wvRunsAsProgram`),
+            // and on Windows the extension decides anyway (W15, 2026-11-24).
             if (wvIsRunnableFile(t.path)) {
                 (this as any)._wvShowLinkRefused(wvStr("weavero-misc-link-refused-runnable", { name: t.unc }));
                 return;
@@ -1728,6 +1784,139 @@ export const urlMethods = {
             hi.launchWithURI(Services.io.newURI(url, null, null), null);
             return true;
         } catch (e) { Zotero.debug("[Weavero] remote file link: OS launch err: " + e); return false; }
+    },
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // file:// links to a file on THIS computer when the system has no handler
+    // for file links (MJT 2026-11-24: "Ask, then open"). Stock Ubuntu sets no
+    // x-scheme-handler/file default: Zotero.launchURL throws "Handler not found
+    // for 'file' URLs", the 10.0.2 shim finds no handler either, and until
+    // 1.2.3 a click did nothing and said nothing (Ubuntu, Zotero 11, 2026-11-24).
+    // Weavero then asks -- its own question, the full path in front of the
+    // user, Cancel the default, as for a link to another computer -- and opens
+    // the FILE the way Zotero opens an attachment it cannot show
+    // (Zotero.launchFile: the system's application for that type of file). An
+    // Open is remembered per link (the exact path, weavero.localFileLinksOpened,
+    // the same cap); a file the system would run (lib/open-guard.ts, or off
+    // Windows its executable bit with a program's start or no extension:
+    // `_wvRunsAsProgram`) is refused and never asked about -- also once
+    // remembered; a missing file, a Cancel and a failed launch each
+    // say so. Where the system has a handler (Windows, macOS, a desktop that
+    // sets one) nothing changes: Zotero.launchURL and its prompt.
+    // Guard: test/file-links.spec.js.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** The path on this computer a file: URL names, or null (no file: URL, a
+     *  file on another computer, or no path Gecko can make of it). */
+    _wvLocalFilePath(url: string): string | null {
+        try {
+            const s = String(url || "").trim();
+            if (!/^file:/i.test(s) || wvRemoteFileHost(s) !== null) return null;
+            const f: any = Services.io.newURI(s, null, null)
+                .QueryInterface(Components.interfaces.nsIFileURL).file;
+            return f && f.path ? String(f.path) : null;
+        } catch (e) { return null; }
+    },
+
+    /** Whether a local file link may open at all: Links & Relations, App
+     *  links and the file scheme -- what makes it a link in the first place. */
+    _wvLocalFileLinksOn(): boolean {
+        try {
+            if (!(this as any)._getEnableLinksAndRelations()) return false;
+            return this._wvAppSchemeEnabled("file");
+        } catch (e) { return false; }
+    },
+
+    /** The local file links the user opened after the question (their
+     *  paths), oldest first. */
+    _wvLocalFileLinksList(): string[] {
+        try {
+            const raw = String(Zotero.Prefs.get("weavero.localFileLinksOpened") || "");
+            if (!raw) return [];
+            const a = JSON.parse(raw);
+            return Array.isArray(a) ? a.filter((k: any) => typeof k === "string" && k) : [];
+        } catch (e) { return []; }
+    },
+
+    /** Remember the local file link `path` (the oldest dropped past the cap). */
+    _wvLocalFileLinksRemember(path: string) {
+        try {
+            const list = this._wvLocalFileLinksList().filter((k: string) => k !== path);
+            list.push(path);
+            while (list.length > WV_REMOTE_FILE_LINKS_MAX) list.shift();
+            Zotero.Prefs.set("weavero.localFileLinksOpened", JSON.stringify(list));
+        } catch (e) { Zotero.debug("[Weavero] local file links: remember err: " + e); }
+    },
+
+    /** A click on a file:// link to a file on this computer that the system
+     *  has no handler for (`_launchURL`, after Zotero.launchURL threw). Async:
+     *  the program check reads the file's first bytes. */
+    async _wvOpenLocalFileLink(url: string): Promise<void> {
+        const refuse = (id: string, name: string) => {
+            try { (this as any)._wvShowLinkRefused(wvStr(id, { name })); } catch (e) {}
+        };
+        try {
+            const path = this._wvLocalFilePath(url);
+            if (!path) {
+                refuse("weavero-misc-link-local-file-failed", String(url).slice(0, 200));
+                return;
+            }
+            if (!this._wvLocalFileLinksOn()) {
+                refuse("weavero-misc-link-local-file-not-opened", path);
+                return;
+            }
+            if (wvIsRunnableFile(path) || await this._wvRunsAsProgram(path)) {
+                refuse("weavero-misc-link-refused-runnable", path);
+                return;
+            }
+            let exists = false;
+            try { exists = !!Zotero.File.pathToFile(path).exists(); } catch (e) {}
+            if (!exists) {
+                refuse("weavero-misc-link-local-file-missing", path);
+                return;
+            }
+            if (!this._wvLocalFileLinksList().includes(path)) {
+                // The one question of this click: the launch below opens the
+                // file, never the link (no Gecko prompt after it).
+                if (!this._wvAskOpenLocalFile(null, path)) {
+                    refuse("weavero-misc-link-local-file-not-opened", path);
+                    return;
+                }
+                this._wvLocalFileLinksRemember(path);
+            }
+            if (!this._wvLaunchLocalFile(path)) refuse("weavero-misc-link-local-file-failed", path);
+        }
+        catch (e) { Zotero.debug("[Weavero] _wvOpenLocalFileLink err: " + e); }
+    },
+
+    /** The question before a local file link opens the first time: Open or
+     *  Cancel, Cancel the default. True: Open. `_wvPromptOverride` is the
+     *  guard spec's stand-in for Services.prompt (test/file-links.spec.js). */
+    _wvAskOpenLocalFile(win: any, path: string): boolean {
+        try {
+            const w = (win && win.document) ? win : Zotero.getMainWindow();
+            const ps: any = (this as any)._wvPromptOverride || Services.prompt;
+            const flags = ps.BUTTON_POS_0 * ps.BUTTON_TITLE_IS_STRING
+                + ps.BUTTON_POS_1 * ps.BUTTON_TITLE_CANCEL
+                + ps.BUTTON_POS_1_DEFAULT;
+            return ps.confirmEx(w, wvStr("weavero-misc-open-local-file-title"),
+                wvStr("weavero-misc-open-local-file-message", { target: path }),
+                flags, wvStr("weavero-misc-open-local-file-button"), "", "", null, {}) === 0;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvAskOpenLocalFile err: " + e);
+            return false;
+        }
+    },
+
+    /** Open `path` as Zotero opens an attachment it cannot show:
+     *  Zotero.launchFile (nsIFile.launch -- on Linux the desktop's application
+     *  for the file's type --, then Zotero's fallback launcher). Never
+     *  Zotero.launchURL: no file-link handler is the reason we are here. */
+    _wvLaunchLocalFile(path: string): boolean {
+        try {
+            Zotero.launchFile(path);
+            return true;
+        } catch (e) { Zotero.debug("[Weavero] local file link: launch err: " + e); return false; }
     },
 
     /** Launch a NON-HTTP URL through the external protocol service WITH a

@@ -5294,6 +5294,7 @@ class _TabsMixin {
     async _wvSwapOpenDonor(targetWin, itemID, background) {
         const Reader: any = Zotero.Reader;
         let donor: any = null;
+        const parked = this._wvMoveParkTargetFocus(targetWin);
         try {
             try { if (targetWin.focus) targetWin.focus(); } catch (e) {}
             // Zotero 10's Reader.open has no window option: the donor goes to the
@@ -5305,7 +5306,10 @@ class _TabsMixin {
             // re-homed on a window that did not hold it (2026-11-20). Wait for the
             // target, bounded; without it, no swap (the classic move lands it).
             // Guard: test/move-tab-context-pane.spec.js.
-            if (!(await this._wvAwaitFrontMain(targetWin, 1000)) || (this as any)._wvDestroyed) return null;
+            if (!(await this._wvAwaitFrontMain(targetWin, 1000)) || (this as any)._wvDestroyed) {
+                this._wvMoveUnparkTargetFocus(targetWin, parked);
+                return null;
+            }
             donor = await Reader.open(itemID, null, { openInWindow: false, allowDuplicate: true, openInBackground: background });
             if (await this._wvSwapWaitShell(donor, targetWin)) return donor;
             this._wvSwapDropDonor(donor, targetWin);
@@ -5317,13 +5321,56 @@ class _TabsMixin {
         }
     }
 
+    /** Before a move brings `targetWin` forward: if the element it would give
+     *  the focus back to is in its LIBRARY tab (the quick search, where a main
+     *  window starts and where its user last searched), forget it, so the
+     *  window comes forward with nothing focused until the moved tab takes the
+     *  focus. Gecko hands an activated window's focus back to that element:
+     *  the target's quick search took the focus while the move ran, and on
+     *  GNOME stayed visibly focused until the moved tab covered it (W14 Q3,
+     *  Zotero 10.0.8, 2026-11-24). Returns that element, for
+     *  `_wvMoveUnparkTargetFocus` if the move does not go through.
+     *  Guard: test/move-tab-context-pane.spec.js. */
+    _wvMoveParkTargetFocus(targetWin: any): any {
+        try {
+            const Z: any = targetWin && targetWin.Zotero_Tabs;
+            if (!Z || Z.selectedID !== "zotero-pane") return null;
+            const fm: any = Services.focus;
+            const el = fm.getFocusedElementForWindow(targetWin, false, {});
+            if (!el) return null;
+            fm.clearFocus(targetWin);
+            return el;
+        } catch (e) { return null; }
+    }
+
+    /** Give the target back the element `_wvMoveParkTargetFocus` took, when
+     *  the move did not bring it forward. */
+    _wvMoveUnparkTargetFocus(targetWin: any, el: any) {
+        try {
+            if (!el || !targetWin || targetWin.closed || !el.isConnected) return;
+            if (Services.focus.getFocusedElementForWindow(targetWin, false, {})) return;
+            el.focus();
+        } catch (e) {}
+    }
+
     /** True once `w` is the main window Zotero 10's Reader.open and Notes.open
-     *  open in (the most recently activated one), waiting up to `ms`. */
+     *  open in (the most recently activated one), waiting up to `ms`, and
+     *  asking for it again every 200 ms meanwhile. GNOME (Wayland) ignored the
+     *  focus() asked at the drop of a tab dragged to another window: the target
+     *  never came to the front within 1 s or 3 s, and every such drag fell back
+     *  to the reloading move; asked again 200 ms later, it came in 0.3 s and the
+     *  swap went through (Zotero 10.0.8, Ubuntu 26.04 / GNOME 50, 2026-11-24).
+     *  Guard: test/move-tab-context-pane.spec.js. */
     async _wvAwaitFrontMain(w: any, ms: number): Promise<boolean> {
         const front = () => { try { return Services.wm.getMostRecentWindow("navigator:browser") === w; } catch (e) { return false; } };
         const t0 = Date.now();
+        let asked = t0;
         while (!front()) {
             if (!w || w.closed || Date.now() - t0 >= ms) return false;
+            if (Date.now() - asked >= 200) {
+                asked = Date.now();
+                try { w.focus(); } catch (e) {}
+            }
             await wvSleep(50);
         }
         return true;
@@ -5546,6 +5593,22 @@ class _TabsMixin {
                 if (payload && payload.sourceTabId && payload.sourceTabId !== donorTabId
                         && /^tab-/.test(String(payload.sourceTabId))) {
                     this._wvRenameTab(targetWin, donorTabId, payload.sourceTabId);
+                }
+            } catch (e) {}
+
+            // The focus into the moved reader. Zotero focuses a reader when its
+            // tab is selected (tabs.js refocus hook), and here that reader was
+            // the donor, swapped away: the moved one never took the focus and
+            // keys did not reach the PDF (W14 Q3, Zotero 10.0.8, 2026-11-24).
+            // Zotero_Tabs.refocus is Zotero's own "return focus into the content
+            // of the selected tab ... after drag". A tab opened in the background
+            // is selected later by its caller, whose select focuses it.
+            // Guard: test/move-tab-context-pane.spec.js.
+            try {
+                const Zt: any = targetWin.Zotero_Tabs;
+                if (Zt && Zt.selectedID === S.tabID) {
+                    if (typeof Zt.refocus === "function") Zt.refocus(S.tabID);
+                    else if (typeof S.focus === "function") S.focus();
                 }
             } catch (e) {}
         } catch (e) {
@@ -5980,9 +6043,12 @@ class _TabsMixin {
                 // The donors open in the window in front (see _wvSwapOpenDonor):
                 // wait for the target, bounded. A donor elsewhere is refused by
                 // _wvSwapWaitShell, dropped in its own window, and its tab goes
-                // the classic way.
+                // the classic way. The target's library focus is set aside
+                // first, as for one tab (_wvMoveParkTargetFocus): its library
+                // tab stays selected until every swap is committed.
+                const parked = this._wvMoveParkTargetFocus(targetWin);
                 try { if (targetWin.focus) targetWin.focus(); } catch (e) {}
-                await this._wvAwaitFrontMain(targetWin, 1000);
+                if (!(await this._wvAwaitFrontMain(targetWin, 1000))) this._wvMoveUnparkTargetFocus(targetWin, parked);
                 for (const job of swapJobs) {
                     try { if (targetWin.focus) targetWin.focus(); } catch (e) {}
                     try { job.donorPromise = Reader.open(job.pl.itemID, null, { openInWindow: false, allowDuplicate: true, openInBackground: true }); }
@@ -6002,8 +6068,13 @@ class _TabsMixin {
                     if (job.ready && job.donor) {
                         try {
                             await this._wvSwapCommitDonor(srcWin, targetWin, job.S, job.donor, job.pl, job.pl._idx, maxOtherPinned);
-                            newSelIds.push(job.donor.tabID);
-                            if (job.pl.sourceTabId === activeId) activeNewId = job.donor.tabID;
+                            // The id the tab has now: the commit gives it its
+                            // original id back (_wvRenameTab), and the donor's
+                            // names no tab -- with it the dragged tab was never
+                            // selected and the moved tabs not multi-selected
+                            // (2026-11-24). Guard: test/move-tab-context-pane.spec.js.
+                            newSelIds.push(job.S.tabID);
+                            if (job.pl.sourceTabId === activeId) activeNewId = job.S.tabID;
                         } catch (e) {}
                     } else {
                         try { this._wvClassicMoveTabBetweenMains(srcWin, targetWin, job.pl, job.pl._idx, maxOtherPinned); } catch (e) {}

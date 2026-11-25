@@ -17358,8 +17358,16 @@ class _ReaderPanelsMixin {
                 // fire-and-forget meant a hide-only sync resolved while the
                 // hide was still pending, so a caller repainting on our
                 // resolution saw pre-hide state (beta.3 survey, 2026-08-24).
-                await reader.unsetAnnotations(toHide);
+                // The keys are recorded BEFORE the await: a sync that starts
+                // while this unset is in flight (two applies in a row) must
+                // see them as removed, or it puts nothing back and the reader
+                // stays filtered under an empty filter (2026-11-24). Its
+                // setAnnotations still lands after this unset: the wrapper's
+                // unset reaches the reader after one turn, set after two or
+                // more (xpcom/reader.js).
                 for (const k of toHide) cur.add(k);
+                try { await reader.unsetAnnotations(toHide); }
+                catch (e) { for (const k of toHide) cur.delete(k); throw e; }
             }
             if (toShow.length && typeof reader.setAnnotations === "function") {
                 const items: any[] = [];

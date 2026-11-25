@@ -318,6 +318,10 @@ export const WV_PREF_VALUES: Record<string, string | number> = {
     // The file:// links to another computer the user opened (remoteFileLinks
     // on), a JSON list of their keys, oldest first; "" = none.
     remoteFileLinksOpened: "",
+    // The file:// links to a file on this computer the user opened after
+    // Weavero's question (no system handler for file links, url.ts
+    // _wvOpenLocalFileLink; 1.2.3), a JSON list of their paths; "" = none.
+    localFileLinksOpened: "",
 };
 
 class _PrefsTableMixin {

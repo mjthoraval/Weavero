@@ -64,6 +64,33 @@ export function wvIsRunnableFile(name: unknown): boolean {
     return !!ext && RUNNABLE.has(ext);
 }
 
+/** Whether a file NAME has no extension: none after the last dot, or a dot
+ *  only in front (a hidden Unix file, `.profile`). A path's folders are
+ *  ignored, Windows' trailing dots and spaces dropped (wvFileExt). */
+export function wvHasNoExtension(name: unknown): boolean {
+    let s = String(name == null ? "" : name);
+    const slash = Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\"));
+    if (slash >= 0) s = s.slice(slash + 1);
+    return !wvFileExt(s) || s.lastIndexOf(".") === 0;
+}
+
+/** Whether a file's first bytes are those of a program the system runs as
+ *  it is: a script's `#!`, an ELF binary (Linux), a Mach-O binary (32 or
+ *  64 bits, either byte order) or a macOS universal binary. Off Windows, a
+ *  file with the executable bit AND such a start is a program whatever its
+ *  name (url.ts `_wvRunsAsProgram`; MJT 2026-11-24, "Bit + program
+ *  content"). */
+export function wvIsProgramHeader(bytes: ArrayLike<number> | null | undefined): boolean {
+    if (!bytes || bytes.length < 2) return false;
+    const b = (i: number) => (i < bytes.length ? bytes[i] : -1);
+    if (b(0) === 0x23 && b(1) === 0x21) return true;   // "#!"
+    if (bytes.length < 4) return false;
+    const four = [b(0), b(1), b(2), b(3)].map((x) => x.toString(16).padStart(2, "0")).join("");
+    return ["7f454c46",                                  // ELF
+        "feedface", "feedfacf", "cefaedfe", "cffaedfe",  // Mach-O
+        "cafebabe"].includes(four);                      // universal binary
+}
+
 /** A file an image viewer opens, by its extension. */
 export function wvIsImageFileName(name: unknown): boolean {
     const ext = wvFileExt(name);

@@ -106,6 +106,63 @@ describe("Weavero — links open files only when that is safe", function () {
         }
     });
 
+    // W15 (Ubuntu hands-on, 2026-11-24): the name rule cannot see a script
+    // without an extension. MJT 2026-11-24, "Bit + program content": off
+    // Windows a file with the executable bit AND a program's start ("#!",
+    // ELF, Mach-O, universal binary) or no extension is a program whatever
+    // its name; the bit alone is not (NTFS / exFAT drives mounted with every
+    // file +x). On Windows (where the extension decides and the bit is not
+    // read) the rule is switched on and isExecutable() plays the Unix bit for
+    // the marked files; the content is real bytes on disk everywhere.
+    it("an attachment marked executable is refused when it has no extension or starts like a program; else, and unmarked, it is asked about", async () => {
+        const att = await mkAttachment("run-me", "application/octet-stream");
+        const p = String(await att.getFilePathAsync());
+        const script = await mkAttachment("notes.txt", "text/plain");
+        const ps = String(await script.getFilePathAsync());
+        await IOUtils.writeUTF8(ps, "#!/bin/sh\necho never run\n");
+        const doc = await mkAttachment("report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+        const pd = String(await doc.getFilePathAsync());
+        await IOUtils.write(pd, new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00]));
+        const plain = await mkAttachment("read-me", "application/octet-stream");
+        const pp = String(await plain.getFilePathAsync());
+        const marked = new Set([p, ps, pd]);
+        const origPTF = Zotero.File.pathToFile;
+        if (!Zotero.isWin) {
+            for (const x of marked) await IOUtils.setPermissions(x, 0o755);
+            await IOUtils.setPermissions(pp, 0o644);
+        }
+        else {
+            wv._wvExecBitApplies = () => true;
+            Zotero.File.pathToFile = function (x) {
+                const f = origPTF.call(Zotero.File, x);
+                if (!marked.has(String(x))) return f;
+                return /** @type {any} */ ({ path: f.path, exists: () => f.exists(), isDirectory: () => f.isDirectory(), isExecutable: () => true });
+            };
+        }
+        try {
+            for (const { a, why } of [{ a: att, why: "no extension" }, { a: script, why: "a #! start under a .txt name" }]) {
+                install();
+                answer = true;
+                await wv.handleZoteroURI("zotero://open/library/items/" + a.key);
+                assert.lengthOf(asked, 0, why + ": refused outright, no question (on 1.2.3-hotfix.1 it was asked)");
+                assert.lengthOf(opened("FileHandlers.open"), 0, why + ": not handed to Zotero's file opener");
+                assert.lengthOf(opened("launchFile"), 0, why + ": not launched");
+            }
+            install();
+            answer = false;
+            await wv.handleZoteroURI("zotero://open/library/items/" + doc.key);
+            assert.deepEqual(asked, ["report.docx"], "a marked document that does not start like a program is asked about (on 1.2.3-hotfix.2 the bit alone refused it)");
+            install();
+            answer = false;
+            await wv.handleZoteroURI("zotero://open/library/items/" + plain.key);
+            assert.deepEqual(asked, ["read-me"], "an unmarked file without an extension is asked about, as before");
+        }
+        finally {
+            Zotero.File.pathToFile = origPTF;
+            delete wv._wvExecBitApplies;
+        }
+    });
+
     it("another file Zotero cannot show opens only once the user confirms, with its real name", async () => {
         const att = await mkAttachment("Table S1.csv", "text/csv");
         install();

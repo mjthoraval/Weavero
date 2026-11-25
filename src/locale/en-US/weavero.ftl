@@ -126,7 +126,7 @@ weavero-pref-links-scheme-figma =
     .tooltiptext = Figma files
 weavero-pref-links-scheme-file =
     .label = file://
-    .tooltiptext = Local files (always asks before opening)
+    .tooltiptext = Local files (asks before opening)
 # file:// links to a file on another computer (a network share): refused
 # unless this is on.
 weavero-pref-links-remote-file =
@@ -1451,10 +1451,28 @@ weavero-misc-open-remote-file-message = This link reaches another computer, “{
 
     Opening it connects to that computer. Open it only if you trust where the link came from. Weavero will not ask again for this link.
 weavero-misc-open-remote-file-button = Open
+# A file:// link to a file on this computer when the system has no
+# application for file links (stock Ubuntu, 1.2.3): the first click on such a
+# link asks first -- the question's title, its text and its button (the other
+# one is Cancel). $target: the file's full path.
+weavero-misc-open-local-file-title = Open a file on this computer?
+weavero-misc-open-local-file-message = This link opens a file on this computer:
+
+    { $target }
+
+    It will open in the application your computer uses for this type of file. Open it only if you trust where the link came from. Weavero will not ask again for this link.
+weavero-misc-open-local-file-button = Open
+# Such a link not opened (Cancel, or file links switched off), its file not
+# found, or the system failing to open it: the toast's text. $name: the
+# file's full path.
+weavero-misc-link-local-file-not-opened = “{ $name }” was not opened.
+weavero-misc-link-local-file-missing = “{ $name }” was not opened: there is no such file on this computer.
+weavero-misc-link-local-file-failed = “{ $name }” could not be opened.
 # A link, a row or a card Weavero did not open, for safety: the toast's title.
 weavero-misc-link-refused-title = Weavero — link not opened
-# A link to a file the system would run (a program, a script, a shortcut).
-# $name: the file's name.
+# A link to a file the system would run (a program, a script, a shortcut,
+# or a file marked as executable). $name: the file's name (an attachment) or
+# its full path (a file:// link).
 weavero-misc-link-refused-runnable = “{ $name }” was not opened: files of this type can run programs on your computer.
 # Before a link opens a file Zotero can't show itself: the question's title,
 # its text and its button (the other one is Cancel). $name: the file's name.

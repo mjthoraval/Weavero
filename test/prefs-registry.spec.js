@@ -156,6 +156,8 @@ describe("Weavero — default-branch registrations (characterization)", () => {
         "itemCountBreakdown": true,
         // Pinned section headers in the item pane (2026-11-03).
         "itemPaneStickyHeaders": true,
+        // The local file links opened after Weavero's question (1.2.3).
+        "localFileLinksOpened": "s:",
         "newMainWindow": true,
         // Notes: the heading folds and the outline (2026-11-03).
         "noteFolding": true,

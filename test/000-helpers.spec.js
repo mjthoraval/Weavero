@@ -540,7 +540,7 @@
             { re: /^Weavero -- Plugins Manager title bar is one row on every platform /, why: "platform: macOS, or a display that refuses to maximize" },
             { re: / \(Windows\)$/, why: "platform: Windows only" },
             // Unlisted until macOS CI got past its crash (2026-11-09).
-            { re: /^Weavero — File \/ Edit menubar entries for the window commands (opened from the hamburger|the menubar keeps Settings, Plugins and Exit)/, why: "platform: macOS has no hamburger (_applyCompactTitleBar skips it; the menu bar is the system's)" },
+            { re: /^Weavero — File \/ Edit menubar entries for the window commands (opened from the hamburger|the menubar keeps Settings, Plugins and Exit|the hamburger's New Reader Window shows only)/, why: "platform: macOS has no hamburger (_applyCompactTitleBar skips it; the menu bar is the system's)" },
             { re: /^Weavero — tab-level undo choice a NEW main window gets the Edit hook/, why: "platform: Windows only, multi-main on" },
             { re: /^Weavero — window identity, lone window/, why: "needs the lone-window case" },
             { re: /^Weavero — menus take their words from weavero\.ftl the menubar's File and Edit entries$/, why: "platform: macOS, the menu bar is the system's and does not open from script" },

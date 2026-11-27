@@ -130,9 +130,6 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     // nothing once toggleTagSelector clears or keeps them). `views`: on a Zotero with
     // library views its gate reads the view's own toggleTagSelector.
     { id: "tag-reshow", on: "both", views: true, wire: (p, win) => p._wvWireTagReshowFix(win) },
-    // WV-TEMP-134357: Zotero 11's "New Item Note" greyed by a stringified boolean
-    // `disabled` (upstream register #34; installs nothing once fixed there).
-    { id: "new-note-menu", on: "both", wire: (p, win) => p._wvWireNewNoteMenuFix(win) },
     // WV-TEMP-134361: the collection whose id equals its library's id may be
     // dropped on the library row (upstream register #35; installs nothing once
     // Zotero compares the dragged id against collection rows only).
@@ -163,8 +160,8 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     { id: "intro-crash", on: "both", wire: (p, win) => p._wvWireIntroCrashFix(win) },
     // WV-TEMP-advsrchcollapse (upstream-fixes.ts): on the Feeds row, the Advanced Search
     // opened from a quick search keeps its Collapse and Close buttons; the window's
-    // advanced-search-pane class (installs nothing once its setter takes a search
-    // with no library).
+    // advanced-search-pane class. Zotero 10 only since 11.0-beta.6 fixed it (its gate
+    // installs nothing once the setter takes a search with no library).
     { id: "adv-search-seed", on: "both", wire: (p, win) => p._wvWireAdvSearchSeedFix(win) },
     // WV-TEMP-FEEDHEAD (upstream-fixes.ts): no Zotero crash when the item pane renders a
     // feed item under a non-feed row (a refresh landing across a collection switch); the

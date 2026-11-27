@@ -68,6 +68,7 @@
             /^Weavero — per-main-window wiring, characterized/,
             /^Weavero — cross-window drop records its effect/,
             /^Weavero — reader and note window wiring, characterized/,
+            /^Weavero — a reader window's tab groups survive the Hide title bar toggle/,
             /^Weavero — item drags onto notes in reader and note windows/,
             /^Weavero — the Tag Selector survives a second main window closing/,
             /^Weavero — File \/ Edit menubar entries for the window commands/,

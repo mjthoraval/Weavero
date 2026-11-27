@@ -122,16 +122,27 @@ import { wvNativeWindows } from "../lib/windows";
     }
 
     /** A Zotero with its own windows (zotero#6035): the options for Weavero's
-     *  go, a line says why. `data-wv-native-off` marks them. A row that stays
-     *  with other masters there names them in `data-wv-native-gate` (the
-     *  Advanced Search window's two: Multiple main windows is hidden, so its
-     *  "off" must not grey them). Runs BEFORE bindMasterDisable, which reads
-     *  data-gated-by once. */
+     *  go, a line says why. `data-wv-native-off` marks them -- the reader and
+     *  note window options too: a document or note opened in a window is a
+     *  main window there, Weavero's reader and note windows never open (MJT
+     *  2026-11-26, "leftovers in Z11 in the settings for 'Reader window'").
+     *  `data-wv-native-l10n` names the words a description takes there, without
+     *  those windows. A row that stays with other masters there names them in
+     *  `data-wv-native-gate` (the Advanced Search window's two: Multiple main
+     *  windows is hidden, so its "off" must not grey them). Runs BEFORE
+     *  bindMasterDisable, which reads data-gated-by once. Guard:
+     *  test/prefs-native-windows.spec.js. */
     function bindNativeWindows(doc) {
         if (!wvNativeWindows()) return;
         for (const el of Array.from(doc.querySelectorAll("[data-wv-native-off]")) as any[]) {
             el.style.setProperty("display", "none", "important");
         }
+        const swapped: any[] = [];
+        for (const el of Array.from(doc.querySelectorAll("[data-wv-native-l10n]")) as any[]) {
+            el.setAttribute("data-l10n-id", el.getAttribute("data-wv-native-l10n"));
+            swapped.push(el);
+        }
+        try { if (swapped.length && doc.l10n) doc.l10n.translateElements(swapped); } catch (e) {}
         for (const el of Array.from(doc.querySelectorAll("[data-wv-native-gate]")) as any[]) {
             el.setAttribute("data-gated-by", el.getAttribute("data-wv-native-gate"));
         }

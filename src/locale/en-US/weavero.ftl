@@ -297,6 +297,8 @@ weavero-pref-tabs-title = Tabs & Windows
 weavero-pref-tabs-enable =
     .aria-label = Enable tabs and windows features
 weavero-pref-tabs-desc = Tab groups, browser-style window chrome, multiple main windows, and an item pane in separate reader windows.
+# The same on a Zotero with its own windows, where Weavero's reader and note windows never open.
+weavero-pref-tabs-desc-native = Tab groups, browser-style window chrome, and tools for working in several windows.
 weavero-pref-tabs-groups =
     .label = Tab groups in the tab bar
 weavero-pref-tabs-groups-desc = Group tabs Firefox-style: right-click a tab → “Add to Tab Group…” for a named, colored group. Click the group’s chip to collapse or expand it; right-click the chip to rename, recolor, ungroup or close the group. Groups persist across restarts.
@@ -315,13 +317,19 @@ weavero-pref-tabs-sessions-desc = Save and switch between named sets of tabs fro
 weavero-pref-tabs-window-icons =
     .label = Per-window taskbar icons (Windows)
 weavero-pref-tabs-window-icons-desc = Give each extra window its own icon — Zotero’s icon with a colored square badge for main windows and a colored round badge for reader windows (the primary window keeps the plain icon) — so taskbar previews, Task View and Alt+Tab tell the windows apart at a glance, the same way Chrome badges its profile windows. Windows only.
+# The same on a Zotero with its own windows, where Weavero's reader and note windows never open.
+weavero-pref-tabs-window-icons-desc-native = Give each extra window its own icon — Zotero’s icon with a colored square badge (the primary window keeps the plain icon) — so taskbar previews, Task View and Alt+Tab tell the windows apart at a glance, the same way Chrome badges its profile windows. Windows only.
 weavero-pref-tabs-windows-only = Windows only — has no effect on this system.
 weavero-pref-tabs-taskbar-buttons =
     .label = Separate taskbar button per window (Windows)
 weavero-pref-tabs-taskbar-buttons-desc = Give every extra window (main and reader) its own taskbar button with its badge icon, shown on the monitor where the window is — instead of grouping all windows behind one Zotero button. Note: split windows leave the shared preview flyout. Off by default.
+# The same on a Zotero with its own windows, where Weavero's reader and note windows never open.
+weavero-pref-tabs-taskbar-buttons-desc-native = Give every extra window its own taskbar button with its badge icon, shown on the monitor where the window is — instead of grouping all windows behind one Zotero button. Note: split windows leave the shared preview flyout. Off by default.
 weavero-pref-tabs-title-glyphs =
     .label = Window-type glyph in window titles
 weavero-pref-tabs-title-glyphs-desc = Alternative for non-Windows platforms (off by default): prefix each window’s title with a small type mark — ⚓ for the primary window, squares (■ □ ▣) for other main windows, circles (● ○ ◉) for reader windows. Takes effect as titles refresh, e.g. on the next tab switch.
+# The same on a Zotero with its own windows, where Weavero's reader and note windows never open.
+weavero-pref-tabs-title-glyphs-desc-native = Alternative for non-Windows platforms (off by default): prefix each window’s title with a small type mark — ⚓ for the primary window, squares (■ □ ▣) for the other windows. Takes effect as titles refresh, e.g. on the next tab switch.
 weavero-pref-tabs-window-name-title = Window Name in the Window Title
 weavero-pref-tabs-window-name-desc = Show a renamed window’s name in its OS title — taskbar previews, Alt+Tab and Task View — like Chrome’s “Name window”. <strong>Before the title</strong> keeps the page context (“Main — Azam et al.”); <strong>Replace the title</strong> shows the name alone. Windows without a custom name always keep the normal title.
 weavero-pref-tabs-window-name-off =
@@ -438,6 +446,8 @@ weavero-pref-itemslist-tab-ring-desc = Pill-shaped tabs, and a thin violet-to-or
 weavero-pref-itemslist-layout-menu =
     .label = View → Layout follows the tab
 weavero-pref-itemslist-layout-menu-desc = Zotero’s <em>View → Layout</em> items toggle the library’s panes whatever tab is in front. In a reader tab the submenu shows the reader’s own panes instead — <em>Sidebar</em>, <em>Context Pane</em> and the <em>Color and Tag Selector</em> at the foot of the annotations pane — with their real state as check marks; a note tab shows <em>Context Pane</em> (and <em>Outline Pane</em> with Better Notes); the library tab keeps Zotero’s items. A separate reader window gets a Layout submenu of its own. Off, the menu is Zotero’s as it is.
+# The same on a Zotero with its own windows, where Weavero's reader and note windows never open.
+weavero-pref-itemslist-layout-menu-desc-native = Zotero’s <em>View → Layout</em> items toggle the library’s panes whatever tab is in front. In a reader tab the submenu shows the reader’s own panes instead — <em>Sidebar</em>, <em>Context Pane</em> and the <em>Color and Tag Selector</em> at the foot of the annotations pane — with their real state as check marks; a note tab shows <em>Context Pane</em> (and <em>Outline Pane</em> with Better Notes); the library tab keeps Zotero’s items. Off, the menu is Zotero’s as it is.
 
 # Extras: the collections pane and the item pane. The pinned-parents row
 # reads "<lead> [number box] <unit>", as the title-lines row does.
@@ -451,6 +461,8 @@ weavero-pref-collections-tag-selector-handle-desc = A small pill on the Tag Sele
 weavero-pref-collections-no-collapse =
     .label = Resizing a side pane stops at its minimum width
 weavero-pref-collections-no-collapse-desc = Dragging the edge of a side pane stops at its narrowest width instead of snapping it shut: the collections pane, the item pane, the context pane of reader tabs and the item pane of reader windows. Collapse them with their buttons or <em>View → Layout</em>. Off, all of them snap shut as in Zotero.
+# The same on a Zotero with its own windows, where Weavero's reader and note windows never open.
+weavero-pref-collections-no-collapse-desc-native = Dragging the edge of a side pane stops at its narrowest width instead of snapping it shut: the collections pane, the item pane and the context pane of reader tabs. Collapse them with their buttons or <em>View → Layout</em>. Off, all of them snap shut as in Zotero.
 weavero-pref-collections-sticky-parents =
     .label = Keep parent collections pinned at the top while scrolling
 weavero-pref-collections-sticky-lead = Up to

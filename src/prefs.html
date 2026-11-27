@@ -705,7 +705,7 @@
         preference="extensions.zotero.weavero.enableTabsAndWindows"/>
     </html:div>
     <html:div class="wv-master-card">
-      <html:p class="wv-master-desc" data-l10n-id="weavero-pref-tabs-desc"/>
+      <html:p class="wv-master-desc" data-l10n-id="weavero-pref-tabs-desc" data-wv-native-l10n="weavero-pref-tabs-desc-native"/>
     </html:div>
   </groupbox>
   <vbox class="wv-block" data-gated-by="enableTabsAndWindows" data-wv-in="tabs">
@@ -732,19 +732,19 @@
   <vbox class="wv-block" data-gated-by="enableTabsAndWindows" data-wv-in="tabs" data-wv-platform="win">
       <checkbox data-l10n-id="weavero-pref-tabs-window-icons" native="true"
         preference="extensions.zotero.weavero.windowIcons"/>
-      <html:p class="wv-desc" data-l10n-id="weavero-pref-tabs-window-icons-desc"/>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-tabs-window-icons-desc" data-wv-native-l10n="weavero-pref-tabs-window-icons-desc-native"/>
       <html:p class="wv-desc wv-platform-note" hidden="true" data-l10n-id="weavero-pref-tabs-windows-only"/>
   </vbox>
   <vbox class="wv-block" data-gated-by="enableTabsAndWindows" data-wv-in="tabs" data-wv-platform="win">
       <checkbox data-l10n-id="weavero-pref-tabs-taskbar-buttons" native="true"
         preference="extensions.zotero.weavero.separateTaskbarButtons"/>
-      <html:p class="wv-desc" data-l10n-id="weavero-pref-tabs-taskbar-buttons-desc"/>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-tabs-taskbar-buttons-desc" data-wv-native-l10n="weavero-pref-tabs-taskbar-buttons-desc-native"/>
       <html:p class="wv-desc wv-platform-note" hidden="true" data-l10n-id="weavero-pref-tabs-windows-only"/>
   </vbox>
   <vbox class="wv-block" data-gated-by="enableTabsAndWindows" data-wv-in="tabs">
       <checkbox data-l10n-id="weavero-pref-tabs-title-glyphs" native="true"
         preference="extensions.zotero.weavero.windowTitleGlyphs"/>
-      <html:p class="wv-desc" data-l10n-id="weavero-pref-tabs-title-glyphs-desc"/>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-tabs-title-glyphs-desc" data-wv-native-l10n="weavero-pref-tabs-title-glyphs-desc-native"/>
   </vbox>
   <vbox class="wv-block wv-block-end" data-gated-by="enableTabsAndWindows" data-wv-in="tabs">
       <label><html:h3 data-l10n-id="weavero-pref-tabs-window-name-title"/></label>
@@ -772,9 +772,9 @@
         <html:span class="wv-apply-label" data-l10n-id="weavero-pref-titlebar-apply"/>
         <checkbox data-l10n-id="weavero-pref-titlebar-main" native="true"
           preference="extensions.zotero.weavero.compactTitleBarMain"/>
-        <checkbox data-l10n-id="weavero-pref-titlebar-reader" native="true"
+        <checkbox data-l10n-id="weavero-pref-titlebar-reader" native="true" data-wv-native-off="true"
           preference="extensions.zotero.weavero.compactTitleBarReader"/>
-        <checkbox data-l10n-id="weavero-pref-titlebar-note" native="true"
+        <checkbox data-l10n-id="weavero-pref-titlebar-note" native="true" data-wv-native-off="true"
           preference="extensions.zotero.weavero.compactTitleBarNote"/>
         <checkbox data-l10n-id="weavero-pref-titlebar-plugins-manager" native="true"
           preference="extensions.zotero.weavero.compactTitleBarPluginsManager"/>
@@ -782,7 +782,7 @@
   </vbox>
   <!-- It needs the reader window's title bar replaced (the code checks the
        "Reader window" tick too): greyed with it (prefs.4, MJT 2026-10-17). -->
-  <vbox class="wv-block wv-subblock wv-block-end" data-gated-by="enableTabsAndWindows compactTitleBar compactTitleBarReader" data-wv-in="tabs titlebar">
+  <vbox class="wv-block wv-subblock wv-block-end" data-gated-by="enableTabsAndWindows compactTitleBar compactTitleBarReader" data-wv-in="tabs titlebar" data-wv-native-off="true">
       <checkbox data-l10n-id="weavero-pref-titlebar-note-deck" native="true"
         preference="extensions.zotero.weavero.noteOpenInDeckWindow"/>
       <html:p class="wv-desc" data-l10n-id="weavero-pref-titlebar-note-deck-desc"/>
@@ -816,7 +816,8 @@
   </vbox>
 
   <!-- ============================ Item Pane in Separate Reader Windows -->
-  <groupbox class="wv-subsec" data-gated-by="enableTabsAndWindows" data-wv-in="tabs">
+  <!-- Reader windows: none on a Zotero with its own windows (data-wv-native-off). -->
+  <groupbox class="wv-subsec" data-gated-by="enableTabsAndWindows" data-wv-in="tabs" data-wv-native-off="true">
     <label><html:h2 data-l10n-id="weavero-pref-reader-pane-title"/></label>    <checkbox data-l10n-id="weavero-pref-reader-pane-enable" native="true"
       preference="extensions.zotero.weavero.readerItemPane"/>
     <html:p class="wv-desc" data-l10n-id="weavero-pref-reader-pane-desc"/>
@@ -907,7 +908,7 @@
   <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-in="extras x-tabs">
       <checkbox data-l10n-id="weavero-pref-itemslist-layout-menu" native="true"
         preference="extensions.zotero.weavero.readerLayoutMenu"/>
-      <html:p class="wv-desc" data-l10n-id="weavero-pref-itemslist-layout-menu-desc"/>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-itemslist-layout-menu-desc" data-wv-native-l10n="weavero-pref-itemslist-layout-menu-desc-native"/>
   </vbox>
 
   <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-head="x-collections" data-wv-in="extras">
@@ -927,7 +928,7 @@
   <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-in="extras x-collections">
       <checkbox data-l10n-id="weavero-pref-collections-no-collapse" native="true"
         preference="extensions.zotero.weavero.paneDragNoCollapse"/>
-      <html:p class="wv-desc" data-l10n-id="weavero-pref-collections-no-collapse-desc"/>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-collections-no-collapse-desc" data-wv-native-l10n="weavero-pref-collections-no-collapse-desc-native"/>
   </vbox>
   <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-in="extras x-collections">
       <checkbox data-l10n-id="weavero-pref-collections-sticky-parents" native="true"

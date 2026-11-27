@@ -884,9 +884,13 @@ class _UpstreamFixesMixin {
     // the rest of Zotero's open runs. The list still searches every feed: the Feeds row
     // copies the search without its library (collectionTreeRow.js 644-648).
     //
-    // RETIRE WHEN the pane's setter takes a search with no library, or the quick-search
-    // seed gets one on the Feeds row: the gate runs both on stand-in objects and installs
-    // nothing then. Tripwire in test/upstream-fixes.spec.js.
+    // ZOTERO 10 ONLY since 2026-11-26: 11.0-beta.6 (+c672babc8) carries Zotero's fix,
+    // 45b9d049b (advancedSearchPane.js 155-159 copies a search with no library), and the
+    // gate installs nothing there (checked live on beta.6). 10.0.8 still has the bug.
+    // RETIRE WHEN a 10.0.x release fixes it too (the setter takes a search with no
+    // library, or the quick-search seed gets one on the Feeds row: the gate runs both on
+    // stand-in objects and installs nothing then), or when Zotero 10 support ends.
+    // Tripwire for Zotero 10 in test/upstream-fixes.spec.js.
     // ─────────────────────────────────────────────────────────────────────────
     _wvWireAdvSearchSeedFix(win: any) {
         try {

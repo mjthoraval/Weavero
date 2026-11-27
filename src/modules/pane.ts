@@ -5979,7 +5979,11 @@ class _PaneMixin {
      *  Layout re-show, the handle, a drag open) awaited a render that never
      *  ran, and the Tag Selector never came back until restart. Native Zotero
      *  has one main window. Each window's own class is kept at wiring (the
-     *  class's global IS its window: loadSubScript into the window). */
+     *  class's global IS its window: loadSubScript into the window).
+     *  ZOTERO 10 ONLY (checked 2026-11-26): 10.0.8's tagSelectorContainer.js:47 still
+     *  assigns `Zotero.TagSelector`; Zotero 11 (before beta.5 already) sets
+     *  `window.TagSelectorContainer` per window and assigns nothing shared, so there
+     *  both methods find no class and do nothing. RETIRE WHEN Zotero 10 support ends. */
     _wvTagSelectorClassKeep(win: any) {
         try {
             const cls = (Zotero as any).TagSelector;
@@ -7930,56 +7934,6 @@ class _PaneMixin {
                         } catch (e) {}
                     }
                 } catch (e) {}
-            }
-        } catch (e) {}
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // WV-TEMP-134357 (forums.zotero.org/discussion/134357, upstream register
-    // #34; MJT 2026-10-21: "fix it in Weavero
-    // until they fix it upstream"). Zotero 11: ZoteroPane.updateNewNoteMenu --
-    // the popupshowing of the toolbar's New Note menu and of File > New --
-    // sets the child-note command's `disabled` to a stringified boolean,
-    // "false" for an eligible item; the menuitem linked to the command then
-    // carries `disabled=""`, and Firefox 153 treats the attribute's presence
-    // as disabled: "New Item Note" greyed and dead (matches :disabled, the
-    // command never fires). On Zotero 10 / Firefox 140 "false" meant enabled.
-    // After Zotero's pass a "false" goes, and with it the attribute it left
-    // on the popup's menuitems; a "true" stays. Installs nothing once
-    // upstream no longer spells the stringified set.
-    //
-    // RETIRE WHEN updateNewNoteMenu uses toggleAttribute / removeAttribute;
-    // test/new-note-menu.spec.js's tripwire says when.
-    // ─────────────────────────────────────────────────────────────────────────
-    _wvWireNewNoteMenuFix(win: any) {
-        try {
-            const ZP = win && win.ZoteroPane;
-            if (!ZP || typeof ZP.updateNewNoteMenu !== "function") return;
-            const wraps = ZP._wvWraps && ZP._wvWraps.updateNewNoteMenu;
-            const native = wraps ? wraps.native : ZP.updateNewNoteMenu;
-            if (!/setAttribute\(\s*["']disabled["']\s*,\s*!this\.canEdit\(\)/.test(String(native))) return;   // Zotero's own fix is in
-            wvWrap(ZP, "updateNewNoteMenu", "newNoteMenu", this._wvWireTag(), (orig: any) => function (this: any, ...args: any[]) {
-                const r = orig.apply(this, args);
-                try {
-                    const doc = win.document;
-                    const cmd = doc.getElementById("cmd_zotero_newChildNote");
-                    if (cmd && cmd.getAttribute("disabled") === "false") {
-                        cmd.removeAttribute("disabled");
-                        const popup = args[1];
-                        const items = popup && popup.querySelectorAll ? popup.querySelectorAll("menuitem[command='cmd_zotero_newChildNote']") : [];
-                        for (const mi of Array.from(items) as any[]) mi.removeAttribute("disabled");
-                    }
-                } catch (e) {}
-                return r;
-            });
-        } catch (e) { Zotero.debug("[Weavero] _wvWireNewNoteMenuFix err: " + e); }
-    }
-
-    _wvTeardownNewNoteMenuFix() {
-        try {
-            const wins: any[] = wvMainWins();
-            for (const w of wins) {
-                try { if (w && w.ZoteroPane) wvUnwrap(w.ZoteroPane, "updateNewNoteMenu", "newNoteMenu"); } catch (e) {}
             }
         } catch (e) {}
     }

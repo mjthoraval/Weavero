@@ -278,7 +278,7 @@ const WIRING_EXPECTED = {
             "wrap setTagScope:tagScopeRows",
             // WV-TEMP-134317: View > Layout shows the Tag Selector again with its tags.
             "wrap toggleTagSelector:tagReshow",
-            "wrap unserializePersist:splitLibPersist", "wrap updateNewNoteMenu:newNoteMenu",
+            "wrap unserializePersist:splitLibPersist",
         ],
         Zotero_Tabs: [
             "_wvOrigCanUnloadTS", "wrap close:trace+lastView", "wrap getState:normalize", "wrap markAsLoaded:trace",
@@ -407,7 +407,7 @@ const WIRING_EXPECTED = {
             "wrap buildCollectionContextMenu:wv-hid", "wrap canDeleteSelectedItems:extAnnDelete",
             "wrap serializePersist:splitPersist", "wrap setTagScope:tagScopeRows",
             "wrap toggleTagSelector:tagReshow",
-            "wrap unserializePersist:splitLibPersist", "wrap updateNewNoteMenu:newNoteMenu",
+            "wrap unserializePersist:splitLibPersist",
         ],
         Zotero_Tabs: [
             "_wvOrigCanUnloadTS", "_wvSidebarIsolated", "_wvSidebarKey", "wrap close:trace+lastView", "wrap getState:normalize",

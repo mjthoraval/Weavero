@@ -143,6 +143,9 @@ describe("Weavero — Settings pane strings come from weavero.ftl", () => {
         parse();
         const inFtl = [...ftl.matchAll(/^(weavero-pref-[a-z0-9-]+)\s*=/gm)].map((m) => m[1]);
         const inHtml = new Set(paneIds().map((el) => el.getAttribute("data-l10n-id")));
+        // The words a description takes on a Zotero with its own windows
+        // (prefs/index.ts bindNativeWindows swaps them in; 2026-11-26).
+        for (const el of ms.querySelectorAll("[data-wv-native-l10n]")) inHtml.add(el.getAttribute("data-wv-native-l10n"));
         const inJs = new Set([...js.matchAll(/["'](weavero-pref-[a-z0-9-]+)["']/g)].map((m) => m[1]));
         assert.isAbove(inFtl.length, 200, "weavero.ftl holds the pane's messages");
         assert.deepEqual(inFtl.filter((id) => !inHtml.has(id) && !inJs.has(id)), [], "messages nothing uses");

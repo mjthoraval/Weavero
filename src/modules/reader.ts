@@ -8826,7 +8826,21 @@ class _ReaderMixin {
                     if (act && !act.native) activeItemID = act.itemID;
                     // Show the native reader so the window isn't left blank.
                     try { if (native) this._wvWTSwitch(win, native.id); } catch (e) {}
-                    const exRec = extras.map((t: any) => ({ itemID: t.itemID, type: t.type || null, pinned: !!t.pinned }));
+                    // Each tab's group goes with it (issue #70, 2026-11-26: the tabs came
+                    // back ungrouped). The record names the group for the way back
+                    // (_wvEnablePullBackReaderTabs reads `grp` / `nativeGrp`), and the main
+                    // window's claim pass (_applyTabGroups) files the arriving tab into it --
+                    // only for a group with no member left in another window, so the
+                    // window's own document leaves a group its extras take along; it gets
+                    // it back on the way back. Kept out of groups meanwhile: the strip's
+                    // claim pass (_applyTabGroupsReader), at the render each close makes,
+                    // stamped it back from the group's item keys, and the group stayed
+                    // home here (measured 2026-11-26, Zotero 10).
+                    const exRec = extras.map((t: any) => ({ itemID: t.itemID, type: t.type || null, pinned: !!t.pinned, grp: t.wvGroupId || null }));
+                    const nativeGrp = (native && native.wvGroupId) || null;
+                    if (nativeGrp && extras.some((t: any) => t.wvGroupId === nativeGrp)) {
+                        try { delete native.wvGroupId; native._wvGroupExcluded = true; } catch (e) {}
+                    }
                     // Close each extra here (uninits reader / saves note → Zotero
                     // persists state), then re-open it in the main window. Close-
                     // then-open preserves reader scroll, mirroring _wvWTMoveTabToMain.
@@ -8838,7 +8852,7 @@ class _ReaderMixin {
                             else { (Zotero.Reader as any).open(itemID, null, { openInWindow: false, allowDuplicate: false }); }
                         } catch (e) {}
                     }
-                    records.push({ nativeItemID: native ? native.itemID : null, orphan: !native, extras: exRec, activeItemID });
+                    records.push({ nativeItemID: native ? native.itemID : null, nativeGrp, orphan: !native, extras: exRec, activeItemID });
                 } catch (e) { Zotero.debug("[Weavero] migrate window err: " + e); }
             }
             if (records.length) {
@@ -8904,11 +8918,14 @@ class _ReaderMixin {
                 // re-create one anchored on the native (or, for an orphan, the
                 // first reader-type extra — notes can't anchor a reader window).
                 let win: any = (rec.nativeItemID != null) ? this._wvReaderWindowForNative(rec.nativeItemID) : null;
+                // The group of the tab that is the window's own document (issue #70).
+                let nativeGrp: any = rec.nativeGrp || null;
                 if (!win) {
                     let anchorID: any = (rec.nativeItemID != null && Zotero.Items.exists(rec.nativeItemID)) ? rec.nativeItemID : null;
                     if (anchorID == null) {
                         const firstReader = extras.find((e: any) => e.type !== "note");
                         anchorID = firstReader ? firstReader.itemID : null;
+                        nativeGrp = firstReader ? (firstReader.grp || null) : null;
                         // The anchor is ONE of the extras → remove exactly that copy
                         // (by reference), NOT every extra sharing its itemID — else a
                         // DUPLICATE tab of the anchor's item would be dropped.
@@ -8919,6 +8936,14 @@ class _ReaderMixin {
                     if (win) closeMainTab(anchorID);                // the anchor is now the window's native
                 }
                 if (!win) continue;
+                // Stamped before the main window's copies close: a group whose last open
+                // member closes there would not be the group the tabs come back to.
+                if (nativeGrp) {
+                    try {
+                        const nat = win._wvWT && win._wvWT.tabs.find((x: any) => x.native);
+                        if (nat && !nat.wvGroupId) { nat.wvGroupId = nativeGrp; delete nat._wvGroupExcluded; }
+                    } catch (e) {}
+                }
                 for (const ex of extras) {
                     try {
                         const newId = await this._wvWTMountTab(win, ex.itemID, { allowDuplicate: true, select: false, await: true });

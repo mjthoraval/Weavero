@@ -4668,7 +4668,6 @@ class WeaveroPlugin {
         try { (this as any)._wvTeardownPreviewFitFix(); } catch (e) {}   // WV-TEMP-134490
         try { (this as any)._wvTeardownItemPaneStickyHeads(); } catch (e) {}   // pinned section headers
         try { (this as any)._wvTeardownWindowPanePrefs(); } catch (e) {}
-        try { (this as any)._wvTeardownNewNoteMenuFix(); } catch (e) {}   // WV-TEMP-134357
         try { (this as any)._wvTeardownCollectionDropFix(); } catch (e) {}   // WV-TEMP-134361
         try { (this as any)._wvTeardownNoteWindowFix(); } catch (e) {}   // WV-TEMP-134831 (upstream-fixes.ts)
         try { (this as any)._wvTeardownCtxHeaderFix(); } catch (e) {}   // WV-TEMP-134823 (upstream-fixes.ts)

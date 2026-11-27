@@ -975,12 +975,26 @@ describe("Weavero — upstream fixes", function () {
             for (const f of feeds) { try { await f.eraseTx(); } catch (er) {} }
         });
 
-        it("the gate: installed on this Zotero, and nothing for a pane that takes a search with no library", async function () {
+        /** Zotero fixed this in 11.0-beta.6 (45b9d049b); 10.0.8 still has it. null: the build does not
+         *  say (a source build) -- then Zotero's own setter decides. */
+        const fixedByVersion = () => {
+            const v = String(Zotero.version || "");
+            if (/SOURCE/i.test(v)) return null;
+            return Services.vc.compare(v.split("+")[0], "11.0-beta.6") >= 0;
+        };
+
+        it("the gate: installed where Zotero's setter refuses a search with no library (Zotero 10), nothing where it takes one (Zotero 11 since beta.6)", async function () {
             const cur = /** @type {any} */ (Object.getOwnPropertyDescriptor(paneProto(), "search"));
-            assert.ok(cur && cur.set && cur.set._wvAdvSeedNative,
-                "the stand-in's setter is on the window's advanced-search-pane class (if not, its gate found Zotero's fix: retire WV-TEMP-advsrchcollapse)");
-            assert.isTrue(wv._wvAdvSearchSeedBugIn(win, cur.set._wvAdvSeedNative.set),
-                "Zotero's own setter still refuses a search with no library (if not, Zotero fixed it: retire WV-TEMP-advsrchcollapse)");
+            const installed = !!(cur && cur.set && cur.set._wvAdvSeedNative);
+            const nativeSet = installed ? cur.set._wvAdvSeedNative.set : cur && cur.set;
+            const bug = wv._wvAdvSearchSeedBugIn(win, nativeSet);
+            assert.strictEqual(installed, bug, "the stand-in installed exactly where Zotero's own setter refuses a search with no library");
+            const fixed = fixedByVersion();
+            if (fixed !== null) {
+                assert.strictEqual(bug, !fixed, "Zotero " + Zotero.version + ": " + (fixed
+                    ? "fixed since 11.0-beta.6, so nothing installed"
+                    : "still refuses it, so the stand-in is installed (if this fails on Zotero 10, a 10.0.x release fixed it: retire WV-TEMP-advsrchcollapse)"));
+            }
             assert.isFalse(wv._wvAdvSearchSeedBugIn(win, function (s) { this._search = s; }), "a setter that takes it: nothing installed");
         });
 
@@ -1016,16 +1030,26 @@ describe("Weavero — upstream fixes", function () {
             });
         });
 
-        it("torn down, the search field stays and Collapse and Close are out of reach (tripwire: fails once Zotero fixes it -- retire WV-TEMP-advsrchcollapse)", async function () {
+        it("torn down: Zotero 10 keeps the search field, no Collapse or Close (tripwire: fails once a 10.0.x release fixes it -- retire WV-TEMP-advsrchcollapse); Zotero 11 since beta.6 shows its own", async function () {
             wv._wvTeardownAdvSearchSeedFix();
             try {
                 await wvT.withPref(COLLAPSE, false, async () => {
                     const errs = await openFromQuickSearch();
                     assert.strictEqual(deck().state, "open", "the Advanced Search shown");
-                    assert.strictEqual(bar(), "the search field",
-                        "no indicator, so no Collapse or Close (if it shows, Zotero fixed it: retire WV-TEMP-advsrchcollapse): " + state());
-                    assert.strictEqual(qs().value, WORD, "the field keeps its text");
-                    assert.isAbove(errs.length, 0, "\"libraryID not provided\" logged");
+                    let fixed = fixedByVersion();
+                    if (fixed === null) {
+                        const d = /** @type {any} */ (Object.getOwnPropertyDescriptor(paneProto(), "search"));
+                        fixed = !wv._wvAdvSearchSeedBugIn(win, d && d.set);
+                    }
+                    if (fixed) {
+                        assert.strictEqual(bar(), "the Advanced Search indicator", "Zotero's own fix: its indicator, with Collapse and Close: " + state());
+                        assert.deepEqual(errs, [], "no \"libraryID not provided\"");
+                    } else {
+                        assert.strictEqual(bar(), "the search field",
+                            "no indicator, so no Collapse or Close (if it shows, Zotero fixed it: retire WV-TEMP-advsrchcollapse): " + state());
+                        assert.strictEqual(qs().value, WORD, "the field keeps its text");
+                        assert.isAbove(errs.length, 0, "\"libraryID not provided\" logged");
+                    }
                 });
             }
             finally {

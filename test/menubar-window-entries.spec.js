@@ -275,6 +275,22 @@ describe("Weavero — File / Edit menubar entries for the window commands", () =
 		finally { close(editPopup); }
 	});
 
+	// MJT 2026-11-23 ("Ok to hide. Check that the Reader Window cannot be reached
+	// anywhere from Z11 beta"): on a Zotero with its own windows (zotero#6035)
+	// `openInWindow` opens a MAIN window -- Zotero has no reader window any more --
+	// so the hamburger's New Reader Window hides there, as New Main Window does;
+	// on Zotero 10 both stay. Re-read at every opening (the popupshowing pass).
+	it("the hamburger's New Reader Window shows only on a Zotero without its own windows", function () {
+		const hp = doc.getElementById("wv-hamburger-popup");
+		if (!hp) this.skip();
+		const nrw = Array.from(hp.children).find(el => el.getAttribute("data-l10n-id") === "weavero-menu-hamburger-new-reader-window");
+		assert.ok(nrw, "the entry exists in the hamburger");
+		const native = Zotero.Weavero.lib.wvNativeWindows();
+		open(hp);
+		try { assert.strictEqual(nrw.hidden, native, native ? "hidden: Zotero has its own windows" : "shown: Zotero 10"); }
+		finally { close(hp); }
+	});
+
 	// Settings → "Ctrl+Shift+F / ⇧⌘F opens Advanced Search in a new window":
 	// the shortcut becomes ours (a capture keydown in the default group runs
 	// before Zotero's <key>, which sits in the system group and returns once

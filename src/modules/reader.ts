@@ -16366,10 +16366,17 @@ class _ReaderMixin {
                         p._wvMainNewTabPicker(win);
                     }
                 }, ACCEL + "T");
+                // Not on a Zotero with its own windows (zotero#6035): there
+                // `Reader.open(..., { openInWindow: true })` opens a MAIN
+                // window holding one reader tab (xpcom/reader.js
+                // _openInNewWindow) -- Zotero has no reader window any more,
+                // so this entry opened the first picked PDF alone in a new main
+                // window (MJT 2026-11-23: "Ok to hide"; File's twin, the tab and
+                // group "New Reader Window" targets were already off there).
                 mkTop("weavero-menu-hamburger-new-reader-window", () => {
                     const p: any = liveP();
                     if (p) p._wvNewReaderWindowPicker(win);
-                });
+                }, undefined, () => wvNativeWindows());
                 mkTop("weavero-menu-file-new-main-window", () => {
                     const p: any = liveP();
                     if (p) p._wvOpenEmptyMainWindow();

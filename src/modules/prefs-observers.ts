@@ -375,39 +375,42 @@ export const WV_PREF_OBSERVERS: WvPrefObserver[] = [
             if (data === "extensions.zotero.weavero.enableTagsCountAuto"
                 || data === "extensions.zotero.weavero.enableVisualExtras") {
                 try {
-                    const w = Zotero.getMainWindow();
-                    const iv = w && w.ZoteroPane && w.ZoteroPane.itemsView;
                     // Adjust the live column width. Plugin column
                     // dataKeys are auto-prefixed with the plugin
                     // ID, so match on the `weaveroTags` suffix.
                     // onResize(..., true) also persists the new
                     // width so it survives a restart.
-                    try {
-                        const want = p._tagsColumnWidth();
-                        const colMgr: any = iv && iv.tree && (iv.tree as any)._columns;
-                        const arr: any[] = colMgr
-                            ? (colMgr.getAsArray ? colMgr.getAsArray() : colMgr._columns)
-                            : null;
-                        const col = arr && arr.find((c: any) =>
-                            c && typeof c.dataKey === "string"
-                            && /(^|[-_])weaveroTags$/.test(c.dataKey));
-                        if (col && colMgr) {
-                            // The column is resizable since 2026-10-23 (MJT:
-                            // "relax the fix width constrain on count
-                            // columns"): turning the second number on only
-                            // widens it to the room two numbers need; turning
-                            // it off keeps the user's width.
-                            const cur = Number(col.width) || 0;
-                            const on = !!p._getEnableTagsCountAuto();
-                            if (on && cur < want) {
-                                col.width = want;
-                                if (typeof colMgr.onResize === "function") {
-                                    colMgr.onResize({ [col.dataKey]: want }, true);
+                    // In EVERY main window (2026-11-26, per-window fix: only the
+                    // window Zotero.getMainWindow() returned followed before).
+                    for (const w of wvMainWins()) {
+                        try {
+                            const iv = w && w.ZoteroPane && w.ZoteroPane.itemsView;
+                            const want = p._tagsColumnWidth();
+                            const colMgr: any = iv && iv.tree && (iv.tree as any)._columns;
+                            const arr: any[] = colMgr
+                                ? (colMgr.getAsArray ? colMgr.getAsArray() : colMgr._columns)
+                                : null;
+                            const col = arr && arr.find((c: any) =>
+                                c && typeof c.dataKey === "string"
+                                && /(^|[-_])weaveroTags$/.test(c.dataKey));
+                            if (col && colMgr) {
+                                // The column is resizable since 2026-10-23 (MJT:
+                                // "relax the fix width constrain on count
+                                // columns"): turning the second number on only
+                                // widens it to the room two numbers need; turning
+                                // it off keeps the user's width.
+                                const cur = Number(col.width) || 0;
+                                const on = !!p._getEnableTagsCountAuto();
+                                if (on && cur < want) {
+                                    col.width = want;
+                                    if (typeof colMgr.onResize === "function") {
+                                        colMgr.onResize({ [col.dataKey]: want }, true);
+                                    }
                                 }
                             }
+                        } catch(e) {
+                            Zotero.debug("[Weavero] tags-col width err: " + e);
                         }
-                    } catch(e) {
-                        Zotero.debug("[Weavero] tags-col width err: " + e);
                     }
                     // Every main window following the default redraws (a
                     // window with its own choice from the header menu keeps
@@ -433,16 +436,19 @@ export const WV_PREF_OBSERVERS: WvPrefObserver[] = [
             if (data === "extensions.zotero.weavero.enableAnnotationAddedBy"
                 || data === "extensions.zotero.weavero.enableAddedByColors") {
                 try {
-                    const w = Zotero.getMainWindow();
-                    const iv = w && w.ZoteroPane && w.ZoteroPane.itemsView;
-                    if (iv && iv.tree && iv.tree.invalidate) {
-                        iv.tree.invalidate();
-                    }
                     // The badge gating is in renderRow, the tint
                     // is in `_paintAddedByCells` (called from
                     // `_markCellLinks`). Invalidation triggers
-                    // both.
-                    try { p._markCellLinks(); } catch(e) {}
+                    // both. Every main window (2026-11-26, per-window fix).
+                    for (const w of wvMainWins()) {
+                        try {
+                            const iv = w && w.ZoteroPane && w.ZoteroPane.itemsView;
+                            if (iv && iv.tree && iv.tree.invalidate) {
+                                iv.tree.invalidate();
+                            }
+                            p._markCellLinks(w.document);
+                        } catch(e) {}
+                    }
                 } catch(e) {
                     Zotero.debug("[Weavero] addedBy-pref invalidate err: " + e);
                 }
@@ -511,7 +517,8 @@ export const WV_PREF_OBSERVERS: WvPrefObserver[] = [
     {
         keys: ["extensions.zotero.weavero.enableLinksAndRelations"],
         run(p: any, data: string) {
-            const winRA = Zotero.getMainWindow();
+            // Every main window (2026-11-26, per-window fix; guard prefs-per-window.spec.js).
+            const wins = wvMainWins();
             // Extra-scheme toggles — invalidate the cached
             // URL_REGEX / URL_SCHEME_ALT, then strip and rescan
             // every surface so newly-enabled schemes start
@@ -537,10 +544,11 @@ export const WV_PREF_OBSERVERS: WvPrefObserver[] = [
                 try {
                     p._setupItemsListContextMenu();
                     p._setupCollectionsContextMenu();
-                    if (p._getEnableLibrariesHighlight() && winRA) {
-                        p._setupLibrariesBoxHighlight(winRA);
-                    } else if (winRA) {
-                        p._teardownLibrariesBoxHighlight(winRA);
+                    for (const w of wins) {
+                        try {
+                            if (p._getEnableLibrariesHighlight()) p._setupLibrariesBoxHighlight(w);
+                            else p._teardownLibrariesBoxHighlight(w);
+                        } catch (e) {}
                     }
                     p._unregisterItemTreeColumns();
                     p._registerItemTreeColumns();
@@ -557,7 +565,7 @@ export const WV_PREF_OBSERVERS: WvPrefObserver[] = [
                     // notes decorated (survey 2026-10-06).
                     if (!p._getEnableLinksAndRelations()) { try { p._stripNotes(); } catch (e) {} }
                     try { p._refreshNoteLinkifyRegex && p._refreshNoteLinkifyRegex(); } catch (e) {}
-                    try { p._markCellLinks(); } catch (e) {}
+                    for (const w of wins) { try { p._markCellLinks(w.document); } catch (e) {} }
                 } catch (e) {
                     Zotero.debug("[Weavero] tab-1 master toggle err: " + e);
                 }
@@ -567,23 +575,24 @@ export const WV_PREF_OBSERVERS: WvPrefObserver[] = [
     {
         keys: ["extensions.zotero.weavero.enableVisualExtras"],
         run(p: any, data: string) {
-            const winRA = Zotero.getMainWindow();
             if (data === "extensions.zotero.weavero.enableVisualExtras") {
                 try {
                     p._unregisterItemTreeColumns();
                     p._registerItemTreeColumns();
                     // Tabs-strip group-library glyph + per-row Added By tints
                     // — re-apply by re-running the tabs setup and the
-                    // items-tree paint pass.
-                    if (winRA) p._setupTabsMenuLibrarySort(winRA);
-                    try {
-                        const w = winRA;
-                        const iv = w && w.ZoteroPane && w.ZoteroPane.itemsView;
-                        if (iv && iv.tree && iv.tree.invalidate) {
-                            iv.tree.invalidate();
-                        }
-                    } catch (e) {}
-                    try { p._markCellLinks(); } catch (e) {}
+                    // items-tree paint pass, in every main window (2026-11-26,
+                    // per-window fix; guard prefs-per-window.spec.js).
+                    for (const w of wvMainWins()) {
+                        try { p._setupTabsMenuLibrarySort(w); } catch (e) {}
+                        try {
+                            const iv = w && w.ZoteroPane && w.ZoteroPane.itemsView;
+                            if (iv && iv.tree && iv.tree.invalidate) {
+                                iv.tree.invalidate();
+                            }
+                        } catch (e) {}
+                        try { p._markCellLinks(w.document); } catch (e) {}
+                    }
                 } catch (e) {
                     Zotero.debug("[Weavero] tab-3 master toggle err: " + e);
                 }
@@ -739,16 +748,16 @@ export const WV_PREF_OBSERVERS: WvPrefObserver[] = [
     {
         keys: ["extensions.zotero.weavero.enableLibrariesHighlight", "extensions.zotero.weavero.enableRelations"],
         run(p: any, data: string) {
-            const winRA = Zotero.getMainWindow();
             if (data === "extensions.zotero.weavero.enableLibrariesHighlight"
                 || data === "extensions.zotero.weavero.enableRelations") {
-                try {
-                    if (p._getEnableLibrariesHighlight()) {
-                        if (winRA) p._setupLibrariesBoxHighlight(winRA);
-                    } else {
-                        if (winRA) p._teardownLibrariesBoxHighlight(winRA);
-                    }
-                } catch (e) {}
+                // Every main window: only Zotero.getMainWindow()'s followed before
+                // (2026-11-26; guard prefs-per-window.spec.js).
+                for (const w of wvMainWins()) {
+                    try {
+                        if (p._getEnableLibrariesHighlight()) p._setupLibrariesBoxHighlight(w);
+                        else p._teardownLibrariesBoxHighlight(w);
+                    } catch (e) {}
+                }
             }
         },
     },
@@ -879,21 +888,21 @@ export const WV_PREF_OBSERVERS: WvPrefObserver[] = [
     {
         keys: ["extensions.zotero.weavero.enableTabsLibraryFilter", "extensions.zotero.weavero.enableTabsFileTypeFilter", "extensions.zotero.weavero.enableFilters"],
         run(p: any, data: string) {
-            const winRA = Zotero.getMainWindow();
             if (data === "extensions.zotero.weavero.enableTabsLibraryFilter"
                 || data === "extensions.zotero.weavero.enableTabsFileTypeFilter"
                 || data === "extensions.zotero.weavero.enableFilters") {
-                try {
-                    // Tear down first so flipping a gate from on -> off
-                    // strips the existing tabs-menu chrome (file-type
-                    // button, library sort patch, wider-panel class).
-                    // Setup then re-adds whatever is still enabled.
-                    if (winRA) {
-                        p._teardownTabsMenuLibrarySort(winRA);
-                        p._setupTabsMenuLibrarySort(winRA);
+                // Tear down first so flipping a gate from on -> off
+                // strips the existing tabs-menu chrome (file-type
+                // button, library sort patch, wider-panel class).
+                // Setup then re-adds whatever is still enabled.
+                // Every main window (2026-11-26; guard prefs-per-window.spec.js).
+                for (const w of wvMainWins()) {
+                    try {
+                        p._teardownTabsMenuLibrarySort(w);
+                        p._setupTabsMenuLibrarySort(w);
+                    } catch (e) {
+                        Zotero.debug("[Weavero] tabs filter toggle err: " + e);
                     }
-                } catch (e) {
-                    Zotero.debug("[Weavero] tabs filter toggle err: " + e);
                 }
             }
         },
@@ -925,14 +934,14 @@ export const WV_PREF_OBSERVERS: WvPrefObserver[] = [
     {
         keys: ["extensions.zotero.weavero.enableGroupLibraryGlyph"],
         run(p: any, data: string) {
-            const winRA = Zotero.getMainWindow();
             // Visual extras — group-library glyph (re-setup the
             // tab-bar decoration which the gate inside
             // _setupTabsMenuLibrarySort short-circuits when off).
+            // Every main window (2026-11-26; guard prefs-per-window.spec.js).
             if (data === "extensions.zotero.weavero.enableGroupLibraryGlyph") {
-                try {
-                    if (winRA) p._setupTabsMenuLibrarySort(winRA);
-                } catch (e) {}
+                for (const w of wvMainWins()) {
+                    try { p._setupTabsMenuLibrarySort(w); } catch (e) {}
+                }
             }
         },
     },
@@ -980,8 +989,10 @@ export const WV_PREF_OBSERVERS: WvPrefObserver[] = [
                 //    stale. (Force a full rebuild by
                 //    flattening the cell here.)
                 try {
-                    const tdoc = Zotero.getMainWindow()?.document;
-                    if (tdoc) {
+                    // Every main window (2026-11-26, per-window fix).
+                    for (const mw of wvMainWins()) {
+                        const tdoc = mw && mw.document;
+                        if (!tdoc) continue;
                         for (const c of tdoc.querySelectorAll(
                                 ".annotation-row.tight .cell.annotation-comment"
                                 + "[data-has-rich]") as any) {

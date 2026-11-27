@@ -198,6 +198,46 @@ export const PLUGIN_CSS = [
     "  background: var(--color-accent, #5e6ad2); pointer-events: none;",
     "}",
     "#wv-filter-tb-button.wv-filter-tb-active .wv-filter-tb-dot { display: block; }",
+    // The funnel and Zotero's quick search share the items toolbar at any
+    // width (MJT 2026-11-25, "Some bad positioning of the funnels"). In a
+    // narrow items pane the button took its 40 px from the search's slot, and
+    // the search's contents did not shrink with it: they spilled past the slot
+    // and Zotero's own Advanced Search funnel slid under this one (Zotero
+    // 10.0.8, a 960-px window: slot 146 px, contents 166 px, 14 px of
+    // overlap; Zotero 11 the same below a ~1000-px window).
+    // (1) The button is as narrow as Zotero's plain toolbar buttons, its ▾
+    // drawn in the icon's lower corner. Zotero gives every menu button of
+    // that toolbar 40 px (`#zotero-items-toolbar toolbarbutton[type="menu"]`);
+    // the doubled id out-ranks it. `type="menu"` stays: it is the toggle.
+    "#wv-filter-tb-button#wv-filter-tb-button { width: 28px; min-width: 28px; }",
+    "#wv-filter-tb-button > .toolbarbutton-menu-dropmarker {",
+    "  position: absolute; inset-inline-end: 0; bottom: 2px; margin: 0;",
+    "}",
+    // (2) The search's contents follow its slot. Zotero means them to
+    // (`quick-search-textbox #search-wrapper { min-width: 0 }`, "Let the
+    // wrapper shrink below its content width when the items pane is
+    // squeezed"), but the wrapper sits in a XUL <deck>, which "sizes to its
+    // largest panel and doesn't clamp the panel" (Zotero's own words, the
+    // reason it lays the deck out as flex while Advanced Search is open), so
+    // the field kept its 146-px width plus padding and spilled. The same
+    // flex layout for the plain search, the indicator out of it as Zotero
+    // has it then; and the slot may go below its 146-px base, so the toolbar
+    // ends inside the items pane. Zotero's 146-px `width` stays (without it
+    // the field's own wide intrinsic size held the toolbar at 493 px); the
+    // toolbar that holds the button gives up its automatic minimum instead --
+    // it is a flex item of a row, and that minimum, the sum of its children's
+    // widths, kept it 1 px past a 393-px items pane (Zotero 10). Only the
+    // search with this button after it, never while Advanced Search is open
+    // (Zotero's own rules hold there). Guard: test/filter-funnel-fit.spec.js.
+    ":has(> #wv-filter-tb-button) { min-width: 0; }",
+    "quick-search-textbox:not([advanced-search-open]):has(+ #wv-filter-tb-button) { min-width: 0; }",
+    "quick-search-textbox:not([advanced-search-open]):has(+ #wv-filter-tb-button) #search-deck {",
+    "  display: flex; min-width: 0;",
+    "}",
+    "quick-search-textbox:not([advanced-search-open]):has(+ #wv-filter-tb-button) #advanced-search-indicator { display: none; }",
+    "quick-search-textbox:not([advanced-search-open]):has(+ #wv-filter-tb-button) :is(#search-wrapper, search-textbox) {",
+    "  flex: 1 1 auto; min-width: 0;",
+    "}",
     // Inline-flex wrapper so multiple sidebar/right-pane icons (comment +
     // relations + ...) sit side-by-side rather than stacking vertically
     // when the host slot is block-level (e.g. Zotero's reader

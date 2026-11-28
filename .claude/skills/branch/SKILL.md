@@ -5,7 +5,7 @@ description: Run a parallel/branch development effort and merge it back. Use whe
 
 # Branch development lifecycle
 
-Ambient rules in CLAUDE.md cover *detecting* a shared clone and the version
+Ambient rules in AGENTS.md cover *detecting* a shared clone and the version
 suffixes. This skill is the procedure. (Worked examples: `weavero-defatt`,
 `weavero-annsource`, `weavero-fx153`.)
 

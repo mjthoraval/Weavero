@@ -10,7 +10,7 @@
 
 describe("Weavero — Settings pane: Windows-only settings are marked", () => {
     const pane = async () => {
-        const rootURI = await Zotero.Plugins.getRootURI("weavero@mjthoraval");
+        const rootURI = await wvT.rootURI();
         const html = await (await fetch(rootURI + "prefs.html")).text();
         const frag = Zotero.getMainWindow().MozXULElement.parseXULToFragment(html);
         const ms = frag.querySelector(".main-section");
@@ -37,7 +37,7 @@ describe("Weavero — Settings pane: Windows-only settings are marked", () => {
     }
 
     it("the pane script knows the marker", async () => {
-        const rootURI = await Zotero.Plugins.getRootURI("weavero@mjthoraval");
+        const rootURI = await wvT.rootURI();
         const js = await (await fetch(rootURI + "prefs.js")).text();
         assert.include(js, 'data-wv-platform="win"', "bindPlatformOnly reads the marker");
         assert.include(js, "wv-platform-off", "and sets the grey-out class");

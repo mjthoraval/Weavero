@@ -14,7 +14,7 @@ describe("Weavero — Settings pane: one search block per setting", () => {
     // Parsed the way Zotero mounts plugin panes (a plain DOMParser refuses
     // the XUL namespace outright).
     const pane = async () => {
-        const rootURI = await Zotero.Plugins.getRootURI("weavero@mjthoraval");
+        const rootURI = await wvT.rootURI();
         const html = await (await fetch(rootURI + "prefs.html")).text();
         const frag = Zotero.getMainWindow().MozXULElement.parseXULToFragment(html);
         const ms = frag.querySelector(".main-section");

@@ -20,6 +20,7 @@
 
 import { winOf } from "./dom";
 import { wvWinType } from "./windows";
+import { wvWireOwnerNoteListen } from "./wire-owner";
 
 interface WvListenRec { type: string; fn: any; capture: boolean; tag: string }
 
@@ -175,9 +176,11 @@ function dropHooksWithoutEntries(): void {
 }
 
 /** For tests: the inner-window id of every registry entry, and the windows
- *  with an unload hook. */
-export function wvListenRegistry(): { wids: number[]; hooked: number[] } {
-    return { wids: wired.map((w) => w.wid), hooked: [...hooks.keys()] };
+ *  with an unload hook; `tags`: each entry's tag, in the order of `wids` (an
+ *  entry a scratch tag left keeps its window's unload hook through every
+ *  later destroy, test/zotero-api-shapes.spec.js). */
+export function wvListenRegistry(): { wids: number[]; hooked: number[]; tags: string[] } {
+    return { wids: wired.map((w) => w.wid), hooked: [...hooks.keys()], tags: wired.map((w) => w.tag) };
 }
 
 // Tags whose instance was destroyed. A timer or retry chain of that instance
@@ -188,8 +191,41 @@ const dead: Set<string> = new Set();
 
 declare const WeakRef: any;
 
+// A CHROME target's table and its records are made in the target's own
+// compartment, not the plugin's: zotero#6080 nukes a plugin's scope 10 s after
+// unload, and a table the old instance made there became a dead object on the
+// window -- every later wvListen / wvUnlisten on that window threw (the
+// wrap-table twin, lib/wrap.ts; canary 40b5f3a1, 2026-11-22). A content target
+// (a reader frame, through its waived wrapper) keeps the plugin's table, as it
+// always did: its listeners are removed through the registry (above).
+function chromeHost(target: any): any {
+    try {
+        const g = (Components as any).utils.getGlobalForObject(target);
+        const p = g && g.document && g.document.nodePrincipal;
+        if (p && p.isSystemPrincipal && typeof g.Object === "function") return g;
+    }
+    catch (e) {}
+    return null;
+}
+
+function isDeadObj(v: any): boolean {
+    try { return !!v && (Components as any).utils.isDeadWrapper(v); }
+    catch (e) { return false; }
+}
+
 function table(target: any): Record<string, WvListenRec> {
-    return target._wvListen || (target._wvListen = Object.create(null));
+    let T = target._wvListen;
+    if (T && isDeadObj(T)) { try { delete target._wvListen; } catch (e) {} T = null; }
+    if (T) return T;
+    const g = chromeHost(target);
+    return (target._wvListen = g ? g.Object.create(null) : Object.create(null));
+}
+
+function newRec(target: any, type: string, fn: any, capture: boolean, tag: string): WvListenRec {
+    const g = chromeHost(target);
+    const r: any = g ? new g.Object() : {};
+    r.type = type; r.fn = fn; r.capture = capture; r.tag = tag;
+    return r;
 }
 
 /** An options object built here belongs to the plugin's (chrome) scope, and
@@ -227,8 +263,10 @@ export function wvListen(target: any, key: string, type: string, fn: any,
     if (cur) { try { target.removeEventListener(cur.type, cur.fn, cur.capture); } catch (e) {} }
     const capture = typeof opts === "boolean" ? opts : !!(opts && opts.capture);
     target.addEventListener(type, fn, wvEventOpts(target, opts));
-    const rec: WvListenRec = { type, fn, capture, tag };
+    const rec: WvListenRec = newRec(target, type, fn, capture, tag);
     T[key] = rec;
+    // The wiring entry running, if any, owns it (lib/wire-owner.ts).
+    try { wvWireOwnerNoteListen(target, key, type, fn, capture, tag); } catch (e) {}
     // Per-row listeners (related-box and annotation rows re-render all the
     // time) grow the registry: drop the gone targets now and then, and
     // everything of a window when it unloads (see WEAK FOR THE GC above).

@@ -69,9 +69,9 @@ describe("Weavero — outline source (non-PDF views)", () => {
             assert.equal(res.tree[0].items[0].title, "Introduction");
         });
 
-        it("labels the source as extracted (headings, not an authored TOC)", async () => {
+        it("labels the source as Zotero's (headings, not an authored TOC; outline2.4 keeps \"extracted\" for Weavero's)", async () => {
             const res = await wv._wvReaderFetchOutline(stubReader("snapshot", SNAPSHOT_TREE));
-            assert.equal(res.source, "extracted");
+            assert.equal(res.source, "zotero");
         });
     });
 

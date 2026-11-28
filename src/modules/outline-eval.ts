@@ -17,8 +17,12 @@
 //       "<libraryID>:<itemKey>": {
 //           verdict: "good" | "bad" | "scan",
 //           markedAt: ISO string,
-//           source: "embedded" | "extracted",   // provenance at mark time
-//           snapshot: [ { title, url?, position?, items: [...] } ],  // raw getOutline2 tree
+//           source: "extracted" | "embedded" | "zotero",   // the document source at mark time
+//           shown: "weavero" | "readingMode" | <source>,     // what was on screen (outline2.4)
+//           snapshot: [ { title, url?, position?, items: [...] } ],  // that source's tree
+//           zotero: [ ... ] | null,   // Zotero's stored outline beside it (outline2.4)
+//           extractedSame: boolean,   // Weavero's Extracted was identical to it, so
+//                                     // "zotero" was shown (outline2.6)
 //           pages: number | null,
 //       } } }
 //
@@ -27,6 +31,7 @@
 
 import { wvStoreWrite, wvStoreRead } from "../lib/store";
 import { wvMainWins } from "../lib/windows";
+import { wvStr } from "../lib/l10n";
 
 declare const Zotero: any;
 declare const PathUtils: any;
@@ -169,15 +174,33 @@ class _OutlineEvalMixin {
                 pages = pv && pv._iframeWindow && pv._iframeWindow.PDFViewerApplication
                     ? pv._iframeWindow.PDFViewerApplication.pagesCount : null;
             } catch (_) {}
+            // What the user was LOOKING at when judging (outline2.4, MJT
+            // 2026-11-24: the verdicts measure Weavero's extraction): the
+            // shown source -- "weavero" (Edited), "readingMode", or the
+            // document source on screen ("extracted" = Weavero's, "embedded",
+            // "zotero") -- with `snapshot` the tree of that document source,
+            // and Zotero's own stored outline beside it for comparison.
+            let shown = (cache && cache.source) || "extracted";
+            try {
+                const chip = idoc && idoc.querySelector(".wv-outline-src-chip");
+                for (const c of String((chip && chip.className) || "").split(/\s+/)) {
+                    const m = /^wv-outline-src-([A-Za-z]+)$/.exec(c);
+                    if (m && m[1] !== "chip" && m[1] !== "switchable") { shown = m[1]; break; }
+                }
+            } catch (_) {}
+            const zotero = cache && cache.alts && cache.alts.zotero ? JSON.parse(JSON.stringify(cache.alts.zotero)) : null;
             this._wvOeRoot.cases[att.libraryID + ":" + att.itemKey] = {
                 verdict,
                 markedAt: new Date().toISOString(),
                 source: (cache && cache.source) || "extracted",
+                shown,
                 snapshot: (cache && cache.tree) ? JSON.parse(JSON.stringify(cache.tree)) : [],
+                zotero,
+                extractedSame: !!(cache && cache.extractedSame),
                 pages,
             };
             await this._wvOePersist();
-            try { (this as any)._wvReaderPanelNote(idoc, "Eval: marked " + verdict.toUpperCase() + " (" + Object.keys(this._wvOeRoot.cases).length + " cases recorded)"); } catch (_) {}
+            try { (this as any)._wvReaderPanelNote(idoc, wvStr("weavero-oe-marked", { verdict, count: Object.keys(this._wvOeRoot.cases).length })); } catch (_) {}
         } catch (e) { Zotero.debug("[Weavero] _wvOeMark err: " + e); }
     }
 
@@ -194,7 +217,7 @@ class _OutlineEvalMixin {
                 delete this._wvOeRoot.cases[k];
                 await this._wvOePersist();
             }
-            try { this._wvReaderPanelNote(idoc, "Eval: cleared mark"); } catch (_) {}
+            try { this._wvReaderPanelNote(idoc, wvStr("weavero-oe-cleared")); } catch (_) {}
         } catch (e) { Zotero.debug("[Weavero] _wvOeUnmark err: " + e); }
     }
 

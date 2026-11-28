@@ -59,6 +59,9 @@ describe("Weavero — custom window titles live in the window's state", () => {
         assert.equal(doc.version, 4);
         assert.equal(doc.anchorTitle, "Quit Title", "builder carries the anchor title");
         assert.property(doc, "anchorHidden", "builder carries the anchor's hidden set field");
+        // Second review 2026-11-28 (L): its saved-search folders and Bookmarks pane, the same way.
+        assert.property(doc, "anchorSfOpen", "builder carries the anchor's closed saved-search folders field");
+        assert.property(doc, "anchorBmPane", "builder carries the anchor's Bookmarks pane field");
         assert.property(doc, "focused");
         const src = String(wv._wvWindowStoreQuitFlush);
         assert.include(src, "_wvWindowStoreBuildDoc(", "the quit flush uses the builder");

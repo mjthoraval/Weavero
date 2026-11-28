@@ -547,7 +547,7 @@ describe("Weavero — menus take their words from weavero.ftl", function () {
     });
 
     it("every weavero-menu id the code names is in weavero.ftl, and every menu message there is used", async () => {
-        const rootURI = await Zotero.Plugins.getRootURI("weavero@mjthoraval");
+        const rootURI = await wvT.rootURI();
         const ftl = await (await fetch(rootURI + "locale/en-US/weavero.ftl")).text();
         const inFtl = [...ftl.matchAll(/^(weavero-menu-[a-z0-9-]+)\s*=/gm)].map(m => m[1]);
         const srcs = [];

@@ -92,7 +92,7 @@ knows why the code refuses to be simplified.
    exemption down (in the fix commit and the report), never silently.
 2. **Route the lesson to its ONE home:** code convention → the matching
    `.claude/rules/` file; process mistake → the skill step that should have
-   prevented it; hard behavioural constraint → the root CLAUDE.md
+   prevented it; hard behavioural constraint → the root AGENTS.md
    Hard invariants;
    upstream defect → the upstream-bugs register with a "Retire when"
    line; personal preference/state → agent memory. Prune anything the new

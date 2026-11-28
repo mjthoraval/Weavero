@@ -59,9 +59,42 @@
 //     WV-TEMP-134317's re-selection after View > Layout shows the Tag Selector
 //     again (`wrap toggleTagSelector:tagReshow` on ZoteroPane, 1.2.1-queue2.1,
 //     upstream-fixes.ts; it goes when that workaround retires). And with the
-//     Locate menu's first opening (`locateIcons:popupshown` on the window,
-//     1.2.1-hotfix: a lost lookup-engine icon is downloaded then, never at
-//     startup; pane.ts). Set
+//     right-click on the item pane's Attachments / Notes rows (`defpane:
+//     contextmenu` on the document, 1.2.1-defpane.1: the default attachment in
+//     the item pane, attachments.ts; its Attachments-class layer sits on the
+//     window's custom-element class, not a recorded host). And with the Locate
+//     menu's first opening (`locateIcons:popupshown` on the window, 1.2.1-
+//     security.1: a lost lookup-engine icon is downloaded then, never at
+//     startup; pane.ts). And with the sheet of the section locked at the
+//     bottom of the item pane (`wv-panelock-style`, 1.2.1-panelock.1,
+//     pane-lock.ts; its observers, wraps and listeners sit on the item panes,
+//     their sections and side navigations, none of them a recorded host). And
+//     with WV-TEMP-114534's layer on the item pane's renderMessage (`wrap
+//     renderMessage:feedSidenav` on itemPane and #zotero-item-pane, 1.2.1-
+//     sidenavfeed.1, upstream-fixes.ts): it sits on the window's item-pane
+//     class, and the pane shows it through the class's wrap table, which it
+//     inherits; it goes when that workaround retires. And with the Group
+//     Libraries line's fold (`wrap toggleOpenState:grpfold` on collectionsView,
+//     `grpfold:down` / `grpfold:up` on #zotero-collections-tree, 1.2.1-grpfold.1,
+//     group-fold.ts), with the collection select guard a layer of notify since
+//     (`wrap notify:selectGuard` for `_wvOrigNotifyForSelectGuard`). And with the
+//     Researchers mark in the Info section (`lazy:ppCmark:click` / `:mousedown` on the
+//     document, `wv-pp-cmark-style`; 1.3.0-peoplenet) and the saved-search folders
+//     trial (`srchfold` on collectionsView's toggleOpenState, `srchfold:ctx|down|up` on
+//     #zotero-collections-tree, `srchfold:colmenu` on #zotero-collectionmenu,
+//     `wv-sf-styles`; 1.3.0-paneorg, every main window since its tree adoption). And
+//     with the Bookmarks pane above the collections tree (`wv-bmpane`, its splitter and
+//     sheet, and the dropdown's sheet its tools use, `wv-bookmarks-style`; 1.3.0-bmpane,
+//     bookmarks-pane.ts: on in pre-release builds; its state and watches sit in
+//     WeakMaps and a window string set only off the defaults). And with the
+//     Researchers button in the collections toolbar (`wv-pp-tb-button` and its
+//     sheet `wv-pp-tb-style`, 1.3.0-rsbtn, people-toolbar.ts; its listeners sit on the
+//     button itself), there only while the Researchers feature is on -- see
+//     `researchersGate` below. And with the funnel above the collections pane
+//     (`wv-cf-tb-button` and its panel `wv-cf-popup` in the collections toolbar, its
+//     sheet `wv-cf-style`; 1.3.0-collfunnel, coll-funnel.ts, on in pre-release builds:
+//     its row rule runs inside the hidden collections' `wv-hid` layers, no layer of its
+//     own; its state is a window string set only off the default). Set
 //     WV_WIRING_RECORD=<path> to dump a new recording instead of comparing.
 //     A deliberate change edits the affected lines here, in the same commit,
 //     with the reason.
@@ -225,8 +258,13 @@ describe("Weavero — per-main-window wiring, characterized", function () {
         // mousemove / rows-change twin installs only where Zotero lacks its
         // own `_clearDropIndicator` (Zotero 10; gone on 11.0-beta.2+, found
         // by the first full run on beta.2, 2026-10-27). stuck-drop-row.spec.js
-        // asserts their presence or absence per build.
-        const BUILD_DEPENDENT = /^(wrap handleRowModelUpdate:stuckDropRow|listen stuckDropRow:(items|collections)|wrap (_setDropRow|_clearDropIndicator):dragRing)$/;
+        // asserts their presence or absence per build. And expand-scroll.ts's
+        // wrap of the items VIEW's toggleOpenState: only Zotero 10's twisty
+        // calls the view's toggleOpenState, so the wrap is there on Zotero 10
+        // alone (the recording is Zotero 11's; it failed on Zotero 10 even on
+        // 1.3.0-peoplenet.14, 2026-11-26); expand-scroll.spec.js asserts the
+        // wrap per entry point.
+        const BUILD_DEPENDENT = /^(wrap handleRowModelUpdate:stuckDropRow|listen stuckDropRow:(items|collections)|wrap (_setDropRow|_clearDropIndicator):dragRing|wrap toggleOpenState:expandScroll)$/;
         // A host those marks emptied (`#zotero-collections-tree` carries only
         // the mousemove listener) goes too: a build without the mark has no
         // such host at all.
@@ -241,7 +279,19 @@ describe("Weavero — per-main-window wiring, characterized", function () {
             }
             return out;
         };
-        assert.deepEqual(wvT.wiringNormalize(buildNeutral(firstApplyOff(got))), wvT.wiringNormalize(buildNeutral(firstApplyOff(WIRING_EXPECTED))));
+        // The Researchers button (people-toolbar.ts, 1.3.0-rsbtn) is drawn only with the
+        // Researchers feature on, which is in testing: on by default in a pre-release
+        // build only (prefs-table.ts `devOnly`), so a release build's CI has none.
+        // people-toolbar-button.spec.js holds the button itself.
+        const researchersGate = (rec) => {
+            if (wv._wvPpTbOn && wv._wvPpTbOn()) return rec;
+            const out = JSON.parse(JSON.stringify(rec));
+            for (const k of ["mainAtStart", "loaded"]) {
+                if (out[k] && Array.isArray(out[k].ids)) out[k].ids = out[k].ids.filter(x => x !== "wv-pp-tb-button" && x !== "wv-pp-tb-style");
+            }
+            return out;
+        };
+        assert.deepEqual(wvT.wiringNormalize(buildNeutral(firstApplyOff(got))), wvT.wiringNormalize(buildNeutral(firstApplyOff(researchersGate(WIRING_EXPECTED)))));
     });
 });
 
@@ -255,16 +305,21 @@ const WIRING_EXPECTED = {
             "_wvLibrariesBoxMo:object", "_wvMainNewTabKeyH:function", "_wvObsReload:object", "_wvObsXpi:object", "_wvOvActivateHandler:function",
             "_wvOvBirthMon:string", "_wvOvFollowWired:number", "_wvOvMoveHandler:function",
             "_wvOvPollId:number", "_wvOvPosKey:string", "_wvOvSettled:boolean", "_wvPaneObs:object",
-            "_wvPinnedTabIDs:object", "_wvRedoKeyH:function", "_wvStrayObs:object", "_wvStrayObsVer:number",
+            "_wvPinnedTabIDs:object", "_wvRedoKeyH:function", "_wvStrayObs:object", "_wvStrayObsVer:string",
             // Split view (tab-split.ts, 1.0.5).
             "_wvTSplitRestoreArmed:boolean", "_wvTSplitSyncing:boolean", "_wvTSplits:object", "_wvTabBarDecoMo:object",
             "_wvTabExtRepositioner:object", "_wvTabGroupWinDnDOff:function", "_wvTabMultiSelOff:function",
-            "_wvThemeMQ:object", "_wvTreeDelegate:object", "_wvWinOrder:number", "listen countTip:blur", "listen countTip:keydown",
+            "_wvThemeMQ:object", "_wvTreeDelegate:object", "_wvWinOrder:number",
+            // The wrap table of the window's own members (lib/wrap.ts): openDialog below.
+            "_wvWraps:object",
+            "listen countTip:blur", "listen countTip:keydown",
             "listen locateIcons:popupshown",
             "listen maxSpan:contextmenu", "listen maxSpan:rbup", "listen newWindowKey", "listen openBesideKey", "listen ovFollow:unload",
             "listen reopenClosedKey", "listen stuckDropRow:dragend", "listen stuckDropRow:dragenter", "listen stuckDropRow:dragexit", "listen stuckDropRow:dragleave",
             "listen stuckDropRow:dragover", "listen stuckDropRow:drop", "listen tabGroupDnD:escKey", "listen tabGroupWinDnD:dragover",
             "listen tabGroupWinDnD:drop", "listen xwinDrop:dragover", "listen xwinDrop:drop",
+            // Zotero's progress window with minimize and maximize (progress-window.ts, 2026-11-26).
+            "wrap openDialog:progressWindow",
         ],
         ZoteroPane: [
             "_wvLoadURIWired", "_wvOrigCopySelectedToClipboard", "_wvOrigLoadURI",
@@ -287,7 +342,10 @@ const WIRING_EXPECTED = {
         itemsView: [
             "_wvCacheStateWired", "_wvCollChangeWrapped", "_wvIsSelectableOrig", "_wvOrigResetColumns",
             "_wvResetColumnsWrapVer", "_wvSelChangeWired", "_wvSetFilterWrapped",
+            // Feeds (feeds.ts `feeds-sort`): the feed views' sort.
+            "wrap _handleColumnSort:feeds",
             "wrap _restoreScrollPosition:scrollAnchor6023", "wrap _saveScrollPosition:scrollAnchor6023",
+            "wrap getSortDirection:feeds", "wrap getSortField:feeds",
             "wrap handleRowModelUpdate:stuckDropRow", "wrap notify:scrollAnchor6023", "wrap selectItems:filterParity",
         ],
         rowProvider: [
@@ -299,13 +357,23 @@ const WIRING_EXPECTED = {
             "wrap toggleOpenState:userOpenTracking+countRedraw",
         ],
         collectionsView: [
-            // `_wvHidOrigContainerEmpty`: the hidden-collections rule over Zotero's
-            // isContainerEmpty (dev.107); `_wvOrigCanDropCheck`: WV-TEMP-134361 (dev.108,
-            // goes when that workaround retires).
-            "_wvHidOrigContainerEmpty", "_wvOrigCanDropCheck", "_wvOrigNotifyForSelectGuard",
+            // `_wvOrigCanDropCheck`: WV-TEMP-134361 (dev.108, goes when that
+            // workaround retires). `_expandRow` / `_includedInTree` /
+            // `isContainerEmpty:wv-hid`: the hidden collections' rules, layers since
+            // 2026-11-27 (they were own properties and `_wvHidOrigContainerEmpty`:
+            // another plugin's members over them were dropped, ssf F1/F2).
+            // `notify:selectGuard`: the collection select guard, a layer since
+            // 1.2.1-grpfold.1 (it was the hand-written `_wvOrigNotifyForSelectGuard`);
+            // `toggleOpenState:grpfold`: the Group Libraries line folds (group-fold.ts;
+            // its other layers sit on the window's CollectionTree class, not a
+            // recorded host).
+            "_wvOrigCanDropCheck",
+            "wrap _expandRow:wv-hid", "wrap _includedInTree:wv-hid", "wrap isContainerEmpty:wv-hid",
+            "wrap notify:selectGuard", "wrap toggleOpenState:grpfold+srchfold",
         ],
         itemPane: [
             "_wvCountWired", "_wvOrigRenderBatchPrompt", "_wvOrigSetItemPaneMessage",
+            "wrap renderMessage:feedSidenav",
             // WV-TEMP-FEEDHEAD: on the window's item-pane prototype, seen through it.
             "wrap setReadLabel:feedHead", "wrap setTranslateButton:feedHead",
         ],
@@ -314,15 +382,15 @@ const WIRING_EXPECTED = {
             "_wvAdvSearchWinHandler", "_wvAdvSearchWinWire", "_wvCollSearchKeyHandler", "_wvCollSearchUnwire",
             "_wvCollSearchWired", "_wvCollTreeGestures", "_wvCollTreeUnwire", "_wvCollTreeWired",
             "_wvMenuGhostFix", "_wvMenuGhostUnwire", "_wvReaderFindKeyHandler", "_wvReaderFindRoute",
-            "_wvReaderFindUnwire", "listen colPickMark:popupshowing", "listen filterPanel:keys",
-            "listen xwinDrop:dragstart",
+            "_wvReaderFindUnwire", "listen colPickMark:popupshowing", "listen defpane:contextmenu", "listen filterPanel:keys",
+            "listen lazy:ppCmark:click", "listen lazy:ppCmark:mousedown", "listen xwinDrop:dragstart",
         ],
         documentElement: [],
         "#zotero-itemmenu": [
             "_wvDefChildMenuHandlers", "_wvDefChildMenuWired",
         ],
         "#zotero-collectionmenu": [
-            "_wvHidH",
+            "_wvHidH", "listen srchfold:colmenu",
         ],
         "#zotero-tabs-menu-panel": [
             "_wvLibrarySortInstalled", "_wvOrigRefreshList", "listen tabsMenu:fitHeight",
@@ -331,6 +399,10 @@ const WIRING_EXPECTED = {
             "listen urlTitle:mouseover",
         ],
         "#zotero-collections-tree": [
+            // The click on the Group Libraries line (group-fold.ts, 1.2.1-grpfold.1).
+            "listen grpfold:down", "listen grpfold:up",
+            // The saved-search folders trial (search-folders.ts, 1.3.0-paneorg).
+            "listen srchfold:ctx", "listen srchfold:down", "listen srchfold:up",
             "listen stuckDropRow:collections",
         ],
         "#tab-bar-container": [
@@ -343,6 +415,7 @@ const WIRING_EXPECTED = {
         ],
         "#zotero-item-pane": [
             "_wvCountWired", "_wvOrigRenderBatchPrompt", "_wvOrigSetItemPaneMessage",
+            "wrap renderMessage:feedSidenav",
             "wrap setReadLabel:feedHead", "wrap setTranslateButton:feedHead",
         ],
         "#zotero-context-pane": [
@@ -365,10 +438,20 @@ const WIRING_EXPECTED = {
             "listen hamburgerPromo:menu_fileQuitItemWin:showing",
         ],
         ids: [
-            "wv-anchor-indicator-style", "wv-bookmarks-toolbar-button", "wv-coll-aids-sheet",
+            "wv-anchor-indicator-style",
+            // The Bookmarks pane above the collections tree (bookmarks-pane.ts, 1.3.0-bmpane),
+            // with the dropdown's sheet for its tools.
+            "wv-bmpane", "wv-bmpane-splitter", "wv-bmpane-style", "wv-bookmarks-style",
+            "wv-bookmarks-toolbar-button",
+            // The collections funnel: its button, its panel and its sheet (1.3.0-collfunnel).
+            "wv-cf-popup", "wv-cf-style", "wv-cf-tb-button",
+            "wv-coll-aids-sheet",
             "wv-compact-titlebar-styles", "wv-early-compact-css", "wv-filter-bar", "wv-filter-popup",
-            "wv-filter-tb-button", "wv-hamburger-popup", "wv-hid-sheet", "wv-pinned-tab-style",
-            "wv-selected-tab-ring", "wv-sticky-heads-styles", "wv-tab-group-styles", "wv-tab-library-tooltip", "wv-tabs-menu-clear-btn",
+            "wv-filter-tb-button", "wv-hamburger-popup", "wv-hid-sheet", "wv-panelock-style", "wv-pinned-tab-style", "wv-pp-cmark-style",
+            // The Researchers button and its sheet (1.3.0-rsbtn; only with Researchers on:
+            // researchersGate).
+            "wv-pp-tb-button", "wv-pp-tb-style",
+            "wv-selected-tab-ring", "wv-sf-styles", "wv-sticky-heads-styles", "wv-tab-group-styles", "wv-tab-library-tooltip", "wv-tabs-menu-clear-btn",
             "wv-tabs-menu-filetype-btn", "wv-tabs-menu-settings-btn", "wv-tb-toggle-collections-pane",
             "wv-tsplit-layer", "wv-tsplit-style",
             "wv-view-menuitem-outline", "wv-view-menuitem-pane", "wv-view-menuitem-selector",
@@ -389,16 +472,19 @@ const WIRING_EXPECTED = {
             "_wvManagedWindow:boolean", "_wvNotifierObsIDs:object", "_wvObsReload:object", "_wvObsXpi:object", "_wvOvActivateHandler:function", "_wvOvBirthMon:string",
             "_wvOvFollowWired:number", "_wvOvMoveHandler:function", "_wvOvPollId:number",
             "_wvOvPosKey:string", "_wvOvSettled:boolean", "_wvPQListeners:object", "_wvPaneObs:object", "_wvPaneOpen:object", "_wvPinnedTabIDs:object",
-            "_wvPrefObsIDs:object", "_wvPrevWinIcons:object",
-            "_wvRedoKeyH:function", "_wvStrayObs:object", "_wvStrayObsVer:number",
+            "_wvPrefObsIDs:object",
+            "_wvRedoKeyH:function", "_wvStrayObs:object", "_wvStrayObsVer:string",
             "_wvTSplitRestoreArmed:boolean", "_wvTSplitSyncing:boolean", "_wvTSplits:object", "_wvTabBarDecoMo:object",
             "_wvTabExtRepositioner:object", "_wvTabGroupWinDnDOff:function", "_wvTabMultiSelOff:function",
             "_wvThemeMQ:object", "_wvTitleGlyphIdx:number", "_wvTreeDelegate:object", "_wvWinIconName:string",
-            "_wvWinOrder:number", "_wvWindowId:number", "listen countTip:blur", "listen countTip:keydown", "listen locateIcons:popupshown", "listen maxSpan:contextmenu", "listen maxSpan:rbup",
+            "_wvWinOrder:number", "_wvWindowId:number", "_wvWraps:object",
+            "listen countTip:blur", "listen countTip:keydown", "listen locateIcons:popupshown",
+            "listen maxSpan:contextmenu", "listen maxSpan:rbup",
             "listen newWindowKey", "listen openBesideKey", "listen ovFollow:unload", "listen reopenClosedKey",
             "listen stuckDropRow:dragend", "listen stuckDropRow:dragenter", "listen stuckDropRow:dragexit", "listen stuckDropRow:dragleave", "listen stuckDropRow:dragover",
             "listen stuckDropRow:drop", "listen tabGroupDnD:escKey", "listen tabGroupWinDnD:dragover", "listen tabGroupWinDnD:drop",
             "listen xwinDrop:dragover", "listen xwinDrop:drop",
+            "wrap openDialog:progressWindow",
         ],
         ZoteroPane: [
             "_wvLoadURIWired", "_wvOrigCopySelectedToClipboard", "_wvOrigLoadURI",
@@ -415,7 +501,9 @@ const WIRING_EXPECTED = {
         ],
         itemsView: [
             "_wvColIsolated", "_wvColKey", "_wvCollChangeWrapped", "_wvIsSelectableOrig",
-            "_wvSetFilterWrapped", "wrap _restoreScrollPosition:scrollAnchor6023", "wrap _saveScrollPosition:scrollAnchor6023",
+            "_wvSetFilterWrapped", "wrap _handleColumnSort:feeds",
+            "wrap _restoreScrollPosition:scrollAnchor6023", "wrap _saveScrollPosition:scrollAnchor6023",
+            "wrap getSortDirection:feeds", "wrap getSortField:feeds",
             "wrap handleRowModelUpdate:stuckDropRow", "wrap notify:scrollAnchor6023", "wrap selectItems:filterParity",
         ],
         rowProvider: [
@@ -425,13 +513,17 @@ const WIRING_EXPECTED = {
             "wrap toggleOpenState:userOpenTracking+countRedraw",
         ],
         collectionsView: [
-            // `_wvHidOrigContainerEmpty`: the hidden-collections rule over Zotero's
-            // isContainerEmpty (dev.107); `_wvOrigCanDropCheck`: WV-TEMP-134361 (dev.108,
-            // goes when that workaround retires).
-            "_wvHidOrigContainerEmpty", "_wvOrigCanDropCheck", "_wvOrigNotifyForSelectGuard",
+            // `_wvOrigCanDropCheck`: WV-TEMP-134361 (dev.108, goes when that workaround
+            // retires); the hidden collections' layers (2026-11-27, as on the first
+            // window); the select guard's layer and the Group Libraries fold's
+            // (1.2.1-grpfold.1, as on the first window).
+            "_wvOrigCanDropCheck",
+            "wrap _expandRow:wv-hid", "wrap _includedInTree:wv-hid", "wrap isContainerEmpty:wv-hid",
+            "wrap notify:selectGuard", "wrap toggleOpenState:grpfold+srchfold",
         ],
         itemPane: [
             "_wvCountWired", "_wvOrigRenderBatchPrompt", "_wvOrigSetItemPaneMessage",
+            "wrap renderMessage:feedSidenav",
             // WV-TEMP-FEEDHEAD: on the window's item-pane prototype, seen through it.
             "wrap setReadLabel:feedHead", "wrap setTranslateButton:feedHead",
         ],
@@ -440,15 +532,15 @@ const WIRING_EXPECTED = {
             "_wvAdvSearchWinHandler", "_wvAdvSearchWinWire", "_wvCollSearchKeyHandler", "_wvCollSearchUnwire",
             "_wvCollSearchWired", "_wvCollTreeGestures", "_wvCollTreeUnwire", "_wvCollTreeWired",
             "_wvMenuGhostFix", "_wvMenuGhostUnwire", "_wvReaderFindKeyHandler", "_wvReaderFindRoute",
-            "_wvReaderFindUnwire", "listen colPickMark:popupshowing", "listen filterPanel:keys",
-            "listen xwinDrop:dragstart",
+            "_wvReaderFindUnwire", "listen colPickMark:popupshowing", "listen defpane:contextmenu", "listen filterPanel:keys",
+            "listen lazy:ppCmark:click", "listen lazy:ppCmark:mousedown", "listen xwinDrop:dragstart",
         ],
         documentElement: [],
         "#zotero-itemmenu": [
             "_wvDefChildMenuHandlers", "_wvDefChildMenuWired",
         ],
         "#zotero-collectionmenu": [
-            "_wvHidH",
+            "_wvHidH", "listen srchfold:colmenu",
         ],
         "#zotero-tabs-menu-panel": [
             "_wvLibrarySortInstalled", "_wvOrigRefreshList", "listen tabsMenu:fitHeight",
@@ -457,6 +549,9 @@ const WIRING_EXPECTED = {
             "listen urlTitle:mouseover",
         ],
         "#zotero-collections-tree": [
+            "listen grpfold:down", "listen grpfold:up",
+            // The saved-search folders trial (search-folders.ts, 1.3.0-paneorg).
+            "listen srchfold:ctx", "listen srchfold:down", "listen srchfold:up",
             "listen stuckDropRow:collections",
         ],
         "#tab-bar-container": [
@@ -469,6 +564,7 @@ const WIRING_EXPECTED = {
         ],
         "#zotero-item-pane": [
             "_wvCountWired", "_wvOrigRenderBatchPrompt", "_wvOrigSetItemPaneMessage",
+            "wrap renderMessage:feedSidenav",
             "wrap setReadLabel:feedHead", "wrap setTranslateButton:feedHead",
         ],
         "#zotero-context-pane": [
@@ -491,10 +587,13 @@ const WIRING_EXPECTED = {
             "listen hamburgerPromo:menu_fileQuitItemWin:showing",
         ],
         ids: [
-            "wv-anchor-indicator-style", "wv-bookmarks-toolbar-button", "wv-coll-aids-sheet",
+            "wv-anchor-indicator-style",
+            "wv-bmpane", "wv-bmpane-splitter", "wv-bmpane-style", "wv-bookmarks-style",
+            "wv-bookmarks-toolbar-button", "wv-cf-popup", "wv-cf-style", "wv-cf-tb-button", "wv-coll-aids-sheet",
             "wv-compact-titlebar-styles", "wv-early-compact-css", "wv-filter-bar", "wv-filter-popup",
-            "wv-filter-tb-button", "wv-hamburger-popup", "wv-hid-sheet", "wv-pinned-tab-style",
-            "wv-selected-tab-ring", "wv-sticky-heads-styles", "wv-tab-group-styles", "wv-tab-library-tooltip", "wv-tabs-menu-clear-btn",
+            "wv-filter-tb-button", "wv-hamburger-popup", "wv-hid-sheet", "wv-panelock-style", "wv-pinned-tab-style", "wv-pp-cmark-style",
+            "wv-pp-tb-button", "wv-pp-tb-style",
+            "wv-selected-tab-ring", "wv-sf-styles", "wv-sticky-heads-styles", "wv-tab-group-styles", "wv-tab-library-tooltip", "wv-tabs-menu-clear-btn",
             "wv-tabs-menu-filetype-btn", "wv-tabs-menu-settings-btn", "wv-tb-toggle-collections-pane",
             "wv-tsplit-layer", "wv-tsplit-style",
             "wv-view-menuitem-outline", "wv-view-menuitem-pane", "wv-view-menuitem-selector",

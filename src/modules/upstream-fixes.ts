@@ -21,15 +21,14 @@ import { wvLivePlugin } from "../lib/live";
 import { wvLibraryViews, wvMainWins, wvNativeWindows } from "../lib/windows";
 import { wvWrap, wvUnwrap } from "../lib/wrap";
 import { wvTimeout } from "../lib/timers";
+import { wvSetBoolAttr, winOf } from "../lib/dom";
 
 declare const Zotero: any;
 declare const Services: any;
+declare const ChromeUtils: any;
+declare const Components: any;
 
 const live = () => wvLivePlugin();
-
-/** Zotero.Notes.open's rule that a tab stands in for a note window (11.0-beta.4,
- *  xpcom/data/notes.js): the source line it is recognised by. */
-const NOTE_TAB_STANDS_IN = /stands in for a window of its own/;
 
 /** WV-TEMP-132551: the row provider's members every expand / collapse gesture lands
  *  in (10.0.8 and 11.0-beta.4 itemTree.js; on Zotero 9 the items view's own). */
@@ -37,6 +36,14 @@ const WV_ROW_TOGGLES = ["toggleOpenState", "expandRows", "collapseRows", "expand
 /** WV-TEMP-132551: the redraw armed per items view (its window's timer), so a burst
  *  of toggles redraws once. A WeakMap: nothing on Zotero's objects. */
 const wvRowCountTimers = new WeakMap<any, { win: any; t: any }>();
+/** WV-TEMP-114534: Zotero's no-item sections a feed item never has -- each hides itself
+ *  for a feed item (11.0-beta.5 and 10.0.8: attachmentsBox.js 70, notesBox.js 64,
+ *  librariesCollectionsBox.js 54, tagsBox.js 88, relatedBox.js 59). */
+const WV_SNF_LIBRARY_ONLY = ["attachments", "notes", "libraries-collections", "tags", "related"];
+/** WV-TEMP-114534: the side navigations whose buttons the fix hid, so a library view
+ *  shown next in the same no-item state gets Zotero's list back. Off the elements
+ *  (window-wiring.spec.js records expandos). */
+const wvSnfHid = new WeakSet<any>();
 /** WV-TEMP-FEEDHEAD: the item pane's feed-button label calls and the button each
  *  labels (itemPane.js setTranslateButton 581-585, setReadLabel 511-514). */
 const WV_FEED_HEAD_LABELS: Array<[string, string]> = [
@@ -44,312 +51,196 @@ const WV_FEED_HEAD_LABELS: Array<[string, string]> = [
     ["setReadLabel", ".feed-item-toggleRead-button"],
 ];
 
-class _UpstreamFixesMixin {
-    // ─────────────────────────────────────────────────────────────────────────
-    // WV-TEMP-134831 (forums.zotero.org/discussion/134831, upstream register #66).
-    // Zotero 11: a note tab's More (...) > "Edit in a Separate Window" does nothing:
-    // the editor's "openWindow" message calls ZoteroPane.openNoteWindow, which is
-    // Zotero.Notes.open with openInWindow, and Notes.open lets "a tab for the note in
-    // any window stand in for a window of its own" -- from the note's own tab it only
-    // selects that tab. Zotero 10.0.8 opens the note in a window (checked with no
-    // add-on, 2026-11-18). Here: called while that note's tab is the selected one of a
-    // window holding other tabs too, the tab moves to a new window -- Zotero's own
-    // "Move Tab > Move to New Window" (Zotero_Tabs' moveToNewWindow hook), on Zotero
-    // 11 the window a note opens in. Anything else (the item pane's note editor, a
-    // window with that tab alone) goes to Zotero as before.
-    //
-    // RETIRE WHEN Notes.open no longer has the stand-in rule, or "Edit in a Separate
-    // Window" from a note tab opens a window on a plain beta; the tripwire in
-    // test/upstream-fixes.spec.js says when. Installs nothing without the rule.
-    // ─────────────────────────────────────────────────────────────────────────
-    _wvWireNoteWindowFix(win: any) {
-        try {
-            const ZP = win && win.ZoteroPane;
-            const Z = win && win.Zotero_Tabs;
-            const N = (Zotero as any).Notes;
-            if (!ZP || typeof ZP.openNoteWindow !== "function" || !Z || typeof Z._getHook !== "function") return;
-            // Zotero's own Notes.open, under Weavero's layers (index.ts deck-window
-            // patch `_wvOrigOpen`, tabs.ts multi-window patch `_wvMwOrigOpen`).
-            const natives = N ? [N._wvMwOrigOpen, N._wvOrigOpen, N.open].filter((f: any) => typeof f === "function") : [];
-            if (!natives.some((f: any) => NOTE_TAB_STANDS_IN.test(String(f)))) return;   // Zotero's own fix is in
-            wvWrap(ZP, "openNoteWindow", "noteWindow", (this as any)._wvWireTag(), (orig: any) => function (this: any, ...args: any[]) {
-                try {
-                    const lp = live();
-                    if (lp && !lp._wvDestroyed && lp._wvNoteWindowFromTab(win, args[0])) return undefined;
-                } catch (e) {}
-                return orig.apply(this, args);
-            });
-        } catch (e) { Zotero.debug("[Weavero] _wvWireNoteWindowFix err: " + e); }
-    }
+// ---- WV-TEMP-134893b: the feed-abstract browser's first load, settled when the browser leaves the page ----
+//
+// Weavero's copy of Zotero's AbstractBox#_ensureFeedAbstractBrowserExists
+// (chrome/content/zotero/elements/abstractBox.js, 11.0-beta.5 and main 2026-11-23:
+// 259-292, https://github.com/zotero/zotero/blob/main/chrome/content/zotero/elements/abstractBox.js),
+// Copyright (c) 2020 Corporation for Digital Scholarship, part of Zotero, free software
+// under the GNU Affero General Public License v3 or later (as Weavero). The lines that
+// make the browser are Zotero's, unchanged; what is Weavero's: the wait also ends when the
+// browser leaves the page before its first load stopped, and a section moved meanwhile
+// gets a new browser.
 
-    /** "Edit in a Separate Window" for note `itemID` from its own tab in `win`: the tab
-     *  moved to a new window, as Zotero's Move to New Window does. True when done. */
-    _wvNoteWindowFromTab(win: any, itemID: any): boolean {
-        try {
-            const Z = win && win.Zotero_Tabs;
-            if (!Z || !Array.isArray(Z._tabs)) return false;
-            const tab = Z._tabs.find((t: any) => t && t.id === Z.selectedID);
-            if (!tab || !/^note/.test(String(tab.type)) || !tab.data || tab.data.itemID !== itemID) return false;
-            // Alone in its window: it is in a window of its own already (Zotero focuses it).
-            if (Z._tabs.filter((t: any) => !!t).length < 2) return false;
-            const kind = (typeof Z.parseTabType === "function" && Z.parseTabType(tab.type).tabContentType) || "note";
-            if (typeof Z._hasHook === "function" && !Z._hasHook(kind, "moveToNewWindow")) return false;
-            const move = Z._getHook(kind, "moveToNewWindow");
-            if (typeof move !== "function") return false;
-            Zotero.debug("[Weavero] WV-TEMP-134831: Edit in a Separate Window from note tab " + tab.id + " -> Move to New Window");
-            Promise.resolve(move(tab, Z._tabs.indexOf(tab))).catch((e: any) => Zotero.logError(e));
-            return true;
-        } catch (e) { Zotero.debug("[Weavero] _wvNoteWindowFromTab err: " + e); return false; }
-    }
+/** The sandbox flags Zotero sets on its feed-abstract browser (abstractBox.js
+ *  `SANDBOX_ALL_FLAGS`, a constant outside the class -- the gate checks that the class
+ *  still applies that constant). */
+const WV_FAB_SANDBOX_ALL_FLAGS = 0xFFFFF;
+/** The wvWrap layer: on the window's abstract-box `_renderFeedItem` (hands each section
+ *  the copy) and on each section's own `_ensureFeedAbstractBrowserExists`. */
+const WV_FAB_LAYER = "feedAbstractLoad";
+/** The load in progress per section (one at a time: the serial): a web progress holds its
+ *  listener weakly, so the copy keeps it here, and the teardown ends it. Keyed by the
+ *  section, so a window closed mid-load takes its entry with it. */
+const wvFabPending: WeakMap<any, { stop: () => void }> = new WeakMap();
+/** The gate's verdict per abstract-box class (one per window). */
+const wvFabShapes: WeakMap<any, string | null> = new WeakMap();
 
-    _wvTeardownNoteWindowFix() {
-        for (const w of wvMainWins() as any[]) {
-            try { if (w && w.ZoteroPane) wvUnwrap(w.ZoteroPane, "openNoteWindow", "noteWindow"); } catch (e) {}
+/** The `remote` value the window's abstract-box class gives its feed-abstract browser
+ *  when its `_ensureFeedAbstractBrowserExists` is the code Weavero copies -- a serial()
+ *  that makes the browser with these four attributes and then waits for nothing but a
+ *  STATE_STOP of its load -- else null (Zotero changed it: its own code runs). */
+function wvFabShape(cls: any): string | null {
+    try {
+        if (!cls) return null;
+        if (wvFabShapes.has(cls)) return wvFabShapes.get(cls) as string | null;
+        let out: string | null = null;
+        const src = Function.prototype.toString.call(cls);
+        const at = src.search(/_ensureFeedAbstractBrowserExists\s*=\s*Zotero\.Utilities\.Internal\.serial\(/);
+        if (at >= 0) {
+            const end = src.indexOf("_discardFeedAbstractBrowser", at);
+            const body = src.slice(at, end > at ? end : at + 4000);
+            const need = [
+                /if\s*\(\s*!this\._feedAbstractBrowser\s*\)/,
+                /createXULElement\(\s*["']browser["']\s*\)/,
+                /setAttribute\(\s*["']type["']\s*,\s*["']content["']\s*\)/,
+                /setAttribute\(\s*["']maychangeremoteness["']\s*,\s*["']true["']\s*\)/,
+                /setAttribute\(\s*["']messagemanagergroup["']\s*,\s*["']feedAbstract["']\s*\)/,
+                /querySelector\(\s*["']\.body["']\s*\)\s*\.appendChild\(\s*this\._feedAbstractBrowser\s*\)/,
+                /browsingContext\.sandboxFlags\s*\|=\s*SANDBOX_ALL_FLAGS/,
+                /stateFlags\s*&\s*Ci\.nsIWebProgressListener\.STATE_STOP/,
+                /addProgressListener\(/,
+            ];
+            const attrs = (body.match(/setAttribute\(/g) || []).length;
+            // Anything else that could end the wait is Zotero's own fix.
+            const settles = /isConnected|MutationObserver|[Dd]iscard|reject|setTimeout|Promise\.race|STATE_IS_|onLocationChange|addEventListener|browsingContext\s*\)/.test(body.replace(/_discardFeedAbstractBrowser/g, ""));
+            // Only an out-of-process browser: Zotero 10.0.8 makes it in process (remote="false",
+            // "fx128: about:blank no longer displays content when loaded remotely"), and taking
+            // that one out of the page mid-load DOES end its load -- its call resolves, nothing
+            // waits (measured 2026-11-24 on Zotero 10.0.8 with no add-on).
+            const remote = /setAttribute\(\s*["']remote["']\s*,\s*["'](true|false)["']\s*\)/.exec(body);
+            if (remote && remote[1] === "true" && attrs === 4 && !settles && need.every((re) => re.test(body))) out = remote[1];
         }
+        wvFabShapes.set(cls, out);
+        return out;
     }
+    catch (e) { return null; }
+}
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // WV-TEMP-134823 (forums.zotero.org/discussion/134823, upstream register #64).
-    // Zotero 11: a reader tab selected while the item pane is closed renders its item
-    // details collapsed (every box skipped); opening the pane again draws the sections
-    // as they come into view, but the HEADER (title / citation) stays blank until another
-    // tab is selected. The context pane's re-render on opening (elements/contextPane.js
-    // handleCollapse) runs only when the inner pane's old `collapsed` value was "true",
-    // and Zotero's own collapse writes it with toggleAttribute -- "" (contextPane.js
-    // `collapsed` setter) -- in the standard layout. Zotero 10.0.8 draws it (no add-on,
-    // 2026-11-17). Here: the same re-render for an old value of "" (Zotero's own call,
-    // `_getItemContext(selected).render()`).
-    //
-    // RETIRE WHEN handleCollapse re-renders for any old value, or the setter writes
-    // "true"; installs nothing once either changes (the gate reads both). Tripwire in
-    // test/upstream-fixes.spec.js.
-    // ─────────────────────────────────────────────────────────────────────────
-    _wvWireCtxHeaderFix(win: any) {
-        try {
-            const doc = win && win.document;
-            const inner: any = doc && doc.getElementById("zotero-context-pane-inner");
-            const CP: any = win && win.ZoteroContextPane;
-            if (!inner || typeof inner.handleCollapse !== "function" || !CP) return;
-            const wraps = inner._wvWraps && inner._wvWraps.handleCollapse;
-            const native = wraps ? wraps.native : inner.handleCollapse;
-            if (!/prevState\s*===\s*["']true["']/.test(String(native))) return;   // Zotero's own fix is in
-            let setter = "";
-            try { const d = Object.getOwnPropertyDescriptor(CP, "collapsed"); setter = d && d.set ? String(d.set) : ""; } catch (e) {}
-            if (!/toggleAttribute\(\s*['"]collapsed['"]/.test(setter)) return;   // the setter writes "true" now
-            wvWrap(inner, "handleCollapse", "ctxHeader", (this as any)._wvWireTag(), (orig: any) => function (this: any, prevState: any, newState: any) {
-                const r = orig.call(this, prevState, newState);
-                try {
-                    if (prevState === "" && (!newState || newState === "false")) {
-                        const Z = win.Zotero_Tabs;
-                        const ctx = Z && typeof this._getItemContext === "function" ? this._getItemContext(Z.selectedID) : null;
-                        if (ctx && typeof ctx.render === "function") ctx.render();
-                    }
-                } catch (e) {}
-                return r;
-            });
-        } catch (e) { Zotero.debug("[Weavero] _wvWireCtxHeaderFix err: " + e); }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // WV-TEMP-134826 (forums.zotero.org/discussion/134826, upstream register #53).
-    // Zotero 11: a window with no library view (a PDF or note moved to a window of its
-    // own) can be narrowed until its open item pane and side navigation are cut off at
-    // the right edge. ZoteroPane.updateLayoutConstraints sets --width-of-fixed-components
-    // to 0px in such a window, and the window's minimum is max(that + 370, 570)
-    // (_mainWindow.scss), so the item pane (min 320) and its side navigation (37) beside
-    // the tabs deck (min 570) are not counted: 570px allowed for a 927px need. A window
-    // with a library counts them (same function). Here: after Zotero's pass, in a window
-    // without a library whose item pane is open beside the deck (standard layout), the
-    // fixed width is set so the minimum is 570 + 320 + 37 -- the same minimums Zotero
-    // uses. Closed pane, stacked layout, or a library window: Zotero's own value.
-    //
-    // RETIRE WHEN updateLayoutConstraints no longer zeroes the fixed width for a window
-    // without a library (the gate reads its source). Tripwire in
-    // test/upstream-fixes.spec.js.
-    // ─────────────────────────────────────────────────────────────────────────
-    _wvWireNarrowPaneFix(win: any) {
-        try {
-            const ZP = win && win.ZoteroPane;
-            if (!ZP || typeof ZP.updateLayoutConstraints !== "function") return;
-            const wraps = ZP._wvWraps && ZP._wvWraps.updateLayoutConstraints;
-            const native = wraps ? wraps.native : ZP.updateLayoutConstraints;
-            if (!/!this\.libraryView[\s\S]{0,200}--width-of-fixed-components['"]\s*,\s*['"]0px/.test(String(native))) return;   // Zotero's own fix is in
-            wvWrap(ZP, "updateLayoutConstraints", "narrowPane", (this as any)._wvWireTag(), (orig: any) => function (this: any, ...args: any[]) {
-                const r = orig.apply(this, args);
-                try { const lp = live(); if (lp && !lp._wvDestroyed) lp._wvNarrowPaneMin(win); } catch (e) {}
-                return r;
-            });
-            try { ZP.updateLayoutConstraints(); } catch (e) {}
-        } catch (e) { Zotero.debug("[Weavero] _wvWireNarrowPaneFix err: " + e); }
-    }
-
-    /** The fixed width of a window without a library while its item pane is open beside
-     *  the tabs deck: Zotero's minimum rule then gives 570 + 320 + 37 (WV-TEMP-134826). */
-    _wvNarrowPaneMin(win: any) {
-        try {
-            const ZP = win && win.ZoteroPane;
-            const doc = win && win.document;
-            if (!ZP || !doc || ZP.libraryView) return;
-            const stack = doc.getElementById("zotero-pane-stack");
-            if (stack && stack.hidden) return;
-            const CP = win.ZoteroContextPane;
-            const stacked = Zotero.Prefs.get("layout") === "stacked" || !!Zotero.Prefs.get("tempStackedMode");
-            if (!CP || CP.collapsed || stacked) return;
-            // Keep in sync with Zotero's _variables.scss: $min-width-tabs-deck 570,
-            // $min-width-item-pane 320, $width-sidenav 37, $min-width-items-pane 370
-            // (the rule adds the last to the fixed width).
-            const fixed = 570 + 320 + 37 - 370;
-            doc.documentElement.style.setProperty("--width-of-fixed-components", fixed + "px");
-        } catch (e) {}
-    }
-
-    _wvTeardownNarrowPaneFix() {
-        for (const w of wvMainWins() as any[]) {
-            try {
-                if (w && w.ZoteroPane && wvUnwrap(w.ZoteroPane, "updateLayoutConstraints", "narrowPane")) {
-                    try { w.ZoteroPane.updateLayoutConstraints(); } catch (e) {}
-                }
-            } catch (e) {}
-        }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // WV-TEMP-134772 (forums.zotero.org/discussion/134772, upstream register #18).
-    // Zotero 11.0-beta.4: right-click on a PDF page -> Automatically Resize, Zoom to Page
-    // Width / Height, Split Horizontally / Vertically greyed and dead. ReaderInstance.
-    // _openContextMenu builds each item by toggling its disabled attribute with
-    // item.disabled as the force: an item with no `disabled` key passes undefined, which
-    // is no `force`, and the call turns the attribute ON. (Not quoted as code here:
-    // compat.spec.js scans the bundle, comments included, for that call form.) FIXED UPSTREAM: zotero 3e32faa0a (2026-11-14, linking the
-    // thread): `!!item.disabled` -- not in a beta yet on 2026-11-18. Weavero's own entries
-    // were already safe (lib/dom.ts wvReaderMenuEvent); this gives Zotero's own the same
-    // boolean, before Zotero builds the menu: exactly what its fix does.
-    //
-    // RETIRE WHEN the beta ships 3e32faa0a: the gate (the unfixed line in the shared
-    // ReaderInstance prototype's _openContextMenu) then installs nothing. Tripwire in
-    // test/upstream-fixes.spec.js.
-    // ─────────────────────────────────────────────────────────────────────────
-    /** Wraps the shared reader prototype's _openContextMenu once, from reader `r` (or
-     *  any open reader): ReaderInstance is not exported, its prototype is on every
-     *  reader's chain. Called by the reader toolbar handler (every reader) and init. */
-    _wvWireReaderMenuFix(r?: any) {
-        try {
-            const P: any = this;
-            if (P._wvReaderMenuProto) return;
-            const R: any = (Zotero as any).Reader;
-            const reader = r || (R && Array.isArray(R._readers) ? R._readers[0] : null);
-            if (!reader) return;
-            let proto = Object.getPrototypeOf(reader);
-            while (proto && !Object.prototype.hasOwnProperty.call(proto, "_openContextMenu")) proto = Object.getPrototypeOf(proto);
-            if (!proto) return;
-            const wraps = proto._wvWraps && proto._wvWraps._openContextMenu;
-            const native = wraps ? wraps.native : proto._openContextMenu;
-            if (!/toggleAttribute\(\s*['"]disabled['"]\s*,\s*item\.disabled\s*\)/.test(String(native))) return;   // Zotero's own fix is in
-            const fix = (items: any) => {
-                if (!items || typeof items.length !== "number") return;
-                for (let i = 0; i < items.length; i++) {
-                    const it = items[i];
-                    if (!it || typeof it !== "object") continue;
-                    if (it.disabled === undefined) { try { it.disabled = false; } catch (e) {} }
-                    if (it.groups && typeof it.groups.length === "number") for (let g = 0; g < it.groups.length; g++) fix(it.groups[g]);
+/** Weavero's serial() for one section: one call at a time, each waiting for the one
+ *  before it to RELEASE -- which a call does once its browser has loaded, or once its
+ *  browser left the page (Zotero's ConcurrentCaller waits for its call to resolve). The
+ *  first call runs at once, as Zotero's does. */
+function wvFabSerial(box: any, remote: string): () => Promise<void> {
+    let busy = false;
+    const queue: Array<() => void> = [];
+    const next = () => {
+        const run = queue.shift();
+        if (run) run();
+        else busy = false;
+    };
+    return function () {
+        return new Promise<void>((resolve, reject) => {
+            const run = () => {
+                busy = true;
+                let released = false;
+                const release = () => {
+                    if (released) return;
+                    released = true;
+                    Promise.resolve().then(next);
+                };
+                try { wvFabEnsure(box, remote, resolve, release); }
+                catch (e) {
+                    // As Zotero's serial() (ConcurrentCaller, onError: Zotero.logError).
+                    try { Zotero.logError(e); } catch (e2) {}
+                    reject(e);
+                    release();
                 }
             };
-            wvWrap(proto, "_openContextMenu", "menuDisabled", P._wvWireTag(), (orig: any) => function (this: any, params: any, ...rest: any[]) {
-                try {
-                    const groups = params && params.itemGroups;
-                    if (groups && typeof groups.length === "number") for (let g = 0; g < groups.length; g++) fix(groups[g]);
-                } catch (e) {}
-                return orig.call(this, params, ...rest);
-            });
-            P._wvReaderMenuProto = proto;
-        } catch (e) { Zotero.debug("[Weavero] _wvWireReaderMenuFix err: " + e); }
-    }
+            if (busy) queue.push(run);
+            else run();
+        });
+    };
+}
 
-    _wvTeardownReaderMenuFix() {
-        try {
-            const P: any = this;
-            if (P._wvReaderMenuProto) wvUnwrap(P._wvReaderMenuProto, "_openContextMenu", "menuDisabled");
-            P._wvReaderMenuProto = null;
-        } catch (e) {}
+/** One call: `settle` lets Zotero's _renderFeedItem draw (a browser is there and has
+ *  loaded), `release` lets the next call run. */
+function wvFabEnsure(box: any, remote: string, settle: () => void, release: () => void): void {
+    let b: any = box._feedAbstractBrowser;
+    // As Zotero: a browser there, loaded, is taken as it is. One left behind by a move AFTER
+    // its load is WV-TEMP-134893's case, dropped by that stand-in before the render --
+    // kept apart, so each tripwire sees Zotero's own code for its own case.
+    if (b) {
+        settle();
+        release();
+        return;
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // WV-TEMP-134824 (forums.zotero.org/discussion/134824, upstream registers #58, #59).
-    // Zotero 11 with several windows: a new item made in one window (File > New Item,
-    // New Standalone Note, a Connector save) takes the selection of every window showing
-    // that list and wipes their quick search; a new collection or saved search moves
-    // EVERY window and library tab onto it. Every library view's item tree and
-    // collection tree observes the notifier and, on 'add', selects the new object unless
-    // its extraData says `skipSelect` (collectionViewItemTree.jsx 822 + 1048,
-    // itemTree.jsx handleRowModelUpdate 1349; collectionTree.jsx 1127 `selectRow`);
-    // nothing in extraData names the window it came from. Zotero 10 had one view.
-    // Here: each view's trees are wrapped; an 'add' reaching a view that is not the
-    // active view of the active main window (where the command ran; the Connector's
-    // target too) is passed on with `skipSelect` (on a copy: the notifier hands every
-    // observer the same object), so Zotero's own keep-the-selection path runs there.
-    //
-    // RETIRE WHEN the collection tree's 'add' stops selecting in every view (the gate
-    // reads `selectRow = ids.length == 1` without an active-window check in
-    // collectionTree.notify) -- or a plain beta keeps the other windows as they were.
-    // Tripwire in test/upstream-fixes.spec.js.
-    // ─────────────────────────────────────────────────────────────────────────
-    _wvWireAddSelectFix(win: any) {
-        try {
-            const P: any = this;
-            const ZP = win && win.ZoteroPane;
-            const views: any[] = ZP && Array.isArray(ZP.libraryViews) ? ZP.libraryViews : (ZP && ZP.libraryView ? [ZP.libraryView] : []);
-            if (!views.length) return;
-            const tag = P._wvWireTag();
-            for (const view of views) {
-                const ct = view && view.collectionsView;
-                const it = view && view.itemsView;
-                if (!ct || typeof ct.notify !== "function") continue;
-                // Zotero's own notify, under Weavero's layers: tabs.ts
-                // _wvGuardCollectionSelectCrossWindow (2026-07, a window's ACTIVE
-                // collection tree, collections only: kept, and this one leaves that tree
-                // alone) and wvWrap's table.
-                const guarded = !!ct._wvOrigNotifyForSelectGuard;
-                const cw = ct._wvWraps && ct._wvWraps.notify;
-                const base = guarded ? ct._wvOrigNotifyForSelectGuard : (cw ? cw.native : ct.notify);
-                const nat = String(base);
-                if (!/selectRow\s*=\s*ids\.length\s*==\s*1/.test(nat) || /getActiveZoteroPane|isActiveView/.test(nat)) continue;   // Zotero's own fix is in
-                const isOrigin = (tree: any) => {
-                    try {
-                        const lv = tree && tree.domEl && typeof tree.domEl.closest === "function" ? tree.domEl.closest("library-view") : null;
-                        if (!lv) return true;   // a tree outside a library view (a dialog): Zotero's own
-                        const ap = (Zotero as any).getActiveZoteroPane && (Zotero as any).getActiveZoteroPane();
-                        return !!ap && ap.libraryView === lv;
-                    } catch (e) { return true; }
-                };
-                const make = (types: string[]) => (orig: any) => function (this: any, action: any, type: any, ids: any, extraData: any, ...rest: any[]) {
-                    try {
-                        if (action === "add" && types.includes(type) && Array.isArray(ids) && !isOrigin(this)) {
-                            const ed: any = Object.assign({}, extraData || {});
-                            for (const id of ids) ed[id] = Object.assign({}, ed[id] || {}, { skipSelect: true });
-                            extraData = ed;
-                        }
-                    } catch (e) {}
-                    return orig.call(this, action, type, ids, extraData, ...rest);
-                };
-                if (!guarded) wvWrap(ct, "notify", "addSelect", tag, make(["collection", "search", "feed"]));
-                if (it && typeof it.notify === "function") wvWrap(it, "notify", "addSelect", tag, make(["item"]));
-            }
-        } catch (e) { Zotero.debug("[Weavero] _wvWireAddSelectFix err: " + e); }
-    }
-
-    _wvTeardownAddSelectFix() {
-        for (const w of wvMainWins() as any[]) {
-            try {
-                const ZP = w && w.ZoteroPane;
-                const views: any[] = ZP && Array.isArray(ZP.libraryViews) ? ZP.libraryViews : (ZP && ZP.libraryView ? [ZP.libraryView] : []);
-                for (const view of views) {
-                    try { if (view && view.collectionsView) wvUnwrap(view.collectionsView, "notify", "addSelect"); } catch (e) {}
-                    try { if (view && view.itemsView) wvUnwrap(view.itemsView, "notify", "addSelect"); } catch (e) {}
-                }
-            } catch (e) {}
+    // Zotero's lines (abstractBox.js 11.0-beta.5:261-269), `this` = the section:
+    // dynamically create a browser element to avoid spawning a process for every tab (#4530)
+    b = box._feedAbstractBrowser = box.ownerDocument.createXULElement("browser");
+    b.setAttribute("type", "content");
+    b.setAttribute("remote", remote);
+    b.setAttribute("maychangeremoteness", "true");
+    b.setAttribute("messagemanagergroup", "feedAbstract");
+    box.querySelector(".body").appendChild(b);
+    b.browsingContext.sandboxFlags |= WV_FAB_SANDBOX_ALL_FLAGS;
+    const webProgress = b.browsingContext.webProgress;
+    // Zotero waits for a STATE_STOP alone (271-289). A browser taken out of the page
+    // before its load stopped never sends one; here its leaving ends the wait too.
+    const Ci = Components.interfaces;
+    let done = false;
+    let mo: any = null;
+    const rec = { stop: () => finish(null) };
+    const progressListener: any = {
+        onStateChange(_progressData: any, _requestData: any, stateFlags: number) {
+            // A stop that comes for a browser already out of the page is its leaving.
+            if (stateFlags & Ci.nsIWebProgressListener.STATE_STOP) finish(!!(b.isConnected && b.browsingContext));
+        },
+        QueryInterface: ChromeUtils.generateQI(["nsIWebProgressListener", "nsISupportsWeakReference"]),
+    };
+    function finish(loaded: boolean | null) {
+        if (done) return;
+        done = true;
+        if (wvFabPending.get(box) === rec) wvFabPending.delete(box);
+        try { webProgress.removeProgressListener(progressListener); } catch (e) {}
+        try { if (mo) mo.disconnect(); } catch (e) {}
+        if (loaded) {
+            settle();
+            release();
+            return;
         }
+        if (loaded === null) {
+            // Weavero goes away mid-load: the half-loaded browser goes with it, and the next
+            // render (Zotero's own code, or the next Weavero) makes a new one.
+            try {
+                if (box._feedAbstractBrowser === b) box._feedAbstractBrowser = null;
+                b.remove();
+            } catch (e) {}
+            release();
+            return;
+        }
+        // The browser left the page before its first load stopped. Zotero did not drop it
+        // (the section moved -- a plugin's section registered or removed, a drag in the side
+        // navigation): the section, back in the page, gets a new browser for the call. A
+        // browser Zotero dropped itself (_discardFeedAbstractBrowser: a library item shown)
+        // or a section gone from the page leaves the call where it is -- going on would draw
+        // a feed abstract over what the section shows now -- and the next call runs.
+        if (box._feedAbstractBrowser === b) {
+            box._feedAbstractBrowser = null;
+            try {
+                const item = box.item;
+                if (box.isConnected && item && item.isFeedItem && box.querySelector(".body")) {
+                    wvFabEnsure(box, remote, settle, release);
+                    return;
+                }
+            }
+            catch (e) { Zotero.debug("[Weavero] WV-TEMP-134893b: no new feed-abstract browser: " + e); }
+        }
+        release();
     }
+    wvFabPending.set(box, rec);
+    try {
+        const win = winOf(box);
+        mo = new win.MutationObserver(() => {
+            try { if (!b.isConnected || !b.browsingContext) finish(false); } catch (e) {}
+        });
+        mo.observe(box, { childList: true, subtree: true });
+    }
+    catch (e) { Zotero.debug("[Weavero] WV-TEMP-134893b: observer err: " + e); }
+    webProgress.addProgressListener(progressListener, Ci.nsIWebProgress.NOTIFY_STATE_ALL);
+}
 
+class _UpstreamFixesMixin {
     // ─────────────────────────────────────────────────────────────────────────
     // WV-TEMP-134825 (forums.zotero.org/discussion/134825, upstream register #50).
     // Zotero 11, several windows, one showing a PDF: after a restart the PDF window is
@@ -366,7 +257,12 @@ class _UpstreamFixesMixin {
     // RETIRE WHEN a plain beta keeps the window you were in after a restart with a PDF
     // window open (z6035-focus-probe.py --no-addon, register #50). No spec can restart
     // the runner; manual protocol: work/zotero-upstream-bugs.md #50 steps (needs an idle
-    // machine: Windows' foreground lock).
+    // machine: Windows' foreground lock). Zotero's fix is in 11.0-beta.5 (zotero
+    // d52817fef7: ReaderInstance.focus / EditorInstance.focus go through
+    // Utilities.Internal.focusIframeWindow, which focuses a frame of a window behind
+    // another main window only within it) -- not yet seen to hold across a restart.
+    // Zotero 10 never runs this (wvNativeWindows): once the probe keeps the window on
+    // beta.5, remove it whole.
     // ─────────────────────────────────────────────────────────────────────────
     _wvStartRestoreFocusFix() {
         try {
@@ -802,9 +698,8 @@ class _UpstreamFixesMixin {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // WV-TEMP-feedabstract (not posted yet: MJT 2026-11-22 "Ok" to a forum report; rename
-    // to the thread number once it is; upstream register entry "Feed abstract blank after
-    // the item pane's sections move"). A feed item's abstract is drawn in a sandboxed
+    // WV-TEMP-134893 (forums.zotero.org/discussion/134893, MJT's thread, 2026-11-22;
+    // upstream register #71). A feed item's abstract is drawn in a sandboxed
     // <browser> the Abstract section makes once (elements/abstractBox.js
     // _ensureFeedAbstractBrowserExists, 11.0-beta.5:259-292). When the section is moved
     // -- Zotero re-orders every section to the saved side-navigation order whenever a
@@ -860,6 +755,160 @@ class _UpstreamFixesMixin {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // WV-TEMP-134893b (forum 134893's second facet; Ubuntu W16, 2026-11-24; upstream
+    // register #71). The Abstract section draws a feed abstract in a <browser> it makes,
+    // then waits for that browser's first load to stop -- one call at a time
+    // (_ensureFeedAbstractBrowserExists, a serial() class field, abstractBox.js
+    // 11.0-beta.5:259-292). When the sections are re-ordered while that load runs (~100 ms
+    // after a feed item is shown: a plugin registering or removing a section at its start,
+    // install or reload; a drag in the side navigation at that moment), the move takes the
+    // browser out of the page, its load never stops, the call never ends, every later call
+    // waits behind it, and the window's Abstract section stays blank until a restart.
+    // WV-TEMP-134893 cannot reach that: nothing is left to make a new browser. Here (MJT
+    // 2026-11-24, option a) each section gets Weavero's copy of that method (wvFabSerial /
+    // wvFabEnsure above, Zotero's code for the browser): its wait also ends when the browser
+    // leaves the page, and a section moved meanwhile gets a new browser. A section that
+    // was jammed before Weavero started is freed by the copy too (with WV-TEMP-134893, which
+    // drops the browser the jam left behind).
+    //
+    // Gate (wvFabShape): only where the window's abstract-box class has exactly the code
+    // copied -- a serial() making an out-of-process browser with these attributes and
+    // waiting for a STATE_STOP alone: Zotero 11 (11.0-beta.5 and main 2026-11-23). Zotero
+    // 10.0.8 has the same code with remote="false": its in-process browser's load does end
+    // when the browser is taken out mid-load, nothing waits (measured with no add-on,
+    // 2026-11-24), and the dead reference left is WV-TEMP-134893's case -- nothing is
+    // installed there.
+    //
+    // RETIRE WHEN Zotero's own call ends on a browser taken out of the page (the gate reads
+    // the method in the class source and installs nothing once it checks anything else);
+    // the tripwire in test/upstream-fixes.spec.js ("torn down, B stays blank") then fails.
+    // ─────────────────────────────────────────────────────────────────────────
+    _wvWireFeedLoadFix(win: any) {
+        try {
+            const CE = win && win.customElements;
+            if (!CE) return;
+            const cls: any = CE.get("abstract-box");
+            if (!cls) {
+                try {
+                    CE.whenDefined("abstract-box").then(() => {
+                        try { const lp = live(); if (lp && !lp._wvDestroyed && !win.closed) lp._wvWireFeedLoadFix(win); } catch (e) {}
+                    }, () => {});
+                } catch (e) {}
+                return;
+            }
+            const proto = cls.prototype;
+            if (!proto || typeof proto._renderFeedItem !== "function" || !this._wvFeedLoadBugIn(win)) return;
+            // The method is a class field (each section's own): every section that draws a
+            // feed abstract takes the copy on its way in, the ones already there now.
+            wvWrap(proto, "_renderFeedItem", WV_FAB_LAYER, (this as any)._wvWireTag(), (orig: any) => function (this: any, ...args: any[]) {
+                try { const lp = live(); if (lp && !lp._wvDestroyed) lp._wvFeedLoadTake(this); } catch (e) {}
+                return orig.apply(this, args);
+            });
+            for (const box of Array.from(win.document.querySelectorAll("abstract-box")) as any[]) this._wvFeedLoadTake(box);
+        } catch (e) { Zotero.debug("[Weavero] _wvWireFeedLoadFix err: " + e); }
+    }
+
+    /** Whether the window's Abstract section has the code WV-TEMP-134893b replaces. */
+    _wvFeedLoadBugIn(win: any): boolean {
+        try {
+            const cls: any = win && win.customElements && win.customElements.get("abstract-box");
+            return !!wvFabShape(cls);
+        } catch (e) { return false; }
+    }
+
+    /** Section `el` (or the graphical-abstract stand-in of one, feeds-graphical.ts: a
+     *  native DOM method runs on the element itself) takes Weavero's copy. */
+    _wvFeedLoadTake(el: any) {
+        try {
+            const box = el && typeof el.closest === "function" ? el.closest("abstract-box") : null;
+            if (!box || typeof box._ensureFeedAbstractBrowserExists !== "function") return;
+            const w = winOf(box);
+            const remote = wvFabShape(w && w.customElements && w.customElements.get("abstract-box"));
+            if (!remote) return;
+            wvWrap(box, "_ensureFeedAbstractBrowserExists", WV_FAB_LAYER, (this as any)._wvWireTag(), () => wvFabSerial(box, remote));
+        } catch (e) { Zotero.debug("[Weavero] _wvFeedLoadTake err: " + e); }
+    }
+
+    _wvTeardownFeedLoadFix() {
+        for (const w of wvMainWins() as any[]) {
+            try {
+                const cls: any = w && w.customElements && w.customElements.get("abstract-box");
+                if (cls && cls.prototype) wvUnwrap(cls.prototype, "_renderFeedItem", WV_FAB_LAYER);
+                for (const box of Array.from(w.document.querySelectorAll("abstract-box")) as any[]) {
+                    try { const rec = wvFabPending.get(box); if (rec) rec.stop(); } catch (e) {}
+                    try { wvUnwrap(box, "_ensureFeedAbstractBrowserExists", WV_FAB_LAYER); } catch (e) {}
+                }
+            } catch (e) {}
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // WV-TEMP-FEEDHEAD (no forum thread yet; fdcrash, 2026-11-22). Zotero.crash() --
+    // "An error has occurred. Please restart Zotero.", the items view locked until a
+    // restart -- after "can't access property "label", elem is null" in itemPane.js.
+    // itemSelected (11.0-beta.5 libraryView.js 862-907, 10.0.8 zoteroPane.js 2223-2268)
+    // hands the item pane the COLLECTIONS pane's rows and the ITEMS view's selection;
+    // updateItemPaneButtons draws the feed buttons only for a feed row (itemPane.js
+    // 383-387), while renderItemPane labels them for a feed ITEM (235-249 ->
+    // setTranslateButton 581-585) and the item observer for a feed row (180-185 ->
+    // setReadLabel 511-514), neither checking the button is there. The two disagree
+    // when an items-view refresh lands across a collection switch: each item-tree column
+    // (un)registration -- every plugin's start and shutdown, Weavero's ~8 columns at a
+    // reload -- runs refreshAndMaintainSelection (itemTree.jsx 1561-1580), which captures
+    // the selection, awaits a serial refresh, then restores it: a feed item restored after
+    // the user picked My Library is rendered under My Library's rows with no feed head.
+    // Reproduced with Weavero disabled, plain Zotero.ItemTreeManager calls then a switch:
+    // 9/24 trials on 11.0-beta.5, 4/24 on 10.0.8 (2026-11-22). Here: a
+    // label call with no button to label in the pane shown does nothing -- the head is
+    // drawn again by the next itemSelected, once the switch has landed.
+    //
+    // RETIRE WHEN Zotero checks the buttons (the gate reads both methods and installs
+    // nothing once either tests `elem`), or the tripwire in test/feeds-crash.spec.js
+    // ("torn down") no longer throws.
+    // ─────────────────────────────────────────────────────────────────────────
+    _wvWireFeedHeadFix(win: any) {
+        try {
+            const CE = win && win.customElements;
+            if (!CE) return;
+            const cls: any = CE.get("item-pane");
+            if (!cls) {
+                try {
+                    CE.whenDefined("item-pane").then(() => {
+                        try { const lp = live(); if (lp && !lp._wvDestroyed && !win.closed) lp._wvWireFeedHeadFix(win); } catch (e) {}
+                    }, () => {});
+                } catch (e) {}
+                return;
+            }
+            const proto = cls.prototype;
+            if (!proto || typeof proto.getCurrentPane !== "function") return;
+            const tag = (this as any)._wvWireTag();
+            for (const [m, sel] of WV_FEED_HEAD_LABELS) {
+                if (typeof proto[m] !== "function") continue;
+                const wraps = Object.prototype.hasOwnProperty.call(proto, "_wvWraps") && proto._wvWraps && proto._wvWraps[m];
+                const native = wraps ? wraps.native : proto[m];
+                if (/!\s*elem\b|elem\s*\?\.|elem\s*(?:===?|!==?)\s*null/.test(String(native))) continue;   // Zotero checks it now
+                wvWrap(proto, m, "feedHead", tag, (orig: any) => function (this: any, ...args: any[]) {
+                    try {
+                        const pane = this.getCurrentPane();
+                        if (pane && typeof pane.querySelector === "function" && !pane.querySelector(sel)) return undefined;
+                    } catch (e) {}
+                    return orig.apply(this, args);
+                });
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvWireFeedHeadFix err: " + e); }
+    }
+
+    _wvTeardownFeedHeadFix() {
+        for (const w of wvMainWins() as any[]) {
+            try {
+                const cls: any = w && w.customElements && w.customElements.get("item-pane");
+                if (!cls || !cls.prototype) continue;
+                for (const [m] of WV_FEED_HEAD_LABELS) wvUnwrap(cls.prototype, m, "feedHead");
+            } catch (e) {}
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // WV-TEMP-advsrchcollapse (MJT 2026-11-22, not yet posted; upstream register #72).
     // On the Feeds row (all feeds), a quick search and then the Advanced Search button
     // in the search field opens the Advanced Search with no Collapse or Close button: the
@@ -875,8 +924,8 @@ class _UpstreamFixesMixin {
     // updateMode 216-223), the field is not cleared, the seed never runs. Zotero knows
     // such a search cannot be cloned and copies it where the items list takes it
     // (collectionTreeRow.js 510-517, 644-648); the pane's setter does not. Stock
-    // 11.0-beta.5 and 10.0.8 with no add-on (D:/tmp/wv-scripts/advsrch-probe.py,
-    // 2026-11-22); zotero main of 2026-11-21 unchanged.
+    // 11.0-beta.5 and 10.0.8 with no add-on (probed 2026-11-22); zotero main of
+    // 2026-11-21 unchanged.
     // Here: a search with no library handed to a temporary pane is given the library the
     // pane's own search holds -- what its refresh() keeps on the Feeds row ("Keep the
     // previous library when the selected row doesn't have one (e.g., Feeds)",
@@ -980,66 +1029,172 @@ class _UpstreamFixesMixin {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // WV-TEMP-FEEDHEAD (no forum thread yet; fdcrash, 2026-11-22). Zotero.crash() --
-    // "An error has occurred. Please restart Zotero.", the items view locked until a
-    // restart -- after "can't access property "label", elem is null" in itemPane.js.
-    // itemSelected (11.0-beta.5 libraryView.js 862-907, 10.0.6 zoteroPane.js 2223-2268)
-    // hands the item pane the COLLECTIONS pane's rows and the ITEMS view's selection;
-    // updateItemPaneButtons draws the feed buttons only for a feed row (itemPane.js
-    // 383-387), while renderItemPane labels them for a feed ITEM (235-249 ->
-    // setTranslateButton 581-585) and the item observer for a feed row (180-185 ->
-    // setReadLabel 511-514), neither checking the button is there. The two disagree
-    // when an items-view refresh lands across a collection switch: each item-tree column
-    // (un)registration -- every plugin's start and shutdown, Weavero's ~8 columns at a
-    // reload -- runs refreshAndMaintainSelection (itemTree.jsx 1561-1580), which captures
-    // the selection, awaits a serial refresh, then restores it: a feed item restored after
-    // the user picked My Library is rendered under My Library's rows with no feed head.
-    // Reproduced with Weavero disabled (test/feeds-crash.spec.js; fdcrash-zonly). Here: a
-    // label call with no button to label in the pane shown does nothing -- the head is
-    // drawn again by the next itemSelected, once the switch has landed.
+    // WV-TEMP-114534 (forums.zotero.org/discussion/114534, MJT's thread, 2024, Zotero 7
+    // beta.79, no reply). With no item selected, the item pane's side navigation lists
+    // one fixed set whatever the view: the item pane turns the side navigation's no-item
+    // state on for every mode but item and duplicates (itemPane.js _handleViewTypeChange,
+    // 11.0-beta.5:750, 10.0.8:749), and that state shows exactly `_defaultPanes` -- Info,
+    // Abstract, Attachments, Notes, Libraries and Collections, Tags, Related, disabled
+    // (itemPaneSidenav.js renderDefaultStatus 659-664 and _defaultPanes 100-102; 10.0.8
+    // 656-661 and 100-102) -- never asking what the pane shows. A feed item has Info and
+    // Abstract only (the WV_SNF_LIBRARY_ONLY sections hide themselves for it), so a feed,
+    // or the Feeds row, with nothing selected lists five sections the view never has.
+    // Stock 11.0-beta.5 and 10.0.8 with no add-on, probed 2026-11-22. Here, layers on the
+    // window's item-pane-sidenav class: in that no-item
+    // state, inside an item pane showing feeds, renderDefaultStatus and updatePaneStatus
+    // (through which Zotero shows a button again in that state: its render(), a section a
+    // plugin adds) leave only Zotero's no-item sections a feed item has. And one on the
+    // item-pane class's renderMessage: My Library <-> a feed with nothing selected keeps
+    // the pane's mode, so Zotero never re-runs its list; the layer applies the one of the
+    // view now shown. Plugin sections (Weavero's too) stay hidden there, as Zotero
+    // hides them in every view's no-item state; a padlock mark (pane-lock.ts) sits on its
+    // button's wrapper and goes out of sight with it. Reader tabs' context panes never
+    // enter that state (contextPane.js 85, toggleDefaultStatus(false)).
     //
-    // RETIRE WHEN Zotero checks the buttons (the gate reads both methods and installs
-    // nothing once either tests `elem`), or the tripwire in test/feeds-crash.spec.js
-    // ("torn down") no longer throws.
+    // RETIRE WHEN Zotero's no-item list follows the view (the gate reads
+    // renderDefaultStatus, _defaultPanes, toggleDefaultStatus and the item pane's
+    // _handleViewTypeChange, and installs nothing once one of them mentions feeds or
+    // renderDefaultStatus no longer lists `_defaultPanes`). Tripwire in
+    // test/upstream-fixes.spec.js.
     // ─────────────────────────────────────────────────────────────────────────
-    _wvWireFeedHeadFix(win: any) {
+    _wvWireSidenavFeedFix(win: any) {
         try {
             const CE = win && win.customElements;
             if (!CE) return;
-            const cls: any = CE.get("item-pane");
-            if (!cls) {
+            const SN: any = CE.get("item-pane-sidenav");
+            const IP: any = CE.get("item-pane");
+            if (!SN || !IP) {
                 try {
-                    CE.whenDefined("item-pane").then(() => {
-                        try { const lp = live(); if (lp && !lp._wvDestroyed && !win.closed) lp._wvWireFeedHeadFix(win); } catch (e) {}
+                    Promise.all([CE.whenDefined("item-pane-sidenav"), CE.whenDefined("item-pane")]).then(() => {
+                        try { const lp = live(); if (lp && !lp._wvDestroyed && !win.closed) lp._wvWireSidenavFeedFix(win); } catch (e) {}
                     }, () => {});
                 } catch (e) {}
                 return;
             }
-            const proto = cls.prototype;
-            if (!proto || typeof proto.getCurrentPane !== "function") return;
+            if (!this._wvSidenavFeedBugIn(win)) return;   // Zotero's own fix is in
             const tag = (this as any)._wvWireTag();
-            for (const [m, sel] of WV_FEED_HEAD_LABELS) {
-                if (typeof proto[m] !== "function") continue;
-                const wraps = Object.prototype.hasOwnProperty.call(proto, "_wvWraps") && proto._wvWraps && proto._wvWraps[m];
-                const native = wraps ? wraps.native : proto[m];
-                if (/!\s*elem\b|elem\s*\?\.|elem\s*(?:===?|!==?)\s*null/.test(String(native))) continue;   // Zotero checks it now
-                wvWrap(proto, m, "feedHead", tag, (orig: any) => function (this: any, ...args: any[]) {
-                    try {
-                        const pane = this.getCurrentPane();
-                        if (pane && typeof pane.querySelector === "function" && !pane.querySelector(sel)) return undefined;
-                    } catch (e) {}
-                    return orig.apply(this, args);
-                });
-            }
-        } catch (e) { Zotero.debug("[Weavero] _wvWireFeedHeadFix err: " + e); }
+            wvWrap(SN.prototype, "renderDefaultStatus", "feedSidenav", tag, (orig: any) => function (this: any, ...args: any[]) {
+                const r = orig.apply(this, args);
+                try { const lp = live(); if (lp && !lp._wvDestroyed) lp._wvSidenavFeedApply(this); } catch (e) {}
+                return r;
+            });
+            wvWrap(SN.prototype, "updatePaneStatus", "feedSidenav", tag, (orig: any) => function (this: any, ...args: any[]) {
+                const r = orig.apply(this, args);
+                try { const lp = live(); if (lp && !lp._wvDestroyed && args[0]) lp._wvSidenavFeedApply(this, String(args[0])); } catch (e) {}
+                return r;
+            });
+            // renderMessage, not setItemPaneMessage: the item count's breakdown wraps the
+            // pane's own setItemPaneMessage and keeps the function it found (filter.ts
+            // _wvWireItemCountBreakdown), so a layer there stayed called after this one's
+            // teardown (found by the tripwire, 2026-11-22).
+            wvWrap(IP.prototype, "renderMessage", "feedSidenav", tag, (orig: any) => function (this: any, ...args: any[]) {
+                const r = orig.apply(this, args);
+                try { const lp = live(); if (lp && !lp._wvDestroyed) lp._wvSidenavFeedRefresh(this._sidenav); } catch (e) {}
+                return r;
+            });
+            // A window already showing a feed with nothing selected (a reload there).
+            for (const ip of Array.from(win.document.querySelectorAll("item-pane")) as any[]) this._wvSidenavFeedRefresh(ip && ip._sidenav);
+        } catch (e) { Zotero.debug("[Weavero] _wvWireSidenavFeedFix err: " + e); }
     }
 
-    _wvTeardownFeedHeadFix() {
+    /** Zotero's no-item side navigation still lists its fixed set whatever the view
+     *  (WV-TEMP-114534). The sources read are the natives under any layer. */
+    _wvSidenavFeedBugIn(win: any): boolean {
+        try {
+            const CE = win.customElements;
+            const SN: any = CE.get("item-pane-sidenav"), IP: any = CE.get("item-pane");
+            const sp: any = SN && SN.prototype, ip: any = IP && IP.prototype;
+            if (!sp || !ip || typeof sp.renderDefaultStatus !== "function" || typeof sp.updatePaneStatus !== "function"
+                || typeof ip.renderMessage !== "function") return false;
+            const nat = (host: any, m: string): string => {
+                const t = Object.prototype.hasOwnProperty.call(host, "_wvWraps") && host._wvWraps && host._wvWraps[m];
+                return String(t ? t.native : host[m]);
+            };
+            const render = nat(sp, "renderDefaultStatus");
+            if (!/_defaultPanes/.test(render)) return false;
+            const d = Object.getOwnPropertyDescriptor(sp, "_defaultPanes");
+            const src = [render, String(d ? (d.get || d.value) : ""), nat(sp, "toggleDefaultStatus"), nat(ip, "_handleViewTypeChange")].join("\n");
+            return !/feed/i.test(src);
+        } catch (e) { return false; }
+    }
+
+    /** Side navigation `sn` sits in an item pane showing feeds: a feed or the Feeds row
+     *  (every selected collection row; the pane's own feed checks read the first,
+     *  itemPane.js 182 and 383). */
+    _wvSidenavFeedView(sn: any): boolean {
+        try {
+            const ip = sn && sn.closest && sn.closest("item-pane");
+            const rows = ip && ip.collectionTreeRows;
+            if (!rows || !rows.length) return false;
+            for (const r of rows) if (!r || typeof r.isFeedsOrFeed !== "function" || !r.isFeedsOrFeed()) return false;
+            return true;
+        } catch (e) { return false; }
+    }
+
+    /** In its no-item state in a feed view, `sn` lists Zotero's no-item sections a
+     *  feed item has, and Weavero's own Feeds sections -- Why relevant, the
+     *  Graphical Abstract (feeds.ts, feeds-graphical.ts) -- disabled as Zotero's
+     *  no-item buttons are (MJT 2026-11-22: "Yes" to "With no item selected in
+     *  Feeds, should Weavero's Feeds sections show in the side navigation?");
+     *  other plugins' sections stay hidden there, as Zotero hides them in every
+     *  view's no-item state. `paneID`: that section's button alone, after Zotero's
+     *  updatePaneStatus. */
+    _wvSidenavFeedApply(sn: any, paneID?: string) {
+        try {
+            if (!sn) return;
+            if (!sn._defaultStatus || !this._wvSidenavFeedView(sn)) {
+                // Zotero's whole list just drawn again (renderDefaultStatus): nothing of ours left.
+                if (!paneID) wvSnfHid.delete(sn);
+                return;
+            }
+            const defs: string[] = Array.isArray(sn._defaultPanes) ? sn._defaultPanes : [];
+            const own = [(this as any)._wvFdSecKey, (this as any)._wvGaSecKey].filter((k: any) => typeof k === "string" && !!k);
+            for (const b of Array.from(sn.querySelectorAll(".btn[data-pane]")) as any[]) {
+                const id = String(b.dataset.pane || "");
+                if (paneID && id !== paneID) continue;
+                const w = b.parentElement;
+                if (!w) continue;
+                if (own.includes(id)) {
+                    wvSetBoolAttr(b, "disabled", true);   // as Zotero's no-item buttons
+                    if (w.hidden) { w.hidden = false; wvSnfHid.add(sn); }
+                    continue;
+                }
+                if (w.hidden) continue;
+                if (defs.includes(id) && !WV_SNF_LIBRARY_ONLY.includes(id)) continue;
+                w.hidden = true;
+                wvSnfHid.add(sn);
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvSidenavFeedApply err: " + e); }
+    }
+
+    /** The item pane showed its message (WV-TEMP-114534): `sn`'s no-item list for the
+     *  view now shown -- the feed one, or Zotero's own again where the fix hid buttons. */
+    _wvSidenavFeedRefresh(sn: any) {
+        try {
+            if (!sn || !sn._defaultStatus || typeof sn.renderDefaultStatus !== "function") return;
+            if (this._wvSidenavFeedView(sn)) this._wvSidenavFeedApply(sn);
+            else if (wvSnfHid.has(sn)) sn.renderDefaultStatus();
+        } catch (e) { Zotero.debug("[Weavero] _wvSidenavFeedRefresh err: " + e); }
+    }
+
+    _wvTeardownSidenavFeedFix() {
         for (const w of wvMainWins() as any[]) {
             try {
-                const cls: any = w && w.customElements && w.customElements.get("item-pane");
-                if (!cls || !cls.prototype) continue;
-                for (const [m] of WV_FEED_HEAD_LABELS) wvUnwrap(cls.prototype, m, "feedHead");
+                const CE = w && w.customElements;
+                const SN: any = CE && CE.get("item-pane-sidenav");
+                const IP: any = CE && CE.get("item-pane");
+                if (SN && SN.prototype) {
+                    wvUnwrap(SN.prototype, "renderDefaultStatus", "feedSidenav");
+                    wvUnwrap(SN.prototype, "updatePaneStatus", "feedSidenav");
+                }
+                if (IP && IP.prototype) wvUnwrap(IP.prototype, "renderMessage", "feedSidenav");
+                // Zotero's own list back where the fix hid buttons.
+                for (const ip of Array.from(w.document.querySelectorAll("item-pane")) as any[]) {
+                    const sn = ip && ip._sidenav;
+                    if (!sn || !wvSnfHid.has(sn)) continue;
+                    wvSnfHid.delete(sn);
+                    if (sn._defaultStatus && typeof sn.renderDefaultStatus === "function") sn.renderDefaultStatus();
+                }
             } catch (e) {}
         }
     }
@@ -1053,20 +1208,11 @@ class _UpstreamFixesMixin {
         }
     }
 
-    _wvTeardownCtxHeaderFix() {
-        for (const w of wvMainWins() as any[]) {
-            try {
-                const inner = w && w.document && w.document.getElementById("zotero-context-pane-inner");
-                if (inner) wvUnwrap(inner, "handleCollapse", "ctxHeader");
-            } catch (e) {}
-        }
-    }
-
     // ─────────────────────────────────────────────────────────────────────────
     // WV-TEMP-INTROCRASH (no forum thread: found by Weavero's suite on 2026-11-24 -- the
     // Zotero 10 runs that died in bg-restore-guard; upstream register entry). Zotero 10
     // CRASHES (WER APPCRASH, xul.dll+0x19f329d, a null read in nsNodeInfoManager::Allocate,
-    // minidump D:/tmp/3b6414b6-...dmp with "<b>Welcome to Zotero!</b>" on the stack) when a
+    // its minidump has "<b>Welcome to Zotero!</b>" on the stack) when a
     // main window closes while its items list is still loading over an EMPTY My Library
     // with no groups: collectionViewItemTree.js _updateIntroText() takes the window's
     // document, awaits `collectionTreeRows[0].ref.hasItems()`, then builds the intro with

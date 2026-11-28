@@ -220,7 +220,14 @@ class _PreviewHighlightMixin {
         if (this._wvDestroyed || !entry || !entry.rects.length) return null;
         // The link's own block is no destination: no mark (module header).
         const selfLink = this._wvPrevHlHoldsLink(popup, pageIndex, entry.rects.concat(target));
-        const marks = selfLink ? [] : entry.rects;
+        let marks = selfLink ? [] : entry.rects;
+        let how = selfLink ? "self-link" : entry.how;
+        // A citation of the paper's numbered list whose destination is not its entry (AIP's
+        // offset destinations, refsfix 2026-11-24): the entry its number names, or no mark --
+        // never the body text or the other entry the destination lands on
+        // (refs-cards.ts _wvRefsCardTint). Guard: test/refs-cards-offset.spec.js.
+        const cited = selfLink || typeof this._wvRefsCardTint !== "function" ? null : this._wvRefsCardTint(reader, pv, popup);
+        if (cited) { marks = cited.rects; how = cited.how; }
 
         // Through the Xray (unwaived): the context's options dictionary is
         // then read on this side; a waived call hands content a chrome object
@@ -262,7 +269,7 @@ class _PreviewHighlightMixin {
                 x: ((t0[0] + t0[2]) / 2 - tr[0]) / dpr,
                 y: ((t0[1] + t0[3]) / 2 - tr[1]) / dpr,
             };
-            this._wvPrevHlLastInfo = { how: selfLink ? "self-link" : entry.how, rects: marks.map(r => r.slice()), pageIndex };
+            this._wvPrevHlLastInfo = { how, rects: marks.map(r => r.slice()), pageIndex };
             return res;
         }
         finally {

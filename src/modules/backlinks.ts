@@ -34,6 +34,7 @@
 
 import { wvHtmlEl, wvPopupHost } from "../lib/dom";
 import { wvLivePlugin } from "../lib/live";
+import { wvOpenedInstance } from "../lib/compat";
 import { wvInjectStyle, wvRemoveStyle } from "../lib/style";
 import { wvMenuItem, wvMenuSeparator } from "../lib/menu";
 import { wvMainWins } from "../lib/windows";
@@ -52,6 +53,18 @@ import type { WvOpenWhere } from "../lib/keys";
 declare const Zotero: any;
 
 export const WV_BL_PANE_ID = "weavero-backlinks";
+/** Weavero's item-pane sections in their default order, by paneID (refs.ts
+ *  SEC_PANE_ID, cited-by.ts SEC_PANE_ID, links.ts WV_LK_PANE_ID, this file's):
+ *  References above the link sections (MJT 2026-11-20), Cited by right after
+ *  References. backlinks.ts _wvSidenavPlaceOurs. */
+export const WV_SIDENAV_ORDER = ["weavero-references", "weavero-citedby", "weavero-links", "weavero-backlinks"];
+/** A Weavero section placed beside one of ZOTERO's, by paneID, not after Related
+ *  with the others: the Graphical Abstract just ABOVE the Abstract it is taken from
+ *  (feeds-graphical.ts; MJT 2026-11-22, "Put the graphical abstract just above the
+ *  abstract" -- an exception to his 2026-11-19 "After Zotero's own sections").
+ *  Only its first placement; the user's own order wins after that.
+ *  backlinks.ts _wvSidenavPlaceOurs. */
+export const WV_SIDENAV_TIE: Record<string, { anchor: string; before?: boolean }> = { "weavero-graphical-abstract": { anchor: "abstract", before: true } };
 export const WV_BL_COLUMN_KEY = "weaveroBacklinks";
 /** The Links column (slice 2, 2026-10-27): the index read the other way. */
 export const WV_LK_COLUMN_KEY = "weaveroLinks";
@@ -101,7 +114,7 @@ export type WvRefKind = "links" | "backlinks";
 /** "1 Item Link" / "3 Item Links" / "1 Backlink" / "3 Backlinks" ("Item
  *  Links" since 2026-10-30, the section's and column's name). */
 export function wvRefTitle(n: number, kind: WvRefKind): string {
-    return n + (kind === "links" ? (n === 1 ? " Item Link" : " Item Links") : (n === 1 ? " Backlink" : " Backlinks"));
+    return wvStr("weavero-bl-ref-title", { kind, count: n });
 }
 
 /** The hover card's last line, shared by every row kind: the gestures of a row
@@ -129,6 +142,11 @@ export interface WvSectionDesc {
     bodyXHTML: string;
     hooks: { init: string; destroy: string; itemChange: string; render: string; asyncRender: string };
     enabled: (plugin: any) => boolean;
+    /** Buttons in the section's header, Zotero's own slot (ItemPaneManager
+     *  `sectionButtons`, itemPaneCustomSection.js registerSectionButton: where
+     *  Tags and Related put "+"); `onClick` a method name on the live instance
+     *  (list-filter.ts's magnifier, M4). */
+    buttons?: Array<{ type: string; icon: string; darkIcon?: string; l10nID: string; onClick: string }>;
 }
 
 const BL_SECTION: WvSectionDesc = {
@@ -480,7 +498,7 @@ export interface WvExtLink { url: string; at: number; len: number }
  *  tooltip naming the item both ends are in. */
 export function wvBlInternalMark(doc: any, owner: string): any {
     const el = wvHtmlEl(doc, "span", "wv-bl-internal");
-    el.title = "Internal link: both ends are in “" + owner + "”";
+    el.title = wvStr("weavero-bl-internal-tip", { title: owner });
     el.appendChild(wvLinkGlyphEl(doc, { backlink: "loop" }));
     return el;
 }
@@ -1158,11 +1176,13 @@ function blDrawSegs(doc: any, parent: any, segs: WvBlSeg[]) {
 /** Better Notes' position inside a note link -- `zotero://note/...?line=3`
  *  (its line index) or `?section=Name` -- worded as BN's own Outbound
  *  Links shows it ("Line 3", "#Name"; the section wins when both are set;
- *  BN fork, workspace/link.ts): "line 3", "#Name", or "". */
-function blNotePos(url: string): string {
+ *  BN fork, workspace/link.ts): which one, and its line or name; null for
+ *  none. The words are weavero.ftl's (`blNotePos`): the kind is what code
+ *  tests, never the shown text. */
+function blNotePosOf(url: string): { at: "section" | "line" | "heading"; value: string } | null {
     try {
         const m = /^zotero:\/\/note\/[^?#]*\?([^#]*)/.exec(unescapeEntities(String(url || "")));
-        if (!m) return "";
+        if (!m) return null;
         let line = "", section = "", heading = false;
         for (const kv of m[1].split("&")) {
             const i = kv.indexOf("=");
@@ -1172,18 +1192,26 @@ function blNotePos(url: string): string {
             else if (k === "line" && /^\d+$/.test(v)) line = v;
             else if (k === "wvheading" && v) heading = true;
         }
-        return section ? "#" + section : line ? "line " + line : heading ? "heading" : "";
+        return section ? { at: "section", value: section } : line ? { at: "line", value: line } : heading ? { at: "heading", value: "" } : null;
     }
-    catch (e) { return ""; }
+    catch (e) { return null; }
+}
+
+/** The same in words: "line 3", "#Name", "heading", or "". */
+function blNotePos(url: string): string {
+    const p = blNotePosOf(url);
+    return p ? wvStr("weavero-bl-note-pos", { at: p.at, value: p.value }) : "";
+}
+
+function blAttKindKey(att: any): "pdf" | "epub" | "snapshot" | "file" | "attachment" {
+    let t: any = "";
+    try { t = att.attachmentReaderType || ""; } catch (e) {}
+    if (t === "pdf" || t === "epub" || t === "snapshot") return t;
+    try { return att.isFileAttachment && att.isFileAttachment() ? "file" : "attachment"; } catch (e) { return "attachment"; }
 }
 
 function blAttKind(att: any): string {
-    let t: any = "";
-    try { t = att.attachmentReaderType || ""; } catch (e) {}
-    if (t === "pdf") return "PDF";
-    if (t === "epub") return "EPUB";
-    if (t === "snapshot") return "snapshot";
-    try { return att.isFileAttachment && att.isFileAttachment() ? "file" : "attachment"; } catch (e) { return "attachment"; }
+    return wvStr("weavero-bl-att-kind", { kind: blAttKindKey(att) });
 }
 
 /** Which file an annotation sits in, as " (Full Text PDF)", when its paper
@@ -1231,7 +1259,7 @@ function blLineage(item: any): any[] {
  *  annotation header puts before the page label. */
 function blReaderPage(): string {
     try { const s = (Zotero as any).ftl?.formatValueSync?.("reader-page"); if (s) return String(s); } catch (e) {}
-    return "Page";
+    return wvStr("weavero-bl-card-page");
 }
 
 /** Who wrote an annotation, as Zotero hands it to the reader
@@ -2318,7 +2346,7 @@ class _BacklinksMixin {
             }
             if (!n) { if (btn) btn.remove(); return; }
             const doc = row.ownerDocument;
-            const title = n + (n === 1 ? " Backlink" : " Backlinks");
+            const title = wvRefTitle(n, "backlinks");
             if (!btn) {
                 this._wvBlEnsureStyle(doc);
                 btn = wvHtmlEl(doc, "div", "clicky-item keyboard-clickable wv-att-bl-btn");
@@ -2603,7 +2631,7 @@ class _BacklinksMixin {
                 if (lp && typeof lp[name] === "function") return lp[name](props);
                 return undefined;
             };
-            const key = M.registerSection({
+            const opts: any = {
                 paneID: desc.paneID,
                 pluginID: WV_BL_PLUGIN_ID,
                 header: { l10nID: desc.header.l10nID, l10nArgs: JSON.stringify({ count: 0 }), icon: desc.header.icon, darkIcon: desc.header.darkIcon },
@@ -2614,14 +2642,19 @@ class _BacklinksMixin {
                 onItemChange: hook(desc.hooks.itemChange),
                 onRender: hook(desc.hooks.render),
                 onAsyncRender: hook(desc.hooks.asyncRender),
-                // No header button: the header's counts list the levels
-                // (pane-scope.ts; MJT 2026-10-29, "Ok for A" -- the scope
+                // No header button on Backlinks / Links: the header's counts list
+                // the levels (pane-scope.ts; MJT 2026-10-29, "Ok for A" -- the scope
                 // button dev.98-111 carried here was redundant with them).
-            });
+            };
+            if (desc.buttons && desc.buttons.length) {
+                opts.sectionButtons = desc.buttons.map((b) => ({ type: b.type, icon: b.icon, darkIcon: b.darkIcon || b.icon, l10nID: b.l10nID, onClick: hook(b.onClick) }));
+            }
+            const key = M.registerSection(opts);
             if (!key) return false;
             self[desc.inst] = key;
             g[desc.glob] = key;
             this._wvBlKeepSectionOrder();
+            this._wvSidenavPlaceSoon();
             // A pane busy rendering processes the removal notice after this
             // registration and keeps its old element (the main library pane
             // did, 2026-10-22, while the context panes rebuilt theirs): sweep.
@@ -2649,6 +2682,95 @@ class _BacklinksMixin {
             const ids = ((data && data.options) || []).map((o: any) => o.paneID);
             if (ids.indexOf(bl) < ids.indexOf(lk)) { this._wvBlUnregisterSection(); this._wvBlRegisterSection(); }
         } catch (e) {}
+    }
+
+    /** Weavero's item-pane sections right after Zotero's own (after Related), before
+     *  other plugins' (MJT 2026-11-19: "After Zotero's own sections, before other
+     *  plugins'"). Zotero 11 keeps each window's section order in `sidenav.order`
+     *  (itemPaneSidenav.js getPersistedOrder / persistOrder; a drag or Move Section
+     *  Up / Down in the side navigation writes it) and appends a section missing from
+     *  it last, in registration order -- so another plugin registered first came first.
+     *  Here a Weavero section MISSING from the window's saved order is written in
+     *  beside Weavero's sections already placed, in WV_SIDENAV_ORDER (References,
+     *  Links, Backlinks), or after Zotero's last own section when none is; Zotero's
+     *  own observer then moves it. A section already in the saved order stays where
+     *  the user put it. True once there is nothing left to place. */
+    _wvSidenavPlaceOurs(win: any): boolean {
+        try {
+            const doc = win && win.document;
+            if (!doc || win.closed) return true;
+            const P: any = Zotero.Prefs;
+            const sns = Array.from(doc.querySelectorAll("item-pane-sidenav")) as any[];
+            const sn = sns.find((s: any) => typeof s.getPersistedOrder === "function");
+            if (!sn) return true;   // no section order in this Zotero
+            const prefix = win.CSS.escape(WV_BL_PLUGIN_ID) + "-";
+            const ours: string[] = [];
+            for (const s of sns) {
+                for (const b of Array.from(s.querySelectorAll(".btn[data-pane]")) as any[]) {
+                    const id = String(b.dataset.pane || "");
+                    if (id.startsWith(prefix) && !ours.includes(id)) ours.push(id);
+                }
+            }
+            if (!ours.length) return false;   // the side navigation has not drawn them yet
+            // Weavero's own default order: References above the link sections (MJT
+            // 2026-11-20, "As default, put the references above the links sections of
+            // Weavero"); a section not listed goes after these.
+            const rank = (id: string) => { const r = WV_SIDENAV_ORDER.indexOf(id.slice(prefix.length)); return r < 0 ? WV_SIDENAV_ORDER.length : r; };
+            ours.sort((a, b) => rank(a) - rank(b));
+            const saved: string[] = Array.from(sn.getPersistedOrder() || []).map(String);
+            const missing = ours.filter((id) => !saved.includes(id));
+            if (!missing.length) return true;
+            // Each missing section goes beside its placed Weavero neighbours in that
+            // order -- before the next one placed, else after the previous one -- so a
+            // section added later (References, after Links and Backlinks were placed)
+            // still lands in its own place; with none placed, after Zotero's last own.
+            // A section tied to one of Zotero's (WV_SIDENAV_TIE) goes right before or
+            // after it instead, and is nobody's neighbour.
+            const own: string[] = Array.isArray(sn._builtInPanes) ? sn._builtInPanes
+                : ["info", "abstract", "attachments", "notes", "note-info", "attachment-info", "attachment-annotations", "libraries-collections", "tags", "related"];
+            const tieOf = (id: string) => WV_SIDENAV_TIE[id.slice(prefix.length)] || null;
+            const free = ours.filter((x) => !tieOf(x));
+            for (const id of missing) {
+                let ownAt = -1;
+                for (let i = 0; i < saved.length; i++) if (own.includes(saved[i])) ownAt = i;
+                const tie = tieOf(id);
+                let at: number;
+                if (tie) at = saved.includes(tie.anchor) ? saved.indexOf(tie.anchor) + (tie.before ? 0 : 1) : ownAt + 1;
+                else {
+                    const k = free.indexOf(id);
+                    const next = free.slice(k + 1).find((x) => saved.includes(x));
+                    const prev = free.slice(0, k).reverse().find((x) => saved.includes(x));
+                    at = next ? saved.indexOf(next) : prev ? saved.indexOf(prev) + 1 : ownAt + 1;
+                }
+                saved.splice(at, 0, id);
+            }
+            const value = saved.join(",");
+            if (typeof P.setForWindow === "function") P.setForWindow(win, "sidenav.order", value);
+            else P.set("sidenav.order", value);
+            Zotero.debug("[Weavero] item pane: " + missing.length + " section(s) placed after Zotero's own");
+            return true;
+        }
+        catch (e) { Zotero.debug("[Weavero] _wvSidenavPlaceOurs err: " + e); return true; }
+    }
+
+    /** _wvSidenavPlaceOurs for `win` (every main window when absent), again every
+     *  second while the side navigation has not drawn Weavero's sections yet (an item
+     *  pane draws its sections when an item is first shown), up to a minute. */
+    _wvSidenavPlaceSoon(win?: any) {
+        const self: any = this;
+        const wins: any[] = win ? [win] : (wvMainWins() as any[]);
+        for (const w of wins) {
+            let n = 0;
+            const tick = () => {
+                try {
+                    const lp: any = wvLivePlugin();
+                    if (!lp || lp !== self || w.closed) return;
+                    if (lp._wvSidenavPlaceOurs(w) || ++n >= 60) return;
+                    wvTimeout(tick, 1000);
+                } catch (e) {}
+            };
+            wvTimeout(tick, 500);
+        }
     }
 
     /** Drop every section element built from an earlier registration (its
@@ -2723,7 +2845,10 @@ class _BacklinksMixin {
 
     _wvBlHookItemChange({ body, doc, item, setEnabled, setL10nArgs }: any) {
         try {
-            const ok = !!(item && (
+            // Not for a feed item (MJT 2026-11-22, "not relevant ... in the
+            // Feeds"): no note can hold one and no link points at one (0 of his
+            // 2,331 feed items had a backlink, a note or an attachment).
+            const ok = !!(item && !item.isFeedItem && (
                 (item.isRegularItem && item.isRegularItem())
                 || (item.isAttachment && item.isAttachment())
                 || (item.isNote && item.isNote())));
@@ -2870,12 +2995,12 @@ class _BacklinksMixin {
      *  (a link; a citation with its page; a quote with the quoted
      *  annotation's page) -- the source is named by the headings above it. */
     _wvBlRowLabel(src: WvBacklinkSource, target: any): string {
-        if (src.ref === "citation") return "Note citation" + (src.locator ? " p. " + src.locator : "");
+        if (src.ref === "citation") return wvStr("weavero-bl-row-label", { ref: "citation", paged: src.locator ? "yes" : "no", page: String(src.locator || ""), file: "" });
         if (src.ref === "quote") {
             let pl = ""; try { pl = (target && target.isAnnotation && target.isAnnotation() && target.annotationPageLabel) || ""; } catch (e) {}
-            return "Note citation, annotation" + (pl ? " p. " + pl : "") + blAttOf(target);
+            return wvStr("weavero-bl-row-label", { ref: "quote", paged: pl ? "yes" : "no", page: String(pl), file: blAttOf(target) });
         }
-        return "Zotero link";
+        return wvStr("weavero-bl-row-label", { ref: "link" });
     }
 
     /** Which make of item link a reference is, and what it does (MJT
@@ -2891,29 +3016,32 @@ class _BacklinksMixin {
      *  `mark`: the chain's corner mark for it (lib/link-glyph.ts). */
     _wvBlRefKind(src: WvBacklinkSource, target: any): { mark: "zotero" | "cite"; kind: string; action: string } {
         try {
-            if (src.ref === "citation") return { mark: "cite", kind: "Note citation", action: src.locator ? "p. " + src.locator : "" };
+            if (src.ref === "citation") return { mark: "cite", kind: wvStr("weavero-bl-kind", { kind: "cite" }), action: src.locator ? wvStr("weavero-bl-page", { page: String(src.locator) }) : "" };
             if (src.ref === "quote") {
                 let pl = "", ann = false;
                 try { ann = !!(target && target.isAnnotation && target.isAnnotation()); pl = (ann && target.annotationPageLabel) || ""; } catch (e) {}
                 // Cited at a page of its own when the citation after it names
                 // another; an annotation gone leaves the citation's page.
                 const cited = src.locator && src.locator !== pl ? src.locator : "";
-                const action = ann ? "annotation" + (pl ? " p. " + pl : "") + (cited ? ", cited p. " + cited : "")
-                    : "annotation" + (src.locator ? ", p. " + src.locator : "");
-                return { mark: "cite", kind: "Note citation", action };
+                const form = ann ? (pl ? (cited ? "page-cited" : "page") : (cited ? "cited" : "plain"))
+                    : (src.locator ? "gone" : "plain");
+                const action = wvStr("weavero-bl-action-quote", { form, page: String((ann ? pl : src.locator) || ""), cited: String(cited || "") });
+                return { mark: "cite", kind: wvStr("weavero-bl-kind", { kind: "cite" }), action };
             }
             const url = unescapeEntities(String(src.url || ""));
             const host = (/^zotero:\/\/(select|open-pdf|open|note)\//.exec(url) || [])[1] || "";
+            const kind = wvStr("weavero-bl-kind", { kind: "zotero" });
             if (host === "note") {
-                const pos = blNotePos(url);
-                const at = pos ? " at " + (pos.charAt(0) === "#" ? "section " + pos.slice(1) : pos) : "";
-                return { mark: "zotero", kind: "Zotero link", action: "Open note" + at + (pos === "heading" ? "" : " (Better Notes)") };
+                const pos = blNotePosOf(url);
+                return { mark: "zotero", kind, action: wvStr("weavero-bl-action-open-note", { at: pos ? pos.at : "none", value: pos ? pos.value : "" }) };
             }
-            if (host === "select") return { mark: "zotero", kind: "Zotero link", action: "Show in library" };
+            if (host === "select") return { mark: "zotero", kind, action: wvStr("weavero-bl-action", { action: "select" }) };
             const p = wvBlParseLink(url);
-            const action = p && p.annotationKey ? "Open at annotation" : p && p.page ? "Open at page " + p.page : "Open";
-            return { mark: "zotero", kind: "Zotero link", action };
-        } catch (e) { return { mark: "zotero", kind: "Zotero link", action: "" }; }
+            const action = p && p.annotationKey ? wvStr("weavero-bl-action", { action: "annotation" })
+                : p && p.page ? wvStr("weavero-bl-action", { action: "page", page: String(p.page) })
+                : wvStr("weavero-bl-action", { action: "open" });
+            return { mark: "zotero", kind, action };
+        } catch (e) { return { mark: "zotero", kind: wvStr("weavero-bl-kind", { kind: "zotero" }), action: "" }; }
     }
 
     /** An item as one line of an item-pane row (MJT 2026-10-29: "you should
@@ -2944,10 +3072,10 @@ class _BacklinksMixin {
             if (it.isAnnotation && it.isAnnotation()) {
                 file = withFile ? blAttFile(it) : "";
                 const pl = it.annotationPageLabel;
-                chip = where || (pl ? "p. " + pl : "");
+                chip = where || (pl ? wvStr("weavero-bl-page", { page: String(pl) }) : "");
             }
         } catch (e) {}
-        return { icon: this._wvBlIcon(doc, it), main: main || "(untitled)", chip, file };
+        return { icon: this._wvBlIcon(doc, it), main: main || wvStr("weavero-common-untitled"), chip, file };
     }
 
     /** What a reference says about where in its target it lands, beyond
@@ -2956,9 +3084,9 @@ class _BacklinksMixin {
     _wvBlWhere(src: WvBacklinkSource, target: any): string {
         try {
             // A quote with its citation carries the citation's page (`joined`).
-            if (src.ref === "citation" || src.ref === "quote") return src.locator ? "p. " + src.locator : "";
+            if (src.ref === "citation" || src.ref === "quote") return src.locator ? wvStr("weavero-bl-page", { page: String(src.locator) }) : "";
             if (target.isNote && target.isNote()) return blNotePos(src.url);
-            if (target.isAttachment && target.isAttachment()) { const pg = src.page || src.locator; return pg ? "p. " + pg : ""; }
+            if (target.isAttachment && target.isAttachment()) { const pg = src.page || src.locator; return pg ? wvStr("weavero-bl-page", { page: String(pg) }) : ""; }
         } catch (e) {}
         return "";
     }
@@ -2972,16 +3100,17 @@ class _BacklinksMixin {
         try {
             if (!target || !item) return "";
             const isNote = !!(target.isNote && target.isNote());
-            const pos = isNote ? blNotePos(src && src.url) : "";
-            if (target.id === item.id) return pos ? "→ " + pos : "";
+            const pos = isNote ? blNotePosOf(src && src.url) : null;
+            const at = pos ? pos.at : "", value = pos ? pos.value : "";
+            if (target.id === item.id) return pos ? wvStr("weavero-bl-chip", { to: "here", at, value }) : "";
             if (target.isAnnotation && target.isAnnotation()) {
                 const pl = target.annotationPageLabel || "";
-                return "→ annotation" + (pl ? " p. " + pl : "") + blAttOf(target);
+                return wvStr("weavero-bl-chip", { to: pl ? "annotation-page" : "annotation", page: String(pl), file: blAttOf(target) });
             }
-            if (isNote) return "→ note" + (pos ? " " + pos : "");
+            if (isNote) return wvStr("weavero-bl-chip", { to: pos ? "note-pos" : "note", at, value });
             if (target.isAttachment && target.isAttachment()) {
                 const pg = src.page || src.locator;
-                return "→ " + blAttKind(target) + (pg ? " p. " + pg : "");
+                return wvStr("weavero-bl-chip", { to: pg ? "attachment-page" : "attachment", kind: blAttKindKey(target), page: String(pg || "") });
             }
         } catch (e) {}
         return "";
@@ -3142,7 +3271,7 @@ class _BacklinksMixin {
             if (!g) {
                 let title = "";
                 try { title = (owner.isNote && owner.isNote()) ? owner.getNoteTitle() : owner.getDisplayTitle(); } catch (x) {}
-                g = { owner, title: title || "(untitled)", srcs: new Map() };
+                g = { owner, title: title || wvStr("weavero-common-untitled"), srcs: new Map() };
                 groups.set(owner.id, g);
             }
             let rows = g.srcs.get(srcItem.id);
@@ -3188,7 +3317,7 @@ class _BacklinksMixin {
                     rowParent = wvHtmlEl(doc, "div", "wv-bl-src", undefined, box);
                     let title = "";
                     try { title = self._wvCountSourceLabel(srcItem, g.owner) || ""; } catch (e) {}
-                    heading(rowParent, srcItem, title || "(untitled)", () => self._wvBlOpenSource(srcItem, null), g.owner);
+                    heading(rowParent, srcItem, title || wvStr("weavero-common-untitled"), () => self._wvBlOpenSource(srcItem, null), g.owner);
                 }
                 const rows = (g.srcs.get(srcItem.id) || []).sort((a, b) => (a.src.at || 0) - (b.src.at || 0));
                 for (const r of rows) {
@@ -3245,7 +3374,7 @@ class _BacklinksMixin {
         try { head.appendChild(self._wvCountItemIcon(doc, win, target)); } catch (e) {}
         let label = "";
         try { label = self._wvCountSourceLabel(target, item) || ""; } catch (e) {}
-        wvHtmlEl(doc, "span", "wv-count-group-title", label || "(untitled)", head);
+        wvHtmlEl(doc, "span", "wv-count-group-title", label || wvStr("weavero-common-untitled"), head);
         const chip = self._wvCountHeadChip(doc, head, target, item);
         head.title = label + (chip ? " · " + chip : "");
         const n = wvHtmlEl(doc, "span", "wv-count-group-n", "", head);
@@ -3430,11 +3559,11 @@ class _BacklinksMixin {
             const cols = wvHtmlEl(doc, "div", "wv-bl-card-cols", undefined, card);
             const colS = wvHtmlEl(doc, "div", "wv-bl-card-col", undefined, cols);
             colS.setAttribute("data-side", "source");
-            wvHtmlEl(doc, "div", "wv-bl-card-side", "Item", colS);
+            wvHtmlEl(doc, "div", "wv-bl-card-side", wvStr("weavero-card-side-item"), colS);
             linS.forEach((it, i) => { if (i >= k) this._wvBlCardNode(doc, colS, it, i); });
             const colT = wvHtmlEl(doc, "div", "wv-bl-card-col", undefined, cols);
             colT.setAttribute("data-side", "target");
-            wvHtmlEl(doc, "div", "wv-bl-card-side", "Related", colT);
+            wvHtmlEl(doc, "div", "wv-bl-card-side", wvStr("weavero-card-side-related"), colT);
             linT.forEach((it, i) => { if (i >= k) this._wvBlCardNode(doc, colT, it, i); });
             if (foot) wvHtmlEl(doc, "div", "wv-bl-card-foot", foot, card);
         });
@@ -3500,12 +3629,12 @@ class _BacklinksMixin {
                 // under the tree (the link highlighted in it): not twice
                 // (MJT 2026-10-27, "The link context is displayed twice").
                 const cm = opts.noComment ? "" : String(item.annotationComment || "").replace(/\s+/g, " ").trim();
-                if (cm) sub.push("comment: " + clip(cm));
+                if (cm) sub.push(wvStr("weavero-bl-card-comment", { text: clip(cm) }));
             }
-            else if (item.isNote && item.isNote()) { kind = "note"; main = item.getNoteTitle() || "Note"; }
+            else if (item.isNote && item.isNote()) { kind = "note"; main = item.getNoteTitle() || wvStr("weavero-bl-card-note"); }
             else if (item.isAttachment && item.isAttachment()) { kind = "attachment"; main = item.getDisplayTitle() || blAttKind(item); }
             else {
-                main = item.getDisplayTitle() || "(untitled)";
+                main = item.getDisplayTitle() || wvStr("weavero-common-untitled");
                 let who = "", year = "", pub = "";
                 try { who = item.firstCreator || ""; } catch (e) {}
                 try { year = String(item.getField("date", true, true) || "").slice(0, 4); } catch (e) {}
@@ -3579,7 +3708,7 @@ class _BacklinksMixin {
         const colS = wvHtmlEl(doc, "div", "wv-bl-card-col", undefined, cols);
         colS.setAttribute("data-side", "source");
         if (!o.back) cols.appendChild(colT);
-        wvHtmlEl(doc, "div", "wv-bl-card-side", "Source", colS);
+        wvHtmlEl(doc, "div", "wv-bl-card-side", wvStr("weavero-card-side-source"), colS);
         linS.forEach((it, i) => { if (i >= k) this._wvBlCardNode(doc, colS, it, i, { noComment: it === o.srcItem }); });
         // The reference and its context under BOTH columns, the card's full
         // width: the arrow already says where it is written and where it
@@ -3599,14 +3728,13 @@ class _BacklinksMixin {
         lab.appendChild(wvRefMarkGlyphEl(doc, rk.mark, { cls: "wv-bl-card-ref-icon" }));
         wvHtmlEl(doc, "span", "wv-bl-card-ref-kind", rk.kind + (rk.action ? " — " + rk.action : ""), lab);
         blDrawSegs(doc, wvHtmlEl(doc, "div", "wv-bl-card-text", undefined, ref), this._wvBlWideSegs(o.srcItem, o.src));
-        wvHtmlEl(doc, "div", "wv-bl-card-side", "Target", colT);
+        wvHtmlEl(doc, "div", "wv-bl-card-side", wvStr("weavero-card-side-target"), colT);
         if (o.target) linT.forEach((it, i) => { if (i >= k) this._wvBlCardNode(doc, colT, it, i); });
         else {
-            wvHtmlEl(doc, "div", "wv-bl-card-broken", o.broken === "library" ? "Library not in this profile" : "Item not found", colT);
+            const why = o.broken === "library" ? "library" : "item";
+            wvHtmlEl(doc, "div", "wv-bl-card-broken", wvStr("weavero-bl-broken", { why }), colT);
             if (o.url) wvHtmlEl(doc, "div", "wv-bl-card-url", o.url, colT);
-            wvHtmlEl(doc, "div", "wv-lk-why", o.broken === "library"
-                ? "The link names a group library that is not in this profile."
-                : "No item in the library has this key: it was deleted, or the link is wrong.", colT);
+            wvHtmlEl(doc, "div", "wv-lk-why", wvStr("weavero-bl-broken-why", { why }), colT);
         }
     }
 
@@ -3840,7 +3968,7 @@ class _BacklinksMixin {
                 const win = Zotero.getMainWindow();
                 if (win && win.ZoteroPane && typeof win.ZoteroPane.openNote === "function") {
                     // A tab, or a note window; either way scrolled to the reference.
-                    const inst = await win.ZoteroPane.openNote(srcItem.id, { openInWindow: where === "window" });
+                    const inst = wvOpenedInstance(await win.ZoteroPane.openNote(srcItem.id, { openInWindow: where === "window" }));
                     if (inst || where !== "window") await reveal(inst);
                 }
                 return;

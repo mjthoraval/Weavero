@@ -85,6 +85,25 @@ describe("Weavero — outline takeover deactivation strips completely", () => {
         assert.doesNotThrow(() => wv._wvReaderDeactivateOutlineTakeover(mkReader(), d));
     });
 
+    // MJT 2026-11-25: "When I open a PDF tab, I see a spinning wheel before the content
+    // appears" -- Zotero's own outline, still loading, up 115 ms (measured) before Weavero's
+    // panel came. Where the takeover is on, the reader document's root says so with its
+    // styles, and Zotero's LOADING outline is hidden from then on. FAILS on 1.3.0-peoplenet.8.
+    it("takeover on: the root's mark comes with the styles, and Zotero's loading outline (its spinner) is hidden; off: no mark", async () => {
+        const d = doc.implementation.createHTMLDocument("wv-takeover-spinner");
+        await wvT.withPref("weavero.readerOutlineTakeover", true, () => {
+            wv._wvEnsureReaderPanelStyles(d);
+            assert.isTrue(d.documentElement.classList.contains("wv-outline-takeover"), "the root's mark");
+        });
+        const css = Array.from(d.querySelectorAll("style")).map(s => s.textContent).join("\n");
+        assert.include(css, ":root.wv-outline-takeover #sidebarContent > .viewWrapper:has(> .outline-view.loading){visibility:hidden!important;}",
+            "Zotero's outline hidden while it loads");
+        await wvT.withPref("weavero.readerOutlineTakeover", false, () => {
+            wv._wvEnsureReaderPanelStyles(d);
+            assert.isFalse(d.documentElement.classList.contains("wv-outline-takeover"), "takeover off: Zotero's own spinner as ever");
+        });
+    });
+
     it("the pref watcher is registered, build-versioned", () => {
         if (typeof wv._wvWireOutlineTakeoverPrefWatch !== "function") wvT.absent('typeof wv._wvWireOutlineTakeoverPrefWatch !== "function"');
         const g = /** @type {any} */ (Zotero);

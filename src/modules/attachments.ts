@@ -66,7 +66,20 @@
 
 import { wvMainWins } from "../lib/windows";
 import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
+import { wvHtmlEl, wvPopupHost } from "../lib/dom";
+import { wvListen, wvUnlisten } from "../lib/listen";
+import { wvLivePlugin } from "../lib/live";
+import { wvWrap, wvUnwrap } from "../lib/wrap";
 declare const Zotero: any;
+
+/** Zotero's own item-pane sections the default-child marks go on (found by
+ *  their pane id: the note editor's links box holds sections of its own). */
+const DEFPANE_ATT_SEL = 'attachments-box[data-pane="attachments"]';
+const DEFPANE_NOTES_SEL = 'notes-box[data-pane="notes"]';
+/** The item pane's right-click menu on those sections' rows. */
+const DEFPANE_MENU_ID = "wv-defpane-menu";
+/** The items list's ▷ (`_wvWireDefattMarker`), drawn the same in the pane. */
+const DEFATT_AUTO_GLYPH = "▷";
 
 /** The marker tag: an EMOJI plus a single HYPHEN-JOINED slug.
  *
@@ -172,7 +185,7 @@ const MARKER_SAVE_OPTS = { skipDateModifiedUpdate: true };
  *  then calls methods that may have been renamed, throws, and silently
  *  degrades to upstream behaviour. Cost me a debugging round on
  *  2026-08-03; a version stamp forces a clean unwire+rewire instead. */
-const WIRE_VERSION = 10;  // 10: menu bubble-up guard (#8); 9: hoist + ▷ marker; 8: reparent guard
+const WIRE_VERSION = 11;  // 11: getNotes hoist + the menu entry shared with the item pane; 10: menu bubble-up guard (#8); 9: hoist + ▷ marker; 8: reparent guard
 
 // Reentrancy latch for the getAttachments hoist: the automatic-winner
 // computation itself calls getAttachments, and the wrap must serve THAT
@@ -529,7 +542,12 @@ class _AttachmentsMixin {
             // 2026-08-04). Any of our wrappers is functionally current (they
             // close over nothing and live-resolve the plugin), so when the top
             // is OURS-BUT-OLDER we simply adopt it instead of stacking.
-            const fns: Set<any> = proto._wvDefaultAttFns || (proto._wvDefaultAttFns = new Set());
+            // A Set an earlier instance made in a scope zotero#6080 has nuked is
+            // a dead object: `has` threw and the whole wiring stopped, leaving
+            // the feature off after a disable / enable past the nuke.
+            let fns: Set<any> = proto._wvDefaultAttFns;
+            try { if (fns && (Components as any).utils.isDeadWrapper(fns)) fns = null as any; } catch (e) { fns = null as any; }
+            if (!fns) fns = proto._wvDefaultAttFns = new Set();
             const topIsOurs = current === proto._wvDefaultAttFn || fns.has(current);
             if (proto._wvDefaultAttWired === WIRE_VERSION && topIsOurs) {
                 proto._wvDefaultAttFn = current;
@@ -670,6 +688,38 @@ class _AttachmentsMixin {
                     proto._wvDefattGetAttsFn = proto.getAttachments;
                 }
             } catch (e) { Zotero.debug("[Weavero] getAttachments hoist wire err: " + e); }
+            // The same hoist for a default NOTE (2026-11-20; MJT on the item
+            // pane plan, "with default first same as in the items list"). The
+            // items list opens a parent onto notes then attachments
+            // (itemTreeRow.js getChildItems) and the item pane's Notes section
+            // lists getNotes() (notesBox.js render): one rule serves both, as
+            // the getAttachments hoist serves the attachments. No automatic
+            // winner among notes, so defattSortFirstDefault alone.
+            try {
+                if (!proto._wvDefattGetNotesFn || proto.getNotes !== proto._wvDefattGetNotesFn) {
+                    const origGetNotes = proto._wvDefattOrigGetNotes || proto.getNotes;
+                    proto._wvDefattOrigGetNotes = origGetNotes;
+                    proto.getNotes = function (this: any) {
+                        const ids = origGetNotes.apply(this, arguments);
+                        try {
+                            if (_wvHoistBusy || !Array.isArray(ids) || ids.length < 2) return ids;
+                            const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            if (!lp || lp._wvDestroyed || !lp._wvDefaultChildEnabled()) return ids;
+                            if (Zotero.Prefs.get("weavero.defattSortFirstDefault") === false) return ids;
+                            if (!this.isRegularItem || !this.isRegularItem()) return ids;
+                            _wvHoistBusy = true;
+                            let pick: any = null;
+                            try { pick = lp._wvDefattDerived(this).pickID; }
+                            finally { _wvHoistBusy = false; }
+                            if (pick != null && ids[0] !== pick && ids.includes(pick)) {
+                                return [pick, ...ids.filter((x: any) => x !== pick)];
+                            }
+                        } catch (e) { _wvHoistBusy = false; }
+                        return ids;
+                    };
+                    proto._wvDefattGetNotesFn = proto.getNotes;
+                }
+            } catch (e) { Zotero.debug("[Weavero] getNotes hoist wire err: " + e); }
             // ▷ MARKER (items list) — see _wvWireDefattMarker.
             try { this._wvWireDefattMarker(); } catch (e) {}
         } catch (e) {
@@ -686,15 +736,18 @@ class _AttachmentsMixin {
     // the items-list _renderCell wrap (every row paint while scrolling)
     // and the getAttachments hoist — and re-walked the children each call.
 
-    /** {pickID, autoID} for a parent item, lazily derived and cached in
+    /** {pickID, autoID, count} for a parent item, lazily derived and cached in
      *  `_wvDerivedDefatt`. pickID = the user's marked child (any openable
      *  kind — consumers re-check file-ness where they need it); autoID =
-     *  the automatic heuristic winner among attachments. */
-    _wvDefattDerived(parent: any): { pickID: number | null, autoID: number | null } {
+     *  the automatic heuristic winner among attachments; count = its
+     *  attachments (not in the trash): the dimmed ▷ is drawn only when there
+     *  is a choice to show (MJT 2026-11-22: "When only 1 attachment, no need
+     *  to show the right arrow to say that it is the default attachment"). */
+    _wvDefattDerived(parent: any): { pickID: number | null, autoID: number | null, count: number } {
         let m: Map<number, any> = this._wvDerivedDefatt;
         if (!m) m = this._wvDerivedDefatt = new Map();
         const id = parent && parent.id;
-        if (id == null) return { pickID: null, autoID: null };
+        if (id == null) return { pickID: null, autoID: null, count: 0 };
         const hit = m.get(id);
         if (hit) return hit;
         let pickID: number | null = null;
@@ -707,7 +760,9 @@ class _AttachmentsMixin {
             const a = this._wvBestAttachmentHeuristicSync(parent);
             autoID = a ? a.id : null;
         } catch (e) {}
-        const v = { pickID, autoID };
+        let count = 0;
+        try { count = (parent.getAttachments(false) || []).length; } catch (e) {}
+        const v = { pickID, autoID, count };
         m.set(id, v);
         return v;
     }
@@ -804,27 +859,62 @@ class _AttachmentsMixin {
             }
             delete proto._wvDefattOrigGetAtts;
             delete proto._wvDefattGetAttsFn;
+            if (typeof proto._wvDefattOrigGetNotes === "function"
+                && proto.getNotes === proto._wvDefattGetNotesFn) {
+                proto.getNotes = proto._wvDefattOrigGetNotes;
+            }
+            delete proto._wvDefattOrigGetNotes;
+            delete proto._wvDefattGetNotesFn;
             // Derived-fields layer: observer + resident map go with us.
             try { this._wvUnwireDerivedInvalidator(); } catch (e) {}
-            // ▷ marker wrap on each window's ItemTree renderer prototype.
-            try {
-                const wins = wvMainWins();
-                for (const win of wins) {
-                    try {
-                        const view: any = (win as any).ZoteroPane && (win as any).ZoteroPane.itemsView;
-                        let itp: any = view && Object.getPrototypeOf(view);
-                        while (itp && !Object.prototype.hasOwnProperty.call(itp, "_renderCell")) itp = Object.getPrototypeOf(itp);
-                        if (itp && typeof itp._wvDefattOrigRenderCell === "function"
-                            && itp._renderCell === itp._wvDefattRenderFn) {
-                            itp._renderCell = itp._wvDefattOrigRenderCell;
-                        }
-                        if (itp) { delete itp._wvDefattOrigRenderCell; delete itp._wvDefattRenderFn; }
-                    } catch (e) {}
-                }
-            } catch (e) {}
+            this._wvUnwireDefattMarker();
         } catch (e) {
             Zotero.debug("[Weavero] _wvUnwireDefaultAttachment err: " + e);
         }
+    }
+
+    /** The ▷ marker wrap off each main window's ItemTree renderer prototype
+     *  (_wvWireDefattMarker). Its own call in destroy(): it used to run only at
+     *  the END of _wvUnwireDefaultAttachment, which returns early when
+     *  getBestAttachment is not wired (the window table wires the marker on
+     *  every window anyway) or is wrapped by another plugin -- and then a
+     *  disable left the old instance's `_renderCell` on the prototype, called
+     *  for every items-list cell: under zotero#6080 "can't access dead object"
+     *  from itemTree.js renderCell on each repaint (canary 40b5f3a1 battery,
+     *  2026-11-22). The prototype is reached from every items view of the
+     *  window (each library tab's on a Zotero with its own windows), not the
+     *  current one only. Guard: test/zz-stale-instance-calls.spec.js. */
+    _wvUnwireDefattMarker(): void {
+        try {
+            for (const win of wvMainWins()) {
+                const w: any = win;
+                const zp: any = w.ZoteroPane;
+                const views: any[] = [];
+                try { if (zp && zp.itemsView) views.push(zp.itemsView); } catch (e) {}
+                try { for (const v of (zp && zp.libraryViews) || []) { if (v && v.itemsView) views.push(v.itemsView); } } catch (e) {}
+                const starts: any[] = [];
+                for (const view of views) { try { starts.push(Object.getPrototypeOf(view)); } catch (e) {} }
+                // The window's own ItemTree class (each window loads its own
+                // module), for a window that shows no library view right now.
+                try { const IT = typeof w.require === "function" ? w.require("zotero/itemTree") : null; if (IT && IT.prototype) starts.push(IT.prototype); } catch (e) {}
+                const protos = new Set<any>();
+                for (const start of starts) {
+                    let itp: any = start;
+                    while (itp && !Object.prototype.hasOwnProperty.call(itp, "_renderCell")) itp = Object.getPrototypeOf(itp);
+                    if (itp) protos.add(itp);
+                }
+                for (const itp of protos) {
+                    try {
+                        if (typeof itp._wvDefattOrigRenderCell === "function"
+                            && itp._renderCell === itp._wvDefattRenderFn) {
+                            itp._renderCell = itp._wvDefattOrigRenderCell;
+                        }
+                        delete itp._wvDefattOrigRenderCell;
+                        delete itp._wvDefattRenderFn;
+                    } catch (e) {}
+                }
+            }
+        } catch (e) {}
     }
 
     /** Hide (or restore) the rival plugin's duplicate items-menu entry.
@@ -1139,14 +1229,18 @@ class _AttachmentsMixin {
                             if (!parent) return cell;
                             // Derived-fields layer: resident autoID beats a
                             // child-walk per row PAINT (2026-08-06).
-                            if (lp._wvDefattDerived(parent).autoID !== it.id) return cell;
+                            // ... and only where there is a choice: a lone
+                            // attachment gets no ▷ (MJT 2026-11-22).
+                            const dd = lp._wvDefattDerived(parent);
+                            if (dd.autoID !== it.id || !(dd.count > 1)) return cell;
                             const txt = cell.querySelector && cell.querySelector(".cell-text");
                             if (!txt || cell.querySelector(".wv-defatt-auto-glyph")) return cell;
                             const g = txt.ownerDocument.createElement("span");
                             g.className = "wv-defatt-auto-glyph";
-                            g.textContent = "▷ ";
+                            g.textContent = DEFATT_AUTO_GLYPH + " ";
                             g.style.cssText = "opacity:.5;";
-                            g.setAttribute("title", "Automatic default — what Zotero would open without a chosen default");
+                            // The item pane's ▷ says the same (weavero.ftl).
+                            g.setAttribute("title", wvAttr("weavero-defatt-mark-auto", "title") || "");
                             txt.parentNode.insertBefore(g, txt);
                         } catch (e) {}
                         return cell;
@@ -1397,52 +1491,44 @@ class _AttachmentsMixin {
             if (!doc || doc.getElementById("wv-defatt-notice")) return;
 
             const active = this._wvRivalDefaultPluginActive(win);
-            const picks = n + " default attachment" + (n === 1 ? "" : "s");
             const lines = active
-                ? ["Default Attachment (PikaPei) is running and has " + picks + " saved.",
-                   "Weavero can do the same job — for any attachment, linked URL or note, "
-                       + "not just PDFs — and stores each choice as a tag so it syncs.",
-                   "What would you like to do?"]
-                : ["Found " + picks + " left over from Default Attachment (PikaPei), "
-                       + "which is not running.",
-                   "Weavero can take those over and store each as a tag so it syncs, "
-                       + "or leave them alone.",
-                   "What would you like to do?"];
+                ? [wvStr("weavero-defatt-legacy-running", { count: n }),
+                   wvStr("weavero-defatt-legacy-running-offer"),
+                   wvStr("weavero-defatt-legacy-question")]
+                : [wvStr("weavero-defatt-legacy-leftover", { count: n }),
+                   wvStr("weavero-defatt-legacy-leftover-offer"),
+                   wvStr("weavero-defatt-legacy-question")];
 
             const apply = (choice: string) => {
                 const lp: any = Zotero.Weavero && Zotero.Weavero.plugin;
                 if (!lp) return;
                 Promise.resolve(lp._wvApplyLegacyChoice(choice)).then((r: any) => {
                     const msg = choice === "import"
-                        ? ["Imported " + r.migrated + " pick" + (r.migrated === 1 ? "" : "s")
-                            + " as the tag " + OPEN_BY_DEFAULT_TAG + ".",
-                           "Default Attachment's own data was left untouched — the README "
-                            + "explains removing it by hand."]
+                        ? [wvStr("weavero-defatt-imported", { count: Number(r.migrated) || 0, tag: OPEN_BY_DEFAULT_TAG }),
+                           wvStr("weavero-defatt-imported-note")]
                         : choice === "other"
-                            ? ["Weavero's default-attachment feature is now off.",
-                               "Default Attachment keeps working exactly as before; Weavero "
-                                + "never changed any of its data.",
-                               "You can turn Weavero's version back on in Settings → Weavero "
-                                + "→ Extras."]
-                            : ["Left Default Attachment's data alone.",
-                               "Set a default any time by right-clicking a child item."];
-                    lp._wvToast("Weavero — default attachments", msg,
+                            ? [wvStr("weavero-defatt-other-off"),
+                               wvStr("weavero-defatt-other-keeps"),
+                               wvStr("weavero-defatt-other-back")]
+                            : [wvStr("weavero-defatt-skipped"),
+                               wvStr("weavero-defatt-skipped-hint")];
+                    lp._wvToast(wvStr("weavero-defatt-result-title"), msg,
                         { id: "wv-defatt-notice", accent: "info", win, autoCloseMs: 15000 });
                 }).catch(() => {});
             };
 
             const actions: any[] = [
-                { label: "Import into Weavero", onClick: () => apply("import") },
-                { label: "Don’t import", onClick: () => apply("skip") },
+                { label: wvStr("weavero-defatt-legacy-import"), onClick: () => apply("import") },
+                { label: wvStr("weavero-defatt-legacy-skip"), onClick: () => apply("skip") },
             ];
             if (active) {
                 actions.push({
-                    label: "Keep using Default Attachment",
+                    label: wvStr("weavero-defatt-legacy-keep"),
                     onClick: () => apply("other"),
                 });
             }
 
-            this._wvToast("Weavero — default attachments found", lines, {
+            this._wvToast(wvStr("weavero-defatt-legacy-title"), lines, {
                 id: "wv-defatt-notice",
                 accent: "info",
                 win,
@@ -1605,88 +1691,16 @@ class _AttachmentsMixin {
                         return;
                     }
                     const child = sel[0];
-                    if (!child || !child.parentID) {               // must be a CHILD
-                        lp._wvDefAttTrace("menu:skip", {
-                            why: "notAChild",
-                            key: child && child.key,
-                            type: child && Zotero.ItemTypes.getName(child.itemTypeID),
-                        });
-                        return;
-                    }
-                    const isAtt = typeof child.isAttachment === "function" && child.isAttachment();
-                    const isNote = typeof child.isNote === "function" && child.isNote();
-                    if (!isAtt && !isNote) {
-                        lp._wvDefAttTrace("menu:skip", { why: "notOpenable", key: child.key });
-                        return;
-                    }
-                    // Read-only library (a group you cannot edit): writing the
-                    // marker throws "Cannot edit item in library", which the
-                    // setter swallows -- so the entry would appear and do
-                    // nothing at all. Don't offer what cannot work.
-                    try {
-                        if (typeof child.isEditable === "function" && !child.isEditable()) {
-                            lp._wvDefAttTrace("menu:skip", { why: "readOnly", key: child.key });
-                            return;
-                        }
-                    } catch (e) {}
-
-                    // ACTION label (not a checkbox): the entry states what the
-                    // click will DO, which reads better than a state label.
-                    //
-                    // The label carries the SAME emoji the marker tag puts in
-                    // the items list, so the menu entry and the row marker are
-                    // visibly the same thing. DERIVED from the tag rather than
-                    // written out, so the two can never drift apart — this is
-                    // the only place the glyph appears outside the tag itself.
-                    const marked = lp._wvIsDefaultChild(child);
-                    const glyph = lp._wvOpenByDefaultEmoji;
-                    const mi = doc.createXULElement("menuitem");
+                    // The same checks, entry and action as the item pane's
+                    // right-click on an Attachments / Notes row
+                    // (_wvDefPaneContextMenu).
+                    if (!lp._wvDefChildMenuEligible(child)) return;
+                    const mi = lp._wvDefChildMenuItem(doc, child);
                     mi.id = ID;
-                    // "Default Attachment" — deliberately DISTINCT from
-                    // upstream zotero#3333's pending "Primary Attachment":
-                    // "Default" signals a plugin tool and keeps the story
-                    // clean if users later migrate from Weavero's Default
-                    // Attachment to Zotero's native Primary Attachment
-                    // (user decision 2026-08-05, reversing same-day).
-                    wvL10n(mi, "weavero-menu-items-default-attachment",
-                        { marked: marked ? "yes" : "no", glyph: glyph ? glyph + " " : "" });
-                    mi.addEventListener("command", () => {
-                        try {
-                            // Re-resolve at click time: the selection can change
-                            // between popupshowing and the command firing.
-                            const p: any = Zotero.Weavero && Zotero.Weavero.plugin;
-                            p && p._wvDefAttTrace("menu:command", {
-                                key: child.key, wasMarked: marked, live: !!p,
-                            });
-                            if (!p) return;
-                            // Do what the LABEL promised, not a blind toggle.
-                            // The label is a snapshot from popupshowing; if the
-                            // marker changes while the menu is open (incoming
-                            // sync, a second window, the tag selector), a
-                            // toggle would invert the shown action -- "Set as
-                            // Default" would clear. Set/clear are idempotent,
-                            // so acting on the snapshot is always safe.
-                            const act = marked
-                                ? p._wvClearDefaultChild(child)
-                                : p._wvSetDefaultChild(child);
-                            act.then(() => {
-                                p._wvDefAttTrace("menu:command:done", {
-                                    key: child.key, did: marked ? "clear" : "set",
-                                    nowMarked: p._wvIsDefaultChild(child),
-                                });
-                            }).catch((e: any) => {
-                                p._wvDefAttTrace("menu:command:err", { e: String(e) });
-                            });
-                        } catch (e) {
-                            const p: any = Zotero.Weavero && Zotero.Weavero.plugin;
-                            p && p._wvDefAttTrace("menu:command:throw", { e: String(e) });
-                            Zotero.debug("[Weavero] open-by-default command err: " + e);
-                        }
-                    });
                     menu.appendChild(mi);
                     lp._wvDefAttTrace("menu:added", {
-                        key: child.key, marked, label: mi.getAttribute("label"),
-                        kind: isNote ? "note" : "attachment",
+                        key: child.key, marked: lp._wvIsDefaultChild(child), label: mi.getAttribute("label"),
+                        kind: (typeof child.isNote === "function" && child.isNote()) ? "note" : "attachment",
                     });
                 } catch (e) {
                     Zotero.debug("[Weavero] open-by-default popupshowing err: " + e);
@@ -1704,6 +1718,368 @@ class _AttachmentsMixin {
         } catch (e) {
             Zotero.debug("[Weavero] _wvWireDefaultChildMenu err: " + e);
         }
+    }
+
+    /** Whether `child` takes the default-child entry, in the items list or
+     *  the item pane: an attachment or a note with a parent, in a library the
+     *  user may edit. The reason it does not goes to the trace ring. */
+    _wvDefChildMenuEligible(child: any): boolean {
+        try {
+            if (!child || !child.parentID) {               // must be a CHILD
+                this._wvDefAttTrace("menu:skip", {
+                    why: "notAChild",
+                    key: child && child.key,
+                    type: child && Zotero.ItemTypes.getName(child.itemTypeID),
+                });
+                return false;
+            }
+            const isAtt = typeof child.isAttachment === "function" && child.isAttachment();
+            const isNote = typeof child.isNote === "function" && child.isNote();
+            if (!isAtt && !isNote) {
+                this._wvDefAttTrace("menu:skip", { why: "notOpenable", key: child.key });
+                return false;
+            }
+            // Read-only library (a group you cannot edit): writing the
+            // marker throws "Cannot edit item in library", which the
+            // setter swallows -- so the entry would appear and do
+            // nothing at all. Don't offer what cannot work.
+            try {
+                if (typeof child.isEditable === "function" && !child.isEditable()) {
+                    this._wvDefAttTrace("menu:skip", { why: "readOnly", key: child.key });
+                    return false;
+                }
+            } catch (e) {}
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    /** The default-child menu entry for `child` (the items list's and the
+     *  item pane's).
+     *
+     *  ACTION label (not a checkbox): the entry states what the click will
+     *  DO, which reads better than a state label. It carries the SAME emoji
+     *  the marker tag puts in the items list, so the menu entry and the row
+     *  marker are visibly the same thing -- DERIVED from the tag rather than
+     *  written out, so the two can never drift apart.
+     *
+     *  "Default Attachment" -- deliberately DISTINCT from upstream
+     *  zotero#3333's pending "Primary Attachment": "Default" signals a
+     *  plugin tool and keeps the story clean if users later migrate from
+     *  Weavero's Default Attachment to Zotero's native Primary Attachment
+     *  (user decision 2026-08-05, reversing same-day). */
+    _wvDefChildMenuItem(doc: any, child: any): any {
+        const marked = this._wvIsDefaultChild(child);
+        const glyph = this._wvOpenByDefaultEmoji;
+        const mi = doc.createXULElement("menuitem");
+        wvL10n(mi, "weavero-menu-items-default-attachment",
+            { marked: marked ? "yes" : "no", glyph: glyph ? glyph + " " : "" });
+        mi.addEventListener("command", () => {
+            try {
+                // Re-resolve at click time: a reload can come between the
+                // menu opening and the command.
+                const p: any = wvLivePlugin();
+                if (!p) return;
+                p._wvDefChildMenuRun(child, marked);
+            } catch (e) {
+                const p: any = wvLivePlugin();
+                p && p._wvDefAttTrace("menu:command:throw", { e: String(e) });
+                Zotero.debug("[Weavero] open-by-default command err: " + e);
+            }
+        });
+        return mi;
+    }
+
+    /** What the entry does: set `child` as the default, or clear it when the
+     *  entry offered "Clear" (`marked`).
+     *
+     *  Do what the LABEL promised, not a blind toggle. The label is a
+     *  snapshot from when the menu opened; if the marker changes while the
+     *  menu is open (incoming sync, a second window, the tag selector), a
+     *  toggle would invert the shown action -- "Set as Default" would clear.
+     *  Set/clear are idempotent, so acting on the snapshot is always safe. */
+    _wvDefChildMenuRun(child: any, marked: boolean): Promise<any> {
+        this._wvDefAttTrace("menu:command", { key: child && child.key, wasMarked: marked, live: true });
+        const act: Promise<any> = marked ? this._wvClearDefaultChild(child) : this._wvSetDefaultChild(child);
+        return act.then(() => {
+            this._wvDefAttTrace("menu:command:done", {
+                key: child.key, did: marked ? "clear" : "set",
+                nowMarked: this._wvIsDefaultChild(child),
+            });
+        }).catch((e: any) => {
+            this._wvDefAttTrace("menu:command:err", { e: String(e) });
+        });
+    }
+
+    // ---- The item pane: Zotero's Attachments and Notes sections ---------
+    //
+    // MJT 2026-11-19, with a screenshot of the Attachments section: "The
+    // item pane should carry the same information about the default item to
+    // open as the items list, with the same ability to change from the
+    // right-click menu"; on the plan, "Ok, with default first same as in the
+    // items list". So the sections' rows carry the items list's marks (the
+    // tag's ▶️ on the default, the dimmed ▷ on Zotero's automatic choice),
+    // between the type icon and the title as the items list draws its tag
+    // emoji (itemTreeRow.js renderPrimaryCell, tags before the title); a
+    // right-click offers the items list's entry; and the default comes first
+    // (the getNotes hoist for the Notes section, `_wvDefPaneHoist` for the
+    // Attachments section). The feature's switch takes all of it away.
+    //
+    // Zotero draws those rows itself and redraws them on every item change
+    // (attachmentsBox.js updateRows / notify, notesBox.js render), so the
+    // marks follow the rows: the pane observer (pane.ts _setupPaneObserver)
+    // calls `_wvDefPaneDecorate` whenever a row comes or goes, and a
+    // default changed anywhere -- the items list, another window, a sync --
+    // is a tag write on the children, which makes Zotero redraw their rows.
+
+    /** Wire one main window (the wiring table's `defpane`): the right-click
+     *  on the sections' rows, the Attachments section's order, the marks
+     *  already drawn. */
+    _wvDefPaneWire(win: any): void {
+        try {
+            const doc = win && win.document;
+            if (!doc) return;
+            wvListen(doc, "defpane:contextmenu", "contextmenu", (e: any) => {
+                try {
+                    const lp: any = wvLivePlugin();
+                    if (lp) lp._wvDefPaneContextMenu(e);
+                } catch (er) { Zotero.debug("[Weavero] default-child pane menu err: " + er); }
+            }, false, this._wvWireTag());
+            this._wvDefPaneWireOrder(win);
+            this._wvDefPaneDecorate(doc);
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvDefPaneWire err: " + e);
+        }
+    }
+
+    /** The Attachments section puts Zotero's getBestAttachment() first
+     *  (attachmentsBox.js _updateAttachmentIDs, Zotero 10.0 and 11) -- a
+     *  FILE, so a default linked URL came second while the items list shows
+     *  it first. A layer on the window's own AttachmentsBox class (each
+     *  window has its own customElements registry) moves the default to the
+     *  front after Zotero's ordering, which every render and notification
+     *  of the section goes through. */
+    _wvDefPaneWireOrder(win: any): void {
+        try {
+            const CE = win && win.customElements;
+            const C = CE && CE.get("attachments-box");
+            if (!C) {
+                // Defined as the window builds its item pane.
+                try {
+                    CE && CE.whenDefined("attachments-box").then(() => {
+                        try {
+                            const lp: any = wvLivePlugin();
+                            if (lp && !win.closed) lp._wvDefPaneWireOrder(win);
+                        } catch (e) {}
+                    });
+                } catch (e) {}
+                return;
+            }
+            wvWrap(C.prototype, "_updateAttachmentIDs", "defpane", this._wvWireTag(), (orig: any) => async function (this: any) {
+                const r = await orig.apply(this, arguments);
+                try {
+                    const lp: any = wvLivePlugin();
+                    if (lp) lp._wvDefPaneHoist(this);
+                } catch (e) {}
+                return r;
+            });
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvDefPaneWireOrder err: " + e);
+        }
+    }
+
+    /** The default first in an Attachments section's order (`box`, after
+     *  Zotero computed it), as the getAttachments hoist puts it first in the
+     *  items list. */
+    _wvDefPaneHoist(box: any): void {
+        try {
+            const ids = box && box._attachmentIDs;
+            if (!Array.isArray(ids) || ids.length < 2) return;
+            if (!this._wvDefaultChildEnabled()) return;
+            if (Zotero.Prefs.get("weavero.defattSortFirstDefault") === false) return;
+            const item = box._item;
+            if (!item || typeof item.isRegularItem !== "function" || !item.isRegularItem()) return;
+            const pick = this._wvDefattDerived(item).pickID;
+            if (pick == null || ids.indexOf(pick) <= 0) return;
+            box._attachmentIDs = [pick, ...ids.filter((x: any) => x !== pick)];
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvDefPaneHoist err: " + e);
+        }
+    }
+
+    /** Give one main window back (destroy): the listener, the class layer,
+     *  the marks and the menu. */
+    _wvDefPaneUnwire(win: any): void {
+        try {
+            const doc = win && win.document;
+            if (doc) wvUnlisten(doc, "defpane:contextmenu");
+            const C = win && win.customElements && win.customElements.get("attachments-box");
+            if (C) wvUnwrap(C.prototype, "_updateAttachmentIDs", "defpane");
+            if (doc) {
+                for (const m of [...doc.querySelectorAll(".wv-defpane-mark")]) m.remove();
+                const menu = doc.getElementById(DEFPANE_MENU_ID);
+                if (menu) menu.remove();
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvDefPaneUnwire err: " + e);
+        }
+    }
+
+    /** Mark every row of the Attachments and Notes sections in `doc` (the
+     *  library's item pane and each reader tab's): "pick" -- the child that
+     *  carries the tag, as the items list shows the tag's emoji -- or "auto"
+     *  -- Zotero's automatic choice when it is not the default, while
+     *  defattMarkAuto is on, as `_wvWireDefattMarker` draws ▷. Notes have no
+     *  automatic choice. Writes only what changed: the pane observer that
+     *  calls this sees every write. */
+    _wvDefPaneDecorate(doc: any): void {
+        try {
+            if (!doc) return;
+            const on = this._wvDefaultChildEnabled();
+            const markAuto = Zotero.Prefs.get("weavero.defattMarkAuto") !== false;
+            const glyph = this._wvOpenByDefaultEmoji;
+            for (const box of doc.querySelectorAll(DEFPANE_ATT_SEL)) {
+                const item = box._item;
+                const d = on && item && typeof item.isRegularItem === "function" && item.isRegularItem()
+                    ? this._wvDefattDerived(item) : null;
+                for (const row of box.querySelectorAll("attachment-row")) {
+                    const att = row.attachment;
+                    let kind: string | null = null;
+                    if (d && att) {
+                        if (this._wvIsDefaultChild(att)) kind = "pick";
+                        else if (markAuto && d.autoID === att.id && d.count > 1) kind = "auto";   // a lone attachment: no ▷
+                    }
+                    this._wvDefPaneSetMark(row.querySelector(":scope > .head > .attachment-btn"), kind, glyph);
+                }
+            }
+            for (const box of doc.querySelectorAll(DEFPANE_NOTES_SEL)) {
+                for (const row of box.querySelectorAll(".body > .row")) {
+                    const note = on ? this._wvDefPaneNoteOf(box, row) : null;
+                    const kind = note && this._wvIsDefaultChild(note) ? "pick" : null;
+                    this._wvDefPaneSetMark(row.querySelector(":scope > .box"), kind, glyph);
+                }
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvDefPaneDecorate err: " + e);
+        }
+    }
+
+    /** One row's mark in `host` (the row's clickable box: Zotero's type icon
+     *  and title), right after the type icon -- which Zotero's own redraw
+     *  replaces in place (attachmentRow.js render). */
+    _wvDefPaneSetMark(host: any, kind: string | null, glyph: string): void {
+        if (!host) return;
+        let m: any = host.querySelector(":scope > .wv-defpane-mark");
+        if (!kind || (kind === "pick" && !glyph)) {
+            if (m) m.remove();
+            return;
+        }
+        if (!m) m = wvHtmlEl(host.ownerDocument, "span", "wv-defpane-mark");
+        const icon = host.querySelector(":scope > .icon");
+        if (icon) {
+            if (icon.nextElementSibling !== m) icon.after(m);
+        }
+        else if (host.firstElementChild !== m) host.prepend(m);
+        if (m.getAttribute("data-wv-mark") !== kind) {
+            m.setAttribute("data-wv-mark", kind);
+            m.textContent = kind === "pick" ? glyph : DEFATT_AUTO_GLYPH;
+            wvL10n(m, kind === "pick" ? "weavero-defatt-mark-pick" : "weavero-defatt-mark-auto");
+        }
+    }
+
+    /** The note a Notes-section row shows: the section lists getNotes() in
+     *  order and keeps that list (notesBox.js render, `_noteIDs`); its rows
+     *  carry no id. Null when the two disagree. */
+    _wvDefPaneNoteOf(box: any, row: any): any {
+        try {
+            const rows = [...row.parentElement.children].filter((c: any) => c.classList && c.classList.contains("row"));
+            const ids = box && box._noteIDs;
+            const i = rows.indexOf(row);
+            if (!Array.isArray(ids) || ids.length !== rows.length || i < 0) return null;
+            return Zotero.Items.get(ids[i]) || null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    /** The child a right-click in `node` is on: an Attachments row's
+     *  attachment, a Notes row's note, or null. */
+    _wvDefPaneChildAt(node: any): any {
+        try {
+            const el = node && node.nodeType === 1 ? node : node && node.parentElement;
+            if (!el || typeof el.closest !== "function") return null;
+            const ar = el.closest("attachment-row");
+            if (ar) return ar.closest(DEFPANE_ATT_SEL) ? (ar.attachment || null) : null;
+            const nr = el.closest(".row");
+            const box = nr && nr.closest(DEFPANE_NOTES_SEL);
+            if (!box || !nr.parentElement || !nr.parentElement.classList.contains("body")) return null;
+            return this._wvDefPaneNoteOf(box, nr);
+        } catch (e) {
+            return null;
+        }
+    }
+
+    /** A right-click in a main window: on an Attachments or Notes row of an
+     *  item pane, the items list's entry for that child (Zotero has no menu
+     *  of its own there; its section menu is on the header). */
+    _wvDefPaneContextMenu(e: any): void {
+        if (!e || e.defaultPrevented) return;
+        if (!this._wvDefaultChildEnabled()) return;
+        const child = this._wvDefPaneChildAt(e.target);
+        if (!child || !this._wvDefChildMenuEligible(child)) return;
+        const doc = e.target && e.target.ownerDocument;
+        if (!doc) return;
+        e.preventDefault();
+        const tag = this._wvWireTag();
+        let menu: any = doc.getElementById(DEFPANE_MENU_ID);
+        if (menu && menu.getAttribute("data-wv-tag") !== tag) { menu.remove(); menu = null; }
+        if (!menu) {
+            menu = doc.createXULElement("menupopup");
+            menu.id = DEFPANE_MENU_ID;
+            menu.setAttribute("data-wv-tag", tag);
+            wvPopupHost(doc).appendChild(menu);
+        }
+        while (menu.firstChild) menu.removeChild(menu.firstChild);
+        menu.appendChild(this._wvDefChildMenuItem(doc, child));
+        this._wvDefAttTrace("pane-menu:added", { key: child.key, marked: this._wvIsDefaultChild(child) });
+        menu.openPopupAtScreen(e.screenX, e.screenY, true);
+    }
+
+    /** Every main window's sections redrawn by Zotero (their order may
+     *  change) and re-marked. */
+    _wvDefPaneRefreshAll(): void {
+        for (const win of wvMainWins()) {
+            try {
+                const doc = win.document;
+                for (const box of doc.querySelectorAll(DEFPANE_ATT_SEL)) {
+                    try {
+                        // Only a section Zotero has drawn (asyncRender sets
+                        // the stage): a hidden one draws itself when shown.
+                        if (box._item && box._renderStage === "final" && typeof box.updateRows === "function") {
+                            Promise.resolve(box.updateRows()).catch(() => {});
+                        }
+                    } catch (e) {}
+                }
+                for (const box of doc.querySelectorAll(DEFPANE_NOTES_SEL)) {
+                    try {
+                        if (box._item && typeof box._forceRenderAll === "function") {
+                            Promise.resolve(box._forceRenderAll()).catch(() => {});
+                        }
+                    } catch (e) {}
+                }
+                this._wvDefPaneDecorate(doc);
+            } catch (e) {}
+        }
+    }
+
+    /** One of the feature's options changed (prefs-observers.ts): the
+     *  per-parent pair cached by `_wvDefattDerived` was derived under the
+     *  old value (the master switch gates the pick), and every item pane
+     *  redraws. */
+    _wvDefattPrefChanged(): void {
+        try { if (this._wvDerivedDefatt) this._wvDerivedDefatt.clear(); } catch (e) {}
+        this._wvDefPaneRefreshAll();
     }
 }
 

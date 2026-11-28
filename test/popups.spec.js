@@ -265,6 +265,47 @@ describe("Weavero — popup infrastructure", () => {
         });
     });
 
+    // -------- 4b. The collections funnel's panel ----------------------
+
+    // The funnel above the collections pane (coll-funnel.ts, 1.3.0-collfunnel.1): its panel is
+    // the CHILD of a type="menu" toolbarbutton, as the items filter's -- a click opens it, the
+    // next closes it, a click outside or Escape closes it, all Zotero's own -- and it keeps
+    // Gecko's autohide (no noautohide: nothing of the toolbar is part of it). A chip's click
+    // redraws it in place, open.
+    describe("the collections funnel's panel", () => {
+        // Review 2026-11-28 (M): the in-place check compared one query with itself, nothing in
+        // between -- it could not fail. Now the panel is opened and a chip clicked between them.
+        it("is its button's child, a type=\"menu\" toggle, auto-hiding; a chip redraws it in place, open", async function () {
+            this.timeout(20000);
+            const main = Zotero.getMainWindow();
+            const btn = lib.wvViewEl(main.document, "zotero-collections-toolbar").querySelector(".wv-cf-tb-button");
+            expect(btn, "the funnel button").to.exist;
+            expect(btn.getAttribute("type")).to.equal("menu");
+            /** @type {any} */
+            const panel = btn.querySelector(":scope > panel");
+            expect(panel, "its panel, a child of the button").to.exist;
+            expect(panel.hasAttribute("noautohide"), "Gecko's own outside-click dismissal").to.equal(false);
+            const was = wv._wvCfCapture(main);
+            try {
+                panel.openPopup(btn, "after_end", 0, 0, false, false);
+                expect(await wvT.waitFor(() => panel.state === "open" || null, 5000, 50), "the panel opened").to.be.ok;
+                const inner = panel.querySelector(".wv-cf-inner");
+                const chip = inner.querySelector(".wv-cf-chip[data-cf-row='kinds'][data-cf-value='feeds']");
+                expect(chip, "the Feeds chip").to.exist;
+                chip.dispatchEvent(new main.MouseEvent("click", { bubbles: true, cancelable: true, button: 0, altKey: true }));
+                await wvT.sleep(250);
+                expect(panel.state, "still open after a chip's click").to.equal("open");
+                expect(panel.querySelector(".wv-cf-inner"), "one content box, redrawn in place").to.equal(inner);
+                const again = inner.querySelector(".wv-cf-chip[data-cf-row='kinds'][data-cf-value='feeds']");
+                expect(again && again.getAttribute("data-excluded"), "redrawn from the new state").to.equal("true");
+            }
+            finally {
+                try { panel.hidePopup(); } catch (e) {}
+                try { await wv._wvCfRestore(main, was || null); } catch (e) {}
+            }
+        });
+    });
+
     // -------- 5. No tooltip over an open popup ------------------------
 
     // MJT 2026-11-03 (screenshot: an annotation row's Related icon clicked,

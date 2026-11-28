@@ -39,6 +39,13 @@ class _WindowStateMixin {
         const st: any = {};
         const hidden = p._wvHidCapture(w);
         if (hidden) st.hiddenColl = hidden;
+        const sf = p._wvSfCapture ? p._wvSfCapture(w) : undefined;
+        if (sf) st.sfOpen = sf;
+        const bp = p._wvBmpCapture ? p._wvBmpCapture(w) : undefined;
+        if (bp) st.bmPane = bp;
+        // Its collections funnel, when it departs from the default (coll-funnel.ts).
+        const cf = p._wvCfCapture ? p._wvCfCapture(w) : undefined;
+        if (cf) st.collFunnel = cf;
         const title = p._wvWindowCustomTitle(w);
         if (title) st.title = title;
         const tagsAuto = p._wvTagsAutoCapture(w);
@@ -244,6 +251,9 @@ class _WindowStateMixin {
                 }
                 // The tree may not exist yet: _wvHidApply refreshes it when it comes.
                 if (st.hiddenColl) await p._wvHidRestore(w, st.hiddenColl);
+                if (st.sfOpen && p._wvSfRestore) p._wvSfRestore(w, st.sfOpen);
+                if (st.bmPane && p._wvBmpRestore) p._wvBmpRestore(w, st.bmPane);
+                if (st.collFunnel && p._wvCfRestore) await p._wvCfRestore(w, st.collFunnel);
             }
         }
         catch (e) { Zotero.debug("[Weavero] _wvWinStateApply err: " + e); }
@@ -375,6 +385,9 @@ class _WindowStateMixin {
         if (st.title && w._wvWindowTitle == null) p._wvWindowSetCustomTitle(w, st.title);
         if (typeof st.tagsAuto === "boolean") p._wvTagsAutoSet(w, st.tagsAuto, { save: false });
         if (st.hiddenColl) await p._wvHidRestore(w, st.hiddenColl);
+        if (st.sfOpen && p._wvSfRestore) p._wvSfRestore(w, st.sfOpen);
+        if (st.bmPane && p._wvBmpRestore) p._wvBmpRestore(w, st.bmPane);
+        if (st.collFunnel && p._wvCfRestore) await p._wvCfRestore(w, st.collFunnel);
         if (fill.collection) {
             if (zp.collectionsView) {
                 try { await zp.collectionsView.selectByID(fill.collection); } catch (e) {}

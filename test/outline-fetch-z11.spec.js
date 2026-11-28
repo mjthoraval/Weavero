@@ -47,10 +47,10 @@ describe("Weavero — outline fetch without getOutline2 (Zotero 11, issue #54)",
         assert.strictEqual(r.tree[0].position.pageIndex, 1, "the position survives the copy (navigation)");
     });
 
-    it("Zotero 11: no embedded bookmarks -> the reader's own outline, labelled Extracted", async () => {
+    it("Zotero 11: no embedded bookmarks -> the reader's own outline, Zotero's (\"zotero\": outline2.4 keeps \"extracted\" for Weavero's)", async () => {
         const r = await wv._wvReaderFetchOutline(pdfReader({ stateOutline: tree, embedded: [] }));
         assert.isOk(r);
-        assert.strictEqual(r.source, "extracted");
+        assert.strictEqual(r.source, "zotero");
         assert.strictEqual(r.tree.length, 2);
     });
 

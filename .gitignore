@@ -24,3 +24,6 @@ test/compat-plugins/last-errors.log
 
 # Scratch directory of the targeted test run (WV_TEST_ENTRIES).
 test-targeted/
+
+# Per-session typecheck marks of the Claude Code hooks (.claude/hooks/).
+.claude/.ts-dirty*

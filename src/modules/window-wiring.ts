@@ -29,16 +29,26 @@
 // (2026-10-09, see `_wvWhenPaneViewsReady`); they run in place when the views
 // exist, else in order once they do.
 //
-// Teardown is NOT in the table: a closed window's wiring dies with it (the
-// characterization finds no plugin reference to a closed window), and
-// destroy()'s per-window teardowns are guarded by test/disable/leftovers.js.
+// UNDO moves into the table, one entry at a time (ADR-0001, docs/adr/; GLOSSARY.md
+// "unwire"): an entry declares `unwire` ("auto", or a function for what the
+// automatic undo cannot see) or `diesWithWindow` (nothing to undo, and why), and
+// `_wvUnwireMainWindow` runs the declared undos in REVERSE table order, at the
+// window's close (_wvMainWindowTeardown) and at a disable / reload (destroy()).
+// Every wire() runs with its entry as the OWNER of the listeners and wrap layers it
+// installs (lib/wire-owner.ts): "auto" removes exactly those. Until the last entry
+// moves, the others keep their hand-written undo in destroy(), _wvMainWindowTeardown
+// or a plugin-wide teardown, allow-listed in test/window-wiring-table.spec.js.
 //
 // Guard: test/window-wiring.spec.js (parity of a second window with the
-// first, plus the full recording) and test/window-wiring-table.spec.js
-// (shape, order constraint, onMainWindowLoad = the table, idempotent init).
+// first, plus the full recording), test/window-wiring-table.spec.js
+// (shape, order constraints, onMainWindowLoad = the table, idempotent init,
+// every entry's undo declared) and test/window-unwire.spec.js (each migrated
+// entry unwired and wired again on a live window).
 
 import { PANEL_ID } from "./constants";
-import { wvUnlisten } from "../lib/listen";
+import { wvUnlisten, wvListenKeys } from "../lib/listen";
+import { wvUnwrap, wvWrapLayers } from "../lib/wrap";
+import { wvWireOwnerRun, wvWireOwned, wvWireOwnedTake, wvWireOwnedForget } from "../lib/wire-owner";
 import { wvItemsTreeEls, wvNativeWindows, wvWinType } from "../lib/windows";
 
 declare const Zotero: any;
@@ -59,12 +69,58 @@ export interface WvMainWire {
      *  test/native-windows.spec.js lists them. */
     nativeOff?: boolean;
     wire(p: any, win: any): void;
+    /** Its undo on one window (ADR-0001). "auto": the listeners (wvListen) and wrap
+     *  layers (wvWrap) its wire() installed on that window come off, as recorded
+     *  while it ran (lib/wire-owner.ts). A function: its own undo, for what that
+     *  record cannot see (state of its own, plain listeners, hand-made wraps); the
+     *  recorded listeners and layers still come off after it. Run at the window's
+     *  close and at a disable or reload, whatever `on`, `views` and `nativeOff` say:
+     *  an undo takes off only what is there. */
+    unwire?: "auto" | ((p: any, win: any) => void);
+    /** Nothing to unwire, and why (GLOSSARY.md "dies with its window"). */
+    diesWithWindow?: string;
+    /** The unwire is skipped while Zotero quits (`Services.startup.shuttingDown`):
+     *  an undo that only a disable needs, and that would hold up the session save. */
+    skipOnShutdown?: boolean;
 }
 
 const live = (): any => {
     const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
     return p && !p._wvDestroyed ? p : null;
 };
+
+/** Entry `e`'s wire() on `win`, as the owner of what it installs (lib/wire-owner.ts).
+ *  Every path that wires a main-window entry comes through here. */
+function wireEntry(p: any, win: any, e: WvMainWire): void {
+    wvWireOwnerRun(win, e.id, () => e.wire(p, win));
+}
+
+/** Entry `e`'s undo on `win` (ADR-0001): its own unwire if it has one, then the
+ *  listeners and layers recorded as its own on that window, newest first -- each
+ *  only while it still carries the tag it went on under (another instance's is
+ *  never touched). Throws what the entry's own unwire threw, after the rest. */
+function unwireEntry(p: any, win: any, e: WvMainWire): void {
+    let failed: any = null;
+    if (typeof e.unwire === "function") {
+        try { e.unwire(p, win); } catch (err) { failed = err; }
+    }
+    const recs = wvWireOwnedTake(win, e.id);
+    for (let i = recs.length - 1; i >= 0; i--) {
+        const r = recs[i];
+        if (!r.target) continue;   // not this window's (a label only)
+        try {
+            if (r.kind === "listen") {
+                const cur = wvListenKeys(r.target).find((k) => k.key === r.key);
+                if (cur && cur.tag === r.tag) wvUnlisten(r.target, r.key);
+            }
+            else if (r.layer && wvWrapLayers(r.target, r.key).some((l) => l.layer === r.layer && l.tag === r.tag)) {
+                wvUnwrap(r.target, r.key, r.layer);
+            }
+        }
+        catch (err) { if (!failed) failed = err; }
+    }
+    if (failed) throw failed;
+}
 
 export const WV_MAIN_WIRES: WvMainWire[] = [
     // Issue #35 (macOS Dock reopen): a main window created MID-SESSION
@@ -85,16 +141,17 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     } },
     // Ctrl+Shift+T -> reopen last closed reader window / group (falls through
     // to Zotero's native tab-undo when Weavero's stack is empty).
-    { id: "reopen-closed-shortcut", on: "both", wire: (p, win) => p._wvWireReopenClosedShortcut(win) },
+    { id: "reopen-closed-shortcut", on: "both", unwire: "auto", wire: (p, win) => p._wvWireReopenClosedShortcut(win) },
     // Catch `zotero://open...&wvpos=...` arriving from OUTSIDE Zotero:
     // commandLineHandler routes those to ZoteroPane.loadURI, which Weavero's
     // own link surfaces bypass entirely.
-    { id: "loaduri-hook", on: "both", wire: (p, win) => p._wvWireLoadURIHook(win) },
+    // A hand-made wrap of ZoteroPane.loadURI (url.ts): its own undo puts the native back.
+    { id: "loaduri-hook", on: "both", unwire: (p, win) => p._wvUnwireLoadURIHook(win), wire: (p, win) => p._wvWireLoadURIHook(win) },
     // Auto-default marker: the ItemTree class is per-window, so a NEW
     // window's renderer needs its own patch.
     { id: "defatt-marker", on: "both", views: true, wire: (p) => p._wvWireDefattMarker() },
     // Session-save hardening: base types for -loading tabs.
-    { id: "tabs-getstate", on: "both", wire: (p, win) => p._wvPatchTabsGetState(win) },
+    { id: "tabs-getstate", on: "both", unwire: "auto", wire: (p, win) => p._wvPatchTabsGetState(win) },
     // Multi-main-window fix: ignore other windows' tab-select notifier events
     // in this window's <item-details> (they froze the pane).
     { id: "itemdetails-tabselect", on: "both", nativeOff: true, wire: (p, win) => p._wvPatchItemDetailsTabSelect(win) },
@@ -105,16 +162,28 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     { id: "window-icon", on: "load", wire: (p, win) => p._wvApplyWindowIcon(win) },
     // Ctrl+T -> "open a library item" picker (reader windows wire theirs at
     // strip build).
-    { id: "new-tab-shortcut", on: "both", nativeOff: true, wire: (p, win) => p._wvWireMainNewTabShortcut(win) },
-    { id: "new-window-shortcut", on: "both", nativeOff: true, wire: (p, win) => p._wvWireNewWindowShortcut(win) },
+    // A plain keydown listener kept on the window (pane.ts `_wvMainNewTabKeyH`): its own undo.
+    { id: "new-tab-shortcut", on: "both", nativeOff: true, unwire: (p, win) => p._wvUnwireMainNewTabShortcut(win), wire: (p, win) => p._wvWireMainNewTabShortcut(win) },
+    { id: "new-window-shortcut", on: "both", nativeOff: true, unwire: "auto", wire: (p, win) => p._wvWireNewWindowShortcut(win) },
     // Ctrl/Cmd+Enter in the items list: the selected item beside (open-where.ts).
-    { id: "open-beside-key", on: "both", wire: (p, win) => p._wvWireOpenBesideKey(win) },
+    { id: "open-beside-key", on: "both", unwire: "auto", wire: (p, win) => p._wvWireOpenBesideKey(win) },
     // On a Zotero with its own windows too (the port, MJT 2026-11-07): there
     // Shift+click is Zotero's, the rest of the routes Weavero's.
     { id: "advsearch-new-window", on: "both", wire: (p, win) => p._wvWireAdvSearchNewWindow(win) },
     { id: "collections-pane-toggle", on: "both", perView: true, wire: (p, win) => p._wvApplyCollectionsPaneToggle(win) },
+    // Feeds (feeds.ts): the items view's sort answers in a feed view -- the
+    // Relevance column first, a clicked column kept -- hence `views`; each
+    // further library tab has its own view.
+    { id: "feeds-sort", on: "both", views: true, perView: true, wire: (p, win) => p._wvFdWireView(win) },
+    // Feeds (feeds-graphical.ts): the window's Abstract section draws a feed
+    // abstract without the pictures the Graphical Abstract section shows (its
+    // abstract-box class, one per window).
+    { id: "feeds-graphical", on: "both", wire: (p, win) => p._wvGaWire(win) },
     // Multi-line titles: each window's items tree, hence `views`.
     { id: "title-lines", on: "both", views: true, wire: (p, win) => p._wvApplyTitleLines(win) },
+    // Expanding a row at the bottom shows its children (expand-scroll.ts): each
+    // window's items trees, hence `views`.
+    { id: "expand-scroll", on: "both", views: true, wire: (p, win) => p._wvApplyExpandScroll(win) },
     // The Tag Selector's handle (issue #58): its filter mark follows the
     // items view's refresh signal, hence `views`.
     { id: "tag-selector-handle", on: "both", views: true, wire: (p, win) => p._wvApplyTagSelectorHandle(win) },
@@ -134,25 +203,23 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     // dropped on the library row (upstream register #35; installs nothing once
     // Zotero compares the dragged id against collection rows only).
     { id: "collection-drop-lib", on: "both", wire: (p, win) => p._wvWireCollectionDropFix(win) },
-    // WV-TEMP-134831: Zotero 11's "Edit in a Separate Window" from a note tab does
-    // nothing (upstream register #66; upstream-fixes.ts; installs nothing once
-    // Notes.open no longer lets a tab stand in for a window).
-    { id: "note-window", on: "both", wire: (p, win) => p._wvWireNoteWindowFix(win) },
-    // WV-TEMP-134823: Zotero 11's item pane header blank after the pane is opened on a
-    // tab selected while it was closed (upstream register #64; upstream-fixes.ts;
-    // installs nothing once handleCollapse or the collapsed setter changes).
-    { id: "ctx-header", on: "both", wire: (p, win) => p._wvWireCtxHeaderFix(win) },
-    // WV-TEMP-134826: a window without a library counts its open item pane in its
-    // minimum width (upstream register #53; upstream-fixes.ts; installs nothing once
-    // updateLayoutConstraints stops zeroing the fixed width there).
-    { id: "narrow-pane", on: "both", wire: (p, win) => p._wvWireNarrowPaneFix(win) },
     // WV-TEMP-133075: the item pane jumps after an Info edit when the focus moves to a
     // field near its bottom edge (upstream-fixes.ts; installs nothing once the Info
     // box's render no longer restores the focus inside its block layout).
     { id: "pane-jump", on: "both", wire: (p, win) => p._wvWirePaneJumpFix(win) },
-    // WV-TEMP-feedabstract (upstream-fixes.ts): a feed abstract blank after the item
+    // Researchers' authors marked in the Info section (people-cmark.ts).
+    { id: "people-cmark", on: "both", wire: (p, win) => p._wvPpCmarkWire(win) },
+    // WV-TEMP-134893 (upstream-fixes.ts): a feed abstract blank after the item
     // pane's sections moved; the window's abstract-box prototype.
     { id: "feed-abstract", on: "both", wire: (p, win) => p._wvWireFeedAbstractFix(win) },
+    // WV-TEMP-134893b (upstream-fixes.ts): a feed abstract blank for good after the
+    // sections moved while its browser loaded; each Abstract section takes Weavero's copy
+    // of its wait (installs nothing once Zotero's own wait ends on a removed browser).
+    { id: "feed-abstract-load", on: "both", wire: (p, win) => p._wvWireFeedLoadFix(win) },
+    // WV-TEMP-FEEDHEAD (upstream-fixes.ts): no Zotero crash when the item pane renders a
+    // feed item under a non-feed row (a refresh landing across a collection switch); the
+    // window's item-pane prototype.
+    { id: "feed-head", on: "both", wire: (p, win) => p._wvWireFeedHeadFix(win) },
     // WV-TEMP-INTROCRASH (upstream-fixes.ts): Zotero 10 crashes when a main window closes
     // while its items list loads over an empty library -- the intro text written into the
     // closed window. Each window's own items-list class (one loader per window); Zotero 10
@@ -163,10 +230,16 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     // advanced-search-pane class. Zotero 10 only since 11.0-beta.6 fixed it (its gate
     // installs nothing once the setter takes a search with no library).
     { id: "adv-search-seed", on: "both", wire: (p, win) => p._wvWireAdvSearchSeedFix(win) },
-    // WV-TEMP-FEEDHEAD (upstream-fixes.ts): no Zotero crash when the item pane renders a
-    // feed item under a non-feed row (a refresh landing across a collection switch); the
-    // window's item-pane prototype.
-    { id: "feed-head", on: "both", wire: (p, win) => p._wvWireFeedHeadFix(win) },
+    // In a feed view, the Advanced Search's field menus offer only the conditions a feed
+    // item can match (advsearch-feed.ts, MJT 2026-11-22); the window's zoterosearchcondition
+    // class (one per window; every library tab's rows).
+    { id: "adv-search-feed", on: "both", wire: (p, win) => p._wvAdvFeedWire(win) },
+    // WV-TEMP-114534 (upstream-fixes.ts): with no item selected in a feed or the Feeds
+    // row, the side navigation lists only a feed item's sections; the window's
+    // item-pane-sidenav and item-pane classes (one per window, every library tab's pane).
+    // Before "item-count-breakdown" or after it alike: that one wraps the pane's
+    // setItemPaneMessage, this one its renderMessage.
+    { id: "sidenav-feed", on: "both", wire: (p, win) => p._wvWireSidenavFeedFix(win) },
     // WV-TEMP-124063: an annotation the reader shows read-only (stored in the PDF, or
     // of an attachment the user may not edit) cannot be deleted from the items list
     // (upstream-fixes.ts; installs nothing once canDeleteSelectedItems checks it).
@@ -176,15 +249,10 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     // Zotero.PDFWorker singleton -- idempotent per instance, so any window wires it --
     // installs nothing once deletePages updates the full-text record itself).
     { id: "page-count", on: "both", wire: (p) => p._wvWirePageCountFix() },
-    // WV-TEMP-134772: Zotero's own reader menu entries greyed on 11.0-beta.4 (upstream
-    // register #18, fixed upstream by 3e32faa0a, not in a beta yet; upstream-fixes.ts).
-    // Once per plugin, from any open reader; the reader toolbar handler covers the rest.
-    { id: "reader-menu-disabled", on: "both", wire: (p) => p._wvWireReaderMenuFix() },
-    // WV-TEMP-134824: a new item / collection made in one window selects it in that
-    // window's active view only (upstream registers #58, #59; upstream-fixes.ts;
-    // installs nothing once the collection tree's 'add' checks the window). Every
-    // library view of the window, each further library tab too (perView).
-    { id: "add-select", on: "both", views: true, perView: true, wire: (p, win) => p._wvWireAddSelectFix(win) },
+    // Weavero's item-pane sections right after Zotero's own, before other plugins',
+    // when the window's saved section order does not hold them yet (backlinks.ts
+    // _wvSidenavPlaceOurs; MJT 2026-11-19). The user's own order wins after that.
+    { id: "sidenav-place", on: "both", wire: (p, win) => p._wvSidenavPlaceSoon(win) },
     // Weavero's Fluent file into the window (the Backlinks section's header
     // and sidenav are l10n ids; issue #60). `refresh`: replace a link an older
     // build left behind (a stale link blanks the window's strings).
@@ -220,6 +288,10 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     { id: "pin-anchor", on: "both", perView: true, wire: (p, win) => p._wvWirePinAnchorFix(win) },
     // Pinned section headers in the item pane (Extras; 2026-11-03).
     { id: "sticky-heads", on: "both", perView: true, wire: (p, win) => p._wvApplyItemPaneStickyHeads(win) },
+    // A section locked at the bottom of the item pane (pane-lock.ts, MJT 2026-11-22):
+    // the padlocks, the side navigation's entries, the per-view lock. The reader
+    // tabs' context panes created later: the pane observer.
+    { id: "pane-lock", on: "both", perView: true, wire: (p, win) => p._wvPaneLockWire(win) },
     // The pinned section and open sections per main window (the first keeps
     // Zotero's own settings; pane.ts _wvWireWindowPanePrefs). The managed
     // init wires a new window itself; this entry covers a reload.
@@ -233,6 +305,28 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     // every window that has something hidden). Retries on its own until the
     // collections tree exists.
     { id: "hidden-collections", on: "both", perView: true, wire: (p, win) => { p._wvHidApply(win); p._wvHidLoad(); } },
+    // The Group Libraries line folds (group-fold.ts): a layer on the window's
+    // CollectionTree class, so a tree built later folds from its first refresh
+    // (no `views`: on Zotero 9/10 this runs before the pane's trees exist),
+    // and the trees already there; each further library tab's on its view.
+    { id: "group-fold", on: "both", perView: true, wire: (p, win) => p._wvGfWire(win) },
+    // Folders for saved searches (search-folders.ts): a layer on the window's
+    // CollectionTree class regroups a library's saved searches under folders Weavero
+    // keeps; each pane tree's folder toggle, clicks and right-click; the collection
+    // menu's Move to Folder.
+    { id: "search-folders", on: "both", perView: true, wire: (p, win) => p._wvSfWire(win) },
+    // The Bookmarks pane above the collections tree (bookmarks-pane.ts): its sheet, a pane
+    // and splitter in each library view's collections column, the window's state on them.
+    // `views`: the column is a library view's; each further library tab builds its own.
+    { id: "bookmarks-pane", on: "both", views: true, perView: true, wire: (p, win) => p._wvBmpWire(win) },
+    // The funnel above the collections pane (coll-funnel.ts): its sheet, a button in each library
+    // view's collections toolbar; no layer of its own: the rows it takes out go through the hidden
+    // collections' `wv-hid` layers (entry "hidden-collections"), its marks through the Group
+    // Libraries fold's class layer (entry "group-fold").
+    // `views`: the toolbar is a library view's; each further library tab gets its button. Its
+    // undo gives every tree its rows back -- not while Zotero quits.
+    { id: "coll-funnel", on: "both", views: true, perView: true, skipOnShutdown: true,
+        unwire: (p, win) => { p._wvCfUnwireWin(win); }, wire: (p, win) => p._wvCfWire(win) },
     // The open Collections and Libraries Managers name their window once
     // there are several: a window opening changes the count (the title is
     // re-read). Load-only: init's window was open already. (Lived in
@@ -250,13 +344,17 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     { id: "collections-search-toggle", on: "both", wire: (p, win) => p._wvWireCollectionsSearchToggle(win) },
     { id: "collection-tree-gestures", on: "both", wire: (p, win) => p._wvWireCollectionTreeGestures(win) },
     { id: "menu-ghost-workaround", on: "both", wire: (p, win) => p._wvWireMenuGhostWorkaround(win) },
+    // Zotero's progress window (Find Full Text, Retrieve Metadata) opens from whichever main
+    // window was focused last: each one carries the layer (progress-window.ts).
+    { id: "progress-window", on: "both", wire: (p, win) => p._wvWireProgressWindow(win) },
     { id: "reader-find-key", on: "both", wire: (p, win) => p._wvWireReaderFindKey(win) },
     // WV-TEMP-134355: a lost lookup-engine icon is downloaded again when the
     // user first opens the Locate menu, never at startup.
-    { id: "locate-icons-first-use", on: "both", wire: (p, win) => p._wvWireLocateIconsFirstUse(win) },
-    { id: "column-picker-mark", on: "both", wire: (p, win) => p._wvWireColumnPickerMark(win) },
-    { id: "column-picker-native-fix", on: "both", wire: (p, win) => p._wvWireColumnPickerNativeFix(win) },
-    { id: "items-cross-window-drop", on: "both", nativeOff: true, wire: (p, win) => p._wvWireItemsCrossWindowDrop(win) },
+    { id: "locate-icons-first-use", on: "both", unwire: "auto", wire: (p, win) => p._wvWireLocateIconsFirstUse(win) },
+    { id: "column-picker-mark", on: "both", unwire: "auto", wire: (p, win) => p._wvWireColumnPickerMark(win) },
+    // A hand-made wrap of the window's XULPopupElement.prototype (macOS): its own undo.
+    { id: "column-picker-native-fix", on: "both", unwire: (p, win) => p._wvUnwireColumnPickerNativeFix(win), wire: (p, win) => p._wvWireColumnPickerNativeFix(win) },
+    { id: "items-cross-window-drop", on: "both", nativeOff: true, unwire: "auto", wire: (p, win) => p._wvWireItemsCrossWindowDrop(win) },
     // Edit > Undo hook + the reader's Ctrl+Y (until 0.21.7 only the init loop
     // wired them: a window opened later had neither).
     { id: "edit-undo-menu", on: "both", wire: (p, win) => p._wvWireEditUndoMenu(win) },
@@ -343,7 +441,18 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     { id: "bookmarks-toolbar-button", on: "both", wire: (p, win) => {
         if (p._getEnableLibraryBookmarks()) p._setupBookmarksToolbarButton(win);
     } },
+    // The Researchers button after Bookmarks in the collections toolbar (people-toolbar.ts,
+    // MJT 2026-11-27). `views`: a window opened mid-session gets its toolbar with its library
+    // view; `perView`: each library tab has a toolbar of its own (zotero#6035). Its undo
+    // takes the buttons and their menu away (the listeners are on the buttons).
+    { id: "people-toolbar-button", on: "both", views: true, perView: true,
+        unwire: (p, win) => p._wvPpTbRemove(win), wire: (p, win) => p._wvPpTbWire(win) },
     { id: "pane-observer", on: "both", wire: (p, win) => p._setupPaneObserver(win) },
+    // The default attachment in the item pane (attachments.ts, MJT
+    // 2026-11-19): the right-click on an Attachments / Notes row, the
+    // window's Attachments class ordering the default first, the marks drawn
+    // so far (the pane observer above draws the rest).
+    { id: "defpane", on: "both", wire: (p, win) => p._wvDefPaneWire(win) },
     { id: "items-list-filter", on: "both", wire: (p, win) => p._setupItemsListFilter(win) },
     // The view half again once the view exists (the panel's wv-filter-bar
     // guard stops a second _setupItemsListFilter before it).
@@ -405,9 +514,10 @@ export const WV_MAIN_WIRES: WvMainWire[] = [
     // must be per-window and re-hooked on reload.
     { id: "item-count-breakdown", on: "both", wire: (p, win) => p._wvWireItemCountBreakdown(win) },
     // Issue #29: only let close-automation see a document's LAST view.
-    { id: "last-view-close-guard", on: "both", wire: (p, win) => p._wvWireLastViewCloseGuard(win) },
-    // Quick-copy shortcuts honour the tab multi-selection.
-    { id: "quick-copy-multi-tab", on: "both", wire: (p, win) => p._wvWireQuickCopyMultiTab(win) },
+    { id: "last-view-close-guard", on: "both", unwire: "auto", wire: (p, win) => p._wvWireLastViewCloseGuard(win) },
+    // Quick-copy shortcuts honour the tab multi-selection. A hand-made wrap of
+    // ZoteroPane.copySelectedItemsToClipboard (pane.ts): its own undo.
+    { id: "quick-copy-multi-tab", on: "both", unwire: (p, win) => p._wvUnwireQuickCopyMultiTab(win), wire: (p, win) => p._wvWireQuickCopyMultiTab(win) },
 ];
 
 // Standalone READER windows (`zotero:reader`), the same idea (wiring slice 2,
@@ -472,6 +582,10 @@ export const WV_READER_WIRES: WvReaderWire[] = [
     // Uninit the window's mounted (non-native) readers when it closes. Also
     // wired when a tab mounts; here so a reload re-wires it.
     { id: "wt-teardown", on: ["render", "init"], anyReader: true, wire: (p, win) => p._wvWTWireWindowTeardown(win) },
+    // A note tab whose editor left the window (a chrome strip took its `wv-`
+    // id) gets a new one: the tab model outlives the instance, nothing else
+    // mounts it again (dev.99 triage, 2026-11-27).
+    { id: "wt-note-remount", on: ["init"], anyReader: true, wire: (p, win) => p._wvWTRemountDetachedNotes(win) },
     // Title bar -> tab strip + hidden menu bar, or both torn down when the
     // option is off.
     { id: "tab-strip", on: ["render", "init", "pref"], wire: (p, _win, r) => p._ensureReaderWindowTabStrip(r) },
@@ -518,7 +632,7 @@ class _WindowWiringMixin {
             if (path === "init" && e.on !== "both") continue;
             if (native && e.nativeOff) continue;
             if (e.views && !viewsNow) { later.push(e); continue; }
-            try { e.wire(p, win); }
+            try { wireEntry(p, win, e); }
             catch (err) { Zotero.debug("[Weavero] wire " + e.id + " err: " + err); }
         }
         // No library view: nothing to wait for. Zotero runs onMainWindowLoad, and
@@ -527,12 +641,56 @@ class _WindowWiringMixin {
             p._wvWhenPaneViewsReady(win, (lp: any) => {
                 stampView();
                 for (const e of later) {
-                    try { e.wire(lp, win); }
+                    try { wireEntry(lp, win, e); }
                     catch (err) { Zotero.debug("[Weavero] wire " + e.id + " (views) err: " + err); }
                 }
             });
         }
     }
+
+    /** Unwire main window `win` (ADR-0001): every entry that declares its undo, in
+     *  REVERSE table order, each on its own (one throwing must not skip the rest);
+     *  then the window's ownership records go. At the window's close
+     *  (_wvMainWindowTeardown) and at a disable or reload (destroy()). `shutdown`:
+     *  Zotero is quitting, so `skipOnShutdown` entries are left alone. The entries
+     *  not migrated yet keep their hand-written undo, beside this call. */
+    _wvUnwireMainWindow(win: any, opts?: { shutdown?: boolean }) {
+        if (!win) return;
+        const p: any = this;
+        try {
+            for (let i = WV_MAIN_WIRES.length - 1; i >= 0; i--) {
+                const e = WV_MAIN_WIRES[i];
+                if (!e.unwire) continue;
+                if (e.skipOnShutdown && opts && opts.shutdown) continue;
+                try { unwireEntry(p, win, e); }
+                catch (err) { Zotero.debug("[Weavero] unwire " + e.id + " err: " + err); }
+            }
+        }
+        finally { wvWireOwnedForget(win); }
+    }
+
+    /** Unwire entry `id` alone on `win` (test/window-unwire.spec.js). False when
+     *  the entry declares no undo. */
+    _wvUnwireMainEntry(win: any, id: string): boolean {
+        const e = WV_MAIN_WIRES.find((x) => x.id === id);
+        if (!e || !e.unwire || !win) return false;
+        unwireEntry(this, win, e);
+        return true;
+    }
+
+    /** Wire entry `id` alone on `win`, as the table does -- never a `nativeOff`
+     *  entry on a Zotero with its own windows (test/window-unwire.spec.js). */
+    _wvWireMainEntry(win: any, id: string): boolean {
+        const e = WV_MAIN_WIRES.find((x) => x.id === id);
+        if (!e || !win || win.closed || (this as any)._wvDestroyed) return false;
+        if (e.nativeOff && wvNativeWindows()) return false;
+        wireEntry(this, win, e);
+        return true;
+    }
+
+    /** What entry `id` installed on `win`, as recorded (lib/wire-owner.ts; for
+     *  test/window-unwire.spec.js). */
+    _wvMainWireOwned(win: any, id: string) { return wvWireOwned(win, id); }
 
     /** The reader-window table, for test/window-wiring-table.spec.js. */
     _wvReaderWires(): WvReaderWire[] { return WV_READER_WIRES; }
@@ -589,10 +747,12 @@ class _WindowWiringMixin {
      *  Window" menu entry inside it and (b) marks it for capture into
      *  Weavero's own store. It then either restores its saved tab group
      *  (startup restore) or starts clean -- library tab only (manual new
-     *  window). No pane relabel: Zotero already restores only the oldest
-     *  pane (the anchor), so managed windows are skipped for free; Weavero
-     *  recreates them itself. Load path only: a pending spawn belongs to the
-     *  window being loaded. */
+     *  window). Zotero 10 saves one pane entry per main window (session.js
+     *  save) but restores the FIRST one into every main window that loads
+     *  (zoteroPane.js 10.0.8, "Restore pane state"), so a managed window would
+     *  mirror the anchor's tabs: `_wvSuppressNativePaneRestore` below swallows
+     *  that, and Weavero recreates the window's own tabs itself. Load path
+     *  only: a pending spawn belongs to the window being loaded. */
     _wvAdoptPendingDevWindow(this: any, _window: any) {
         try {
             if (this._wvPendingDevWindow && _window && !_window._wvManagedWindow) {
@@ -726,7 +886,7 @@ class _WindowWiringMixin {
             view._wvViewWireTag = tag;
             for (const e of WV_MAIN_WIRES) {
                 if (!(e.views || e.perView) || e.nativeOff) continue;
-                try { e.wire(p, win); }
+                try { wireEntry(p, win, e); }
                 catch (err) { Zotero.debug("[Weavero] wire " + e.id + " (view) err: " + err); }
             }
             try { p._wvInstallCollapseToQuickSearch(win); } catch (e) {}

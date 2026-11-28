@@ -8,7 +8,7 @@ name: Test
 # On Ubuntu the scaffold's own headless setup still runs (xvfb and the
 # Ubuntu 24 libraries; it skips its beta download when a binary is given);
 # on Windows and macOS it is Linux-only and is skipped
-# (ZOTERO_SETUP_COMPLETE). The twelve jobs run side by side: the wait is
+# (ZOTERO_SETUP_COMPLETE). The sixteen jobs run side by side: the wait is
 # the slowest one's.
 
 on:
@@ -36,6 +36,11 @@ on:
 concurrency:
   group: test-${{ github.ref }}
   cancel-in-progress: true
+
+# Read-only, whatever the repository's default token permission: the
+# suite runs npm's packages and the whole plugin (2026-11-22).
+permissions:
+  contents: read
 
 # Opt into the Node 24 runtime for actions themselves (not just
 # the project's Node toolchain). Silences the deprecation warning
@@ -67,27 +72,37 @@ jobs:
       # One red job never cancels the others: each system and channel
       # reports on its own.
       fail-fast: false
-      # Shards (WV_TEST_SHARD, zotero-plugin.config.ts: contiguous,
-      # size-balanced slices of the spec files, the 000- helpers in each;
-      # the 2026-11-03 study, recommendation 7): two per job, for time
-      # (MJT 2026-11-04, "2 shards"). Twelve jobs, four on macOS (GitHub's
-      # free plan runs 20 at once, 5 of them macOS). The memory that once
-      # argued for more -- a run's Zotero at 5-11 GB, a macOS half killed
-      # at 6 GB on the 7 GB runner -- was the scaffold's Browser Toolbox
-      # attached to the runner's Zotero (zotero-plugin.config.ts,
-      # server.devtools), not Zotero's reader: without it the whole suite
-      # peaks near 2 GB. `part` names the shard where a "/" cannot go (the
-      # logs' artifact).
+      # Shards (WV_TEST_SHARD, zotero-plugin.config.ts: parts of the spec
+      # files balanced by their measured run times, test/spec-times.json,
+      # since 2026-11-20 -- contiguous slices of equal bytes before; the 000-
+      # helpers in each; the 2026-11-03 study, recommendation 7). Per system
+      # since 2026-11-20 (MJT, "Ubuntu and Windows can take 3-4 shards ...
+      # macOS stays at 2"): three on Ubuntu and Windows, two on macOS -- 16
+      # jobs, four on macOS (GitHub's free plan runs 20 at once, 5 of them
+      # macOS). Predicted from run 44546104702's own suite times (the longest
+      # part plus the system's fixed cost per job): macOS ~18.9 min decides
+      # the run (its longest job was 27.1); Ubuntu and Windows report in
+      # ~10-11 min. Four parts there would fill the 20-job cap for results in
+      # ~8 min, the run still waiting on macOS. The memory that once argued
+      # for more -- a run's Zotero at 5-11 GB, a macOS half killed at 6 GB on
+      # the 7 GB runner -- was the scaffold's Browser Toolbox attached to the
+      # runner's Zotero (zotero-plugin.config.ts, server.devtools), not
+      # Zotero's reader: without it the whole suite peaks near 2 GB. `part`
+      # names the shard where a "/" cannot go (the logs' artifact).
       matrix:
         include:
-          - { os: ubuntu-latest, label: Ubuntu, channel: release, experimental: false, shard: "1/2", part: "-1of2" }
-          - { os: ubuntu-latest, label: Ubuntu, channel: release, experimental: false, shard: "2/2", part: "-2of2" }
-          - { os: ubuntu-latest, label: Ubuntu, channel: beta, experimental: false, shard: "1/2", part: "-1of2" }
-          - { os: ubuntu-latest, label: Ubuntu, channel: beta, experimental: false, shard: "2/2", part: "-2of2" }
-          - { os: windows-latest, label: Windows, channel: release, experimental: false, shard: "1/2", part: "-1of2" }
-          - { os: windows-latest, label: Windows, channel: release, experimental: false, shard: "2/2", part: "-2of2" }
-          - { os: windows-latest, label: Windows, channel: beta, experimental: false, shard: "1/2", part: "-1of2" }
-          - { os: windows-latest, label: Windows, channel: beta, experimental: false, shard: "2/2", part: "-2of2" }
+          - { os: ubuntu-latest, label: Ubuntu, channel: release, experimental: false, shard: "1/3", part: "-1of3" }
+          - { os: ubuntu-latest, label: Ubuntu, channel: release, experimental: false, shard: "2/3", part: "-2of3" }
+          - { os: ubuntu-latest, label: Ubuntu, channel: release, experimental: false, shard: "3/3", part: "-3of3" }
+          - { os: ubuntu-latest, label: Ubuntu, channel: beta, experimental: false, shard: "1/3", part: "-1of3" }
+          - { os: ubuntu-latest, label: Ubuntu, channel: beta, experimental: false, shard: "2/3", part: "-2of3" }
+          - { os: ubuntu-latest, label: Ubuntu, channel: beta, experimental: false, shard: "3/3", part: "-3of3" }
+          - { os: windows-latest, label: Windows, channel: release, experimental: false, shard: "1/3", part: "-1of3" }
+          - { os: windows-latest, label: Windows, channel: release, experimental: false, shard: "2/3", part: "-2of3" }
+          - { os: windows-latest, label: Windows, channel: release, experimental: false, shard: "3/3", part: "-3of3" }
+          - { os: windows-latest, label: Windows, channel: beta, experimental: false, shard: "1/3", part: "-1of3" }
+          - { os: windows-latest, label: Windows, channel: beta, experimental: false, shard: "2/3", part: "-2of3" }
+          - { os: windows-latest, label: Windows, channel: beta, experimental: false, shard: "3/3", part: "-3of3" }
           - { os: macos-latest, label: macOS, channel: release, experimental: false, shard: "1/2", part: "-1of2" }
           - { os: macos-latest, label: macOS, channel: release, experimental: false, shard: "2/2", part: "-2of2" }
           - { os: macos-latest, label: macOS, channel: beta, experimental: true, shard: "1/2", part: "-1of2" }
@@ -95,6 +110,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v7
         id: node
@@ -113,10 +130,11 @@ jobs:
 
       # `npm ci` honours the lockfile exactly — fails fast if the
       # lockfile and package.json have drifted, which is what we
-      # want for reproducible CI runs.
+      # want for reproducible CI runs. No install script of any package
+      # runs (release.yml says why the build and the suite need none).
       - name: Install dependencies
         if: steps.nm.outputs.cache-hit != 'true'
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       # No download but Zotero's: the scaffold's update check off, the
       # pinned chai.js in place (ci/prepare.mjs, ci/README.md).
@@ -132,14 +150,62 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.channel == 'beta'
         run: npm run test:unit
 
+      # Zotero itself, cached by the exact build the channel serves (MJT
+      # 2026-11-20, after Zotero's own CI, which caches its xulrunner): the
+      # dl?channel= link redirects to download.zotero.org/client/<channel>/
+      # <version>/<file>, so that file name keys the cache, and a new release
+      # or beta is a new key. Only the redirect touches www.zotero.org, retried
+      # (a rate-limited download there failed a job before any test ran,
+      # "error code: 1015"); a cache miss downloads from download.zotero.org.
+      # The answer is a redirect from www.zotero.org: what reaches a shell
+      # later goes through the environment, and the URL must be a plain
+      # download.zotero.org address (letters, digits and . _ - / % + only).
+      - name: Resolve the Zotero build
+        id: zotero
+        shell: bash
+        env:
+          CHANNEL: ${{ matrix.channel }}
+        run: |
+          case "$RUNNER_OS" in
+            Linux) platform=linux-x86_64 ;;
+            Windows) platform=win-x64-zip ;;
+            macOS) platform=mac ;;
+          esac
+          url=""
+          for i in 1 2 3 4 5; do
+            url="$(curl -s -o /dev/null -w '%{redirect_url}' "https://www.zotero.org/download/client/dl?channel=$CHANNEL&platform=$platform" || true)"
+            if [[ "$url" =~ ^https://download\.zotero\.org/[A-Za-z0-9._%+/-]+$ ]]; then break; fi
+            echo "no build named yet (attempt $i): '$url'"
+            url=""
+            sleep $((i * 15))
+          done
+          test -n "$url" || { echo "::error::www.zotero.org named no Zotero build for $CHANNEL / $platform"; exit 1; }
+          file="${url##*/}"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+          echo "Zotero $CHANNEL: $file"
+
+      - name: Cache the Zotero download
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/zotero-dl
+          key: zotero-${{ runner.os }}-${{ steps.zotero.outputs.file }}
+
       - name: Install Zotero (Ubuntu)
         if: runner.os == 'Linux'
         shell: bash
+        env:
+          ZURL: ${{ steps.zotero.outputs.url }}
+          ZFILE: ${{ steps.zotero.outputs.file }}
         run: |
+          dl="$RUNNER_TEMP/zotero-dl/$ZFILE"
+          if [ -f "$dl" ]; then echo "from the cache: $dl"; else
+            mkdir -p "$RUNNER_TEMP/zotero-dl"
+            curl -fsSL --retry 3 -o "$dl" "$ZURL"
+          fi
           dir="$RUNNER_TEMP/zotero"
           mkdir -p "$dir"
-          curl -fsSL -o "$RUNNER_TEMP/zotero.tar.xz" "https://www.zotero.org/download/client/dl?channel=${{ matrix.channel }}&platform=linux-x86_64"
-          tar -xf "$RUNNER_TEMP/zotero.tar.xz" -C "$dir"
+          tar -xf "$dl" -C "$dir"
           exe="$(find "$dir" -maxdepth 2 -type f -name zotero | head -n 1)"
           test -n "$exe" || { echo "zotero not found in the archive"; exit 1; }
           echo "ZOTERO_PLUGIN_ZOTERO_BIN_PATH=$exe" >> "$GITHUB_ENV"
@@ -147,10 +213,17 @@ jobs:
       - name: Install Zotero (Windows, portable ZIP)
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          ZURL: ${{ steps.zotero.outputs.url }}
+          ZFILE: ${{ steps.zotero.outputs.file }}
         run: |
-          $zip = Join-Path $env:RUNNER_TEMP "zotero.zip"
+          $dl = Join-Path $env:RUNNER_TEMP "zotero-dl"
+          $zip = Join-Path $dl $env:ZFILE
           $dir = Join-Path $env:RUNNER_TEMP "zotero"
-          Invoke-WebRequest -Uri "https://www.zotero.org/download/client/dl?channel=${{ matrix.channel }}&platform=win-x64-zip" -OutFile $zip
+          if (Test-Path $zip) { "from the cache: $zip" } else {
+            New-Item -ItemType Directory -Force -Path $dl | Out-Null
+            Invoke-WebRequest -Uri $env:ZURL -OutFile $zip -MaximumRetryCount 3
+          }
           Expand-Archive -Path $zip -DestinationPath $dir
           $exe = Get-ChildItem -Path $dir -Recurse -Filter zotero.exe | Select-Object -First 1
           if (-not $exe) { throw "zotero.exe not found in the ZIP" }
@@ -160,10 +233,16 @@ jobs:
       - name: Install Zotero (macOS, disk image)
         if: runner.os == 'macOS'
         shell: bash
+        env:
+          ZURL: ${{ steps.zotero.outputs.url }}
+          ZFILE: ${{ steps.zotero.outputs.file }}
         run: |
-          dmg="$RUNNER_TEMP/zotero.dmg"
+          dmg="$RUNNER_TEMP/zotero-dl/$ZFILE"
           mnt="$RUNNER_TEMP/zotero-mnt"
-          curl -fsSL -o "$dmg" "https://www.zotero.org/download/client/dl?channel=${{ matrix.channel }}&platform=mac"
+          if [ -f "$dmg" ]; then echo "from the cache: $dmg"; else
+            mkdir -p "$RUNNER_TEMP/zotero-dl"
+            curl -fsSL --retry 3 -o "$dmg" "$ZURL"
+          fi
           mkdir -p "$mnt"
           hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mnt"
           cp -R "$mnt/Zotero.app" "$RUNNER_TEMP/"
@@ -187,6 +266,10 @@ jobs:
           WV_TEST_SHARD: ${{ matrix.shard }}
           WV_TEST_ENTRIES: ${{ matrix.entries }}
           WV_TEST_PREFS: ${{ matrix.prefs }}
+          # Each spec file's wall time (test/000-helpers.spec.js), kept with the
+          # logs below: `node scripts/spec-times.mjs --json <file>` merges one
+          # into test/spec-times.json, by which the shards are balanced.
+          WV_TEST_TIMES: ${{ runner.temp }}/wv-spec-times.json
         run: |
           set -o pipefail
           npm test 2>&1 | tee "$RUNNER_TEMP/wv-test.log"
@@ -197,6 +280,25 @@ jobs:
             exit 1
           fi
           case "$summary" in *failed*) echo "::error::$summary"; exit 1;; esac
+
+      # A retried test is never silent (test/000-helpers.spec.js retries a
+      # failed test up to twice on CI, as Zotero's CI does): every
+      # "[wv-test] retry" line -- which test, which attempt, its first error,
+      # how the retry ended -- goes into the job's summary and as a warning
+      # on the run's page, red or green.
+      - name: Report retried tests
+        if: always()
+        shell: bash
+        run: |
+          lines="$(grep -a -o '\[wv-test\] retry[^[:cntrl:]]*' "$RUNNER_TEMP/wv-test.log" 2>/dev/null || true)"
+          if [ -z "$lines" ]; then echo "no retried test"; exit 0; fi
+          {
+            echo "### Retried tests -- ${{ matrix.label }}, Zotero ${{ matrix.channel }}, ${{ matrix.shard }}"
+            echo '```'
+            echo "$lines"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          while IFS= read -r l; do echo "::warning title=Retried test (${{ matrix.label }}, ${{ matrix.channel }}, ${{ matrix.shard }})::$l"; done <<< "$lines"
 
       # The run's log and the suite's quit trace (test/000-helpers.spec.js
       # writes every quit request with its JS stack, and every window close,
@@ -210,6 +312,7 @@ jobs:
           out="$RUNNER_TEMP/wv-artifacts"
           mkdir -p "$out"
           cp "$RUNNER_TEMP/wv-test.log" "$out/" 2>/dev/null || true
+          cp "$RUNNER_TEMP/wv-spec-times.json" "$out/spec-times${{ matrix.part }}.json" 2>/dev/null || true
           for d in "${TMPDIR:-}" "${TEMP:-}" /tmp; do
             if [ -n "$d" ] && [ -f "$d/wv-test-quit-trace.txt" ]; then cp "$d/wv-test-quit-trace.txt" "$out/"; break; fi
           done

@@ -105,6 +105,98 @@ describe("Weavero — a library tab is a tab like any other on a Zotero with its
         dragEv("dragend", xEnd, y, dt, srcEl);
         await settle(label);
     }
+    /** The pinned My Library's name (pinnedLibraryTabName, tabs.ts
+     *  _wvSyncPinnedMirrors): on by default, icon + title as wide as the title
+     *  needs (a tab's 200px at most); off, an icon as wide as the other pin. The
+     *  same checks as test/library-tab-zotero-pin.spec.js (Zotero's own pin). */
+    async function checkPinnedName() {
+        const m = mirror(LIB), mA = mirror(tabOf(a).id);
+        assert.ok(m && mA, "fixture: My Library and A pinned");
+        await waitFor(() => m.hasAttribute("data-wv-named"), 3000, "the name shown");
+        const ttl = m.querySelector(".wv-pinned-mirror-title"), ic = m.querySelector(".tab-icon");
+        assert.notStrictEqual(win.getComputedStyle(ttl).display, "none", "the title is drawn");
+        assert.strictEqual(ttl.textContent, lib().title, "the tab's own title");
+        assert.isAbove(rect(ttl).width, 10, "with room for it");
+        assert.isAbove(rect(ttl).left, rect(ic).right - 0.5, "after the icon");
+        assert.isAbove(rect(m).width, rect(mA).width + 10, "wider than an icon pin (" + rect(m).width + " vs " + rect(mA).width + ")");
+        assert.isAtMost(rect(m).width, 200.5, "a tab's width at most");
+        assert.isAtLeast(rect(m).height, rect(mA).height - 0.5, "as tall as the other pin");
+        assert.notOk(mA.hasAttribute("data-wv-named"), "an item tab's pin stays an icon");
+        await wvT.withPref("weavero.pinnedLibraryTabName", false, async () => {
+            await waitFor(() => !m.hasAttribute("data-wv-named"), 3000, "the setting off: the icon alone");
+            assert.strictEqual(win.getComputedStyle(ttl).display, "none", "off: no title");
+            assert.approximately(rect(m).width, rect(mA).width, 1, "off: as wide as the other pin");
+        });
+        await waitFor(() => m.hasAttribute("data-wv-named"), 3000, "the default back: the name shown");
+    }
+    /** "Show Tab Name" on a pinned tab's menu, its place and its command:
+     *  the tab's own choice, on a library tab as on an item tab (MJT 2026-11-27:
+     *  "it should act per tab, same as all the other tabs"; until then it was
+     *  the Settings option on a library tab, so every library tab at once:
+     *  pin-name-library-tabs.spec.js); none on an unpinned tab. */
+    async function checkPinNameMenu() {
+        const entry = async (tabID) => {
+            const r = rect(node(tabID) || mirror(tabID));
+            ZT._openMenu(Math.round(win.mozInnerScreenX + r.left + 10), Math.round(win.mozInnerScreenY + r.top + 10), tabID);
+            await sleep(500);
+            for (const p of doc.querySelectorAll("popupset > menupopup")) {
+                if (p.state !== "open" && p.state !== "showing") continue;
+                const shown = Array.from(p.children).filter(ch => !ch.hidden && win.getComputedStyle(ch).display !== "none");
+                const i = shown.findIndex(ch => ch.getAttribute("data-wv-key") === "pinName");
+                return { mi: i >= 0 ? shown[i] : null, prev: i > 0 ? shown[i - 1] : null, popup: p,
+                    desc: shown.map(ch => (wv._wvTabMenuItemKey(ch) || "-") + ":" + (ch.getAttribute("label") || ch.localName)).join(" | ") };
+            }
+            return { mi: null, popup: null, desc: "no open menu" };
+        };
+        try {
+            const e = await entry(LIB);
+            assert.ok(e.mi, "on My Library's menu: " + e.desc);
+            assert.strictEqual(e.mi.getAttribute("type"), "checkbox", "a checkbox");
+            assert.ok(wvT.lib().wvBoolAttrOn(e.mi, "checked"), "checked: the option's default is on");
+            assert.strictEqual(wv._wvTabMenuItemKey(e.prev), "pin", "right after the pin entry: " + e.desc);
+            assert.ok(e.mi.getAttribute("label"), "labelled: " + e.desc);
+            e.mi.doCommand();
+            closeMenus();
+            await waitFor(() => !mirror(LIB).hasAttribute("data-wv-named"), 3000, "the pin becomes the icon alone");
+            assert.strictEqual(wv._wvLibTabPinNameOwn(lib()), false, "My Library's own choice");
+            assert.strictEqual(Zotero.Prefs.get("weavero.pinnedLibraryTabName"), true, "the Settings option unchanged");
+            const e2 = await entry(LIB);
+            assert.ok(e2.mi && !wvT.lib().wvBoolAttrOn(e2.mi, "checked"), "unchecked once off: " + e2.desc);
+            closeMenus();
+            await sleep(200);
+            // Any PINNED tab has it, an item tab for itself alone (MJT 2026-11-21:
+            // "Also add a show name when pinned to any tab"; "Show the option to
+            // display the name when pinned only on pinned tabs").
+            const mA = () => mirror(tabOf(a).id);
+            const eA = await entry(tabOf(a).id);
+            assert.ok(eA.mi, "on a pinned item tab's menu: " + eA.desc);
+            assert.notOk(wvT.lib().wvBoolAttrOn(eA.mi, "checked"), "unchecked: an item tab's pin is an icon by default");
+            assert.strictEqual(wv._wvTabMenuItemKey(eA.prev), "pin", "right after the pin entry: " + eA.desc);
+            eA.mi.doCommand();
+            closeMenus();
+            await waitFor(() => mA() && mA().hasAttribute("data-wv-named"), 3000, "A's pin shows its name");
+            assert.isAbove(rect(mA()).width, rect(mirror(LIB)).width + 10, "wider than an icon pin");
+            assert.include(String(Zotero.Prefs.get("weavero.pinnedTabNames")), a.key, "the choice kept by item");
+            assert.notOk(mirror(LIB).hasAttribute("data-wv-named"), "My Library keeps its own choice (off)");
+            const eA2 = await entry(tabOf(a).id);
+            assert.ok(eA2.mi && wvT.lib().wvBoolAttrOn(eA2.mi, "checked"), "checked once on: " + eA2.desc);
+            eA2.mi.doCommand();
+            closeMenus();
+            await waitFor(() => !mA().hasAttribute("data-wv-named"), 3000, "off again: the icon alone");
+            await sleep(200);
+            const eB = await entry(tabOf(b).id);
+            assert.ok(eB.popup, "fixture: B's menu opened");
+            assert.notOk(eB.mi, "not on an unpinned tab's menu: " + eB.desc);
+        }
+        finally {
+            closeMenus();
+            try { Zotero.Prefs.clear("weavero.pinnedLibraryTabName"); } catch (er) {}
+            try { Zotero.Prefs.clear("weavero.pinnedTabNames"); } catch (er) {}
+            try { wv._wvLibTabPinNameSet(lib(), undefined); apply(); } catch (er) {}
+            await sleep(300);
+        }
+        await waitFor(() => mirror(LIB) && mirror(LIB).hasAttribute("data-wv-named"), 3000, "the default back");
+    }
 
     before(async function () {
         wv = wvT.plugin();
@@ -112,7 +204,7 @@ describe("Weavero — a library tab is a tab like any other on a Zotero with its
         if (!wvT.nativeWindows()) this.skip();
         if (wvT.lib() && wvT.lib().wvZoteroPinsLibraryTabs && wvT.lib().wvZoteroPinsLibraryTabs()) this.skip();
         for (const m of ["_applyPinnedTabs", "_applyTabGroups", "_pinnedTabsAdd", "_pinnedTabsRemove", "_tabGroupCreate",
-            "_wvTabGroupAddTab", "_wvTabGroupStamp", "_wvTabGroupStampLeave", "_wvTabGroupSaveAndClose"]) {
+            "_wvTabGroupAddTab", "_wvTabGroupStamp", "_wvTabGroupStampLeave", "_wvTabGroupSaveAndClose", "_wvLibTabPinNameOwn", "_wvLibTabPinNameSet"]) {
             if (typeof wv[m] !== "function") wvT.absent("plugin." + m);
         }
         win = Zotero.getMainWindow(); doc = win.document; ZT = win.Zotero_Tabs;
@@ -218,12 +310,29 @@ describe("Weavero — a library tab is a tab like any other on a Zotero with its
         await settle("My Library moved first among the pins");
         assert.deepEqual(order(), ["LIB", "A", "B"], "the pins reorder");
         assert.deepEqual(screen(), ["pin:LIB", "pin:A", "B"]);
-        const wl = rect(mirror(LIB)).width, wa = rect(mirror(tabOf(a).id)).width;
-        assert.approximately(wl, wa, 1, "as wide as the other pin (" + wl + " vs " + wa + ")");
+        // An icon like the other pins with Show Tab Name off; on (the
+        // default) the next case checks its name.
+        await wvT.withPref("weavero.pinnedLibraryTabName", false, async () => {
+            await waitFor(() => !mirror(LIB).hasAttribute("data-wv-named"), 3000, "the icon alone");
+            const wl = rect(mirror(LIB)).width, wa = rect(mirror(tabOf(a).id)).width;
+            assert.approximately(wl, wa, 1, "as wide as the other pin (" + wl + " vs " + wa + ")");
+        });
         const ic = mirror(LIB).querySelector(".tab-icon");
         assert.ok(ic && ic.classList.contains("icon-library"), "with the library's icon: " + (ic && ic.className));
         assert.isAtLeast(rect(ic).width, 15, "and the icon is drawn (it measured 0x0 in 1.0.3-dev.2)");
         assert.strictEqual(mirror(LIB).getAttribute("title"), lib().title, "and its title as the tooltip");
+    });
+
+    // MJT 2026-11-21 (screenshot of the icon-only pinned My Library): "Consider an
+    // option to make the library tab pinned in a wider tab header, same as before,
+    // so that it remains more easily accessible" -- icon + name, its own width; a
+    // Settings checkbox, on by default, and the library tab's right-click menu.
+    it("a pinned My Library shows its name (Show Tab Name, on by default); off, the icon alone", async function () {
+        await checkPinnedName();
+    });
+
+    it("Show Tab Name on a pinned tab's menu, right after the pin entry: the tab's own choice, on My Library as on an item tab; none on an unpinned tab", async function () {
+        await checkPinNameMenu();
     });
 
     it("the pin rides in the tab's saved data, which Zotero restores", function () {

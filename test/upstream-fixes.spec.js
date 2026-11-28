@@ -5,123 +5,18 @@
 // the private upstream-bugs register lists each one).
 describe("Weavero — upstream fixes", function () {
     this.timeout(120000);
-    let wv, win, ZT, note;
+    let wv, win, ZT;
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     const mainWins = () => Array.from(Services.wm.getEnumerator("navigator:browser")).filter(w => !w.closed);
-    const noteTab = (w) => (w && w.Zotero_Tabs && w.Zotero_Tabs._tabs.find(t => t && t.data && t.data.itemID === note.id)) || null;
     const libTab = () => ZT._tabs.find(t => String(t.type).startsWith("library"));
-    async function closeNew(before) {
-        for (const w of mainWins()) if (!before.includes(w)) { try { w.close(); } catch (er) {} }
-        await sleep(1500);
-    }
 
     before(async function () {
         wv = wvT.plugin();
         if (!wv) wvT.absent("plugin");
-        for (const m of ["_wvWireNoteWindowFix", "_wvTeardownNoteWindowFix", "_wvNoteWindowFromTab", "_wvWireCtxHeaderFix", "_wvTeardownCtxHeaderFix", "_wvWireNarrowPaneFix", "_wvTeardownNarrowPaneFix", "_wvWireReaderMenuFix", "_wvTeardownReaderMenuFix", "_wvWireAddSelectFix", "_wvTeardownAddSelectFix", "_wvWirePaneJumpFix", "_wvTeardownPaneJumpFix", "_wvWireExtAnnDeleteFix", "_wvTeardownExtAnnDeleteFix", "_wvWirePageCountFix", "_wvTeardownPageCountFix", "_wvPageCountRefresh","_wvWireRowCountFix", "_wvTeardownRowCountFix", "_wvWireTagReshowFix", "_wvTeardownTagReshowFix", "_wvTagSelectorReselect", "_wvWireFeedAbstractFix", "_wvTeardownFeedAbstractFix", "_wvWireAdvSearchSeedFix", "_wvTeardownAdvSearchSeedFix", "_wvAdvSearchSeedBugIn", "_wvWireIntroCrashFix", "_wvTeardownIntroCrashFix"]) {
+        for (const m of ["_wvWirePaneJumpFix", "_wvTeardownPaneJumpFix", "_wvWireExtAnnDeleteFix", "_wvTeardownExtAnnDeleteFix", "_wvWirePageCountFix", "_wvTeardownPageCountFix", "_wvPageCountRefresh","_wvWireRowCountFix", "_wvTeardownRowCountFix", "_wvWireTagReshowFix", "_wvTeardownTagReshowFix", "_wvTagSelectorReselect", "_wvWireFeedAbstractFix", "_wvTeardownFeedAbstractFix", "_wvWireAdvSearchSeedFix", "_wvTeardownAdvSearchSeedFix", "_wvAdvSearchSeedBugIn", "_wvWireSidenavFeedFix", "_wvTeardownSidenavFeedFix", "_wvWireIntroCrashFix", "_wvTeardownIntroCrashFix"]) {
             if (typeof wv[m] !== "function") wvT.absent("plugin." + m);
         }
         win = Zotero.getMainWindow(); ZT = win.Zotero_Tabs;
-        note = new Zotero.Item("note");
-        note.setNote("<h1>wv upstream fix note</h1><p>Edit in a separate window</p>");
-        await note.saveTx();
-    });
-
-    after(async function () {
-        for (const w of mainWins()) { const t = noteTab(w); if (t) { try { w.Zotero_Tabs.close(t.id); } catch (er) {} } }
-        await sleep(500);
-        if (note) await wvT.erase(note);
-    });
-
-    // Forum 134823, register #64: a reader tab selected while the item pane is closed;
-    // the pane opened again draws the sections but not the header (title / citation),
-    // until another tab is selected. Zotero 10.0.8 draws it.
-    describe("WV-TEMP-134823: the item pane header after the pane is opened again", function () {
-        const made = [];
-        const parents = [];
-        let ow, oh;
-        const CP = () => win.ZoteroContextPane;
-        const tabOfAtt = (att) => ZT._tabs.find(t => t && t.data && t.data.itemID === att.id) || null;
-        /** The header's words for tab `id` ("" while blank). */
-        const header = (id) => {
-            const d = win.document.getElementById(id + "-context");
-            const h = d && d.querySelector("item-pane-header");
-            if (!h) return "";
-            const bib = h.bibEntry && h.bibEntry.shadowRoot ? h.bibEntry.shadowRoot.textContent.trim() : "";
-            const title = h.titleField ? String(h.titleField.value || "").trim() : "";
-            return bib || title;
-        };
-        async function readerTab(att) {
-            await Zotero.Reader.open(att.id, null, { openInWindow: false });
-            const t = await wvT.waitFor(() => tabOfAtt(att), 20000, 100);
-            assert.ok(t, "fixture: the reader tab");
-            await wvT.waitFor(() => { const r = /** @type {any} */ (Zotero.Reader.getByTabID(t.id)); return r && r._internalReader; }, 20000, 100);
-            await sleep(1200);
-            return t;
-        }
-        /** Paper A's PDF with the pane open, the pane closed, paper `att` opened, the pane opened. */
-        async function scenario(att) {
-            const a = await readerTab(made[0]);
-            if (CP().collapsed) { CP().collapsed = false; await sleep(800); }
-            assert.ok(header(a.id), "fixture: A's header drawn with the pane open");
-            CP().collapsed = true; await sleep(700);
-            // As in the steps reproduced without Weavero (D:/tmp/hunt/mw_ui64.js): back in
-            // My Library, then the second PDF.
-            ZT.select(libTab().id); await sleep(1000);
-            const b = await readerTab(att);
-            CP().collapsed = false; await sleep(1800);
-            return header(b.id);
-        }
-
-        before(async function () {
-            const inner = win.document.getElementById("zotero-context-pane-inner");
-            const nat = inner && inner._wvWraps && inner._wvWraps.handleCollapse ? inner._wvWraps.handleCollapse.native : inner && inner.handleCollapse;
-            const d = Object.getOwnPropertyDescriptor(win.ZoteroContextPane, "collapsed");
-            // Zotero 11 with the mismatch only (the fix installs nothing elsewhere).
-            if (!/prevState\s*===\s*["']true["']/.test(String(nat)) || !/toggleAttribute\(\s*['"]collapsed['"]/.test(d && d.set ? String(d.set) : "")) this.skip();
-            // The standard (side-by-side) layout: a window wider than Zotero's 930px.
-            // Resized only when narrower (and given back in after(), waited for): a
-            // later spec reads the reader's zoom, which follows the window's width.
-            if (win.innerWidth < 1200) {
-                ow = win.outerWidth; oh = win.outerHeight;
-                try { win.resizeTo(1600, 1000); } catch (er) {}
-                await wvT.waitFor(() => win.outerWidth === 1600 || null, 3000, 50);
-                await sleep(400);
-            }
-            // Papers with a PDF each, as in the reproduction (the header shows the paper).
-            for (const n of ["A", "B", "C"]) {
-                const parent = await wvT.createItem("journalArticle", { title: "WV-HDR paper " + n });
-                parents.push(parent);
-                made.push(await wvT.createTestPDFItem("wv-hdr-" + n, { parentItemID: parent.id }));
-            }
-        });
-
-        after(async function () {
-            for (const att of made) { const t = tabOfAtt(att); if (t) { try { ZT.close(t.id); } catch (er) {} } }
-            await sleep(400);
-            try { if (win.ZoteroContextPane.collapsed) win.ZoteroContextPane.collapsed = false; } catch (er) {}
-            if (ow) {
-                try { win.resizeTo(ow, oh); } catch (er) {}
-                await wvT.waitFor(() => win.outerWidth === ow || null, 3000, 50);
-                await sleep(600);
-            }
-            if (made.length) await wvT.erase(...made);
-            if (parents.length) await wvT.erase(...parents);
-        });
-
-        it("opened again on a PDF selected while it was closed, the pane draws its header", async function () {
-            const h = await scenario(made[1]);
-            assert.ok(h, "the header drawn: " + JSON.stringify(h));
-        });
-
-        it("torn down, the header stays blank (tripwire: fails once Zotero fixes it -- retire WV-TEMP-134823)", async function () {
-            wv._wvTeardownCtxHeaderFix();
-            try {
-                const h = await scenario(made[2]);
-                assert.strictEqual(h, "", "blank (if drawn, Zotero fixed it: retire WV-TEMP-134823)");
-            }
-            finally { wv._wvWireCtxHeaderFix(win); }
-        });
     });
 
     // Forum 133075 (MJT; also 133002, 129464, 133790): after a change to an Info field, the
@@ -395,151 +290,6 @@ describe("Weavero — upstream fixes", function () {
         });
     });
 
-    // Forum 134824, registers #58/#59: a new item made in one window takes the selection
-    // of every window showing that list (and wipes its quick search); a new collection
-    // moves every window and library tab. The active window is set by stubbing
-    // Zotero.getActiveZoteroPane: the runner's focus is not to be trusted.
-    describe("WV-TEMP-134824: a new item selects in the window it was made in only", function () {
-        let w2 = null, keep = null, getActive = null;
-        const made = [];
-        const selectedIn = (w) => { try { const s = w.ZoteroPane.getSelectedItems(); return s && s.length === 1 ? s[0].id : null; } catch (er) { return null; } };
-        async function newItem(title) {
-            const it = new Zotero.Item("book"); it.setField("title", title); await it.saveTx();
-            made.push(it);
-            await sleep(1500);
-            return it;
-        }
-        before(async function () {
-            const ct = win.ZoteroPane.collectionsView;
-            const cw = ct && ct._wvWraps && ct._wvWraps.notify;
-            const nat = String(ct && (ct._wvOrigNotifyForSelectGuard || (cw ? cw.native : ct.notify)));
-            if (!wvT.nativeWindows() || !/selectRow\s*=\s*ids\.length\s*==\s*1/.test(nat) || /getActiveZoteroPane|isActiveView/.test(nat)) this.skip();
-            ZT.select(libTab().id); await sleep(500);
-            await win.ZoteroPane.collectionsView.selectLibrary(Zotero.Libraries.userLibraryID); await sleep(800);
-            keep = new Zotero.Item("book"); keep.setField("title", "wv add-select keep"); await keep.saveTx();
-            made.push(keep);
-            w2 = await wvT.openMainWindow();
-            assert.ok(w2, "fixture: a second main window");
-            await sleep(1500);
-            await w2.ZoteroPane.collectionsView.selectLibrary(Zotero.Libraries.userLibraryID); await sleep(800);
-            getActive = /** @type {any} */ (Zotero).getActiveZoteroPane;
-            /** @type {any} */ (Zotero).getActiveZoteroPane = () => w2.ZoteroPane;
-        });
-        after(async function () {
-            if (getActive) /** @type {any} */ (Zotero).getActiveZoteroPane = getActive;
-            if (w2) { try { w2.close(); } catch (er) {} await sleep(1200); }
-            if (made.length) await wvT.erase(...made);
-        });
-
-        it("made in window 2: window 1 keeps its selection", async function () {
-            await win.ZoteroPane.selectItem(keep.id); await sleep(800);
-            assert.strictEqual(selectedIn(win), keep.id, "fixture: window 1 on its item");
-            const y = await newItem("wv add-select new 1");
-            assert.strictEqual(selectedIn(win), keep.id, "window 1 still on its item (not the new one)");
-            assert.strictEqual(selectedIn(w2), y.id, "window 2, where it was made, on the new item");
-        });
-
-        it("torn down, window 1 jumps to the new item (tripwire: fails once Zotero fixes it -- retire WV-TEMP-134824)", async function () {
-            await win.ZoteroPane.selectItem(keep.id); await sleep(800);
-            wv._wvTeardownAddSelectFix();
-            try {
-                const z = await newItem("wv add-select new 2");
-                assert.strictEqual(selectedIn(win), z.id, "window 1 took the new item (if not, Zotero fixed it: retire WV-TEMP-134824)");
-            }
-            finally { for (const w of mainWins()) { try { wv._wvWireAddSelectFix(w); } catch (er) {} } }
-        });
-    });
-
-    // Forum 134772, register #18: Zotero's own entries of a PDF page's right-click menu
-    // (Automatically Resize, Zoom to Page Width / Height, Split ...) greyed on 11.0-beta.4:
-    // an item without `disabled` is built with toggleAttribute('disabled', undefined).
-    // Fixed upstream (zotero 3e32faa0a, 2026-11-14), not in a beta yet.
-    describe("WV-TEMP-134772: reader menu entries without a disabled value are enabled", function () {
-        let att = null, reader = null;
-        const protoOf = (r) => { let p = Object.getPrototypeOf(r); while (p && !Object.prototype.hasOwnProperty.call(p, "_openContextMenu")) p = Object.getPrototypeOf(p); return p; };
-        /** Zotero's own menu builder on `items`: the built entry's disabled attribute. */
-        async function built(label) {
-            // Its promise settles when the menu closes (popuphidden): not awaited.
-            reader._openContextMenu({ x: 200, y: 200, itemGroups: [[{ label, onCommand() {} }]] });
-            const mi = await wvT.waitFor(() => Array.from(reader._popupset.querySelectorAll("menuitem")).find(m => m.getAttribute("label") === label), 3000, 50);
-            const out = mi ? mi.hasAttribute("disabled") : null;
-            try { const pop = mi && mi.closest("menupopup"); if (pop) { if (pop.state === "open" || pop.state === "showing") pop.hidePopup(); else pop.remove(); } } catch (er) {}
-            await sleep(300);
-            return out;
-        }
-        before(async function () {
-            att = await wvT.createTestPDFItem("wv-menu-disabled");
-            await Zotero.Reader.open(att.id, null, { openInWindow: false });
-            const t = await wvT.waitFor(() => ZT._tabs.find(x => x && x.data && x.data.itemID === att.id), 20000, 100);
-            reader = await wvT.waitFor(() => { const r = /** @type {any} */ (Zotero.Reader.getByTabID(t.id)); return r && r._internalReader ? r : null; }, 20000, 100);
-            assert.ok(reader, "fixture: a reader");
-            const p = protoOf(reader);
-            const wr = p && p._wvWraps && p._wvWraps._openContextMenu;
-            const nat = wr ? wr.native : p && p._openContextMenu;
-            if (!/toggleAttribute\(\s*['"]disabled['"]\s*,\s*item\.disabled\s*\)/.test(String(nat))) this.skip();
-        });
-        after(async function () {
-            const t = att && ZT._tabs.find(x => x && x.data && x.data.itemID === att.id);
-            if (t) { try { ZT.close(t.id); } catch (er) {} }
-            await sleep(400);
-            if (att) await wvT.erase(att);
-        });
-
-        it("an entry with no disabled value comes out enabled", async function () {
-            assert.isFalse(await built("wv menu test on"), "enabled");
-        });
-
-        it("torn down, it comes out greyed (tripwire: fails once the beta has zotero 3e32faa0a -- retire WV-TEMP-134772)", async function () {
-            wv._wvTeardownReaderMenuFix();
-            try {
-                assert.isTrue(await built("wv menu test off"), "greyed (if enabled, Zotero's fix shipped: retire WV-TEMP-134772)");
-            }
-            finally { wv._wvWireReaderMenuFix(reader); }
-        });
-    });
-
-    // Forum 134826, register #53: a window without a library (a note in a window of its
-    // own) can be narrowed until its open item pane is cut off: its minimum is 570px for
-    // a 927px need (deck 570 + item pane 320 + side navigation 37).
-    describe("WV-TEMP-134826: a window without a library counts its open item pane in its minimum width", function () {
-        let nw = null;
-        const minOf = (w) => parseFloat(w.getComputedStyle(w.document.documentElement).minWidth) || 0;
-        before(async function () {
-            const ZP = win.ZoteroPane;
-            const wr = ZP._wvWraps && ZP._wvWraps.updateLayoutConstraints;
-            const nat = wr ? wr.native : ZP.updateLayoutConstraints;
-            if (!wvT.nativeWindows() || !/!this\.libraryView[\s\S]{0,200}--width-of-fixed-components['"]\s*,\s*['"]0px/.test(String(nat))) this.skip();
-            const before = mainWins();
-            /** @type {any} */ (Zotero).openMainWindow({ noteTabState: { itemID: note.id, title: "wv upstream fix note" } });
-            nw = await wvT.waitFor(() => mainWins().find(w => !before.includes(w) && w.ZoteroPane && w.ZoteroContextPane && noteTab(w)), 20000, 100);
-            assert.ok(nw, "fixture: a window holding the note alone");
-            await sleep(1500);
-            assert.notOk(nw.ZoteroPane.libraryView, "fixture: no library view in it");
-            if (nw.ZoteroContextPane.collapsed) { nw.ZoteroContextPane.collapsed = false; await sleep(800); }
-        });
-        after(async function () { if (nw) { try { nw.close(); } catch (er) {} await sleep(1200); } });
-
-        it("its item pane open beside the tabs: the window's minimum width counts it (570 + 320 + 37)", async function () {
-            nw.ZoteroPane.updateLayoutConstraints(); await sleep(300);
-            assert.approximately(minOf(nw), 927, 1, "min-width " + minOf(nw));
-            nw.ZoteroContextPane.collapsed = true; await sleep(600);
-            assert.approximately(minOf(nw), 570, 1, "pane closed: Zotero's own minimum");
-            nw.ZoteroContextPane.collapsed = false; await sleep(600);
-            assert.approximately(minOf(nw), 927, 1, "open again: counted again");
-        });
-
-        it("torn down, Zotero's minimum leaves the pane out (tripwire: fails once Zotero fixes it -- retire WV-TEMP-134826)", async function () {
-            wv._wvTeardownNarrowPaneFix();
-            try {
-                nw.ZoteroPane.updateLayoutConstraints(); await sleep(300);
-                assert.approximately(minOf(nw), 570, 1, "570px with the pane open (if it counts the pane, Zotero fixed it: retire WV-TEMP-134826)");
-            }
-            finally {
-                for (const w of mainWins()) { try { wv._wvWireNarrowPaneFix(w); } catch (er) {} }
-            }
-        });
-    });
-
     // Forum 134317 (MJT), register #30: View > Layout > Tag Selector hides the Tag Selector
     // by taking it down (toggleTagSelector: uninit, tagSelector = null) and leaves the
     // items list filtered by the selected tag (the collection row keeps it); shown again,
@@ -625,70 +375,6 @@ describe("Weavero — upstream fixes", function () {
                 assert.deepEqual(rowTags(), [TAG], "the list still filtered by it");
             }
             finally { for (const w of mainWins()) { try { wv._wvWireTagReshowFix(w); } catch (er) {} } }
-        });
-    });
-
-    // Forum 134831, register #66: a note tab's More > "Edit in a Separate Window" calls
-    // ZoteroPane.openNoteWindow, and Zotero 11's Notes.open lets the note's own tab stand
-    // in for a window -- nothing opens. Zotero 10.0.8 opens a note window.
-    describe("WV-TEMP-134831: Edit in a Separate Window from a note tab", function () {
-        before(function () {
-            // Zotero 11 (its own windows) with the stand-in rule only; anywhere else Zotero
-            // opens the window itself and the fix installs nothing.
-            const N = /** @type {any} */ (Zotero).Notes;
-            const rule = [N._wvMwOrigOpen, N._wvOrigOpen, N.open].some(f => typeof f === "function" && /stands in for a window of its own/.test(String(f)));
-            if (!wvT.nativeWindows() || !rule) this.skip();
-        });
-        async function openTab() {
-            await win.ZoteroPane.openNote(note.id, { openInWindow: false });
-            await wvT.waitFor(() => noteTab(win) && ZT.selectedID === noteTab(win).id, 15000, 100);
-            await sleep(900);
-            assert.ok(noteTab(win) && ZT.selectedID === noteTab(win).id, "fixture: the note's tab selected");
-            assert.isAtLeast(ZT._tabs.filter(Boolean).length, 2, "fixture: the window has other tabs");
-        }
-
-        it("from the note's own tab: the tab moves to a new window of its own, as Move to New Window", async function () {
-            await openTab();
-            const before = mainWins();
-            try {
-                // What the note editor's More > Edit in a Separate Window calls.
-                win.ZoteroPane.openNoteWindow(note.id);
-                const nw = await wvT.waitFor(() => mainWins().find(w => !before.includes(w) && noteTab(w)), 20000, 100);
-                assert.ok(nw, "a new window holding the note's tab");
-                await sleep(800);
-                assert.notOk(noteTab(win), "the tab left the first window");
-            }
-            finally { await closeNew(before); }
-        });
-
-        it("from elsewhere (the library selected, the note's tab open): Zotero's own -- its tab selected, no window", async function () {
-            await openTab();
-            ZT.select(libTab().id); await sleep(600);
-            const before = mainWins();
-            try {
-                await win.ZoteroPane.openNoteWindow(note.id);
-                await sleep(2500);
-                assert.strictEqual(mainWins().length, before.length, "no window");
-                assert.ok(noteTab(win) && ZT.selectedID === noteTab(win).id, "Zotero selected the note's tab");
-            }
-            finally { await closeNew(before); }
-        });
-
-        it("torn down, Zotero only selects the tab (tripwire: fails once Zotero fixes it -- retire WV-TEMP-134831)", async function () {
-            await openTab();
-            wv._wvTeardownNoteWindowFix();
-            const before = mainWins();
-            try {
-                await win.ZoteroPane.openNoteWindow(note.id);
-                await sleep(3000);
-                assert.strictEqual(mainWins().length, before.length,
-                    "Zotero opened no window (if it did, Zotero fixed it: retire WV-TEMP-134831)");
-                assert.ok(noteTab(win), "the tab still here");
-            }
-            finally {
-                wv._wvWireNoteWindowFix(win);
-                await closeNew(before);
-            }
         });
     });
 
@@ -790,11 +476,11 @@ describe("Weavero — upstream fixes", function () {
         });
     });
 
-    // Not posted yet (MJT 2026-11-22 "Ok" to a forum report): a feed item's abstract blank
+    // Forum 134893 (MJT, 2026-11-22): a feed item's abstract blank
     // after the item pane's sections moved (a plugin adding or removing a section, or a drag
     // in the side navigation). Zotero's Abstract section keeps a reference to its abstract
     // browser across the move, the browser is gone, and no new one is made.
-    describe("WV-TEMP-feedabstract: a feed abstract shows after the item pane's sections moved", function () {
+    describe("WV-TEMP-134893: a feed abstract shows after the item pane's sections moved", function () {
         let feed = null, A = null, B = null, order0 = null;
         const det = () => {
             let d = null;
@@ -841,6 +527,17 @@ describe("Weavero — upstream fixes", function () {
             order0 = det().getPanes().map(e => e.dataset.pane);
             await select(A);
             assert.ok(await wvT.waitFor(() => shown() || null, 10000, 100), "fixture: Zotero draws A's abstract");
+            // And A's abstract browser has finished loading: Zotero makes it, then
+            // waits for its first load to stop, one call at a time (abstractBox.js
+            // _ensureFeedAbstractBrowserExists, a serial()). A move inside that wait
+            // removes the browser mid-load, its load never stops, and every later
+            // call waits behind it for good -- no stand-in can reach that, so the
+            // abstract stays blank whatever Weavero does (Ubuntu 2026-11-24, by hand
+            // too: a move the moment A's browser appeared). Ubuntu's own runner
+            // moved inside it, and most likely the CI's Linux and macOS ones; a
+            // call queued behind A's resolves once A's load has stopped.
+            const settled = await Promise.race([box()._ensureFeedAbstractBrowserExists().then(() => true), sleep(10000).then(() => false)]);
+            assert.isTrue(settled, "fixture: A's abstract browser finishes loading");
         });
 
         after(async function () {
@@ -855,17 +552,11 @@ describe("Weavero — upstream fixes", function () {
         });
 
         it("the sections move, the next feed item's abstract still shows", async function () {
-            // CI only, macOS with Zotero 11 (1.2.1 release CI run 45200266733, both
-            // attempts): B's abstract was not drawn after the move -- the stand-in
-            // does not take effect on GitHub's macOS beta runner, while the tripwire
-            // below (Zotero still blanks it) passes there. No regression (the same
-            // blank abstract as without Weavero); Windows and Ubuntu CI and local
-            // runs pass. MJT 2026-11-23: "Go" (skip and follow up, work/TODO.md).
-            // Also CI on Linux with Zotero 11 (1.2.2 release CI run 45384510446, both
-            // attempts; it had passed on the commit before): the same undrawn
-            // abstract on GitHub's Ubuntu beta runner. MJT 2026-11-24: "Skip on CI
-            // Ubuntu beta". Windows CI and local runs pass.
-            if (Services.env.exists("CI") && (Zotero.isMac || Zotero.isLinux) && /^11\./.test(Zotero.version)) this.skip();
+            // Skipped on the CI's macOS and Linux runners with Zotero 11 from 1.2.1
+            // and 1.2.2 (runs 45200266733, 45384510446): B's abstract was never drawn
+            // there. The fixture moved the sections while A's abstract was still
+            // loading (see `before`); it now waits for that load, and the case runs
+            // everywhere (Ubuntu 2026-11-24: red, then green, headless and headed).
             await move();
             await select(B);
             assert.ok(await wvT.waitFor(() => shown() || null, 10000, 100), "B's abstract drawn after the move");
@@ -873,18 +564,174 @@ describe("Weavero — upstream fixes", function () {
             assert.ok(await wvT.waitFor(() => shown() || null, 10000, 100), "and A's again");
         });
 
-        it("torn down, the abstract stays blank after a move (tripwire: fails once Zotero fixes it -- retire WV-TEMP-feedabstract)", async function () {
+        it("torn down, the abstract stays blank after a move (tripwire: fails once Zotero fixes it -- retire WV-TEMP-134893)", async function () {
             wv._wvTeardownFeedAbstractFix();
             try {
                 await move();
                 await select(B);
                 await sleep(2500);
-                assert.isFalse(shown(), "no abstract after the move (if it shows, Zotero lets go of the dead browser now: retire WV-TEMP-feedabstract)");
+                assert.isFalse(shown(), "no abstract after the move (if it shows, Zotero lets go of the dead browser now: retire WV-TEMP-134893)");
             }
             finally {
                 wv._wvWireFeedAbstractFix(win);
                 const b = box();
                 try { if (b && b._feedAbstractBrowser && !b._feedAbstractBrowser.isConnected) b._feedAbstractBrowser = null; } catch (er) {}
+            }
+        });
+    });
+
+    // Forum 134893, second facet (Ubuntu W16, 2026-11-24; upstream register #71): the
+    // sections moved WHILE a feed abstract's browser was loading its first page. Zotero
+    // makes that browser and waits for its first load to stop, one call at a time
+    // (abstractBox.js _ensureFeedAbstractBrowserExists, a serial()); the move removes the
+    // browser mid-load, its load never stops, every later call waits behind it, and the
+    // window's Abstract section stays blank for good. Here the move lands the moment the
+    // browser is put in the page (a MutationObserver on the section: its callback runs
+    // before any load can stop), as a plugin's section registered at that moment or a
+    // drag in the side navigation would.
+    describe("WV-TEMP-134893b: a feed abstract shows after the sections moved while it was loading", function () {
+        let feed = null, A = null, B = null, C = null, order0 = null, info0 = null;
+        const det = () => {
+            let d = null;
+            try { const lv = /** @type {any} */ (win.ZoteroPane).libraryView; if (lv) d = lv.querySelector("item-details"); } catch (er) {}
+            return /** @type {any} */ (d || win.document.querySelector("#zotero-item-pane item-details"));
+        };
+        const box = () => /** @type {any} */ (det().querySelector("abstract-box"));
+        const liveBrowser = () => { const b = box() && box().querySelector('browser[messagemanagergroup="feedAbstract"]'); return b && b.isConnected && b.browsingContext ? b : null; };
+        const summary = () => { const s = box() && box().querySelector("collapsible-section"); return (s && s.getAttribute("summary")) || ""; };
+        /** Zotero's Abstract section has the code that jams (the stand-in's gate; read from the
+         *  class source where the build has no gate): an out-of-process feed-abstract browser.
+         *  Zotero 10.0.8's is in process, and its load ends when it is taken out. */
+        const jamShape = () => typeof wv._wvFeedLoadBugIn === "function" ? wv._wvFeedLoadBugIn(win)
+            : /setAttribute\(\s*["']remote["']\s*,\s*["']true["']\s*\)/.test(Function.prototype.toString.call(win.customElements.get("abstract-box")));
+        /** Zotero went past its wait for `it` (the section's summary is set right after it) and has a browser to draw in. */
+        const drawn = (it) => !!liveBrowser() && summary().indexOf(it.getField("title") + ": the abstract") >= 0;
+        async function feedItem(title) {
+            const it = /** @type {any} */ (new Zotero.FeedItem("journalArticle"));
+            it.libraryID = feed.libraryID;
+            it.guid = "wv-feedload-" + Zotero.Utilities.randomString();
+            it.setField("title", title);
+            it.setField("abstractNote", "<div xmlns=\"http://www.w3.org/1999/xhtml\" class=\"abstract\"><p>" + title + ": the abstract.</p></div>");
+            await it.saveTx();
+            return it;
+        }
+        async function select(it) {
+            await win.ZoteroPane.selectItem(it.id);
+            await sleep(300);
+        }
+        /** Select `it` with the Abstract section moved the moment its new abstract browser is
+         *  put in the page. The browser is dropped first as Zotero drops it when the pane shows
+         *  a library item (_renderRegularItem -> _discardFeedAbstractBrowser), so selecting
+         *  `it` makes a new one and waits for its first load. */
+        async function selectMovingMidLoad(it) {
+            const d = det(), bx = box();
+            const rec = { moved: false, loading: /** @type {any} */ (null), from: -1, to: -1 };
+            bx._discardFeedAbstractBrowser();
+            const mo = new win.MutationObserver((records) => {
+                if (rec.moved) return;
+                for (const r of records) {
+                    for (const n of Array.from(r.addedNodes)) {
+                        const el = /** @type {any} */ (n);
+                        if (rec.moved || el.localName !== "browser" || el.getAttribute("messagemanagergroup") !== "feedAbstract") continue;
+                        rec.moved = true;
+                        try { rec.loading = el.browsingContext.webProgress.isLoadingDocument; } catch (er) { rec.loading = "? " + er; }
+                        mo.disconnect();
+                        const ids = d.getPanes().map(e => e.dataset.pane);
+                        rec.from = ids.indexOf("abstract");
+                        rec.to = Math.min(rec.from + 3, ids.length);
+                        // Zotero's own reorder; its DOM move is synchronous (itemDetails.js changePaneOrder).
+                        d.changePaneOrder("abstract", rec.to, { render: false });
+                    }
+                }
+            });
+            mo.observe(bx, { childList: true, subtree: true });
+            try {
+                await win.ZoteroPane.selectItem(it.id);
+                // The pane draws the abstract after the selection has resolved (1.3-1.5 s
+                // later, measured on 11.0-beta.5): the observer stays until the browser came.
+                await wvT.waitFor(() => rec.moved || null, 10000, 50);
+            }
+            finally { mo.disconnect(); }
+            await sleep(300);
+            return rec;
+        }
+        async function restoreOrder() {
+            try {
+                const d = det(), now = d.getPanes().map(e => e.dataset.pane);
+                if (order0 && now.indexOf("abstract") !== order0.indexOf("abstract")) await d.changePaneOrder("abstract", order0.indexOf("abstract"));
+            } catch (er) {}
+        }
+
+        before(async function () {
+            feed = /** @type {any} */ (new Zotero.Feed());
+            feed.name = "WV-TEST feed abstract load";
+            feed.url = "https://wv-feedload-test.invalid/" + Zotero.Utilities.randomString() + ".xml";
+            feed.refreshInterval = 24 * 60; feed.cleanupReadAfter = 60; feed.cleanupUnreadAfter = 90;
+            await feed.saveTx();
+            A = await feedItem("WV feed load A");
+            B = await feedItem("WV feed load B");
+            C = await feedItem("WV feed load C");
+            ZT.select(libTab().id); await sleep(500);
+            const cv = win.ZoteroPane.collectionsView;
+            assert.ok(await wvT.waitFor(() => cv.getRowIndexByID("L" + feed.libraryID) !== false, 15000, 100), "fixture: the feed's row");
+            await cv.selectByID("L" + feed.libraryID);
+            await win.ZoteroPane.itemsView.waitForLoad();
+            order0 = det().getPanes().map(e => e.dataset.pane);
+            // The Info section collapsed, so the Abstract is in view: the pane draws a
+            // section's abstract at the selection only when it is in view (else at a later
+            // scroll -- or, for an unread feed item, when it is marked read). Info open, A
+            // selected again was never drawn on Zotero 10.0.8 (2026-11-24, isPaneVisible false).
+            info0 = det().getPane("info").open;
+            det().getPane("info").open = false;
+            await select(C);
+            assert.ok(await wvT.waitFor(() => drawn(C) || null, 10000, 100), "fixture: Zotero draws C's abstract");
+            assert.isTrue(det().isPaneVisible("abstract"), "fixture: the Abstract section is in view");
+        });
+
+        after(async function () {
+            try { if (typeof wv._wvWireFeedLoadFix === "function") wv._wvWireFeedLoadFix(win); } catch (er) {}
+            try { if (info0 !== null) det().getPane("info").open = info0; } catch (er) {}
+            await restoreOrder();
+            try { await win.ZoteroPane.collectionsView.selectLibrary(Zotero.Libraries.userLibraryID); } catch (er) {}
+            try { if (feed) await feed.eraseTx(); } catch (er) {}
+        });
+
+        it("the sections move while A's abstract loads: A, then B, are drawn", async function () {
+            const rec = await selectMovingMidLoad(A);
+            assert.isTrue(rec.moved, "fixture: the Abstract section moved the moment A's browser was put in the page");
+            const why = " (moved " + rec.from + " -> " + rec.to + " while loading: " + rec.loading + ")";
+            // Zotero 10.0.8 (an in-process browser, no stand-in: the load ends when the browser
+            // is taken out, nothing waits) loses A's render to the dead browser and draws it at
+            // the next selection; where the stand-in is installed, A's own call gets a new
+            // browser and draws.
+            if (jamShape()) {
+                assert.ok(await wvT.waitFor(() => drawn(A) || null, 10000, 100), "A's abstract drawn after the move" + why);
+            }
+            await select(B);
+            assert.ok(await wvT.waitFor(() => drawn(B) || null, 10000, 100), "B's abstract drawn" + why);
+            await select(A);
+            assert.ok(await wvT.waitFor(() => drawn(A) || null, 10000, 100), "and A's again" + why);
+            await restoreOrder();
+        });
+
+        it("torn down, B stays blank after such a move (tripwire: fails once Zotero's own call settles -- retire WV-TEMP-134893b)", async function () {
+            if (!jamShape()) this.skip();
+            if (typeof wv._wvTeardownFeedLoadFix === "function") wv._wvTeardownFeedLoadFix();
+            try {
+                await select(C);
+                const rec = await selectMovingMidLoad(A);
+                assert.isTrue(rec.moved, "fixture: the Abstract section moved the moment A's browser was put in the page");
+                await select(B);
+                await sleep(2500);
+                assert.isFalse(drawn(B), "B blank: Zotero's own call still waits for a load that never stops"
+                    + " (if B is drawn, Zotero settles it now: retire WV-TEMP-134893b)");
+            }
+            finally {
+                // Zotero's own queue in this section stays jammed behind A's call; Weavero's
+                // copy takes the section back, as it does for a window jammed before Weavero
+                // started.
+                if (typeof wv._wvWireFeedLoadFix === "function") wv._wvWireFeedLoadFix(win);
+                await restoreOrder();
             }
         });
     });
@@ -1055,6 +902,158 @@ describe("Weavero — upstream fixes", function () {
             finally {
                 for (const w of mainWins()) { try { wv._wvWireAdvSearchSeedFix(w); } catch (er) {} }
             }
+        });
+    });
+
+    // Forum 114534 (MJT, 2024, Zotero 7 beta; still in stock 11.0-beta.5 and 10.0.8 with no
+    // add-on, 2026-11-22): with no item selected in a feed or the Feeds row, the item pane's
+    // side navigation lists My Library's sections -- Attachments, Notes, Libraries and
+    // Collections, Tags, Related -- which a feed item never has.
+    describe("WV-TEMP-114534: with no item selected, a feed's side navigation lists a feed item's sections only", function () {
+        const LIB_ONLY = ["attachments", "notes", "libraries-collections", "tags", "related"];
+        const DEFAULTS = ["info", "abstract", "attachments", "notes", "libraries-collections", "tags", "related"];
+        const FEED = ["info", "abstract"];
+        // Weavero's own Feeds sections (Why relevant, the Graphical Abstract), listed and
+        // disabled in a feed view's no-item state (MJT 2026-11-22: "Yes" to "With no item
+        // selected in Feeds, should Weavero's Feeds sections show in the side navigation?").
+        const OWN = () => [wv._wvFdSecKey, wv._wvGaSecKey].filter(k => typeof k === "string" && !!k);
+        const FEED_NOITEM = () => FEED.concat(OWN());
+        let feed = null, fi = null, li = null, userLib = "";
+        const pane = () => {
+            let p = null;
+            try { const lv = /** @type {any} */ (win.ZoteroPane).libraryView; if (lv) p = lv.querySelector("item-pane"); } catch (er) {}
+            return /** @type {any} */ (p || win.document.querySelector("item-pane#zotero-item-pane") || win.document.querySelector("item-pane"));
+        };
+        const sn = () => { const p = pane(); return /** @type {any} */ (p && (p._sidenav || p.querySelector("item-pane-sidenav"))); };
+        /** The sections listed, as Zotero counts them (itemPaneSidenav.js _enabledWrappers: not [hidden]). */
+        const shownBtns = () => Array.from(sn().querySelectorAll(".pin-wrapper:not([hidden]) > .btn[data-pane]"));
+        const listed = () => shownBtns().map(b => String(/** @type {any} */ (b).dataset.pane));
+        const plugins = () => shownBtns().filter(b => b.hasAttribute("custom")).map(b => String(/** @type {any} */ (b).dataset.pane));
+        const allDisabled = () => shownBtns().every(b => b.hasAttribute("disabled"));
+        const wrapperOf = (id) => /** @type {any} */ (sn().querySelector(`.btn[data-pane="${id}"]`)).parentElement;
+        async function view(id) {
+            const cv = win.ZoteroPane.collectionsView;
+            for (let i = 0; i < 60; i++) {
+                try { await cv.selectByID(id); } catch (er) {}
+                if (cv.selectedTreeRow && cv.selectedTreeRow.id === id) break;
+                await sleep(250);
+            }
+            assert.strictEqual(cv.selectedTreeRow && cv.selectedTreeRow.id, id, "fixture: the row " + id + " selected");
+            await win.ZoteroPane.itemsView.waitForLoad();
+            await sleep(300);
+        }
+        /** What Space does on the one selected item (virtualized-table.jsx: it toggles the
+         *  focused row's selection off): no item selected. */
+        async function noItem() {
+            try { win.ZoteroPane.itemsView.selection.clearSelection(); } catch (er) {}
+            assert.ok(await wvT.waitFor(() => (pane().mode === "message" && !!sn()._defaultStatus) || null, 10000, 50), "fixture: no item selected, the pane shows its message (mode " + pane().mode + ")");
+            await sleep(200);
+        }
+        async function pick(it) {
+            await win.ZoteroPane.itemsView.selectItem(it.id);
+            assert.ok(await wvT.waitFor(() => (pane().mode === "item" && !sn()._defaultStatus) || null, 10000, 50), "fixture: the item selected (mode " + pane().mode + ")");
+            await sleep(300);
+        }
+
+        before(async function () {
+            ZT.select(libTab().id); await sleep(500);
+            userLib = "L" + Zotero.Libraries.userLibraryID;
+            li = await wvT.createItem("journalArticle", { title: "WV sidenav-feed library item" });
+            feed = /** @type {any} */ (new Zotero.Feed());
+            feed.name = "WV-TEST feed sidenav";
+            feed.url = "https://wv-snf-test.invalid/" + Zotero.Utilities.randomString() + ".xml";
+            feed.refreshInterval = 24 * 60; feed.cleanupReadAfter = 60; feed.cleanupUnreadAfter = 90;
+            await feed.saveTx();
+            fi = /** @type {any} */ (new Zotero.FeedItem("journalArticle"));
+            fi.libraryID = feed.libraryID;
+            fi.guid = "wv-snf-" + Zotero.Utilities.randomString();
+            fi.setField("title", "WV sidenav-feed feed item");
+            fi.setField("abstractNote", "The feed item's abstract.");
+            await fi.saveTx();
+        });
+
+        after(async function () {
+            for (const w of mainWins()) { try { wv._wvWireSidenavFeedFix(w); } catch (er) {} }
+            try { await win.ZoteroPane.collectionsView.selectLibrary(Zotero.Libraries.userLibraryID); } catch (er) {}
+            try { if (feed) await feed.eraseTx(); } catch (er) {}
+            await wvT.erase(li);
+        });
+
+        it("no item selected: a feed and the Feeds row list Info and Abstract, disabled; My Library keeps Zotero's seven", async function () {
+            await view(userLib);
+            await noItem();
+            assert.sameMembers(listed(), DEFAULTS, "My Library, no item: Zotero's no-item sections, " + listed().join(", "));
+            assert.isTrue(allDisabled(), "disabled, as Zotero draws them");
+            // The pane stays on its message: Zotero never re-runs its list (the item pane's layer does).
+            await view("L" + feed.libraryID);
+            await noItem();
+            assert.isAtLeast(OWN().length, 1, "fixture: Weavero's Feeds sections registered");
+            assert.sameMembers(listed(), FEED_NOITEM(), "a feed, no item, from My Library with no item: " + listed().join(", "));
+            assert.isTrue(allDisabled(), "disabled, as Zotero draws them (Weavero's Feeds sections too)");
+            assert.sameMembers(plugins(), OWN(), "of the plugin sections, Weavero's Feeds ones alone (its library ones hidden)");
+            await pick(fi);
+            assert.includeMembers(listed(), FEED, "a feed item: Info and Abstract (" + listed().join(", ") + ")");
+            for (const id of LIB_ONLY) assert.notInclude(listed(), id, "Zotero's own list for a feed item has no " + id);
+            await noItem();
+            assert.sameMembers(listed(), FEED_NOITEM(), "the feed item deselected: " + listed().join(", "));
+            assert.sameMembers(plugins(), OWN(), "of the plugin sections, Weavero's Feeds ones alone");
+            await view("F1");
+            await noItem();
+            assert.sameMembers(listed(), FEED_NOITEM(), "the Feeds row, no item: " + listed().join(", "));
+            assert.isTrue(allDisabled(), "disabled");
+            await view(userLib);
+            await noItem();
+            assert.sameMembers(listed(), DEFAULTS, "My Library again, no item: Zotero's seven back, " + listed().join(", "));
+            assert.isTrue(allDisabled(), "disabled");
+        });
+
+        it("from a library item to a feed with nothing selected: a feed item's sections only; a section Zotero lists again there stays off", async function () {
+            await view(userLib);
+            await pick(li);
+            await view("L" + feed.libraryID);
+            await noItem();
+            assert.sameMembers(listed(), FEED_NOITEM(), "a feed, no item, after a library item: " + listed().join(", "));
+            // Zotero's own way of listing a section again in that state (a render, the pin
+            // pref observer, a plugin section added): its updatePaneStatus per section.
+            sn().render();
+            assert.sameMembers(listed(), FEED_NOITEM(), "after the side navigation's render: " + listed().join(", "));
+            assert.isTrue(allDisabled(), "still disabled after the render");
+        });
+
+        it("a padlock mark (pane-lock.ts) goes out of sight with its section's button in a feed, and is back with it in My Library", async function () {
+            if (typeof wv._wvPaneLockApplyAll !== "function") wvT.absent("plugin._wvPaneLockApplyAll");
+            await wvT.withPref("weavero.paneLock.library", JSON.stringify(["tags"]), async () => {
+                wv._wvPaneLockApplyAll();
+                await view(userLib);
+                await pick(li);
+                assert.ok(await wvT.waitFor(() => wrapperOf("tags").classList.contains("wv-panelock-sn") || null, 5000, 50), "fixture: Tags locked for library items, its padlock mark on");
+                await view("L" + feed.libraryID);
+                await noItem();
+                assert.isTrue(!!wrapperOf("tags").hidden, "a feed, no item: Tags not listed, its mark out of sight with it");
+                await view(userLib);
+                await noItem();
+                assert.isFalse(!!wrapperOf("tags").hidden, "My Library, no item: Tags listed again");
+                assert.isTrue(wrapperOf("tags").classList.contains("wv-panelock-sn"), "with its padlock mark");
+            });
+            wv._wvPaneLockApplyAll();
+        });
+
+        it("torn down, a feed with no item selected lists My Library's sections (tripwire: fails once Zotero fixes it -- retire WV-TEMP-114534)", async function () {
+            wv._wvTeardownSidenavFeedFix();
+            try {
+                await view(userLib);
+                await noItem();
+                assert.sameMembers(listed(), DEFAULTS, "My Library, no item, torn down: the same seven as with the fix");
+                await pick(li);
+                await view("L" + feed.libraryID);
+                await noItem();
+                assert.includeMembers(listed(), LIB_ONLY, "a feed, no item: Zotero lists " + listed().join(", ")
+                    + " (if a feed item's sections only, Zotero's no-item list follows the view now: retire WV-TEMP-114534)");
+                await pick(fi);
+                await noItem();
+                assert.includeMembers(listed(), LIB_ONLY, "the feed item deselected: " + listed().join(", ") + " (retire WV-TEMP-114534 if not)");
+            }
+            finally { for (const w of mainWins()) { try { wv._wvWireSidenavFeedFix(w); } catch (er) {} } }
         });
     });
 

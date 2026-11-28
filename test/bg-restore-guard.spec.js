@@ -29,8 +29,39 @@ describe("Weavero — the background-restore focus guard ends", function () {
         await closeOpened();
     });
 
+    /** A main window this spec opened has finished loading its items list
+     *  (Zotero's itemTree.waitForLoad, which settles after the list's intro
+     *  text is written). Closed before that, the list's pending refresh still
+     *  runs: Zotero 10's _updateIntroText (collectionViewItemTree.js) writes
+     *  "Welcome to Zotero!" with innerHTML into the CLOSED window's document,
+     *  and Gecko 140 crashes there (nsNodeInfoManager::Allocate, a null
+     *  node-info manager; minidump 2026-11-24). The suite's empty test
+     *  library is what shows the intro. On Windows with Zotero 10 the runner
+     *  died this way in "a click in progress" (full local runs, CI shard 1/2):
+     *  its windows closed a few ms after they opened. A window loads its list
+     *  more than once as it starts (a window opened as a user's command
+     *  selects its collection after the first load), so this waits until the
+     *  list stays loaded for a moment (itemTree._loadingDeferredResolved, set
+     *  false while a load is in flight). Bounded. */
+    async function settled(w) {
+        try {
+            const end = Date.now() + 10000;
+            while (w && !w.closed && Date.now() < end) {
+                const zp = w.ZoteroPane;
+                const iv = zp && zp.itemsView;
+                if (!iv || typeof iv.waitForLoad !== "function") { await wvT.sleep(50); continue; }
+                await Promise.race([iv.waitForLoad(), wvT.sleep(Math.max(0, end - Date.now()))]);
+                await wvT.sleep(250);
+                const now = w.closed ? null : w.ZoteroPane && w.ZoteroPane.itemsView;
+                if (now === iv && iv._loadingDeferredResolved !== false) return;
+            }
+        } catch (e) {}
+    }
+
     async function closeOpened() {
-        for (const w of opened.splice(0)) { try { if (!w.closed) { w._wvSavedParkClose = true; w.close(); } } catch (e) {} }
+        const ws = opened.splice(0);
+        for (const w of ws) await settled(w);
+        for (const w of ws) { try { if (!w.closed) { w._wvSavedParkClose = true; w.close(); } } catch (e) {} }
         await wvT.waitFor(() => Zotero.getMainWindows().length === 1, 8000);
     }
 
@@ -39,6 +70,7 @@ describe("Weavero — the background-restore focus guard ends", function () {
         const w = await wv._wvSpawnMainWindowWait(s, { wait: "init", timeoutMs: 25000, timerWin: win, dropOnTimeout: true });
         assert.isOk(w, "a new main window");
         opened.push(w);
+        await settled(w);
         return w;
     }
 
@@ -80,6 +112,7 @@ describe("Weavero — the background-restore focus guard ends", function () {
             const restored = await wv._wvSpawnMainWindowWait(s, { wait: "init", timeoutMs: 25000, timerWin: win, dropOnTimeout: true });
             assert.isOk(restored, "a restore window");
             opened.push(restored);
+            await settled(restored);
             assert.isOk(restored._wvBgArmed, "the restore's window is held back as before");
         }
         finally { wv._wvBgRestoreStop(); await closeOpened(); }
@@ -148,6 +181,7 @@ describe("Weavero — the background-restore focus guard ends", function () {
             const w = await wv._wvSpawnMainWindowWait(s, { wait: "init", timeoutMs: 25000, timerWin: win, dropOnTimeout: true });
             assert.isOk(w, "a restore window");
             opened.push(w);
+            await settled(w);
             w._wvBgOpenGrace = 0;   // the fixed grace has run out
             let loaded = /** @type {(v?: any) => void} */ (() => {});
             wv._wvBgMarkReaderLoad({ _window: w, _initPromise: new Promise((r) => { loaded = r; }) });
@@ -182,6 +216,7 @@ describe("Weavero — the background-restore focus guard ends", function () {
             const w = await wv._wvSpawnMainWindowWait(s, { wait: "init", timeoutMs: 25000, timerWin: win, dropOnTimeout: true });
             assert.isOk(w, "a restore window");
             opened.push(w);
+            await settled(w);
             return w;
         };
         const mouse = (w, type) => w.dispatchEvent(new w.MouseEvent(type, { bubbles: true }));

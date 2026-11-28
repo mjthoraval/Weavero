@@ -130,6 +130,27 @@ export function wvReaderMenuEvent(event: any): any {
     }
 }
 
+/** Boxes kept on pdf.js's pages (`boxes`: page index -> box, `pages`: the viewer's
+ *  page views, each with its `div`) put on their pages: every page's place READ
+ *  first, then the boxes MOVED. Interleaved, each read laid the document out again
+ *  after the write before it -- a box per page of a book's 54 reference pages, run
+ *  on every style change pdf.js makes while it renders: one 117 ms frame on every
+ *  scroll through the book's references with the References marks on (2026-11-20;
+ *  the rule in .claude/rules/src-ts.md). Guard: lib-helpers.spec.js. */
+export function wvPlaceOnPages(boxes: Map<number, any>, pages: any) {
+    try {
+        const at: Array<[any, string, string]> = [];
+        for (const [pi, b] of boxes) {
+            const pg = pages[pi] && pages[pi].div;
+            if (pg) at.push([b, pg.offsetTop + "px", pg.offsetLeft + "px"]);
+        }
+        for (const [b, t, l] of at) {
+            if (b.style.top !== t) b.style.top = t;
+            if (b.style.left !== l) b.style.left = l;
+        }
+    } catch (e) {}
+}
+
 /** True if `node` is `container` or lies inside it, INCLUDING native
  *  anonymous content such as the element's own scrollbar. `contains()` stops
  *  at that boundary: a real press on a popup's scrollbar arrives with the XUL

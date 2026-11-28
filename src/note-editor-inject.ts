@@ -43,8 +43,10 @@ import { wvTrimTrailing } from "./lib/text";
     // so a page running either 12 takes the merged bundle. 14: the
     // citations taken out again (MJT 2026-11-09, "move safely"; they live
     // on branch notecite) -- past 13, so a page running the citation
-    // bundle takes this one.
-    const INJECT_V = 14;
+    // bundle takes this one. 15: the citations back (branch notecite merged,
+    // MJT 2026-11-20) -- past 14, so a page running the bundle without them
+    // takes this one.
+    const INJECT_V = 15;
 
     /** CROSS-BUNDLE DecorationSet interop (issue #37 -- "Search in notes
      *  does not find anything", root-caused 2026-08-27).
@@ -859,6 +861,161 @@ import { wvTrimTrailing } from "./lib/text";
         return true;
     }
 
+    // ---- Zotero links in a note, and the citations added after them
+    // (MJT 2026-11-09). Chrome resolves each link to an item and builds the
+    // HTML Zotero itself writes for it (a citation; an annotation's quote
+    // and citation); this side finds the links and inserts that HTML right
+    // after each, the link left as it is.
+
+    const ZLINK_RE = /zotero:\/\/(?:select|open|open-pdf|note)\/[^\s<>"'`]+/g;
+    const QUOTE_NODES = ["highlight", "underline_annotation"];
+
+    /** Every Zotero link in `doc`: a link mark whose href is zotero://, and a
+     *  bare zotero:// address in text with no link mark. `insertAt` is right
+     *  after the link -- after the quote node holding it, whose content
+     *  takes text only. `cites` / `quoted`: the citation URIs and quoted
+     *  annotation keys already right after it (past spaces), so a link is
+     *  never given the same citation twice. */
+    function zoteroLinksOf(state: any): any[] {
+        const doc = state.doc;
+        const linkType = state.schema.marks.link;
+        const out: any[] = [];
+        let run: any = null;
+        const flush = () => { if (run) { out.push(run); run = null; } };
+        const visit = (node: any, pos: number, wrapEnd: number | null) => {
+            if (!node.isText) { flush(); return; }
+            const m = linkType ? node.marks.find((k: any) => k.type === linkType) : null;
+            if (m && /^zotero:\/\//i.test(String(m.attrs.href || ""))) {
+                const end = pos + node.nodeSize;
+                if (run && run.href === m.attrs.href && run.to === pos) { run.to = end; run.insertAt = wrapEnd != null ? wrapEnd : end; }
+                else { flush(); run = { href: m.attrs.href, from: pos, to: end, insertAt: wrapEnd != null ? wrapEnd : end }; }
+                return;
+            }
+            flush();
+            if (m) return;   // another link: not a Zotero one
+            ZLINK_RE.lastIndex = 0;
+            let mm: any;
+            while ((mm = ZLINK_RE.exec(node.text))) {
+                const href = wvTrimTrailing(mm[0], ".,;:)]");
+                const from = pos + mm.index, to = from + href.length;
+                out.push({ href, from, to, insertAt: wrapEnd != null ? wrapEnd : to });
+            }
+        };
+        doc.descendants((node: any, pos: number) => {
+            if (!node.inlineContent || QUOTE_NODES.indexOf(node.type.name) >= 0) return true;
+            node.forEach((child: any, offset: number) => {
+                const at = pos + 1 + offset;
+                if (QUOTE_NODES.indexOf(child.type.name) >= 0) {
+                    const end = at + child.nodeSize;
+                    child.forEach((g: any, o: number) => visit(g, at + 1 + o, end));
+                    flush();
+                }
+                else visit(child, at, null);
+            });
+            flush();
+            return false;
+        });
+        for (const l of out) {
+            l.cites = [];
+            l.quoted = [];
+            const $p = doc.resolve(l.insertAt);
+            const parent = $p.parent;
+            let i = $p.index();
+            // A bare address ends inside its text node (the space added
+            // before a citation joins that node): only the rest of the node
+            // counts there.
+            if ($p.textOffset) {
+                const tn = parent.child(i);
+                if (String(tn.text || "").slice($p.textOffset).trim()) continue;
+                i++;
+            }
+            for (; i < parent.childCount; i++) {
+                const n = parent.child(i);
+                if (n.isText && !n.text.trim()) continue;
+                if (QUOTE_NODES.indexOf(n.type.name) >= 0 && n.attrs.annotation) { l.quoted.push(n.attrs.annotation.annotationKey || ""); continue; }
+                if (n.type.name === "citation" && n.attrs.citation) {
+                    for (const c of (n.attrs.citation.citationItems || [])) for (const u of (c.uris || [])) l.cites.push(u);
+                    continue;
+                }
+                break;
+            }
+        }
+        return out;
+    }
+
+    /** The Zotero links chrome asks for, as JSON: `{mode: "at", x, y}` (the
+     *  link under a right-click, viewport coordinates), `{mode: "sel"}` (the
+     *  links the selection touches), `{mode: "all"}`. With the facts chrome
+     *  needs: whether the note can be edited, whether this editor knows
+     *  underline quotes (schema 10). */
+    function zoteroLinksJSON(scopeJSON: string): string {
+        const view: any = viewOf();
+        if (!view) return JSON.stringify({ links: [] });
+        let scope: any = {};
+        try { scope = JSON.parse(String(scopeJSON)) || {}; } catch (e) {}
+        let links = zoteroLinksOf(view.state);
+        if (scope.mode === "at") {
+            let pos = -1;
+            try { const r = view.posAtCoords({ left: Number(scope.x), top: Number(scope.y) }); if (r) pos = r.pos; } catch (e) {}
+            links = pos < 0 ? [] : links.filter((l: any) => pos >= l.from && pos <= l.to).slice(0, 1);
+        }
+        else if (scope.mode === "sel") {
+            const { from, to } = view.state.selection;
+            links = from === to ? [] : links.filter((l: any) => l.to > from && l.from < to);
+        }
+        const ci: any = (window as any)._currentEditorInstance;
+        const readOnly = !view.editable || !!(ci && ci._editorCore && ci._editorCore.readOnly);
+        return JSON.stringify({ links, readOnly, underline: !!view.state.schema.nodes.underline_annotation });
+    }
+
+    /** Insert each `{insertAt, html}` in ONE transaction (one Ctrl+Z), from
+     *  the last position back, with the editor's own parser (ProseMirror
+     *  caches it on the schema when the note is parsed): the citation's
+     *  item data then goes to the note's metadata through Zotero's
+     *  pull-item-data, as for a citation Zotero inserts. The number added,
+     *  or an error. */
+    function zoteroCite(planJSON: string): string {
+        const view: any = viewOf();
+        if (!view) return JSON.stringify({ error: "no-view" });
+        const ci: any = (window as any)._currentEditorInstance;
+        if (!view.editable || (ci && ci._editorCore && ci._editorCore.readOnly)) return JSON.stringify({ error: "read-only" });
+        let plan: any[] = [];
+        try { plan = JSON.parse(String(planJSON)) || []; } catch (e) {}
+        const parser: any = view.state.schema.cached && view.state.schema.cached.domParser;
+        if (!parser) return JSON.stringify({ error: "no-parser" });
+        plan.sort((a: any, b: any) => b.insertAt - a.insertAt);
+        const schema = view.state.schema;
+        let tr = view.state.tr;
+        let n = 0;
+        for (const p of plan) {
+            const box = document.createElement("div");
+            box.innerHTML = String(p.html || "");
+            const slice = parser.parseSlice(box);
+            if (!slice || !slice.content.size) continue;
+            // The parsed inline nodes, inserted CLOSED, each after a space.
+            // Not the slice itself: it comes back open at its start
+            // (openStart 1), and fitting an open quote node into the
+            // paragraph merged its text and dropped the node (2026-11-09:
+            // the quote landed as plain text); the whitespace between the
+            // pieces is not kept at the slice's top either.
+            const nodes: any[] = [];
+            slice.content.forEach((nd: any) => {
+                if (nd.isInline) nodes.push(nd);
+                else nd.forEach((c: any) => { if (c.isInline) nodes.push(c); });
+            });
+            const parts: any[] = [];
+            for (const nd of nodes) {
+                if (nd.isText && !nd.text.trim()) continue;
+                parts.push(schema.text(" "), nd);
+            }
+            if (!parts.length) continue;
+            tr = tr.insert(p.insertAt, parts);
+            n++;
+        }
+        if (n) view.dispatch(tr);
+        return JSON.stringify({ added: n });
+    }
+
     function install(): string {
         const ci: any = (window as any)._currentEditorInstance;
         const view: any = ci && ci._editorCore && ci._editorCore.view;
@@ -921,6 +1078,8 @@ import { wvTrimTrailing } from "./lib/text";
     (window as any).__wvFoldAll = foldAll;
     (window as any).__wvUnfoldAll = unfoldAll;
     (window as any).__wvFoldCounts = foldCounts;
+    (window as any).__wvZoteroLinks = zoteroLinksJSON;
+    (window as any).__wvZoteroCite = zoteroCite;
     // Force a re-scan: `decorations` reads __wvLinkifyRegexSrc fresh each call,
     // so dispatching an empty transaction re-runs it under the current toggle
     // state (chrome calls this after a "Show:" toggle changes, and once after

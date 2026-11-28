@@ -54,6 +54,24 @@ describe("Weavero — the filter funnel and Zotero's quick search share the item
         };
     }
 
+    // MJT 2026-11-25: "The arrow position for the funnel in the library tab is different from
+    // before, and from the one in a reader tab". The ▾ beside the funnel, centred on it, as the
+    // reader toolbar's funnel and the 40-px button had it -- not in the icon's lower corner.
+    // FAILS on 1.3.0-peoplenet.10 (the ▾ overlapped the icon, 4 px below its centre).
+    it("the funnel's ▾ sits beside the icon, centred on it, inside the 28-px button", async function () {
+        const btn = win.document.getElementById("wv-filter-tb-button");
+        const icon = btn && btn.querySelector(".toolbarbutton-icon");
+        const mark = btn && btn.querySelector(".toolbarbutton-menu-dropmarker");
+        assert.ok(icon && mark, "fixture: the icon and the dropmarker");
+        const b = btn.getBoundingClientRect(), i = icon.getBoundingClientRect(), m = mark.getBoundingClientRect();
+        const box = (r) => [r.left, r.top, r.width, r.height].map(x => Math.round(x * 2) / 2).join(",");
+        const why = "button " + box(b) + " icon " + box(i) + " marker " + box(m);
+        assert.equal(Math.round(b.width), 28, "28 px: " + why);
+        assert.isAtLeast(m.left, i.right - 0.5, "beside the icon, not over it: " + why);
+        assert.isAtMost(Math.abs((m.top + m.bottom) / 2 - (i.top + i.bottom) / 2), 1, "centred on the icon: " + why);
+        assert.isAtMost(m.right, b.right + 0.5, "inside the button: " + why);
+    });
+
     it("at every width: Zotero's Advanced Search funnel and Weavero's never overlap, the search stays in its slot, and Weavero's funnel stays in the toolbar", async function () {
         const rows = [];
         for (const w of WIDTHS) {

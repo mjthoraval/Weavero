@@ -778,6 +778,39 @@ Real right-click menus; the spec builds them without opening.
       tabs menu → the same set. Switch tab sessions and back → each
       session's windows have their own sets.
 
+## Collections funnel (after touching coll-funnel.ts or the collections tree filter)
+
+Run `test/coll-funnel.spec.js` first (rows, AND with the search box, the
+default, sessions), then by hand -- what synthetic events cannot show:
+
+- [ ] The collections toolbar reads **New Collection, Bookmarks,
+      Researchers, funnel, magnifier**. Open the collections search: the box wraps to its own
+      line, the funnel stays on the first one, next to the magnifier.
+- [ ] A real click on the funnel opens its panel under it; a second click
+      on the funnel closes it; a click in the items list or **Escape**
+      closes it too. Chips: a click shows only (blue), **Alt+click** hides
+      (red slash); switching direction clears the other chips of the row.
+      The panel stays open while chips are clicked.
+- [ ] The funnel's dot lights while anything is filtered; its tooltip names
+      what ("only Collections · hiding My Group"). Light and dark themes:
+      the chips, icons and dot readable.
+- [ ] Hide every kind: the tree shows **Nothing matches the funnel. Clear**;
+      a real click on **Clear** brings everything back.
+- [ ] **Bookmarks pane** chip: a click = the pane's *Bookmarks only* (the
+      pane's own ⇕ button follows, and the reverse); Alt+click hides the
+      pane in this window only.
+- [ ] **Use as Default**: open Settings → Extras → Collections: the *Shown
+      by default* boxes and the libraries line match; a new window (Ctrl+N)
+      starts from it. Untick a box in Settings: every window that follows
+      the default follows it; a window with its own filter keeps it.
+- [ ] With the plugin Saved Search Folders installed (a dev profile): hide
+      **Saved searches**, then show only them: its folders go and come back
+      with their searches, no empty folder left; Alt+click the
+      **Saved-search folders** chip is Weavero's folders only.
+- [ ] Restart: each window gets its own funnel back (the first window too,
+      with only its library tab open). Zotero 11: a second library tab
+      shows the same funnel (the window's), its own funnel button included.
+
 ## Popups (after touching popup code)
 
 Run `test/popups.spec.js` first, then by hand:
@@ -981,22 +1014,28 @@ and the item pane's own render are checked by hand (2026-10-27).
       other files Zotero cannot annotate, e.g. a PDF + a Word file
       (2026-10-30).
 
-## Settings window buttons (Windows, after touching the Settings opener or its watcher)
+## Settings window and Plugins Manager buttons (Windows, after touching their openers or the Settings watcher)
 
 The spec drives destroy/init directly; the real toggle goes through the
-Plugins Manager (2026-10-26).
+Plugins Manager (2026-10-26). Since 2026-11-27 (MJT, "1a"; "same as
+Settings" for the Plugins Manager) the buttons follow Weavero only when
+the window opens: an open window is never restyled (that took native code).
 
 - [ ] Weavero enabled, open Settings → minimize, maximize and close.
 - [ ] With Settings still open, disable Weavero in the Plugins Manager →
-      the open Settings window keeps only close (a maximized one is
-      restored first); enable it again → minimize and maximize come back.
-- [ ] Weavero disabled, open Settings, then enable Weavero → the buttons
-      appear on that window.
+      the open Settings window keeps its three buttons, nothing else
+      changes on it but Weavero's pane going; close it and open Settings
+      again → close only (Zotero's dialog). Enable Weavero with that
+      window open → still close only; close it, open Settings again →
+      minimize and maximize.
 - [ ] Plugins Manager open (Weavero enabled: minimize, maximize, close).
       Click Weavero's own toggle and keep the pointer still → the card stays
       where it is, like any other plugin's, and can be switched back on at
-      once; the window is back to Zotero's close-only title bar. Move the
-      pointer off the list → the card moves to Disabled and the list narrows.
+      once; the window keeps its three buttons. Move the pointer off the
+      list → the card moves to Disabled and the list narrows. Close the
+      manager, open it again (Tools → Plugins) → close only (Zotero's
+      dialog); enable Weavero there → still close only; close it, open it
+      again → minimize and maximize.
 
 <!-- 2026-10-26: Weavero's widened list used to shrink under the pointer at
      disable, so the page moved the card at once. -->

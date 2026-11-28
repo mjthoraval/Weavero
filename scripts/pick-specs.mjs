@@ -1,101 +1,111 @@
 // Pick the spec files a change needs, instead of the full suite.
 //
-//   node scripts/pick-specs.mjs [--base <ref>] [--list]      (npm run test:pick -- --list)
+//   node scripts/pick-specs.mjs [--base <ref>] [--head <ref>] [--list]   (npm run test:pick -- --list)
 //
 // Prints a WV_TEST_ENTRIES value (comma-separated spec paths) for
 // `WV_TEST_ENTRIES=<value> npm test -- --exit-on-finish`; with --list, one
-// line per picked spec with the reason, on stderr.
+// line per picked spec with the reason -- which changed file led to it -- on
+// stderr.
 //
-// The change is `git diff <base>...HEAD` plus uncommitted and untracked files.
+// The change is the working tree against its merge base with <base> (commits,
+// uncommitted and untracked files), or with --head, `git diff <base>...<head>`
+// read at <head> (to try the picker on a branch or a past range).
 // --base defaults to `main` on a branch and to `origin/main` on main.
 //
-// A spec is picked when:
+// A spec is picked when (scripts/pick-specs-lib.mjs):
 //   - it is itself changed or new;
 //   - it names an identifier that a changed src/ line adds or removes
-//     (`_wvSomething`, `wv-something`, `weavero.somePref`, a Fluent id). An
-//     identifier named by more than COMMON spec files (a shared helper such as
-//     `_wvWireTag`) picks nothing and is listed as too common;
-//   - a FILE RULE below matches a changed file (strings, Settings, wiring);
+//     (`_wvSomething`, `wv-something`, `weavero.somePref`, a Fluent id);
+//   - it names a definition the change reaches through the IMPORT GRAPH: the
+//     function or method each changed line sits in, then every function and
+//     method that uses one of those -- in the same file and, through named
+//     imports, in the files importing it, transitively -- up to the plugin's
+//     methods (a class or a module's method bundle). A src/lib/ change picks
+//     the specs of the methods that call it (2026-11-20; before, any src/lib/
+//     change meant the full suite);
+//   - a FILE RULE matches a changed file or a file the change reaches
+//     (strings, Settings, wiring, split view, tab groups, filter);
 //   - it is in the BASE set (always run).
-// A changed src/lib/ file (shared by every module) or more than half of the
-// suite picked: it says "run the full suite".
+// A name in more than COMMON spec files (a shared helper such as `_wvWireTag`)
+// picks nothing and is listed as too common.
+// It says "run the full suite" -- with the reason -- when src/index.ts or the
+// scaffold config changed, when a changed file is imported by no file and is no
+// entry point, or imported in a form it does not follow, when a changed source
+// file's change reaches no spec it can name, or when more than half of the
+// suite is picked.
 //
 // This is for DAY-TO-DAY work. The full suite still runs once on each tree that
 // lands on main and at every release (verify skill §5).
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync, existsSync } from "node:fs";
-import { basename, join } from "node:path";
+import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { parseDiff, pickSpecs } from "./pick-specs-lib.mjs";
 
 const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 const LIST = args.includes("--list");
-const COMMON = 12;
 
-const BASE = [
-  "test/popups.spec.js",          // popup contracts (CLAUDE.md hard invariant)
-  "test/compat.spec.js",          // winOf(node) rule (CLAUDE.md hard invariant)
-  "test/reader-leak.spec.js",     // closed readers and windows are freed
-  "test/prefs-defaults.spec.js",  // every pref's default
-  "test/option-gates.spec.js",    // every setting turns its feature off
-];
-const FILE_RULES = [
-  [/^src\/locale\//, (s) => /^(menus-l10n|prefs-l10n)\.spec\.js$/.test(s), "strings changed"],
-  [/^src\/(prefs\.html|prefs\/|modules\/prefs)/, (s) => /^prefs-/.test(s), "Settings changed"],
-  [/^src\/(index\.ts|bootstrap\.js)$/, (s) => /^(init-phases|window-wiring|window-wiring-table|destroyed-instance-wiring|zz-reload-listeners|zzz-disable-leftovers)\.spec\.js$/.test(s), "startup / wiring changed"],
-  [/^src\/modules\/tab-split/, (s) => /^split-/.test(s), "split view changed"],
-  [/^src\/modules\/tab-groups/, (s) => /^tab-group/.test(s), "tab groups changed"],
-  [/^src\/modules\/filter/, (s) => /^filter/.test(s), "filter changed"],
-];
-
-const git = (...a) => execFileSync("git", a, { encoding: "utf8", maxBuffer: 64 << 20 }).trim();
+const git = (...a) => execFileSync("git", a, { encoding: "utf8", maxBuffer: 256 << 20 }).trim();
+const lines = (s) => s.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
 const branch = git("rev-parse", "--abbrev-ref", "HEAD");
 const base = opt("--base") || (branch === "main" ? "origin/main" : "main");
+const head = opt("--head");
 
-const lines = (s) => s.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
-const changed = new Set([
-  ...lines(git("diff", "--name-only", `${base}...HEAD`)),
-  ...lines(git("diff", "--name-only", "HEAD")),
-  ...lines(git("ls-files", "--others", "--exclude-standard")),
-]);
-
-// Identifiers that changed src/ lines add or remove.
-const idents = new Set();
-const srcDiff = git("diff", "--unified=0", `${base}...HEAD`, "--", "src") + "\n" + git("diff", "--unified=0", "HEAD", "--", "src");
-for (const l of srcDiff.split(/\r?\n/)) {
-  if (!/^[+-]/.test(l) || /^(\+\+\+|---) /.test(l)) continue;
-  for (const m of l.matchAll(/\b_wv[A-Za-z0-9_]{3,}\b|\bwv-[a-z0-9-]{3,}\b|\bweavero\.[A-Za-z0-9_.]{3,}\b|\bweavero-[a-z0-9-]{3,}\b/g)) idents.add(m[0]);
+/** path -> text for every file under the given roots: at a commit, or on disk. */
+function readTree(roots) {
+  const out = new Map();
+  if (head) {
+    const paths = lines(git("ls-tree", "-r", "--name-only", head, "--", ...roots));
+    const buf = execFileSync("git", ["cat-file", "--batch"], { input: paths.map((p) => `${head}:${p}`).join("\n") + "\n", maxBuffer: 256 << 20 });
+    let at = 0;
+    for (const p of paths) {
+      const nl = buf.indexOf(10, at);
+      const size = Number(buf.toString("utf8", at, nl).split(" ")[2]);
+      out.set(p, buf.toString("utf8", nl + 1, nl + 1 + size));
+      at = nl + 1 + size + 1;
+    }
+    return out;
+  }
+  const walk = (p) => {
+    if (!existsSync(p)) return;
+    if (!statSync(p).isDirectory()) { out.set(p, readFileSync(p, "utf8")); return; }
+    for (const f of readdirSync(p)) walk(p + "/" + f);
+  };
+  for (const r of roots) walk(r);
+  return out;
 }
 
-const specs = readdirSync("test").filter((f) => f.endsWith(".spec.js") && !f.startsWith("000-")).sort();
-const texts = new Map(specs.map((s) => [s, readFileSync(join("test", s), "utf8")]));
-const picked = new Map();   // spec path -> reason
-const pick = (path, why) => { if (!picked.has(path)) picked.set(path, why); };
-
-for (const f of changed) {
-  if (/^test\/[^/]+\.spec\.js$/.test(f) && existsSync(f) && !basename(f).startsWith("000-")) pick(f, "changed spec");
-}
-for (const f of changed) {
-  for (const [re, test, why] of FILE_RULES) {
-    if (re.test(f)) for (const s of specs) if (test(s)) pick("test/" + s, why);
+let changed, diffText;
+if (head) {
+  changed = lines(git("diff", "--name-only", `${base}...${head}`));
+  diffText = git("diff", "--unified=0", `${base}...${head}`, "--", "src");
+} else {
+  const mb = git("merge-base", base, "HEAD");
+  const untracked = lines(git("ls-files", "--others", "--exclude-standard"));
+  changed = [...new Set([...lines(git("diff", "--name-only", mb)), ...untracked])];
+  diffText = git("diff", "--unified=0", mb, "--", "src");
+  // An untracked source file: every line is new.
+  for (const f of untracked.filter((p) => p.startsWith("src/"))) {
+    const t = readFileSync(f, "utf8").split(/\r?\n/);
+    diffText += `\n+++ b/${f}\n@@ -0,0 +1,${t.length} @@\n` + t.map((l) => "+" + l).join("\n");
   }
 }
-const common = [];
-for (const id of idents) {
-  const users = specs.filter((s) => texts.get(s).includes(id));
-  if (users.length > COMMON) { common.push(`${id} (${users.length})`); continue; }
-  for (const s of users) pick("test/" + s, "names " + id);
-}
-for (const b of BASE) if (existsSync(b)) pick(b, "base set");
 
-const out = [...picked.keys()];
-const lib = [...changed].filter((f) => /^src\/lib\//.test(f));
+const tree = readTree(["src", "test", "zotero-plugin.config.ts"]);
+const src = new Map([...tree].filter(([p]) => p.startsWith("src/")));
+const specs = new Map([...tree].filter(([p]) => /^test\/[^/]+\.spec\.js$/.test(p) && !/^test\/000-/.test(p)).map(([p, t]) => [p.slice(5), t]));
+const config = tree.get("zotero-plugin.config.ts") || "";
+const entries = [...config.matchAll(/entryPoints:\s*\[([^\]]*)\]/g)].flatMap((m) => [...m[1].matchAll(/["']([^"']+)["']/g)].map((x) => x[1]));
+
+const { picked, full, common, graph } = pickSpecs({ changed, diff: parseDiff(diffText), src, specs, entries });
+
 if (LIST) {
-  console.error(`[pick-specs] base ${base}: ${changed.size} changed files, ${idents.size} changed identifiers`);
+  console.error(`[pick-specs] ${base}...${head || "the working tree"}: ${changed.length} changed files`);
+  for (const g of graph) console.error(`  graph: ${g}`);
   for (const [s, why] of picked) console.error(`  ${s}  -- ${why}`);
-  if (common.length) console.error(`[pick-specs] too common to pick by (more than ${COMMON} specs): ${common.join(", ")}`);
-  console.error(`[pick-specs] ${out.length} of ${specs.length} spec files`);
+  if (common.length) console.error(`[pick-specs] too common to pick by (more than 12 specs): ${common.join(", ")}`);
+  console.error(`[pick-specs] ${picked.size} of ${specs.size} spec files`);
 }
-if (lib.length) console.error(`[pick-specs] shared code changed (${lib.join(", ")}): run the full suite`);
-else if (out.length > specs.length / 2) console.error(`[pick-specs] more than half of the suite picked: run the full suite`);
-console.log(out.join(","));
+for (const why of full) console.error(`[pick-specs] run the full suite: ${why}`);
+console.log([...picked.keys()].join(","));

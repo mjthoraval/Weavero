@@ -1,28 +1,48 @@
 import { defineConfig } from "zotero-plugin-scaffold";
-import { copyFileSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
+import { createHash } from "node:crypto";
+import { parseShard, planShards, specTimes } from "./scripts/spec-shard.mjs";
 
-/** WV_TEST_SHARD=k/n: the k-th of n contiguous, size-balanced slices of the
- *  suite's spec files in name order (Zotero's runner shards the same way,
- *  test/content/runtests.js; the 2026-11-03 CI study, recommendation 7), so a
- *  slow CI job runs as two side by side and a shard is reproducible
- *  locally. The 000- files are added to every shard below. */
+/** A hash of a source file's CODE: whole-line comments (`//` lines and block
+ *  comments starting a line) dropped, whitespace runs collapsed. The Cited by
+ *  index's fingerprints take the matcher's and the list reader's modules whole
+ *  (cited-by.ts wvCbMatchFp / wvCbListFp): a change in a helper either calls
+ *  re-reads or re-matches what it read, where the functions' own text missed it
+ *  (review of M1, 2026-11-21; D's fixes were mostly helpers). A comment edit
+ *  changes nothing. */
+function wvSrcHash(...files: string[]): string {
+  const h = createHash("sha256");
+  for (const f of files) {
+    const code = readFileSync(f, "utf8").replace(/\r\n/g, "\n")
+      .replace(/^[ \t]*\/\*[\s\S]*?\*\/[ \t]*$/gm, "")
+      .replace(/^[ \t]*\/\/.*$/gm, "")
+      .replace(/\s+/g, " ");
+    h.update(f + "\n" + code + "\n");
+  }
+  return h.digest("hex").slice(0, 16);
+}
+
+/** WV_TEST_SHARD=k/n: the k-th of n parts of the suite's spec files whose
+ *  predicted RUN TIMES are balanced -- longest first into the least-loaded
+ *  part, by the timing table test/spec-times.json (scripts/spec-shard.mjs; a
+ *  file the table lacks is weighed by its size). A slow CI job runs as n side
+ *  by side (the 2026-11-03 CI study, recommendation 7; Zotero shards its own
+ *  suite, test/content/runtests.js) and a part is reproducible locally. The
+ *  000- files are added to every part below. Until 2026-11-20 the parts were
+ *  contiguous slices of equal BYTES: on CI shard 1/2 ran ~7 min and 2/2 ~23
+ *  (test.yml run 44546104702; MJT 2026-11-20, "Ok"). */
 function wvTestShard(spec: string): string[] {
-  const m = /^(\d+)\/(\d+)$/.exec(spec);
-  if (!m) throw new Error("WV_TEST_SHARD must read k/n, got " + spec);
-  const k = Number(m[1]), n = Number(m[2]);
-  if (!(n >= 1 && k >= 1 && k <= n)) throw new Error("WV_TEST_SHARD out of range: " + spec);
-  const files = readdirSync("test").filter(f => f.endsWith(".spec.js") && !f.startsWith("000-")).sort();
-  const sizes = files.map(f => statSync(join("test", f)).size);
-  const total = sizes.reduce((a, b) => a + b, 0);
-  let acc = 0;
-  const mine = files.filter((f, i) => {
-    // A file goes to the slice its middle byte falls in.
-    const slice = Math.min(n - 1, Math.floor((acc + sizes[i] / 2) / (total / n)));
-    acc += sizes[i];
-    return slice === k - 1;
-  });
-  return mine.map(f => "test/" + f);
+  const { k, n } = parseShard(spec);
+  const files = readdirSync("test").filter(f => f.endsWith(".spec.js") && !f.startsWith("000-")).sort()
+    .map(f => ({ name: f, bytes: statSync(join("test", f)).size }));
+  let times: Record<string, number> = {};
+  try { times = specTimes(JSON.parse(readFileSync("test/spec-times.json", "utf8"))); }
+  catch (e) { console.log("[weavero] test/spec-times.json unreadable, parts weighed by size: " + e); }
+  const plan = planShards(files, times, n);
+  console.log("[weavero] shard " + spec + ": predicted " + plan.loads.map(ms => Math.round(ms / 1000) + " s").join(" / ")
+    + " for the " + n + " parts" + (plan.estimated.length ? "; weighed by size: " + plan.estimated.join(", ") : ""));
+  return plan.bins[k - 1].map(f => "test/" + f);
 }
 
 /** `test` (the whole suite), or a scratch directory holding only the specs
@@ -104,6 +124,25 @@ export default defineConfig({
         platform: "browser",
         format: "iife",
         outfile: "addon/index.js",
+        define: {
+          __WV_REFMATCH_SRC__: JSON.stringify(wvSrcHash("src/lib/ref-match.ts")),
+          __WV_REFLIST_SRC__: JSON.stringify(wvSrcHash("src/lib/ref-list.ts")),
+          // The document layer's component fingerprints (lib/doc-layer.ts
+          // wvDlChainFps): each component's code, its helpers' modules
+          // included (outline-build imports ref-list, which imports ref-match).
+          __WV_DL_OL_SRC__: JSON.stringify(wvSrcHash("src/lib/outline-build.ts", "src/lib/outline-sdt.ts", "src/lib/ref-list.ts", "src/lib/ref-match.ts", "src/lib/doc-layer.ts")),
+          __WV_DL_PL_SRC__: JSON.stringify(wvSrcHash("src/lib/doc-layer-pl.ts")),
+        },
+      },
+      {
+        // The document layer's ChromeWorker (modules/doc-layer.ts): the outline
+        // builder and the page-label rule, run off the main thread.
+        entryPoints: ["src/doc-layer-worker.ts"],
+        bundle: true,
+        target: "firefox115",
+        platform: "browser",
+        format: "iife",
+        outfile: "addon/doc-layer-worker.js",
       },
       {
         entryPoints: ["src/prefs/index.ts"],
@@ -175,6 +214,15 @@ export default defineConfig({
     // collection selectWait never settled and specs timed out in their
     // setup, five runs on 2026-10-16, each with the runner out of sight.
     prefs: {
+      // The runner's UI language. A fresh temp profile follows the OS, so
+      // local runs on a French Windows were French while CI's are English;
+      // once Weavero shipped its own translations (fr-FR, de, es-ES, zh-CN;
+      // l10n branch 2026-11-19; it-IT 2026-11-23) the specs that assert Weavero's English would
+      // read French locally. Pinned to en-US, as CI runs;
+      // WV_TEST_LOCALE=fr-FR (any Zotero locale) runs the suite in another
+      // language on purpose. test/l10n-locales.spec.js checks every
+      // translation through a Localization of its own locale whatever this is.
+      "intl.locale.requested": process.env.WV_TEST_LOCALE || "en-US",
       "widget.windows.window_occlusion_tracking.enabled": false,
       "widget.windows.window_occlusion_tracking_display_state.enabled": false,
       // macOS: an app in the background cannot take focus there, and the

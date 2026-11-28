@@ -31,11 +31,12 @@ import { winOf, wvIsHiddenOrCollapsed, wvSetBoolAttr, wvBoolAttrOn, wvWithin, wv
 import { wvRemoveStyle, wvFilterTileRules, wvDataColor } from "../lib/style";
 import { wvOutsideClick, wvReachableDocs, wvDismissOff } from "../lib/dismiss";
 import { wvLivePlugin } from "../lib/live";
+import { wvOpenedInstance } from "../lib/compat";
 import { wvStoreWrite, wvStoreRead, wvStoreRemove } from "../lib/store";
 import { wvTimeout } from "../lib/timers";
 import { wvListen, wvListener, wvUnlisten, wvEventOpts } from "../lib/listen";
 import { wvWrap, wvUnwrap } from "../lib/wrap";
-import { urlPattern, wvLinkVars, wvLabelMisleads, MD_LINK_SRC, WV_LINK_SCAN_MAX } from "../lib/links";
+import { urlPattern, wvLinkVars, wvLinkColor, wvLabelMisleads, MD_LINK_SRC, WV_LINK_SCAN_MAX } from "../lib/links";
 import { wvTrimTrailing } from "../lib/text";
 import { wvMainWins, wvNativeWindows, wvWinType } from "../lib/windows";
 import { wvAccel } from "../lib/keys";
@@ -560,8 +561,8 @@ class _ReaderMixin {
     _makeCopyBtn(doc, win, url) {
         const btn = wvHtmlEl(doc, "button");
         btn.className = "wv-copy-btn";
-        btn.textContent = "Copy";
-        btn.title = "Copy URL to clipboard";
+        btn.textContent = wvStr("weavero-reader-copy-url");
+        btn.title = wvStr("weavero-reader-copy-url-tip");
         btn.addEventListener("click", e => {
             e.stopPropagation();
             const original = btn.textContent;
@@ -622,7 +623,7 @@ class _ReaderMixin {
         // Extra URLs (from <a href> in DOM) not already shown inline
         const extras = (opts.extraURLs || []).filter(u => u && !seen.has(u));
         if (extras.length) {
-            const sep = wvHtmlEl(doc, "div", "wv-separator", "Additional links in comment:", container);
+            const sep = wvHtmlEl(doc, "div", "wv-separator", wvStr("weavero-reader-comment-extra-links"), container);
         }
         for (const url of extras) {
             const row = wvHtmlEl(doc, "div");
@@ -844,14 +845,16 @@ class _ReaderMixin {
         } catch (e) {}
         const headTitle = wvHtmlEl(doc, "span") as any;
         headTitle.className = "wv-relations-header-title";
-        headTitle.textContent = items.length + " Related";
+        // Zotero's own "{ $count } Related" (zotero.ftl section-related), the
+        // item pane's Related section header this popup copies.
+        headTitle.textContent = wvStr("section-related", { count: items.length });
         header.appendChild(headTitle);
         const addBtn = wvHtmlEl(doc, "span") as any;
         addBtn.className = "wv-relations-add";
         addBtn.setAttribute("role", "button");
         addBtn.setAttribute("tabindex", "0");
-        addBtn.setAttribute("aria-label", "Add related item");
-        addBtn.title = "Add related item…";
+        addBtn.setAttribute("aria-label", wvStr("weavero-related-add-label"));
+        addBtn.title = wvStr("weavero-related-add-tip");
         // Inline plus.svg (same glyph as the item-pane "Related" add button).
         // Fall back to a text "+" only if the SVG build throws.
         try { addBtn.appendChild(this._makePlusSvg(doc)); }
@@ -879,9 +882,12 @@ class _ReaderMixin {
         if (!items.length) {
             const empty = wvHtmlEl(doc, "div");
             empty.className = "wv-rel-empty";
-            empty.textContent = "No related items.";
+            empty.textContent = wvStr("weavero-related-empty");
             list.appendChild(empty);
         }
+        // Once per popup, not per row.
+        const untitledText = wvStr("weavero-common-untitled");
+        const removeText = wvStr("weavero-related-remove");
         for (const item of items) {
             const row = wvHtmlEl(doc, "div");
             row.className = "wv-rel-row";
@@ -930,8 +936,8 @@ class _ReaderMixin {
             }
 
             const titleEl = wvHtmlEl(doc, "span", "wv-rel-title");
-            let titleText = "(untitled)";
-            try { titleText = item.getDisplayTitle() || "(untitled)"; }
+            let titleText = untitledText;
+            try { titleText = item.getDisplayTitle() || untitledText; }
             catch (e) {}
             // Render URLs / markdown inside the related-item title (a
             // related annotation's title IS its comment text, which may
@@ -960,8 +966,8 @@ class _ReaderMixin {
             rmBtn.className = "wv-rel-remove";
             rmBtn.setAttribute("role", "button");
             rmBtn.setAttribute("tabindex", "0");
-            rmBtn.setAttribute("aria-label", "Remove");
-            rmBtn.title = "Remove";
+            rmBtn.setAttribute("aria-label", removeText);
+            rmBtn.title = removeText;
             // Same glyph as the item pane's Related section remove button
             // (toolbarbutton.zotero-clicky-minus → minus-circle.svg).
             try {
@@ -1372,7 +1378,7 @@ class _ReaderMixin {
                 const relBtn = wvHtmlEl(doc, "button");
                 relBtn.className = BTN_CLASS + " " + BTN_SIDEBAR_CLASS
                     + " wv-btn-relations";
-                relBtn.title = related.length + " Related";
+                relBtn.title = wvStr("section-related", { count: related.length });
                 relBtn.appendChild(this._makeRelationsSvg(doc));
                 relBtn.addEventListener("click", e => {
                     e.stopPropagation(); e.preventDefault();
@@ -1992,9 +1998,6 @@ class _ReaderMixin {
      *  every re-render, so re-injection is automatic. */
     _toolbarHandlerImpl(event) {
         try {
-            // WV-TEMP-134772 (upstream-fixes.ts): the shared reader prototype's menu
-            // builder, wrapped once from the first reader seen.
-            try { (this as any)._wvWireReaderMenuFix(event && event.reader); } catch (e) {}
             const { reader, doc, append } = event || {};
             const rw: any = reader && reader._window;
             // Standalone reader windows only: a reader TAB lives in a main
@@ -2031,7 +2034,7 @@ class _ReaderMixin {
         try {
             const btn = wvHtmlEl(doc, "button", "toolbar-button wv-reader-to-tab");
             btn.setAttribute("tabindex", "-1");
-            btn.title = "Move this reader into a tab in the main Zotero window";
+            btn.title = wvStr("weavero-reader-move-to-tab-tip");
             // Tabbed-window glyph: an outlined window body with a tab strip
             // (one full-height active tab merging into the body, plus a
             // shorter faded tab behind it). fill="currentColor" so it
@@ -2238,6 +2241,8 @@ class _ReaderMixin {
             const existing = doc.getElementById("wv-reader-pane");
             if (!on) {
                 // Teardown (takes effect on the next reader render / reload).
+                // The section lock's observers and listeners go with the pane (pane-lock.ts).
+                try { const od: any = doc.getElementById("wv-reader-item-details"); if (od) (this as any)._wvPaneLockUnwireDet(od); } catch (e) {}
                 if (existing) existing.remove();
                 const sp = doc.getElementById("wv-reader-pane-splitter"); if (sp) sp.remove();
                 // Clear the bind cache so a re-enable rebinds the rebuilt pane
@@ -2439,7 +2444,21 @@ class _ReaderMixin {
                 try { const osp = doc.getElementById("wv-reader-pane-splitter"); if (osp) osp.remove(); } catch (e) {}
                 try { delete win._wvReaderPaneItemID; } catch (e) {}
             }
-            else if (existing) { try { this._wvReaderPaneSync(win); } catch (e) {} return; }
+            else if (existing) {
+                try { this._wvReaderPaneSync(win); } catch (e) {}
+                // A section locked at the bottom (pane-lock.ts): idempotent per instance.
+                try { (this as any)._wvPaneLockWire(win); } catch (e) {}
+                return;
+            }
+            // A NEW pane is built below, its <item-details> bound to nothing:
+            // the bind cache belongs to whatever pane came before, however it
+            // went. Cleared only when this build replaced it, a pane removed
+            // by the chrome strip (an old instance's deferred reader-window
+            // sweep, Zotero 10 reload, dev.99 triage 2026-11-27) left the
+            // cache naming the item, and _wvReaderPaneSync skipped binding the
+            // new pane for good: no item, none of Weavero's sections.
+            // Guard: test/zz-reload-reader-strip.spec.js.
+            try { delete win._wvReaderPaneItemID; } catch (e) {}
             const readerVbox = doc.getElementById("zotero-reader");
             const hbox: any = readerVbox ? readerVbox.parentNode : null;
             if (!hbox) return;
@@ -2675,6 +2694,11 @@ class _ReaderMixin {
                 });
             } catch (e) {}
             this._wvApplyReaderPaneSnap(win);
+            // A section locked at the bottom of the pane (pane-lock.ts; MJT
+            // 2026-11-22): the padlocks, the side navigation's entries, the
+            // "reader" view's lock. Here, not in the reader-window table: the
+            // pane is also built by the readerItemPane setting and the tear-off.
+            try { (this as any)._wvPaneLockWire(win); } catch (e) {}
         } catch (e) {
             Zotero.debug("[Weavero] _ensureReaderWindowItemPane err: " + e);
         }
@@ -3741,7 +3765,7 @@ class _ReaderMixin {
             const menubar = doc.querySelector("menubar");
             if (!menubar) return;
 
-            const title = doc.title || "Note";
+            const title = doc.title || wvStr("weavero-note-tab-fallback-title");
 
             // Read the note's itemID from the editor so we can wire
             // context-menu + drag-to-main-window without re-parsing
@@ -3777,8 +3801,8 @@ class _ReaderMixin {
                 const titleEl: any = wvHtmlEl(doc, "span", "wv-window-tab-title", title, tab);
 
                 const closeBtn: any = wvHtmlEl(doc, "button", "wv-window-tab-close");
-                closeBtn.setAttribute("title", "Close");
-                closeBtn.setAttribute("aria-label", "Close");
+                closeBtn.setAttribute("title", wvStr("weavero-common-close"));
+                closeBtn.setAttribute("aria-label", wvStr("weavero-common-close"));
                 closeBtn.setAttribute("tabindex", "-1");
                 closeBtn.addEventListener("click", (e: any) => {
                     try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
@@ -4428,6 +4452,17 @@ class _ReaderMixin {
                 "#wv-window-tab-tooltip .wv-tab-tooltip-libname {",
                 "  margin: 0 !important;",
                 "  font-weight: 600;",
+                "}",
+                // The item type's icon in front of the title (constants.ts twin).
+                "#wv-window-tab-tooltip .wv-tab-tooltip-typed {",
+                "  padding-inline-start: 20px;",
+                "  text-indent: -20px;",
+                "}",
+                "#wv-window-tab-tooltip .wv-tab-tooltip-type {",
+                "  width: 16px;",
+                "  height: 16px;",
+                "  margin-inline-end: 4px;",
+                "  text-indent: 0;",
                 "}",
                 /* ───────────────────────────────────────────────────────────
                    Rich "List all tabs" panel — the reader twin of the main
@@ -5762,31 +5797,14 @@ class _ReaderMixin {
             if (!vbox) return null;
             const seq = ++st.seq;
             const id = "wvwt-" + seq;
-            const ed: any = doc.createXULElement("note-editor");
-            ed.id = "wv-wt-note-" + seq;
-            // `wv-wt-note` lets the reader-pane stylesheet hide this editor's
-            // built-in tags/collections/related footer when the item pane owns
-            // that metadata (see wv-reader-pane-style).
-            ed.setAttribute("class", "reader wv-wt-note");
-            ed.setAttribute("flex", "1");
-            ed.collapsed = true;                 // mounted hidden; switch reveals
-            vbox.appendChild(ed);
-            let editable = true;
-            try {
-                const lib: any = Zotero.Libraries.get(item.libraryID);
-                editable = !!(lib && lib.editable) && !item.deleted;
-            } catch (e) {}
-            try { ed.mode = editable ? "edit" : "view"; } catch (e) {}
-            try { ed.viewMode = "window"; } catch (e) {}
-            try { wvUIRoot(ed, (this as any)._wvWireTag()); } catch (e) {}
-            try { ed.item = item; } catch (e) {}
-            try { if (typeof ed.refresh === "function") ed.refresh(); } catch (e) {}
+            const ed: any = this._wvWTNewNoteEditor(win, item, seq);
+            if (!ed) return null;
             let title = "";
             try { title = (typeof item.getNoteTitle === "function") ? item.getNoteTitle() : ""; } catch (e) {}
             const tab: any = {
                 id, itemID: item.id, type: "note",
                 reader: null, browser: ed, noteEditor: ed,
-                native: false, pinned: false, title: title || "Note",
+                native: false, pinned: false, title: title || wvStr("weavero-note-tab-fallback-title"),
             };
             st.tabs.push(tab);
             try { this._wvWTRenderStrip(win); } catch (e) {}
@@ -5797,6 +5815,74 @@ class _ReaderMixin {
             Zotero.debug("[Weavero] _wvWTMountNoteTab err: " + e);
             return null;
         }
+    }
+
+    /** A note tab's editor: a <note-editor> `wv-wt-note-<seq>` for note
+     *  `item`, appended hidden to the reader vbox (a switch reveals it).
+     *  Null when the window has no reader vbox. */
+    _wvWTNewNoteEditor(win: any, item: any, seq: any) {
+        const doc: any = win.document;
+        const vbox: any = doc.getElementById("zotero-reader");
+        if (!vbox) return null;
+        const ed: any = doc.createXULElement("note-editor");
+        ed.id = "wv-wt-note-" + seq;
+        // `wv-wt-note` lets the reader-pane stylesheet hide this editor's
+        // built-in tags/collections/related footer when the item pane owns
+        // that metadata (see wv-reader-pane-style).
+        ed.setAttribute("class", "reader wv-wt-note");
+        ed.setAttribute("flex", "1");
+        ed.collapsed = true;                 // mounted hidden; switch reveals
+        vbox.appendChild(ed);
+        let editable = true;
+        try {
+            const lib: any = Zotero.Libraries.get(item.libraryID);
+            editable = !!(lib && lib.editable) && !item.deleted;
+        } catch (e) {}
+        try { ed.mode = editable ? "edit" : "view"; } catch (e) {}
+        try { ed.viewMode = "window"; } catch (e) {}
+        try { wvUIRoot(ed, (this as any)._wvWireTag()); } catch (e) {}
+        try { ed.item = item; } catch (e) {}
+        try { if (typeof ed.refresh === "function") ed.refresh(); } catch (e) {}
+        return ed;
+    }
+
+    /** Note tabs whose <note-editor> left the window get a new one, in place:
+     *  same tab, same item, same editor id. The chrome strip takes every
+     *  `wv-` id, the editor's with it (an old instance's deferred
+     *  reader-window sweep during a Zotero 10 reload, dev.99 triage
+     *  2026-11-27), and nothing put it back: the window's tab model
+     *  (`win._wvWT`) outlives the plugin instance, so the next one found the
+     *  tab and only toggled `collapsed` on a detached node -- the note blank,
+     *  its outline and link cards unwired. Init path of the reader-window
+     *  table (window-wiring.ts). Returns how many were mounted again.
+     *  Guard: test/zz-reload-reader-strip.spec.js. */
+    _wvWTRemountDetachedNotes(win: any) {
+        let n = 0;
+        try {
+            const st: any = win && !win.closed && win._wvWT;
+            if (!st || !Array.isArray(st.tabs)) return 0;
+            for (const tab of st.tabs) {
+                if (!tab || tab.type !== "note") continue;
+                const old: any = tab.noteEditor;
+                if (old && old.isConnected) continue;
+                const item: any = Zotero.Items.get(tab.itemID);
+                if (!item) continue;
+                const m = /^wvwt-(\d+)$/.exec(String(tab.id));
+                const ed: any = this._wvWTNewNoteEditor(win, item, m ? m[1] : ++st.seq);
+                if (!ed) continue;
+                tab.browser = ed;
+                tab.noteEditor = ed;
+                n++;
+                // The shown tab is shown again and wired as a switch wires it
+                // (no switch: that would focus the window during init).
+                if (tab.id === st.activeId) {
+                    ed.collapsed = false;
+                    try { this._wvNoteTabWire(win, tab); } catch (e) {}
+                }
+            }
+            if (n) Zotero.debug("[Weavero] reader window: " + n + " detached note tab(s) mounted again");
+        } catch (e) { Zotero.debug("[Weavero] _wvWTRemountDetachedNotes err: " + e); }
+        return n;
     }
 
     // ---- Note outline (reader-window notes) --------------------------------
@@ -6363,9 +6449,9 @@ class _ReaderMixin {
             if (btn) return btn;
             btn = wvHtmlEl(doc, "button");
             btn.className = "wv-window-newtab-btn";
-            btn.setAttribute("title", "New tab — open a library item (Ctrl+T)");
+            btn.setAttribute("title", wvStr("weavero-reader-newtab-tip", { shortcut: wvStr("weavero-key-ctrl") + "+T" }));
             btn.setAttribute("tabindex", "-1");
-            btn.setAttribute("aria-label", "New tab");
+            btn.setAttribute("aria-label", wvStr("weavero-reader-newtab"));
             const svg: any = wvSvgEl(doc, "svg");
             // Zotero's native plus icon, verbatim from
             // chrome://zotero/skin/16/universal/plus.svg (whole-pixel path,
@@ -6447,9 +6533,11 @@ class _ReaderMixin {
             // menu) instead of the old plain XUL menupopup of radio items.
             btn = wvHtmlEl(doc, "button");
             btn.className = "wv-window-tablist-btn";
-            btn.setAttribute("title", "List all tabs");
+            // Zotero's own words for its main window's button (zotero.ftl).
+            const listAllTabs = wvStr("zotero-toolbar-tabs-menu", undefined, "tooltiptext");
+            btn.setAttribute("title", listAllTabs);
             btn.setAttribute("tabindex", "-1");
-            btn.setAttribute("aria-label", "List all tabs");
+            btn.setAttribute("aria-label", listAllTabs);
             const svg: any = wvSvgEl(doc, "svg");
             // Native Zotero tabs-menu chevron, verbatim from
             // chrome://zotero/skin/20/universal/chevron.svg — a FILLED wedge
@@ -6550,7 +6638,7 @@ class _ReaderMixin {
             const gear: any = wvHtmlEl(doc, "button");
             gear.id = "wv-wtl-settings-btn";
             gear.type = "button";
-            gear.title = "Tabs menu settings";
+            gear.title = wvStr("weavero-reader-tablist-settings");
             gear.style.setProperty("-moz-context-properties",
                 "fill, fill-opacity, stroke, stroke-opacity");
             gear.style.fill = "currentColor";
@@ -6567,7 +6655,8 @@ class _ReaderMixin {
             const input: any = wvHtmlEl(doc, "input");
             input.id = "wv-wtl-filter";
             input.type = "text";
-            input.setAttribute("placeholder", "Search Tabs");
+            // Zotero's own placeholder for its tabs menu's box (zotero.ftl).
+            input.setAttribute("placeholder", wvStr("zotero-tabs-menu-filter", undefined, "placeholder"));
             const syncWtlClear = () => {
                 try { wrapper.classList.toggle("wv-wtl-hastext", !!String(input.value || "")); } catch (er) {}
             };
@@ -6585,8 +6674,8 @@ class _ReaderMixin {
             const wtlClear: any = wvHtmlEl(doc, "button");
             wtlClear.id = "wv-wtl-clear-btn";
             wtlClear.type = "button";
-            wtlClear.title = "Clear search";
-            wtlClear.setAttribute("aria-label", "Clear search");
+            wtlClear.title = wvStr("weavero-common-clear-search");
+            wtlClear.setAttribute("aria-label", wvStr("weavero-common-clear-search"));
             wtlClear.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="#808080"/><line x1="4" y1="4" x2="10" y2="10" stroke-width="1.5" stroke="#fff"/><line x1="10" y1="4" x2="4" y2="10" stroke-width="1.5" stroke="#fff"/></svg>';
             wtlClear.addEventListener("click", (e: any) => {
                 try {
@@ -6607,8 +6696,7 @@ class _ReaderMixin {
             const funnel: any = wvHtmlEl(doc, "button");
             funnel.id = "wv-wtl-filetype-btn";
             funnel.type = "button";
-            funnel.title = "Filter tabs by attachment file type. "
-                + "Click in the popup to filter, Alt+click to exclude.";
+            funnel.title = wvStr("weavero-reader-tablist-filetype-tip");
             funnel.style.setProperty("-moz-context-properties",
                 "fill, fill-opacity, stroke, stroke-opacity");
             funnel.style.fill = "currentColor";
@@ -6891,9 +6979,9 @@ class _ReaderMixin {
             const titleEl: any = wvHtmlEl(doc, "span", "wv-window-tab-title", this._wvWTTabTitle(tab));
 
             const closeBtn: any = wvHtmlEl(doc, "button", "wv-window-tab-close");
-            closeBtn.setAttribute("title", "Close");
+            closeBtn.setAttribute("title", wvStr("weavero-common-close"));
             closeBtn.setAttribute("tabindex", "-1");
-            closeBtn.setAttribute("aria-label", "Close");
+            closeBtn.setAttribute("aria-label", wvStr("weavero-common-close"));
             // Native Zotero close glyph: x-8.svg via .icon-css → muted
             // --fill-secondary (rgba(255,255,255,0.55)), 16px — identical icon
             // AND colour to the main window's .tab-close .icon, instead of the
@@ -8315,9 +8403,12 @@ class _ReaderMixin {
             // a previously-multi-tab item mid-session doesn't re-add old tabs.
             // (Backstop — consumption clears the flag as entries are used, see
             // _wvWTRestoreMaybeDone.)
+            // The handle is kept for destroy(): a disable or a reload within
+            // the 30 s left it to run in the gone instance (the
+            // stale-instance guard on Zotero 10, 2026-11-22).
             try {
                 const setT = wvTimeout;
-                setT(() => { this._wvWTRestoreActive = false; this._wvWTRestoreMap = {}; }, 30000);
+                (this as any)._wvWTRestoreExpiryT = setT(() => { this._wvWTRestoreActive = false; this._wvWTRestoreMap = {}; }, 30000);
             } catch (e) {}
             return map;
         })();
@@ -9126,7 +9217,16 @@ class _ReaderMixin {
                         return;
                     }
                     const tabsInReaderWin = !!(lp && lp._getCompactTitleBarReader && lp._getCompactTitleBarReader());
-                    if (lp && tabsInReaderWin && !wvNativeWindows() && items && items.length > 1) {
+                    // The items list's "Open … in Separate Windows" (Zotero's own
+                    // entry, relabelled for several items, open-where.ts
+                    // _wvOpenSeveralItemsMenu) opens what it says: a window each,
+                    // Zotero's way. Shift and the rest are still merged.
+                    let separate = false;
+                    try {
+                        const t: any = event && event.target;
+                        separate = !!(t && typeof t.getAttribute === "function" && t.getAttribute("data-wv-open-several") === "windows");
+                    } catch (e) {}
+                    if (lp && tabsInReaderWin && !separate && !wvNativeWindows() && items && items.length > 1) {
                         // Resolve the effective openInWindow the way viewAttachment does:
                         // the pref is the default; Shift / forceAlternateWindowBehavior inverts it.
                         let openInWindow = false;
@@ -9309,7 +9409,7 @@ class _ReaderMixin {
             // text upstream uses when blocking this case.
             if (targets[0].libraryID !== anchor.libraryID) {
                 Zotero.alert(null, "",
-                    "You cannot relate items in different libraries.");
+                    wvStr("weavero-related-different-libraries"));
                 return;
             }
 
@@ -9455,7 +9555,7 @@ class _ReaderMixin {
                     relBtn.className = BTN_CLASS + " " + BTN_POPUP_CLASS
                         + " wv-btn-relations";
                     relBtn.setAttribute("tabindex", "-1");
-                    relBtn.title = related.length + " Related";
+                    relBtn.title = wvStr("section-related", { count: related.length });
                     relBtn.appendChild(this._makeRelationsSvg(doc));
                     relBtn.addEventListener("click", e => {
                         e.stopPropagation(); e.preventDefault();
@@ -10790,6 +10890,11 @@ class _ReaderMixin {
         for (const v of [ir._primaryView, ir._secondaryView, ir._lastView]) {
             if (!v) continue;
             try { wvUnwrap(v, "_onSetOverlayPopup"); } catch (e) {}
+            // WV-TEMP-CITEZONES (cite-zones.ts): Zotero's own citation areas back.
+            try {
+                const dd = v._documentData;
+                if (dd && wvUnwrap(dd, "_composePage", "citeZones")) (this as any)._wvCzRecompose(dd);
+            } catch (e) {}
             try {
                 if (v._wvPrevZonesOrig) back(v, "_onSetOverlayPopup", v._wvPrevZonesOrig);   // an older build's
                 delete v._wvPrevZonesOrig; delete v._wvPrevZonesWired; delete v._wvPrevZonesSeq;
@@ -11446,6 +11551,10 @@ class _ReaderMixin {
             try { this._wvOutlineInstallRecovery(reader); } catch (_) {}
             try { (this as any)._wvWireDomSelTracker(reader); } catch (_) {}
             try { (this as any)._wvWirePreviewLinkZones(reader); } catch (_) {}
+            // WV-TEMP-CITEZONES: one area per in-text citation (cite-zones.ts).
+            try { (this as any)._wvWireCiteZones(reader); } catch (_) {}
+            // References in your library: Zotero's citation popup (refs.ts).
+            try { (this as any)._wvRefsWireReader(reader); } catch (_) {}
             try { (this as any)._wvWireExternalLinkTip(reader); } catch (_) {}
             try { (this as any)._wvWireReaderDocLinkTip(reader); } catch (_) {}
 
@@ -12795,7 +12904,10 @@ class _ReaderMixin {
         if (!this._badgeRepositionObservers) {
             this._badgeRepositionObservers = new WeakMap();
         }
-        if (this._badgeRepositionObservers.has(idoc)) return;
+        // Keyed by the document itself, whatever wrapper the caller holds
+        // (the page teardown reaches it through another one).
+        const key = this._wvBadgeObsKey(idoc);
+        if (this._badgeRepositionObservers.has(key)) return;
         const win = idoc.defaultView;
         if (!win || !win.MutationObserver || !win.requestAnimationFrame) {
             this._dbg("[Weavero] reposition obs: missing win APIs");
@@ -12845,7 +12957,30 @@ class _ReaderMixin {
         for (const page of pdfViewer.querySelectorAll(".page")) {
             pageObs.observe(page, obsInit);
         }
-        this._badgeRepositionObservers.set(idoc, { obs, pageObs, overlay });
+        this._badgeRepositionObservers.set(key, { obs, pageObs, overlay });
+    }
+
+    _wvBadgeObsKey(idoc: any): any {
+        try { return (Components as any).utils.unwaiveXrays(idoc); } catch (e) { return idoc; }
+    }
+
+    /** The badge overlay's reposition observers of page `idoc` off
+     *  (_setupBadgeRepositionObserver): _wvReaderPageTeardown, for each
+     *  reader view. They watch every pdf.js page's style, so a pair left by a
+     *  reload or a disable ran the old instance's callback on each zoom and
+     *  render -- under zotero#6080 a dead object (2026-11-22). Guard:
+     *  test/zz-stale-instance-calls.spec.js. */
+    _wvBadgeRepositionOff(idoc: any) {
+        try {
+            const m = this._badgeRepositionObservers;
+            if (!m || !idoc) return;
+            const key = this._wvBadgeObsKey(idoc);
+            const rec = m.get(key);
+            if (!rec) return;
+            try { rec.obs.disconnect(); } catch (e) {}
+            try { rec.pageObs.disconnect(); } catch (e) {}
+            m.delete(key);
+        } catch (e) {}
     }
 
     /** Inject 🔗 badges over canvas-rendered annotations (note, highlight,
@@ -13221,7 +13356,7 @@ class _ReaderMixin {
                         // states, no comment-driven tooltip. Title
                         // shows the related-items count.
                         const n = item.relCount || 0;
-                        badge.title = n + " Related";
+                        badge.title = wvStr("section-related", { count: n });
                         badge.appendChild(this._makeRelationsSvg(idoc));
                     }
 
@@ -13730,10 +13865,10 @@ class _ReaderMixin {
                     if (isRel) {
                         badge.appendChild(this._makeRelationsSvg(idoc));
                         const n = entry.relCount || 0;
-                        badge.title = n + " Related";
+                        badge.title = wvStr("section-related", { count: n });
                     } else {
                         badge.appendChild(this._makeLinkSvg(idoc));
-                        badge.title = "Open comment";
+                        badge.title = wvStr("weavero-reader-open-comment-tip");
                     }
                     badge.addEventListener("click", (ev) => {
                         ev.stopPropagation();
@@ -14822,7 +14957,7 @@ class _ReaderMixin {
         const doc = commentEl.ownerDocument;
         const ph = doc.createElement("div");
         ph.className = "wv-am-add-comment";
-        ph.textContent = "Add comment…";
+        ph.textContent = wvStr("weavero-reader-am-add-comment");
         ph.addEventListener("mousedown", (e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -15479,8 +15614,8 @@ class _ReaderMixin {
                 return btn;
             };
 
-            const minBtn = mkCtl("wv-window-min", "Minimize", () => win.minimize());
-            const maxBtn = mkCtl("wv-window-max", "Maximize", () => {
+            const minBtn = mkCtl("wv-window-min", wvStr("weavero-reader-window-minimize"), () => win.minimize());
+            const maxBtn = mkCtl("wv-window-max", wvStr("weavero-reader-window-maximize"), () => {
                 // Spanned across monitors (max-span.ts): back to before the span.
                 const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                 if (lp && win._wvMaxSpan && win.windowState === win.STATE_NORMAL && lp._wvMaxSpanRestore(win)) return;
@@ -15498,24 +15633,27 @@ class _ReaderMixin {
             };
             maxBtn.addEventListener("contextmenu", (e: any) => spanPress(e, false));
             maxBtn.addEventListener("mouseup", (e: any) => { if (e.button === 2) spanPress(e, true); });
-            const closeBtn = mkCtl("wv-window-close", "Close", () => win.close());
+            const closeBtn = mkCtl("wv-window-close", wvStr("weavero-reader-window-close"), () => win.close());
 
             // Keep the max/restore icon in sync via a data-state attribute.
             // The CSS rule `.wv-window-max[data-state='maximized']` swaps
             // the bg image from maximize.svg to restore.svg. A window spanned
             // across monitors shows the restore glyph too (max-span.ts).
+            // Formatted once per build: syncMaxIcon runs on every resize.
+            const restoreText = wvStr("weavero-reader-window-restore");
+            const maximizeText = wvStr("weavero-reader-window-maximize");
             const syncMaxIcon = () => {
                 try {
                     const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                     const spanned = !!(lp && win._wvMaxSpan && lp._wvMaxSpanIsSpanned && lp._wvMaxSpanIsSpanned(win));
                     if (win.windowState === win.STATE_MAXIMIZED || spanned) {
                         maxBtn.setAttribute("data-state", "maximized");
-                        maxBtn.setAttribute("title", "Restore");
-                        maxBtn.setAttribute("aria-label", "Restore");
+                        maxBtn.setAttribute("title", restoreText);
+                        maxBtn.setAttribute("aria-label", restoreText);
                     } else {
                         maxBtn.removeAttribute("data-state");
-                        maxBtn.setAttribute("title", "Maximize");
-                        maxBtn.setAttribute("aria-label", "Maximize");
+                        maxBtn.setAttribute("title", maximizeText);
+                        maxBtn.setAttribute("aria-label", maximizeText);
                     }
                 } catch (e) {}
             };
@@ -15726,7 +15864,7 @@ class _ReaderMixin {
                     wvZoteroLabel(fi, (srcFind && srcFind.getAttribute("label")) || wvZoteroText("general-find"));
                     const fak = srcFind && srcFind.getAttribute("accesskey");
                     if (fak) fi.setAttribute("accesskey", fak);
-                    fi.setAttribute("acceltext", "Ctrl+F");
+                    fi.setAttribute("acceltext", wvStr("weavero-key-ctrl") + "+F");
                     fi.addEventListener("command", () => {
                         try {
                             const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
@@ -16085,7 +16223,7 @@ class _ReaderMixin {
             const mains = Zotero.getMainWindows() || [];
             if (mains.length < 2) {
                 Services.prompt.alert(win, "Weavero",
-                    "This is the last main window. Open another main window first, then convert this one.");
+                    wvStr("weavero-reader-convert-last-main-window"));
                 return;
             }
             const ZT: any = win.Zotero_Tabs;
@@ -16094,7 +16232,7 @@ class _ReaderMixin {
             const readers = all.filter((t: any) => String(t.type || "").indexOf("reader") === 0);
             if (!readers.length) {
                 Services.prompt.alert(win, "Weavero",
-                    "No document tabs to move — a reader window needs at least one open PDF, EPUB or snapshot tab.");
+                    wvStr("weavero-reader-convert-no-documents"));
                 return;
             }
             const selectedID = ZT.selectedID;
@@ -16126,7 +16264,7 @@ class _ReaderMixin {
             }
             if (!newWin) {
                 // Classic seed: fresh window, then close the source tab.
-                const rd: any = await Reader.open(seedItemID, null, { openInWindow: true, allowDuplicate: true });
+                const rd: any = wvOpenedInstance(await Reader.open(seedItemID, null, { openInWindow: true, allowDuplicate: true }));
                 const t0 = Date.now();
                 while (rd && Date.now() - t0 < 8000
                     && !(rd._window && rd._iframe && rd._iframe.contentWindow)) { await sleep(120); }
@@ -16354,7 +16492,7 @@ class _ReaderMixin {
                     });
                     popup.appendChild(mi);
                 };
-                const ACCEL = Zotero.isMac ? "⌘" : "Ctrl+";
+                const ACCEL = Zotero.isMac ? "⌘" : wvStr("weavero-key-ctrl") + "+";
                 const liveP = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                 mkTop("weavero-menu-hamburger-new-tab", () => {
                     const p: any = liveP();
@@ -16557,9 +16695,9 @@ class _ReaderMixin {
                                 const mods = (keyEl.getAttribute("modifiers") || "")
                                     .split(/[\s,]+/).filter(Boolean)
                                     .map((m: string) => m === "accel"
-                                        ? (Zotero.isMac ? "⌘" : "Ctrl")
-                                        : m === "shift" ? "Shift"
-                                        : m === "alt" ? "Alt" : m);
+                                        ? (Zotero.isMac ? "⌘" : wvStr("weavero-key-ctrl"))
+                                        : m === "shift" ? wvStr("weavero-key-shift")
+                                        : m === "alt" ? wvStr("weavero-key-alt") : m);
                                 const k = keyEl.getAttribute("key")
                                     || keyEl.getAttribute("keycode") || "";
                                 if (k) accel = [...mods, k.toUpperCase()].join("+")
@@ -16704,9 +16842,9 @@ class _ReaderMixin {
             //    lines never paint).
             btn = wvHtmlEl(doc, "button");
             btn.className = "wv-hamburger-btn";
-            btn.setAttribute("title", "Open application menu");
+            btn.setAttribute("title", wvStr("weavero-reader-app-menu"));
             btn.setAttribute("tabindex", "-1");
-            btn.setAttribute("aria-label", "Open application menu");
+            btn.setAttribute("aria-label", wvStr("weavero-reader-app-menu"));
             const svg = wvSvgEl(doc, "svg");
             // 16×16 viewBox — Firefox's exact app-menu icon. Three filled
             // rects (16-wide × 1-tall) at y=2/7/12 (centerlines 2.5/7.5/
@@ -16938,12 +17076,11 @@ class _ReaderMixin {
             while (tooltip.firstChild) tooltip.removeChild(tooltip.firstChild);
             tooltip.removeAttribute("label");
 
-            const renderPlainLabel = (text) => {
+            // The title with the item type's icon in front, as the main
+            // window's tab tooltip (tabs.ts _wvTabTooltipTitleEl).
+            const renderPlainLabel = (text, iconName?: string) => {
                 tooltip.setAttribute("label", text);
-                const desc = doc.createXULElement("description");
-                desc.setAttribute("class", "tooltip-label");
-                desc.textContent = text;
-                tooltip.appendChild(desc);
+                tooltip.appendChild((this as any)._wvTabTooltipTitleEl(doc, text, iconName || "", "tooltip-label"));
             };
 
             // The hovered tab's item + title were stashed at hover time (resolved
@@ -16960,17 +17097,18 @@ class _ReaderMixin {
             let lib = null;
             try { lib = item ? Zotero.Libraries.get(item.libraryID) : null; }
             catch (e) {}
+            const iconName = (this as any)._wvTabTooltipIconName(item);
 
             // Non-group library or no item: plain title tooltip.
             if (!lib || lib.libraryType !== "group") {
-                if (title) { renderPlainLabel(title); return true; }
+                if (title) { renderPlainLabel(title, iconName); return true; }
                 return false;
             }
 
             // Group library: the SAME rich card as the main-window tab header —
             // group icon + name ON TOP, then a separator, then the title (the
             // reader tooltip previously had it reversed). Reuse the shared builder.
-            (this as any)._wvTabTooltipRichCard(doc, tooltip, lib, title);
+            (this as any)._wvTabTooltipRichCard(doc, tooltip, lib, title, iconName);
             return true;
         } catch (e) {
             Zotero.debug("[Weavero] _populateReaderTabTooltip err: " + e);
@@ -17771,6 +17909,13 @@ class _ReaderMixin {
                             if (cit) lp0._wvCitCardSwap(pv, popup, cit);
                         }
                     } catch (_) {}
+                    // R2 (refs-cards.ts _wvRefsCardSwap): a PDF link no card of Zotero's
+                    // crosses, landing on an entry of Weavero's reference list, shows
+                    // that entry as Zotero's card. After the swap above, before the hold.
+                    try {
+                        const lp1: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (lp1 && popup && popup.type === "internal-link" && typeof lp1._wvRefsCardSwap === "function") lp1._wvRefsCardSwap(reader, pv, popup);
+                    } catch (_) {}
                     // The entry highlight (preview-highlight.ts) HOLDS an
                     // internal-link preview until its own picture is ready. Every
                     // call settles a held one first: a close or a newer popup
@@ -17917,6 +18062,22 @@ class _ReaderMixin {
         try {
             const ev = pv._wvExtTipEvt;
             if (!ev) return;
+            // A grey ring beside a reference-list entry (refs.ts): its tip, the link
+            // on a line of its own in the Weavero link colour (MJT 2026-11-20, "Put
+            // the tooltip on different lines. Color the link in the same color as the
+            // Weavero links") -- this tip, as a title tooltip cannot colour a part.
+            try {
+                const mk = ev.target && ev.target.closest ? ev.target.closest(".wv-refs-bibmark[data-wv-refs-kind='web']") : null;
+                if (mk && mk.isConnected) {
+                    const lines = this._wvRefsWebTipLines ? this._wvRefsWebTipLines(reader, mk) : null;
+                    if (lines && lines.length) {
+                        this._wvExtTipRenderIn(reader, pv._iframeWindow, lines, ev.clientX, ev.clientY);
+                        pv._wvExtTipShownAt = { x: ev.clientX, y: ev.clientY };
+                        pv._wvExtTipOv = mk;
+                        return;
+                    }
+                }
+            } catch (_) {}
             const pos = pv.pointerEventToPosition(ev);
             if (!pos) return;
             const ov = pv._getSelectableOverlay(pos);
@@ -18122,7 +18283,7 @@ class _ReaderMixin {
      *  hosts the tip div -- the PDF iframe for in-page links, READER.html
      *  for links inside overlay popups (a div in the pdf iframe would sit
      *  UNDER the popup, which floats in the reader document). */
-    _wvExtTipRenderIn(this: any, reader: any, tw: any, url: string, cx: number, cy: number) {
+    _wvExtTipRenderIn(this: any, reader: any, tw: any, url: string | Array<{ text: string; link?: boolean | string }>, cx: number, cy: number) {
         try {
             // IN-CONTENT overlay div, not an OS popup. Two popup-widget
             // renderers died in one day (2026-08-27): a manual <tooltip>
@@ -18172,7 +18333,38 @@ class _ReaderMixin {
                 const dmw = cs.maxWidth;
                 tip.style.maxWidth = (dmw && dmw !== "none") ? dmw : "40em";
             } catch (_) {}
-            tip.textContent = url;
+            if (typeof url === "string") tip.textContent = url;
+            else {
+                // Lines (a reference mark's tip, refs.ts _wvRefsWebTipLines): one per
+                // line, a link in the Weavero link colour -- the dark variant on a dark
+                // tooltip (the donor's background, as the tip takes it).
+                tip.textContent = "";
+                let dark = false;
+                try {
+                    const m = String(tip.style.background || "").match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+                    if (m) dark = (0.2126 * +m[1] + 0.7152 * +m[2] + 0.0722 * +m[3]) < 128;
+                } catch (_) {}
+                for (const ln of url) {
+                    const d = idoc.createElement("div");
+                    const at = typeof ln.link === "string" ? ln.text.indexOf(ln.link) : -1;
+                    if (at >= 0) {
+                        // The link inside its line: only that part in the link colour.
+                        const lk = String(ln.link);
+                        if (at > 0) d.appendChild(idoc.createTextNode(ln.text.slice(0, at)));
+                        const sp = idoc.createElement("span");
+                        sp.className = "wv-exttip-link";
+                        sp.textContent = lk;
+                        sp.style.color = wvLinkColor("http", dark);
+                        d.appendChild(sp);
+                        if (at + lk.length < ln.text.length) d.appendChild(idoc.createTextNode(ln.text.slice(at + lk.length)));
+                    }
+                    else {
+                        d.textContent = ln.text;
+                        if (ln.link === true) { d.className = "wv-exttip-link"; d.style.color = wvLinkColor("http", dark); }
+                    }
+                    tip.appendChild(d);
+                }
+            }
             tip.style.display = "block";
             // +21: the native tooltip frame margin (PopupType::Tooltip only);
             // client coords ARE the div's fixed coords -- no screen math.

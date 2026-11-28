@@ -386,6 +386,87 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         await waitFor(() => !!idoc.querySelector(".wv-al-actions"), 15000, "pane funnel back again");
     });
 
+    it("the reader funnel's own switch: off removes its button and rests its filter, on brings both back", async function () {
+        // MJT 2026-11-24: one Settings checkbox per funnel. The reader funnel's
+        // filter lives on the open document; with its switch off nothing could
+        // show or reset it, so it rests -- every annotation is back on the page
+        // and in the pane -- and applies again when the switch comes back.
+        const idoc = reader._iframeWindow.document;
+        const P = "weavero.enableReaderAnnFilter";
+        const st = wv._wvReaderFilterState(reader);
+        try {
+            st.typesExcl = ["ink"];
+            await wv._wvApplyReaderFilter(reader);
+            await waitFor(() => !visibleKeys().includes(ink.key), 15000, "ink filtered out of the reader");
+            await waitFor(() => cards(idoc).length === 1, 15000, "and out of the pane");
+            try {
+                Zotero.Prefs.set(P, false);
+                await waitFor(() => !idoc.querySelector(".wv-reader-filter-btn"), 15000, "the reader funnel's button gone");
+                await waitFor(() => visibleKeys().includes(ink.key), 15000, "the filter rests: ink back in the reader");
+                await waitFor(() => cards(idoc).length === 2, 15000, "and in the pane");
+                assert.isFalse(wv._wvReaderFilterActive(reader), "a resting filter is not active");
+                assert.deepEqual([...wv._wvReaderFilterState(reader).typesExcl], ["ink"], "the document's filter is kept");
+                // A re-apply while off (a data change, the backlinks re-apply) leaves it resting.
+                await wv._wvApplyReaderFilter(reader);
+                assert.include(visibleKeys(), ink.key, "a re-apply leaves the filter resting");
+                assert.isOk(idoc.querySelector(".wv-al-actions"), "the pane funnel stays");
+            }
+            finally {
+                Zotero.Prefs.set(P, true);
+            }
+            const btn = await waitFor(() => idoc.querySelector(".wv-reader-filter-btn"), 15000, "the button back");
+            await waitFor(() => !visibleKeys().includes(ink.key), 15000, "the filter applies again");
+            await waitFor(() => btn.classList.contains("wv-rf-active"), 5000, "and the button says so");
+        }
+        finally {
+            st.typesExcl = [];
+            await wv._wvApplyReaderFilter(reader);
+        }
+        await waitFor(() => visibleKeys().includes(ink.key) && cards(idoc).length === 2, 15000, "cleared");
+    });
+
+    it("the reader funnel's switch closes only its own popup; the pane funnel works without it; Extras takes it too", async function () {
+        // The mirror of issue #69: the two funnels open their popups under one
+        // id, so the reader funnel's removal closes a popup of ITS kind only.
+        const idoc = reader._iframeWindow.document;
+        const P = "weavero.enableReaderAnnFilter";
+        const POP = "wv-reader-filter-popup-v2";
+        if (idoc.getElementById(POP)) wv._wvCloseReaderFilterPopup(idoc);
+        wv._wvToggleReaderFilterPopup(reader, idoc, idoc.querySelector(".wv-reader-filter-btn"));
+        const rp = await waitFor(() => idoc.getElementById(POP), 5000, "reader popup");
+        assert.equal(rp.dataset.wvKind, "filter");
+        try {
+            Zotero.Prefs.set(P, false);
+            await waitFor(() => !idoc.getElementById(POP), 15000, "the reader popup closes with its funnel");
+            wv._wvAnnListTogglePopup(reader, idoc, idoc.querySelector("#sidebarContainer .wv-al-btn"));
+            const pp = await waitFor(() => idoc.getElementById(POP), 5000, "pane popup");
+            assert.equal(pp.dataset.wvKind, "list");
+            wv._wvProcessReaderPanels(idoc);
+            await wvT.sleep(300);
+            assert.isOk(idoc.getElementById(POP), "a reader-panels scan leaves the pane funnel's popup open");
+            wv._wvCloseReaderFilterPopup(idoc);
+            await setPane({ typesExcl: ["ink"] });
+            await waitFor(() => cards(idoc).length === 1, 15000, "the pane funnel filters with the reader funnel off");
+            assert.include(pageKeys(), ink.key, "and the page keeps the annotation");
+        }
+        finally {
+            Zotero.Prefs.set(P, true);
+            if (idoc.getElementById(POP)) wv._wvCloseReaderFilterPopup(idoc);
+            await wv._wvAnnPaneBackToDefault(reader);
+        }
+        await waitFor(() => cards(idoc).length === 2, 15000, "the pane back to the default");
+        await waitFor(() => !!idoc.querySelector(".wv-reader-filter-btn"), 15000, "the reader funnel back");
+        // Its checkbox sits under Extras, which switches it off too.
+        try {
+            Zotero.Prefs.set("weavero.enableVisualExtras", false);
+            await waitFor(() => !idoc.querySelector(".wv-reader-filter-btn"), 15000, "Extras off takes the reader funnel");
+        }
+        finally {
+            Zotero.Prefs.set("weavero.enableVisualExtras", true);
+        }
+        await waitFor(() => !!idoc.querySelector(".wv-reader-filter-btn"), 15000, "back with Extras");
+    });
+
     it("the native selector is shown by default and folds on request (the handle's state)", async function () {
         // Shown since 0.22.2 (MJT 2026-10-14; up to 0.22.1 the default hid
         // it); the fold is the handle's own state, global.

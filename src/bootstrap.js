@@ -20,9 +20,17 @@ async function startup({ id, version, rootURI }, reason) {
         // path (e.g. during dev) actually picks up the new bundled
         // index.js. Without this the bytecode cache happily serves
         // the previous content from the same URL — silent regression.
+        // `allowUnsafeURL: true`: Firefox 153 (Zotero 11) refuses jar:file: and
+        // file: scripts without it (bug 1974213); Zotero allows them for now
+        // through security.allow_unsafe_subscript_loads, a pref it means to
+        // switch off ("Zotero 11 for Developers", 2026-11-27). Without the
+        // option Weavero would then load nothing, silently (only this catch's
+        // debug line). Older Zotero builds ignore the unknown option.
+        // No `target`: index.js must stay in this bootstrap global
+        // (zzz-disable-leftovers.spec.js).
         Services.scriptloader.loadSubScriptWithOptions(
             rootURI + "index.js",
-            { ignoreCache: true });
+            { ignoreCache: true, allowUnsafeURL: true });
     } catch (e) {
         Zotero.debug("[Weavero] failed to load index.js: " + e);
         return;

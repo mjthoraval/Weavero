@@ -1,11 +1,14 @@
 // Weavero's own strings in the UI it builds (localisation slice 2, menus,
-// 2026-11-11; zotero/zotero CLAUDE.md: "all new strings in Fluent .ftl").
-// Every message lives in src/locale/en-US/weavero.ftl, which Zotero registers
-// with the plugin's locale/ directory at startup (xpcom/plugins.js
-// registerLocales) -- the en-US file under EVERY UI locale until a
-// translation exists, so a count reads under that locale's plural rules: a
+// 2026-11-11; every interface text since the l10n branch, 2026-11-19;
+// zotero/zotero CLAUDE.md: "all new strings in Fluent .ftl"). Every message
+// lives in src/locale/en-US/weavero.ftl, translated in src/locale/{fr-FR,de,
+// es-ES,zh-CN,it-IT}/weavero.ftl; Zotero registers the plugin's locale/ directory at
+// startup (xpcom/plugins.js registerLocales), giving each Zotero locale the
+// plugin's closest file -- en-US for every language Weavero does not
+// translate, where a count reads under THAT locale's plural rules: an en-US
 // label that differs for exactly one item selects on `[1]`, not `[one]`
-// (French's "one" also takes 0, Japanese has none).
+// (French's "one" also takes 0, Japanese has none). A message missing from
+// the UI locale's file reads in English (english() below).
 //
 // Two ways a string reaches the screen:
 //  - `wvL10n(el, id, args)`: an element Weavero builds or relabels gets
@@ -32,6 +35,8 @@ const FTL_LINK = `link[rel="localization"][href="${WV_FTL}"]`;
 const XUL_NS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
 
 let syncL10n: any = null;
+/** English alone: false once its construction failed. */
+let englishL10n: any = null;
 /** The suite's stand-in texts (`wvL10nStub`), ahead of the file. */
 let stub: ((id: string, args?: any) => any) | null = null;
 
@@ -46,6 +51,26 @@ function localization(): any {
     return syncL10n;
 }
 
+/** weavero.ftl in en-US only (Localization's fourth argument, the locales):
+ *  the text a message missing from the UI locale's file falls back to,
+ *  whatever Zotero's loader registered for that locale (plugins.js
+ *  registerLocales picks ONE plugin file per Zotero locale; the app's own
+ *  fallback chain usually reaches en-US too -- the l10n branch's live check,
+ *  2026-11-19 -- but Weavero does not count on it). */
+function english(): any {
+    if (englishL10n === null) {
+        try {
+            const L: any = (globalThis as any).Localization;
+            englishL10n = new L([WV_FTL], true, undefined, ["en-US"]);
+        }
+        catch (e) {
+            Zotero.debug("[Weavero] l10n: no en-US Localization: " + e);
+            englishL10n = false;
+        }
+    }
+    return englishL10n || null;
+}
+
 function stubbed(id: string, args?: any): string | null {
     if (!stub || !id.startsWith("weavero-")) return null;
     try {
@@ -55,15 +80,52 @@ function stubbed(id: string, args?: any): string | null {
     catch (e) { return null; }
 }
 
-/** The formatted message (weavero.ftl, or Zotero's for another id), or null. */
+/** Formatted messages by id and arguments. A synchronous Fluent format costs
+ *  far more than a map lookup, and some paths ask for the same text per row or
+ *  per section render (2026-11-21 profile: 125 ms of wvStr in one switch to My
+ *  Library). A message depends on its id, its arguments and the UI locale only;
+ *  a locale change takes a Zotero restart, which starts a new cache. Only found
+ *  messages are kept (one missing while the files register is asked again);
+ *  bounded; emptied with the Localization (wvL10nRelease). */
+const memo = new Map<string, any>();
+const MEMO_MAX = 4000;
+
 function message(id: string, args?: any): any {
+    let key: string | null = null;
+    try { key = id + "\u0001" + (args == null ? "" : JSON.stringify(args)); }
+    catch (e) { key = null; }
+    if (key !== null) {
+        const hit = memo.get(key);
+        if (hit) return hit;
+    }
+    const m = formatted(id, args);
+    if (m && key !== null) {
+        if (memo.size >= MEMO_MAX) memo.clear();
+        memo.set(key, m);
+    }
+    return m;
+}
+
+/** The formatted message (weavero.ftl, or Zotero's for another id), or null. */
+function formatted(id: string, args?: any): any {
+    const own = id.startsWith("weavero-");
     try {
-        const L = id.startsWith("weavero-") ? localization() : (Zotero as any).ftl;
+        const L = own ? localization() : (Zotero as any).ftl;
         const [m] = L.formatMessagesSync([{ id, args: args || null }]);
-        return m || null;
+        if (m || !own) return m || null;
     }
     catch (e) {
         Zotero.debug("[Weavero] l10n " + id + ": " + e);
+        if (!own) return null;
+    }
+    try {
+        const E = english();
+        if (!E) return null;
+        const [m] = E.formatMessagesSync([{ id, args: args || null }]);
+        return m || null;
+    }
+    catch (e) {
+        Zotero.debug("[Weavero] l10n en-US " + id + ": " + e);
         return null;
     }
 }
@@ -184,5 +246,7 @@ export function wvL10nStub(fn: any) {
  *  after shutdown, plugins.js unregisterLocales). */
 export function wvL10nRelease() {
     syncL10n = null;
+    englishL10n = null;
     stub = null;
+    memo.clear();
 }

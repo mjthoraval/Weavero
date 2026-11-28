@@ -59,12 +59,58 @@ same thing changes the plan — the undo work had to account for PR #6021), and
 the plugin registry for a plugin that already does it. Say what you found in
 the plan, including "nothing".
 
+### Interactions with the existing features
+
+The plugin is large: a new feature lands among features that already use the
+same surface, the same data, the same gestures and the same Zotero hooks.
+Before planning, map them, so that everything stays consistent and compatible
+(MJT 2026-11-27, "As the plugin is growing, the features planning skill needs
+to make a careful consideration of how each new feature would interact with
+the other existing features"; the same night, "pinned collections",
+"saved-search folders" and a "starred section" were planned as three features
+while the shipped bookmarks already held collections and saved searches in
+folders, in manual order). List, with the file each lives in:
+
+- **Same concept**: an existing feature that already does part of it, under
+  another name (bookmarks vs. pins vs. favorites; hiding vs. filtering).
+  Extend the existing concept before adding a parallel one: one store per
+  concept, one word per concept across the UI.
+- **Same surface**: every Weavero feature on that pane, menu, row or strip
+  (Settings' section for it lists them; `window-wiring.ts` lists what is wired
+  per window), and what the new one does to each: room, order, look.
+- **Same hooks**: every wrap on the Zotero members the feature will touch --
+  grep `wvWrap(` and hand-written own-property wraps for the member names
+  (`_expandRow`, `toggleOpenState`, `notify`, `renderItem`...). A new layer
+  stacks with them or goes inside them; never a second hand-written wrap of
+  one member. Note other plugins known to patch the same members (the
+  plugin-survey notes, `work/*-coexistence-*`).
+- **Same data and state**: the stores in `<data dir>/weavero/`, the session
+  record's per-window fields (sessions.ts), the per-window and per-view state,
+  prefs; whether the feature must survive a reload, a disable, a restart, a
+  session switch, a second window, a library tab (Zotero 11).
+- **Same gestures**: clicks, modifiers, drags, keys and right-click entries
+  already taken on that surface; the new gesture means the same thing it means
+  elsewhere in Weavero and in Zotero.
+- **Standing decisions**: the past decisions that touch the feature (the
+  maintainer's decisions register when present, the tracking notes, the rules
+  files). Each was right for its context: when that context changed and the
+  decision now blocks a better option, the plan names it (what, when, why),
+  says what changed and proposes revisiting it -- never a silent workaround
+  (MJT 2026-11-27, "old decisions taken during development in a different
+  context [should] not hinder the development of new ideas"). A new decision
+  the plan takes is recorded with its context and a "Revisit when" line.
+
+Put the result in the plan as a table -- existing feature, interaction,
+decision (reuse / extend / coexist / conflict to resolve) -- and give every
+"coexist" row a spec in the test plan that exercises the two features
+together.
+
 ## Step 3: Plan checkpoint
 
-Present a short plan: files touched, approach, invariants at risk (check the
-"Hard invariants" list in the root CLAUDE.md), test plan, and anything that
-deviates from a standing convention. Wait for approval. This is the second and
-LAST interaction.
+Present a short plan: files touched, approach, the interactions table (Step 2),
+invariants at risk (check the "Hard invariants" list in the root AGENTS.md),
+test plan, and anything that deviates from a standing convention. Wait for
+approval. This is the second and LAST interaction.
 
 ## Step 4: Implement
 
@@ -95,7 +141,7 @@ can only be done by hand, SAY so in the report rather than faking it.
 If implementation surprised you anywhere — an API behaved differently than
 assumed, a convention was missing, a verification step was invented on the
 spot — route the lesson to its one home (rules file / skill step / root
-CLAUDE.md invariant / upstream register / memory) before reporting. New
+AGENTS.md invariant / upstream register / memory) before reporting. New
 behaviour with a contract worth keeping gets a guard: a spec, a live-suite
 check, or a manual-protocol entry (same rules as /bugfix Step 6) — usually
 the check already written in Step 4.

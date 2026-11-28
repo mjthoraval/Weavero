@@ -171,6 +171,17 @@ describe("Weavero — the saved windows move to Zotero's own (zotero#6035)", () 
             assert.deepEqual(p.first.state, { hiddenColl: { groups: [1] }, title: "First", tagsAuto: true });
         });
 
+        // Second review 2026-11-28 (L): the first window's closed saved-search folders and its
+        // Bookmarks pane did not go to Zotero 11's own window (only the other windows' did), and
+        // the store held them only inside an entry the first window has while it holds more than
+        // its library tab. Its own fields now; an older store's entry still answers.
+        it("the first window's saved-search folders and Bookmarks pane: its store fields, else its entry's", () => {
+            const own = plan({ windows: [], anchorSfOpen: ["1|f1"], anchorBmPane: { only: true }, anchorCollFunnel: { kinds: { exc: ["feeds"] } } });
+            assert.deepEqual(own.first.state, { sfOpen: ["1|f1"], bmPane: { only: true }, collFunnel: { kinds: { exc: ["feeds"] } } });
+            const old = plan({ windows: [{ kind: "main-anchor", tabs: [library(), reader(1)], wvMainState: { sfOpen: ["1|f2"], bmPane: { folded: true } } }] });
+            assert.deepEqual(old.first.state, { sfOpen: ["1|f2"], bmPane: { folded: true } });
+        });
+
         it("a store with nothing usable plans nothing", () => {
             for (const doc of [null, {}, { windows: "x" }, { windows: [null, {}, { kind: "main-dev" }, { kind: "other", tabs: [] }] }]) {
                 const p = plan(doc);

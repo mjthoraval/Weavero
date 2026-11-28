@@ -25,6 +25,28 @@ describe("Weavero — shared helpers (src/lib)", () => {
         assert.strictEqual(lib.wvLivePlugin(), wv);
     });
 
+    // 2026-11-20 night: the References marks' boxes were placed read, write, read, write --
+    // every read a layout of the whole document after the write before it: one 117 ms frame
+    // per scroll through a book's 54 reference pages (references on vs off, the scroll bench).
+    it("wvPlaceOnPages reads every page's place before it moves any box, and moves a box only when its place changed", () => {
+        if (typeof lib.wvPlaceOnPages !== "function") wvT.absent("lib.wvPlaceOnPages");
+        const log = [];
+        const page = (k, top, left) => ({ div: { get offsetTop() { log.push("r" + k); return top; }, get offsetLeft() { log.push("r" + k); return left; } } });
+        const box = (k, top, left) => {
+            const st = { _top: top, _left: left, get top() { return this._top; }, set top(v) { log.push("w" + k); this._top = v; }, get left() { return this._left; }, set left(v) { log.push("w" + k); this._left = v; } };
+            return { style: st };
+        };
+        const pages = [page(0, 0, 10), page(1, 900, 10), page(2, 1800, 10)];
+        const boxes = new Map([[0, box(0, "0px", "10px")], [1, box(1, "", "")], [2, box(2, "", "")]]);
+        lib.wvPlaceOnPages(boxes, pages);
+        const firstWrite = log.findIndex(x => x[0] === "w");
+        const lastRead = log.map(x => x[0]).lastIndexOf("r");
+        assert.isAbove(firstWrite, lastRead, "every read before the first write: " + log.join(" "));
+        assert.equal(boxes.get(1).style.top, "900px");
+        assert.equal(boxes.get(2).style.left, "10px");
+        assert.notInclude(log, "w0", "box 0 already at its place: not written");
+    });
+
     // zotero#6035 suffixes a library tab's element ids with "-tab-..." in every tab but a
     // window's first; a rule naming the plain id reached that first tab alone (2026-11-07).
     it("wvViewIdsCss: a library-view id matches its tab-suffixed copies, nothing else changes", () => {
@@ -69,6 +91,20 @@ describe("Weavero — shared helpers (src/lib)", () => {
         assert.isFalse(Object.prototype.hasOwnProperty.call(host, "m"), "a prototype method shows through again");
         assert.strictEqual(host.m(1), "n1");
         assert.isUndefined(host._wvWraps, "the table goes with the last wrap");
+        // A CLASS layer put on after an instance's layer: the instance's chain calls the
+        // prototype's member as it is at CALL time, never the one captured at the first
+        // wrap (a window's selectGuard skipped the saved-search folders' class layer on
+        // notify, 2026-11-27; the hidden collections' _expandRow the night before).
+        const p2 = { m(x) { return "n" + x; } };
+        const h2 = Object.create(p2);
+        lib.wvWrap(h2, "m", "inst", T1, layer("I"));
+        const natP = p2.m;
+        p2.m = function (x) { return "K(" + natP.call(this, x) + ")"; };
+        assert.strictEqual(h2.m(1), "I(K(n1))", "a class layer added later is reached");
+        p2.m = natP;
+        assert.strictEqual(h2.m(1), "I(n1)", "and gone once the class drops it");
+        lib.wvUnwrap(h2, "m");
+        assert.isFalse(Object.prototype.hasOwnProperty.call(h2, "m"), "the prototype shows through again");
         // An own-property member is put back, not deleted.
         const ownFn = host.own;
         lib.wvWrap(host, "own", "a", T1, layer("A"));
@@ -77,6 +113,72 @@ describe("Weavero — shared helpers (src/lib)", () => {
         assert.strictEqual(host.own, ownFn);
         assert.isFalse(lib.wvUnwrap(host, "own"), "nothing wrapped: false");
         assert.isFalse(lib.wvWrap(host, "nope", "a", T1, (o) => o), "no such function: false");
+    });
+
+    // Another plugin puts its function over Weavero's and calls what it found there
+    // ("Saved Search Folders" 1.1 on the collections tree, 2026-11-27, work note F1-F3).
+    // Writing a rebuilt chain into the slot dropped it -- at every re-wrap, at a reload,
+    // at the last unwrap. The slot holds a stub of Weavero's that runs the live chain:
+    // their function stays, Weavero's layers run inside it, and what their shutdown puts
+    // back (an older instance's stub) is swapped for this instance's by wvWrapSettle.
+    it("wvWrap: another plugin's function over Weavero's stays through re-wraps, a reload and the last unwrap", () => {
+        const T1 = "wv@t#one", T2 = "wv@t#two";
+        const layer = (L) => (orig) => function (x) { return L + "(" + orig.call(this, x) + ")"; };
+        const over = (found) => function (x) { return "F(" + found.call(this, x) + ")"; };
+        // An own member (a class field, as the tree's isContainerEmpty).
+        const host = { own(x) { return "o" + x; } };
+        const nat = host.own;
+        lib.wvWrap(host, "own", "a", T1, layer("A"));
+        const found = host.own;
+        const theirs = over(found);
+        host.own = theirs;
+        assert.strictEqual(host.own(1), "F(A(o1))");
+        assert.isFalse(lib.wvWrap(host, "own", "a", T1, layer("never")), "the same layer again: no-op");
+        assert.strictEqual(host.own, theirs, "and their function stays");
+        lib.wvWrap(host, "own", "b", T1, layer("B"));
+        assert.strictEqual(host.own, theirs, "a new layer does not write the slot");
+        assert.strictEqual(host.own(1), "F(B(A(o1)))", "it runs inside their function");
+        // The instance goes (these tags are no live plugin's): their function stays, Weavero's
+        // stub passes straight through -- but on a Zotero that nukes a stopped plugin's scope
+        // (zotero#6080), where that stub would die inside their function: the slot is taken back.
+        lib.wvUnwrap(host, "own");
+        if (/** @type {any} */ (Zotero).Plugins && /** @type {any} */ (Zotero).Plugins.getBaseURI) {
+            assert.strictEqual(host.own, nat, "a nuking Zotero: the member exactly as it was");
+            assert.isUndefined(host._wvWraps, "no table left");
+            return;
+        }
+        assert.strictEqual(host.own, theirs, "the last unwrap leaves their function");
+        assert.strictEqual(host.own(1), "F(o1)", "Weavero's stub: a pass-through");
+        // The next instance: its layer goes back in at the same place.
+        lib.wvWrap(host, "own", "c", T2, layer("C"));
+        assert.strictEqual(host.own, theirs);
+        assert.strictEqual(host.own(1), "F(C(o1))");
+        // Their shutdown puts back what they found: the previous instance's stub, which
+        // runs the live layers; the next settle puts this instance's in its place.
+        host.own = found;
+        assert.strictEqual(host.own(1), "C(o1)");
+        lib.wvWrapSettle(host);
+        assert.notStrictEqual(host.own, found, "this instance's stub in the slot again");
+        assert.strictEqual(host.own(1), "C(o1)");
+        lib.wvUnwrap(host, "own");
+        assert.strictEqual(host.own, nat, "the member exactly as it was");
+        assert.isUndefined(host._wvWraps, "no table left");
+        // A prototype member: their own property over Weavero's stays too; once they delete
+        // theirs the prototype's member shows through, and the next settle takes the slot.
+        const proto = { m(x) { return "n" + x; } };
+        const h = Object.create(proto);
+        lib.wvWrap(h, "m", "a", T1, layer("A"));
+        h.m = over(h.m);
+        lib.wvUnwrap(h, "m");
+        assert.strictEqual(h.m(1), "F(n1)");
+        lib.wvWrap(h, "m", "c", T2, layer("C"));
+        assert.strictEqual(h.m(1), "F(C(n1))");
+        delete h.m;
+        assert.strictEqual(h.m(1), "n1");
+        lib.wvWrapSettle(h);
+        assert.strictEqual(h.m(1), "C(n1)", "taken back");
+        lib.wvUnwrap(h, "m");
+        assert.isFalse(Object.prototype.hasOwnProperty.call(h, "m"), "the prototype shows through again");
     });
 
     // Firefox 153 (Zotero 11): boolean XUL attributes on presence alone; Zotero
@@ -594,7 +696,7 @@ describe("Weavero — shared helpers (src/lib)", () => {
         // The "(w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout" idiom
         // on the FOCUSED main window hosted plugin-level timers (holds, tick
         // loops, flag resets) on whichever window happened to be focused --
-        // dead when that window closed (src-ts.md timer hosts). Such sites
+        // dead when that window closed (src-ts-core.md timer hosts). Such sites
         // use wvTimeout now; a timer hosted on the window the work concerns
         // (`win.setTimeout`) is a deliberate "dies with the window" choice.
         const offenders = [];

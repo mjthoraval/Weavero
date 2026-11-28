@@ -39,14 +39,16 @@ import { wvOutsideClick, wvReachableDocs, wvDismissOff } from "../lib/dismiss";
 import { wvLivePlugin } from "../lib/live";
 import { wvWrap, wvUnwrap } from "../lib/wrap";
 import { wvTimeout, wvClearTimeout } from "../lib/timers";
+import { wvTraceFilePush } from "../lib/trace-file";
 import { wvListen, wvUnlisten } from "../lib/listen";
-import { wvLibraryViews, wvMainWins, wvNativeWindows, wvViewEl } from "../lib/windows";
+import { wvLibraryViews, wvMainWins, wvNativeWindows, wvViewEl, wvViewEls } from "../lib/windows";
 import { wvSvgEl } from "../lib/svg";
 import { wvDataColor } from "../lib/style";
 import { wvExternalLinkGlyphEl } from "../lib/link-glyph";
+import { wvStr, wvL10n } from "../lib/l10n";
 import { WV_BL_ICON_CONTEXT } from "./backlinks";
 import { WV_LK_ICON_CONTEXT } from "./links";
-import { WV_FILTER_DIMS, wvDimSet, wvDimDefaults, wvDimLevels, wvDimChildFields } from "./filter-facets";
+import { WV_FILTER_DIMS, wvDimSet, wvDimDefaults, wvDimLevels, wvDimChildFields, wvDimNoFeed, wvDimNoFeedDefaults } from "./filter-facets";
 import type { WvDim } from "./filter-facets";
 import { URL_SCHEMES } from "./url";
 import {
@@ -199,9 +201,59 @@ function wvTrace(ev: string, data?: any) {
     } catch (e) {}
 }
 
+/** The filter's PERSISTENT trace (MJT's freezes of 2026-11-22 ended in a
+ *  kill, and nothing in memory survived): applies with their duration, state
+ *  and row counts, bounces (re-entrancy), the data-change ladder, the panel's
+ *  re-render, in `<data dir>/weavero/filter-trace.json` (the session before:
+ *  `filter-trace.prev.json`). A user gesture's apply is written BEFORE it
+ *  runs, so a freeze inside it leaves that record on disk (lib/trace-file.ts);
+ *  the rest is written at most every 2 s. Off with
+ *  `extensions.zotero.weavero.filterTrace` = false (docs/filter-rules.md).
+ *  Guard: test/filter-trace-file.spec.js. */
+let WV_FTRACE_ON = true, WV_FTRACE_AT = 0;
+function wvFilterDiskTrace(ev: string, data?: any, urgent?: boolean) {
+    try {
+        const now = Date.now();
+        if (now - WV_FTRACE_AT > 1000) {
+            WV_FTRACE_AT = now;
+            try { WV_FTRACE_ON = Zotero.Prefs.get("weavero.filterTrace") !== false; } catch (_) { WV_FTRACE_ON = true; }
+        }
+        if (!WV_FTRACE_ON) return;
+        const d = new Date(now);
+        const t = d.toISOString().slice(0, 23);
+        wvTraceFilePush("filter-trace", Object.assign({ t, ev }, data || {}),
+            { urgent: !!urgent, max: 300, gapMs: 2000, coalesceMs: 2000,
+              build: String(((Zotero as any).Weavero && (Zotero as any).Weavero._version) || "") });
+    } catch (e) {}
+}
 // A filter panel's suggestion list longer than this is built when shown, not
 // at every panel re-render (_renderUnifiedSearchSection).
 const WV_SUGGEST_EAGER_MAX = 500;
+// Free-text dimensions: their values are the user's words (tags, names):
+// the trace records how many, not which.
+const WV_FTRACE_COUNT_ONLY = /^(annotationTag|annotationAuthor|publication|addedBy|collections|savedSearches)(Exclude)?$/;
+/** A short, value-safe summary of a filter state for the trace. */
+function wvFilterStateSummary(state: any): string {
+    try {
+        if (!state) return "";
+        const out: string[] = [];
+        const add = (k: string, v: any) => {
+            if (v == null || v === "" || (Array.isArray(v) && !v.length)) return;
+            if (Array.isArray(v)) out.push(WV_FTRACE_COUNT_ONLY.test(k) ? k + "#" + v.length : k + "=" + v.slice(0, 8).map((x: any) => String(x).slice(0, 28)).join(","));
+            else if (typeof v === "object") return;
+            else out.push(k + "=" + String(v).slice(0, 28));
+        };
+        add("collections", state.collections);
+        add("savedSearches", state.savedSearches);
+        (state.groups || []).forEach((g: any, i: number) => {
+            if (!g) return;
+            const n0 = out.length;
+            for (const k in g) add(k, g[k]);
+            if (out.length > n0 && (state.groups || []).length > 1) out.splice(n0, 0, "g" + i + ":");
+        });
+        return out.join(" ").slice(0, 600);
+    } catch (e) { return "?"; }
+}
 
 function wvEvictFacets(ids: any[]) {
     try {
@@ -352,6 +404,8 @@ const WV_DIM_TESTS: Record<string, WvDimTest> = {
     // Via the precomputed linked-relations cache; a COLD cache passes rows
     // through (degraded, never wrong-way filtering).
     inOtherLibrary: { has: (p, it) => p._wvItemInAnyOtherLib(it), ready: (p) => p._wvLinkedLibCacheWarm() },
+    // From the feeds' score cache (feeds.ts); before the first pass, rows pass.
+    feedNotInLibrary: { has: (p, it) => p._wvFdNotInLibrary(it), ready: (p) => p._wvFdIndexReady() },
 };
 
 // Row kinds as bits, so a check classifies its row ONCE: each Zotero kind
@@ -484,6 +538,51 @@ function wvDimRootOK(p: any, f: WvDim, root: any, isReg: boolean, g: any): boole
     return true;
 }
 
+// ---- Feed views (MJT 2026-11-22: "The filter of feeds probably contains a
+//      lot of irrelevant filters. Clean-up") ----
+// In a feed view every check reads the EFFECTIVE filter: a SHADOW of the
+// window's state whose groups have the `noFeed` dimensions (filter-facets.ts)
+// and the quick-search scope at their defaults, and whose Selection Target,
+// collection and saved-search filters and ∩ mode are off -- nothing a feed
+// item can match, and only parent rows exist. A shadow inherits from what it
+// shadows (Object.create), so the kept fields are always the live ones and the
+// popup keeps writing the real state; nothing is lost, and a library view reads
+// the real state again. `_wvFeedState` / `_wvFeedGroup` make them.
+// FeedReader._guessItemType (xpcom/feedReader.js): a feed item is one of these.
+const WV_FEED_ITEM_TYPES = ["journalArticle", "bookSection", "conferencePaper"];
+const WV_FEED_SHADOWS: WeakSet<any> = new WeakSet();
+const WV_FEED_GROUP_SHADOW: WeakMap<any, any> = new WeakMap();
+const WV_FEED_STATE_SHADOW: WeakMap<any, { from: any[]; groups: any; s: any }> = new WeakMap();
+
+/** The shadow of group `g` (one per group; see above). */
+function wvFeedShadowGroup(g: any): any {
+    let s = WV_FEED_GROUP_SHADOW.get(g);
+    if (!s) {
+        s = Object.assign(Object.create(g), wvDimNoFeedDefaults(),
+            { quickSearchScope: { annotation: true, attachment: true, parent: true } });
+        WV_FEED_SHADOWS.add(s);
+        WV_FEED_GROUP_SHADOW.set(g, s);
+    }
+    return s;
+}
+
+/** The shadow of filter state `state`, made again when its groups change. */
+function wvFeedShadowState(state: any): any {
+    const groups: any[] = Array.isArray(state.groups) ? state.groups : [];
+    const m = WV_FEED_STATE_SHADOW.get(state);
+    if (m && m.groups === state.groups && m.from.length === groups.length
+        && groups.every((g, i) => m.from[i] === g)) return m.s;
+    const s = Object.assign(Object.create(state), {
+        groups: groups.map((g) => (g && typeof g === "object") ? wvFeedShadowGroup(g) : g),
+        selectionTarget: {}, selectionTargetExclude: {},
+        collections: [], collectionsExclude: [], savedSearches: [], savedSearchesExclude: [],
+        collSetMode: null,
+    });
+    WV_FEED_SHADOWS.add(s);
+    WV_FEED_STATE_SHADOW.set(state, { from: groups.slice(), groups: state.groups, s });
+    return s;
+}
+
 // ---- Chip bar (survey step 7, facets slice 3) ----
 // How a dimension's chip reads, where it differs from the default: a list
 // says "is" / "is not" with its values joined by ", "; a tri-state says
@@ -498,8 +597,20 @@ interface WvChipSpec {
 const wvChipLabels = (list: any[], defs: { value: string; label: string }[]) =>
     list.map((v) => { const d = defs.find(x => x.value === v); return d ? d.label : v; });
 // Several picks of a multi-valued field must ALL match; exclusions: any.
-const wvChipOpAll = (list: any, x: boolean) => (x ? "excludes any" : (list.length > 1 ? "includes all" : "includes"));
-const wvChipOpAny = (_list: any, x: boolean) => (x ? "excludes any" : "includes any");
+const wvChipOpAll = (list: any, x: boolean) => wvStr(x ? "weavero-filter-chip-op-excludes-any"
+    : (list.length > 1 ? "weavero-filter-chip-op-includes-all" : "weavero-filter-chip-op-includes"));
+const wvChipOpAny = (_list: any, x: boolean) => wvStr(x ? "weavero-filter-chip-op-excludes-any" : "weavero-filter-chip-op-includes-any");
+/** The order of a chip's three boxes in the UI's language: the message
+ *  places $field, $op and $value, and only their order is read (English:
+ *  field, op, value; any other text in it is not shown). Unreadable -> the
+ *  English order. */
+function wvChipOrder(): ("field" | "op" | "value")[] {
+    const keys: ("field" | "op" | "value")[] = ["field", "op", "value"];
+    const marks = { field: "", op: "", value: "" };
+    const s = wvStr("weavero-filter-chip-order", marks, null);
+    if (keys.some(k => s.indexOf(marks[k]) < 0)) return keys;
+    return keys.slice().sort((a, b) => s.indexOf(marks[a]) - s.indexOf(marks[b]));
+}
 const WV_CHIPS: Record<string, WvChipSpec> = {
     annotationColor: {
         fill: (p, doc, seg, l) => {
@@ -510,8 +621,8 @@ const WV_CHIPS: Record<string, WvChipSpec> = {
     },
     annotationType: { fill: (p, doc, seg, l) => { seg.textContent = wvChipLabels(l!, p._ANNOTATION_TYPES).join(", "); } },
     annotationSource: {
-        op: () => "is",
-        fill: (p, doc, seg, l, x, v) => { seg.textContent = v ? "Embedded in PDF" : "Made in Zotero"; },
+        op: () => wvStr("weavero-filter-chip-op-is"),
+        fill: (p, doc, seg, l, x, v) => { seg.textContent = wvStr(v ? "weavero-filter-chip-source-embedded" : "weavero-filter-chip-source-zotero"); },
     },
     annotationTag: { op: wvChipOpAll },
     annotationAuthor: { op: wvChipOpAll },
@@ -533,7 +644,7 @@ const WV_CHIPS: Record<string, WvChipSpec> = {
     outlineClass: { fill: (p, doc, seg, l) => { seg.textContent = wvChipLabels(l!, p._wvOutlineClassCatalogue()).join(", "); } },
     // Include is AND ("has all"); exclude is has-any -> hide.
     outlineFlags: {
-        op: (l, x) => (x ? "has none of" : "has"),
+        op: (l, x) => wvStr(x ? "weavero-filter-chip-op-has-none-of" : "weavero-filter-chip-op-has"),
         fill: (p, doc, seg, l, x) => { seg.textContent = wvChipLabels(l!, p._wvOutlineClassCatalogue()).join(x ? ", " : " + "); },
     },
     outlineVerdict: { fill: (p, doc, seg, l) => { seg.textContent = wvChipLabels(l!, p._wvOutlineVerdictCatalogue()).join(", "); } },
@@ -563,35 +674,40 @@ const WV_CHIPS: Record<string, WvChipSpec> = {
         fill: (p, doc, seg, l) => {
             const icons: Record<string, string> = {};
             try { for (const st of p._wvReadStatuses()) icons[st.name] = st.icon; } catch (e) {}
-            seg.textContent = l!.map((n: string) => (icons[n] ? icons[n] + " " : "") + (n || "No Status")).join(", ");
+            // A status NAME is Zotero Reading List's stored value, shown as
+            // it is; only the empty one ("" = no status) is Weavero's word.
+            const none = wvStr("weavero-filter-read-status-none");
+            seg.textContent = l!.map((n: string) => (icons[n] ? icons[n] + " " : "") + (n || none)).join(", ");
         },
     },
 };
 
+// The labels are getters: read in the UI's language where they are shown,
+// never at import time. `value` is the data the filters compare.
 const _ANNOTATION_COLORS_DATA = [
-    { value: "#ffd400", label: "Yellow" },
-    { value: "#ff6666", label: "Red" },
-    { value: "#5fb236", label: "Green" },
-    { value: "#2ea8e5", label: "Blue" },
-    { value: "#a28ae5", label: "Purple" },
-    { value: "#e56eee", label: "Magenta" },
-    { value: "#f19837", label: "Orange" },
-    { value: "#aaaaaa", label: "Gray" },
-    { value: "#000000", label: "Black" },
+    { value: "#ffd400", get label() { return wvStr("weavero-filter-color-yellow"); } },
+    { value: "#ff6666", get label() { return wvStr("weavero-filter-color-red"); } },
+    { value: "#5fb236", get label() { return wvStr("weavero-filter-color-green"); } },
+    { value: "#2ea8e5", get label() { return wvStr("weavero-filter-color-blue"); } },
+    { value: "#a28ae5", get label() { return wvStr("weavero-filter-color-purple"); } },
+    { value: "#e56eee", get label() { return wvStr("weavero-filter-color-magenta"); } },
+    { value: "#f19837", get label() { return wvStr("weavero-filter-color-orange"); } },
+    { value: "#aaaaaa", get label() { return wvStr("weavero-filter-color-gray"); } },
+    { value: "#000000", get label() { return wvStr("weavero-filter-color-black"); } },
 ];
 
 const _ANNOTATION_TYPES_DATA = [
-    { value: "highlight", label: "Highlight",
+    { value: "highlight", get label() { return wvStr("weavero-filter-ann-type-highlight"); },
       icon: "chrome://zotero/skin/16/universal/annotate-highlight.svg" },
-    { value: "underline", label: "Underline",
+    { value: "underline", get label() { return wvStr("weavero-filter-ann-type-underline"); },
       icon: "chrome://zotero/skin/16/universal/annotate-underline.svg" },
-    { value: "note",      label: "Note",
+    { value: "note",      get label() { return wvStr("weavero-filter-ann-type-note"); },
       icon: "chrome://zotero/skin/16/universal/annotate-note.svg" },
-    { value: "image",     label: "Image",
+    { value: "image",     get label() { return wvStr("weavero-filter-ann-type-image"); },
       icon: "chrome://zotero/skin/16/universal/annotate-area.svg" },
-    { value: "ink",       label: "Ink",
+    { value: "ink",       get label() { return wvStr("weavero-filter-ann-type-ink"); },
       icon: "chrome://zotero/skin/16/universal/annotate-ink.svg" },
-    { value: "text",      label: "Text",
+    { value: "text",      get label() { return wvStr("weavero-filter-ann-type-text"); },
       icon: "chrome://zotero/skin/16/universal/annotate-text.svg" },
 ];
 
@@ -629,13 +745,13 @@ const _ATTACHMENT_FILE_TYPES_DATA = [
       icon: "chrome://zotero/skin/item-type/16/light/attachment-pdf.svg" },
     { value: "attachmentEPUB",       label: "EPUB",
       icon: "chrome://zotero/skin/item-type/16/light/attachment-epub.svg" },
-    { value: "attachmentSnapshot",   label: "Snapshot",
+    { value: "attachmentSnapshot",   get label() { return wvStr("weavero-filter-file-type-snapshot"); },
       icon: "chrome://zotero/skin/item-type/16/light/attachment-snapshot.svg" },
-    { value: "attachmentImage",      label: "Image",
+    { value: "attachmentImage",      get label() { return wvStr("weavero-filter-file-type-image"); },
       icon: "chrome://zotero/skin/item-type/16/light/attachment-image.svg" },
-    { value: "attachmentVideo",      label: "Video",
+    { value: "attachmentVideo",      get label() { return wvStr("weavero-filter-file-type-video"); },
       icon: "chrome://zotero/skin/item-type/16/light/attachment-video.svg" },
-    { value: "attachmentWebLink",    label: "Web Link",
+    { value: "attachmentWebLink",    get label() { return wvStr("weavero-filter-file-type-web-link"); },
       icon: "chrome://zotero/skin/item-type/16/light/attachment-web-link.svg" },
     // Zotero's own linked-file item icon -- the page outline with the chain
     // badge that the items tree shows for a linked file -- taken from the
@@ -647,14 +763,14 @@ const _ATTACHMENT_FILE_TYPES_DATA = [
     // the LIGHT item-type file showed a white-filled page on the dark
     // popup (MJT 2026-09-09, "the transparent page icon, same as Zotero,
     // with the link glyph"). Guard: test/filter-icons.spec.js.
-    { value: "attachmentLinkedFile", label: "Linked File",
+    { value: "attachmentLinkedFile", get label() { return wvStr("weavero-filter-file-type-linked-file"); },
       icon: "data:image/svg+xml;utf8,"
         + "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none'>"
         + "<path opacity='0.3' fill='context-fill' d='M10 1.70697V5H13.293L10 1.70697Z'/>"
         + "<path fill='context-fill' d='M6 14H3V1H9V6H14V10H15V5.293L9.707 0L2 0V15H6V14ZM10 1.707L13.293 5H10V1.707Z'/>"
         + "<path fill='context-fill' fill-rule='evenodd' clip-rule='evenodd' d='M9.5 11C10.3178 11 11.0439 11.3927 11.5 11.9998C11.9561 11.3927 12.6822 11 13.5 11C14.8807 11 16 12.1193 16 13.5C16 14.8807 14.8807 16 13.5 16C12.6822 16 11.9561 15.6073 11.5 15.0002C11.0439 15.6073 10.3178 16 9.5 16C8.11929 16 7 14.8807 7 13.5C7 12.1193 8.11929 11 9.5 11ZM10.9146 13H9.5C9.22386 13 9 13.2239 9 13.5C9 13.7761 9.22386 14 9.5 14H10.9146C10.7087 14.5826 10.1531 15 9.5 15C8.67157 15 8 14.3284 8 13.5C8 12.6716 8.67157 12 9.5 12C10.1531 12 10.7087 12.4174 10.9146 13ZM12.0854 14H13.5C13.7761 14 14 13.7761 14 13.5C14 13.2239 13.7761 13 13.5 13H12.0854C12.2913 12.4174 12.8469 12 13.5 12C14.3284 12 15 12.6716 15 13.5C15 14.3284 14.3284 15 13.5 15C12.8469 15 12.2913 14.5826 12.0854 14Z'/>"
         + "</svg>" },
-    { value: "attachmentFile",       label: "Other File",
+    { value: "attachmentFile",       get label() { return wvStr("weavero-filter-file-type-other-file"); },
       icon: "chrome://zotero/skin/16/universal/attachment.svg" },
 ];
 
@@ -826,12 +942,63 @@ class _FilterMixin {
         if (!win) return fn();
         const prevO = self._wvFilterWinOverride, prevPin = self._wvApplyPin;
         self._wvFilterWinOverride = win;
-        self._wvApplyPin = { win, wst: this._wvApplyWinStOf(win), vst: this._wvApplyViewStOf(this._wvApplyRpOf(win)) };
+        self._wvApplyPin = { win, wst: this._wvApplyWinStOf(win), vst: this._wvApplyViewStOf(this._wvApplyRpOf(win)),
+            feed: this._wvFilterWinIsFeed(win) };
         try { return fn(); }
         finally {
             self._wvFilterWinOverride = prevO || null;
             self._wvApplyPin = prevPin || null;
         }
+    }
+
+    // ---- Feed views (the shadows: see WV_FEED_SHADOWS) --------------------
+
+    /** Does `win`'s items view show Zotero's Feeds row or one feed? */
+    _wvFilterWinIsFeed(win: any): boolean {
+        try { return !!(win && win.ZoteroPane && this._wvFdIsFeedView(win.ZoteroPane.itemsView)); }
+        catch (e) { return false; }
+    }
+
+    /** Does the window being filtered show a feed view? The same window as
+     *  `_filterState` (`_wvFilterTargetWin`); read from the pin during an
+     *  apply, where it is asked per row. */
+    _wvFilterInFeedView(): boolean {
+        const self: any = this;
+        const pin = self._wvApplyPin;
+        if (pin && pin.win === self._wvFilterWinOverride && typeof pin.feed === "boolean") return pin.feed;
+        return this._wvFilterWinIsFeed(this._wvFilterTargetWin());
+    }
+
+    /** The filter state every check reads: `state` itself, or in a feed view
+     *  its shadow. Idempotent. Never write through what it returns. */
+    _wvFeedState(state: any): any {
+        if (!state || typeof state !== "object" || WV_FEED_SHADOWS.has(state)) return state;
+        return this._wvFilterInFeedView() ? wvFeedShadowState(state) : state;
+    }
+
+    /** The same for one filter group. */
+    _wvFeedGroup(group: any): any {
+        if (!group || typeof group !== "object" || WV_FEED_SHADOWS.has(group)) return group;
+        return this._wvFilterInFeedView() ? wvFeedShadowGroup(group) : group;
+    }
+
+    /** The feed libraries `win`'s feed view shows (every feed for the Feeds
+     *  row): what the popup's Publication and Author lists are read from. */
+    _wvFilterFeedLibraryIDs(win: any): number[] {
+        const out: number[] = [];
+        try {
+            const v: any = win && win.ZoteroPane && win.ZoteroPane.itemsView;
+            const rows: any[] = (v && Array.isArray(v.collectionTreeRows)) ? v.collectionTreeRows
+                : ((v && v.collectionTreeRow) ? [v.collectionTreeRow] : []);
+            for (const r of rows) {
+                if (r && typeof r.isFeeds === "function" && r.isFeeds()) {
+                    for (const f of ((Zotero as any).Feeds.getAll() || [])) out.push(f.libraryID);
+                }
+                else if (r && r.ref && r.ref.libraryID != null) out.push(r.ref.libraryID);
+            }
+        }
+        catch (e) {}
+        return [...new Set(out)];
     }
 
     /** Every view's no-op memo is void (`_wvLastApplySig` reads null): a data
@@ -1807,11 +1974,8 @@ class _FilterMixin {
                     matches.forEach((m: any) => {
                         m.classList.toggle("wv-revealed", isRevealed);
                         m.title = isRevealed
-                            ? "Showing all children of this container."
-                            + " Click to re-apply the filter."
-                            : `${n} more item${n === 1 ? "" : "s"}`
-                                + " hidden by the filter."
-                                + " Click to reveal them.";
+                            ? wvStr("weavero-filter-chevron-revealed-tip")
+                            : wvStr("weavero-filter-chevron-hidden-tip", { count: n });
                         const path = m.querySelector("path");
                         if (path) {
                             path.setAttribute("d", isRevealed
@@ -3021,7 +3185,8 @@ class _FilterMixin {
                     let eff: any = null;
                     try { eff = self._effectiveSelectionTargetKinds(); } catch (e) {}
                     if (eff && eff.parent && eff.attachment && eff.note && eff.annotation) eff = null;
-                    const state = self._filterState;
+                    // The effective state (a feed view's shadow), once.
+                    const state = self._wvFeedState ? self._wvFeedState(self._filterState) : self._filterState;
                     const active = !!(state && self._wvUserFilterActive(state));
                     return { on, eff, state, active };
                 };
@@ -3061,7 +3226,10 @@ class _FilterMixin {
                         // rows, and Ctrl+A takes what is shown.)
                         if (p.active) {
                             try {
-                                if (!self._rowIsPrimary(item, p.state)) return false;
+                                // Bound to this view's window: the verdict's
+                                // view checks then read it, not the focused one.
+                                if (!(win ? self._wvWithFilterWin(win, () => self._rowIsPrimary(item, p.state))
+                                    : self._rowIsPrimary(item, p.state))) return false;
                             } catch (e) {}
                         }
                     }
@@ -3594,8 +3762,8 @@ class _FilterMixin {
                 chev.appendChild(svg);
                 chev.setAttribute("data-wv-item-id", String(parentID));
                 chev.title = revealed
-                    ? "Showing all children of this container. Click to re-apply the filter."
-                    : `${n} more item${n === 1 ? "" : "s"} hidden by the filter. Click to reveal them.`;
+                    ? wvStr("weavero-filter-chevron-revealed-tip")
+                    : wvStr("weavero-filter-chevron-hidden-tip", { count: n });
                 // Insert immediately BEFORE the row's icon — so the
                 // chevron sits to the left of the annotation icon and
                 // right of the indent/twisty spacers. The icon isn't
@@ -3947,8 +4115,15 @@ class _FilterMixin {
         });
     }
 
-    /** Returns true iff at least one field in the group is set. */
+    /** Returns true iff at least one field in the group is set -- of the
+     *  fields that count in the view (`_wvFeedGroup`). */
     _isGroupActive(group) {
+        return this._wvGroupActiveEff(this._wvFeedGroup(group));
+    }
+
+    /** `_isGroupActive` of a group already made effective (or of the real
+     *  group, for "is anything stored": `_pruneEmptyGroups`). */
+    _wvGroupActiveEff(group) {
         if (!group) return false;
         if (wvAnyDimSet(WV_FILTER_DIMS, group)) return true;
         // Quick-search scope only counts as active when at least
@@ -3970,11 +4145,16 @@ class _FilterMixin {
     /** Returns true iff any group has any active condition or any
      *  global filter (Collection / Saved Search) is set. */
     _isFilterActive(state) {
+        return this._wvFilterActiveEff(this._wvFeedState(state));
+    }
+
+    /** `_isFilterActive` of an effective state (`_wvFeedState`). */
+    _wvFilterActiveEff(state) {
         if (!state) return false;
         // The multi-collection mode counts only while a library has 2+
         // selected collections -- otherwise it is inert (and costs nothing).
         if (state.collSetMode && this._wvCollSetGroups().size) return true;
-        return this._wvUserFilterActive(state);
+        return this._wvUserFilterActiveEff(state);
     }
 
     /** The filter the USER set in the panel -- what the chip bar, the
@@ -3983,13 +4163,18 @@ class _FilterMixin {
      *  (_isFilterActive) but stays independent of that UI: it is shown
      *  and undone on its own header button (MJT 2026-09-28). */
     _wvUserFilterActive(state) {
+        return this._wvUserFilterActiveEff(this._wvFeedState(state));
+    }
+
+    /** `_wvUserFilterActive` of an effective state (`_wvFeedState`). */
+    _wvUserFilterActiveEff(state) {
         if (!state) return false;
         if (state.collections && state.collections.length) return true;
         if (state.collectionsExclude && state.collectionsExclude.length) return true;
         if (state.savedSearches && state.savedSearches.length) return true;
         if (state.savedSearchesExclude && state.savedSearchesExclude.length) return true;
         if (!state.groups) return false;
-        return state.groups.some(g => this._isGroupActive(g));
+        return state.groups.some(g => this._wvGroupActiveEff(g));
     }
 
     /** Does the active filter target CHILD rows (attachments/annotations)?
@@ -4024,7 +4209,7 @@ class _FilterMixin {
             // set, and item 3772 lost as a result. The same probe with no
             // search live returned parent-only, which is what made the gate
             // look correct when it was first written.
-            const g: any = this._activeGroup();
+            const g: any = this._wvFeedGroup(this._activeGroup());
             if (!g) return true;
             // The annotation and attachment levels, plus the cross-level
             // dimensions (`kids` in the table), which CAN match children and
@@ -4078,6 +4263,9 @@ class _FilterMixin {
      *  → it grabs both. The chips still override it. */
     _effectiveSelectionTargetKinds() {
         const ALL = { parent: true, attachment: true, note: true, annotation: true };
+        // A feed view: only parent rows (`_wvFeedState`), nothing to narrow to.
+        // Author alone would pin "annotation" below and dim every feed row.
+        if (this._wvFilterInFeedView()) return { ...ALL };
         const fs = this._filterState || {};
         const tgt = fs.selectionTarget || {};
         const exc = fs.selectionTargetExclude || {};
@@ -4184,15 +4372,17 @@ class _FilterMixin {
                 if (!key) continue;
                 const explicit = !!(ti[key] || te[key]);
                 if (!explicit && narrowed && eff[key]) {
+                    // The plain tooltip is kept in data-wv-base-tip where the
+                    // chip is built: the shown one is localized text, never
+                    // parsed back.
                     if (btn.dataset.auto !== "true") {
                         btn.dataset.auto = "true";
-                        const baseTip = btn.title.split("  •  Auto:")[0];
-                        btn.title = baseTip
-                            + "  •  Auto: your active filters only target this kind, so that's what Ctrl+A selects. Click any kind to set it manually.";
+                        btn.title = wvStr("weavero-filter-seltarget-auto-tip",
+                            { tip: btn.dataset.wvBaseTip || btn.title });
                     }
                 } else if (btn.dataset.auto) {
                     delete btn.dataset.auto;
-                    btn.title = btn.title.split("  •  Auto:")[0];
+                    if (btn.dataset.wvBaseTip) btn.title = btn.dataset.wvBaseTip;
                 }
             }
         } catch (e) {}
@@ -4464,25 +4654,26 @@ class _FilterMixin {
             try { counts = this._wvCollSetCounts(ids); } catch (e) {}
             // Zotero's own word for the selection kind.
             const nSearch = ids.filter((s: any) => typeof s === "string").length;
-            const what = !nSearch ? "collections" : nSearch === ids.length ? "saved searches" : "sources";
+            const kind = !nSearch ? "collections" : nSearch === ids.length ? "searches" : "sources";
             const mode = (win._wvFilterState && win._wvFilterState.collSetMode) || null;
             const cell = div.querySelector(".cell.library-header") || div;
             const text = cell.querySelector(".cell-text");
-            if (text && mode) text.textContent += mode === "all" ? " — in all" : " — not in all";
+            if (text && mode) {
+                text.textContent = wvStr("weavero-filter-collset-header",
+                    { header: text.textContent, mode: mode === "all" ? "all" : "not-all" });
+            }
             const btn = wvHtmlEl(doc, "button");
             btn.type = "button";
             btn.className = "wv-collset-btn";
             btn.textContent = "∩";
             if (mode === "all") btn.dataset.selected = "true";
             else if (mode === "notAll") btn.dataset.excluded = "true";
-            btn.title = mode === "all"
-                ? `Showing items in ALL selected ${what} — click to show them all again (union)`
-                : mode === "notAll"
-                    ? `Showing items in some but NOT all selected ${what} — Alt+click to show them all again (union)`
-                    : `Show only items in ALL selected ${what} (intersection). Alt+click: items in some but not all.`;
+            btn.title = wvStr(mode === "all" ? "weavero-filter-collset-tip-all"
+                : mode === "notAll" ? "weavero-filter-collset-tip-not-all"
+                    : "weavero-filter-collset-tip-off", { kind });
             if (counts) {
-                const n = (k: number) => k + (k === 1 ? " item" : " items");
-                btn.title += `\nIn all: ${n(counts.all)} · in some but not all: ${n(counts.union - counts.all)}`;
+                btn.title += "\n" + wvStr("weavero-filter-collset-tip-counts",
+                    { all: counts.all, some: counts.union - counts.all });
                 // Inside the button, "∩: 2" (MJT 2026-09-28): the count is
                 // the intersection's in every mode, so toggling never
                 // changes the button's width -- it stays under the mouse.
@@ -4680,7 +4871,7 @@ class _FilterMixin {
         const colour = cell.getAttribute("data-wv-added-by-color");
         const doc = cell.ownerDocument;
         const badge = wvHtmlEl(doc, "span", "wv-annotation-added-by", name);
-        badge.title = "Added by " + name;
+        badge.title = wvStr("weavero-filter-added-by-tip", { name });
         if (colour && this._getEnableAddedByColors()) {
             badge.style.color = colour;
             badge.style.backgroundColor = this._withAlpha(colour, 0.18);
@@ -4707,7 +4898,7 @@ class _FilterMixin {
         if (old) old.remove();
         const doc = rowDiv.ownerDocument;
         const badge = wvHtmlEl(doc, "span", "wv-annotation-added-by", name);
-        badge.title = "Added by " + name;
+        badge.title = wvStr("weavero-filter-added-by-tip", { name });
         if (this._getEnableAddedByColors()) {
             const colour = this._colorForUser(name);
             badge.style.color = colour;
@@ -5325,7 +5516,10 @@ class _FilterMixin {
      *  the state's groups: the row passes if it satisfies ANY active
      *  group's AND-conjoined fields. */
     _rowIsPrimary(item, state) {
-        if (!this._isFilterActive(state)) return false;
+        // The effective state (a feed view's shadow); free when the caller
+        // passes one already (the apply's), one view check otherwise.
+        state = this._wvFeedState(state);
+        if (!this._wvFilterActiveEff(state)) return false;
         if (!this._rowPassesGlobalFilters(item, state)) return false;
         // Strict per-LEVEL AND, but allow the quick search to match
         // at SELF or any ANCESTOR: a green annotation under a PDF
@@ -5407,7 +5601,7 @@ class _FilterMixin {
         // restricted, every row that passes the global filters is
         // primary by virtue of those alone.
         const anyGroupActive = state.groups
-            && state.groups.some(g => this._isGroupActive(g));
+            && state.groups.some(g => this._wvGroupActiveEff(g));
         if (!anyGroupActive) return true;
         // A row is primary iff:
         //   1. It satisfies the group's filters (kind-specific
@@ -5422,7 +5616,7 @@ class _FilterMixin {
         //      we'd flood the result with unrelated parents. The
         //      `|| directSearchMatch` admits the row whose own level
         //      satisfies the search even though no chip pins its kind.
-        return state.groups.some(g => this._isGroupActive(g)
+        return state.groups.some(g => this._wvGroupActiveEff(g)
             && this._rowPassesFilters(item, g)
             && (this._rowHasOwnKindMatch(item, g) || directSearchMatch)
             && this._rowSatisfiesTreeJoin(item, g));
@@ -6307,8 +6501,11 @@ class _FilterMixin {
         const itemsPane = wvViewEl(doc, "zotero-items-pane");
         const searchBox = wvViewEl(doc, "zotero-tb-search");
         if (!container || !itemsPane || !searchBox) {
-            // Items pane mounts asynchronously on first window open; retry.
-            win.setTimeout(() => this._setupItemsListFilter(win), 1000);
+            // Items pane mounts asynchronously on first window open; retry --
+            // for THIS instance only: a window timer outlives destroy()
+            // (src-ts.md survival rules), and a retry chain of a destroyed
+            // instance polled on a window without the pane.
+            win.setTimeout(() => { if (!(this as any)._wvDestroyed) this._setupItemsListFilter(win); }, 1000);
             return;
         }
         // Collapse-to-quick-search rides on this window pass because it wraps
@@ -6340,12 +6537,17 @@ class _FilterMixin {
         // self-heal the moment a mode menuitem is inserted anywhere
         // outside its menupopup, and RECORD its parent chain to
         // Zotero._wvStrayLog (persistent ring, survives reloads) so
-        // the next occurrence pinpoints the culprit. Observer lifetime
-        // = the window; the version stamp lives ON THE WINDOW to match
-        // (the 2026-08-19 stale-stamp lesson).
+        // the next occurrence pinpoints the culprit. The observer is the
+        // INSTANCE's: stamped with its wire tag, replaced by the next one and
+        // disconnected by destroy (_wvStrayWatchdogOff). Under a constant
+        // `_wvStrayObsVer = 1` it stayed on every window across reloads and
+        // disables, its callback the first instance's: under zotero#6080
+        // every DOM change of the main window then threw "can't access dead
+        // object" (241 calls into a reloaded-away instance in one probe run,
+        // 2026-11-22). Guard: test/zz-stale-instance-calls.spec.js.
         try {
             const winAny: any = win;
-            if (winAny._wvStrayObsVer !== 1 || !winAny._wvStrayObs) {
+            if (winAny._wvStrayObsVer !== (this as any)._wvWireTag() || !winAny._wvStrayObs) {
                 if (winAny._wvStrayObs) {
                     try { winAny._wvStrayObs.disconnect(); } catch (e) {}
                 }
@@ -6375,7 +6577,7 @@ class _FilterMixin {
                 });
                 obs.observe(doc.documentElement, { childList: true, subtree: true });
                 winAny._wvStrayObs = obs;
-                winAny._wvStrayObsVer = 1;
+                winAny._wvStrayObsVer = (this as any)._wvWireTag();
             }
         } catch (e) {}
 
@@ -6396,7 +6598,7 @@ class _FilterMixin {
         tbBtn.className = "zotero-tb-button";
         tbBtn.setAttribute("type", "menu");
         tbBtn.setAttribute("tabindex", "-1");
-        tbBtn.setAttribute("tooltiptext", "Filter items");
+        tbBtn.setAttribute("tooltiptext", wvStr("weavero-filter-tb-button-tip"));
         tbBtn.style.setProperty("-moz-context-properties",
             "fill, fill-opacity, stroke, stroke-opacity");
         tbBtn.style.fill = "currentColor";
@@ -7077,6 +7279,9 @@ class _FilterMixin {
                                 dbg(
                                     "[Weavero][filter] post-setFilter reapply err: " + e);
                             }
+                            // The researchers strip reads THIS window's search
+                            // once its rows are in (people-strip.ts).
+                            try { const lp: any = wvLivePlugin(); if (lp && typeof lp._wvPsSoon === "function") lp._wvPsSoon(win); } catch (e) {}
                         }));
                     }
                     return result;
@@ -7167,6 +7372,9 @@ class _FilterMixin {
                                 dbg(
                                     "[Weavero][filter] post-swap reapply err: " + e);
                             }
+                            // Another collection, maybe the trash or a feed:
+                            // the researchers strip of THIS window again.
+                            try { const lp: any = wvLivePlugin(); if (lp && typeof lp._wvPsSoon === "function") lp._wvPsSoon(win); } catch (e) {}
                         }));
                     }
                     return result;
@@ -7310,6 +7518,37 @@ class _FilterMixin {
         finally { (this as any)._wvFilterWinOverride = prev || null; }
     }
 
+    /** The stray-menuitem watchdog of `win` off (_setupItemsListFilterIn). */
+    _wvStrayWatchdogOff(win: any) {
+        try {
+            const w: any = win;
+            if (w && w._wvStrayObs) { try { w._wvStrayObs.disconnect(); } catch (e) {} }
+            if (w) { delete w._wvStrayObs; delete w._wvStrayObsVer; }
+        } catch (e) {}
+    }
+
+    /** The hidden-count chevron's capture mousedown / mouseup handlers off the
+     *  items tree of every library view of `win` (_installHiddenBadgeClickHandler).
+     *  Only the next instance's install took them off: after a disable both
+     *  stayed on the tree, and under zotero#6080 every press in the items list
+     *  then reached a dead object (2026-11-22). Guard:
+     *  test/zzz-disable-leftovers.spec.js (listener census). */
+    _wvHiddenBadgeHandlerOff(win: any) {
+        try {
+            const doc = win && win.document;
+            if (!doc) return;
+            const hosts: any[] = [doc.getElementById("item-tree-main"), ...wvViewEls(doc, "zotero-items-tree")];
+            for (const h of hosts) {
+                if (!h) continue;
+                try { if (h._wvHiddenBadgeHandlerDown) h.removeEventListener("mousedown", h._wvHiddenBadgeHandlerDown, true); } catch (e) {}
+                try { if (h._wvHiddenBadgeHandlerUp) h.removeEventListener("mouseup", h._wvHiddenBadgeHandlerUp, true); } catch (e) {}
+                for (const k of ["_wvHiddenBadgeHandlerDown", "_wvHiddenBadgeHandlerUp", "_wvHiddenBadgeHandlerInstalled", "_wvHiddenBadgeHandlerTag"]) {
+                    try { delete h[k]; } catch (e) {}
+                }
+            }
+        } catch (e) {}
+    }
+
     _teardownItemsListFilterIn(targetWin: any) {
         // The collapse button's wrapper is NOT the pane's: it stays while the
         // pane goes (prefs.4); the plugin's destroy() gives it back to Zotero.
@@ -7333,6 +7572,8 @@ class _FilterMixin {
                 this._filterTreeObserver = null;
             }
         } catch (e) {}
+        this._wvStrayWatchdogOff(targetWin);
+        this._wvHiddenBadgeHandlerOff(targetWin);
         // Restore the rowProvider methods we monkey-patched. Without
         // this, plugin disable would leave the items list still
         // filtering through our state.
@@ -7513,23 +7754,26 @@ class _FilterMixin {
             const group = groups[gi];
             if (!this._isGroupActive(group)) continue;
             if (!firstActive) {
-                const orSep = wvHtmlEl(doc, "span", "wv-filter-or", "OR", bar);
+                const orSep = wvHtmlEl(doc, "span", "wv-filter-or", wvStr("weavero-filter-bar-or"), bar);
             }
             firstActive = false;
 
             // One chip per set include / exclude list or tri-state, in table
             // order (filter-facets.ts); WV_CHIPS says how each one reads.
+            // What counts in the view: a feed view shows no chip for a
+            // dormant criterion (`_wvFeedGroup`); the x still edits `group`.
             const dev = this._wvOeEnabled();
+            const eg = this._wvFeedGroup(group);
             for (const f of WV_FILTER_DIMS) {
                 if (f.dev && !dev) continue;
-                const s = wvDimSetBits(f, group);
+                const s = wvDimSetBits(f, eg);
                 if (s & 4) bar.appendChild(this._buildDimChip(doc, group, gi, f, false));
                 if (s & 1) bar.appendChild(this._buildDimChip(doc, group, gi, f, false));
                 if (s & 2) bar.appendChild(this._buildDimChip(doc, group, gi, f, true));
             }
             // An active In Multiple Libraries with a COLD cache (e.g. right
             // after a window re-wire) filters nothing; warm it and re-apply.
-            if (group.inOtherLibrary != null && !this._wvLinkedLibCacheWarm()) {
+            if (eg.inOtherLibrary != null && !this._wvLinkedLibCacheWarm()) {
                 try { this._wvEnsureLinkedLibCache(winOf(bar), true); } catch (e) {}
             }
         }
@@ -7538,8 +7782,8 @@ class _FilterMixin {
         const addBtn = wvHtmlEl(doc, "button");
         addBtn.type = "button";
         addBtn.className = "wv-filter-add";
-        addBtn.textContent = "+ Filter";
-        addBtn.title = "Add a filter to the current group (AND with the existing chips in this group).";
+        addBtn.textContent = wvStr("weavero-filter-bar-add");
+        addBtn.title = wvStr("weavero-filter-bar-add-tip");
         addBtn.addEventListener("click", (e) => {
             e.stopPropagation();
             // Target last-active group when opening from the bar.
@@ -7562,8 +7806,8 @@ class _FilterMixin {
         const addGroupBtn = wvHtmlEl(doc, "button");
         addGroupBtn.type = "button";
         addGroupBtn.className = "wv-filter-add wv-filter-add-group";
-        addGroupBtn.textContent = "+ OR Group";
-        addGroupBtn.title = "Start a new OR group — its filters are AND'd internally and the group's results are unioned with the others.";
+        addGroupBtn.textContent = wvStr("weavero-filter-bar-add-group");
+        addGroupBtn.title = wvStr("weavero-filter-bar-add-group-tip");
         addGroupBtn.addEventListener("click", (e) => {
             e.stopPropagation();
             state.groups.push(this._emptyFilterGroup());
@@ -7578,8 +7822,8 @@ class _FilterMixin {
         const clearBtn = wvHtmlEl(doc, "button");
         clearBtn.type = "button";
         clearBtn.className = "wv-filter-clear";
-        clearBtn.textContent = "Clear all";
-        clearBtn.title = "Remove every active filter and reset to a single empty group.";
+        clearBtn.textContent = wvStr("weavero-filter-bar-clear-all");
+        clearBtn.title = wvStr("weavero-filter-bar-clear-all-tip");
         clearBtn.addEventListener("click", (e) => {
             e.stopPropagation();
             this._clearAllFilters();
@@ -7637,18 +7881,21 @@ class _FilterMixin {
     _buildFilterChip(doc, opts) {
         const chip = wvHtmlEl(doc, "div");
         chip.className = "wv-filter-chip";
-        chip.title = "Click to edit — opens the filter popup focused on this group.";
+        chip.title = wvStr("weavero-filter-chip-tip");
 
-        const fieldSeg = wvHtmlEl(doc, "span", "wv-chip-seg wv-chip-field", opts.field, chip);
+        const fieldSeg = wvHtmlEl(doc, "span", "wv-chip-seg wv-chip-field", opts.field);
 
-        const opSeg = wvHtmlEl(doc, "span", "wv-chip-seg wv-chip-op", opts.op, chip);
+        const opSeg = wvHtmlEl(doc, "span", "wv-chip-seg wv-chip-op", opts.op);
 
         const valSeg = wvHtmlEl(doc, "span", "wv-chip-seg wv-chip-value");
         opts.fillValue(valSeg);
-        chip.appendChild(valSeg);
+        // Field, operator and values in the order the UI's language reads
+        // them (weavero-filter-chip-order); the × stays last.
+        const segs = { field: fieldSeg, op: opSeg, value: valSeg };
+        for (const k of wvChipOrder()) chip.appendChild(segs[k]);
 
         const removeSeg = wvHtmlEl(doc, "span", "wv-chip-seg wv-chip-remove", "×");
-        removeSeg.title = "Remove filter";
+        removeSeg.title = wvStr("weavero-filter-chip-remove-tip");
         removeSeg.addEventListener("click", (e) => {
             e.stopPropagation();
             opts.onRemove();
@@ -7672,8 +7919,10 @@ class _FilterMixin {
     _pruneEmptyGroups() {
         const s = this._filterState;
         if (!s || !s.groups) return;
+        // Empty = nothing STORED: a group holding only criteria dormant in a
+        // feed view keeps them for the library views.
         for (let i = s.groups.length - 1; i > 0; i--) {
-            if (!this._isGroupActive(s.groups[i])) s.groups.splice(i, 1);
+            if (!this._wvGroupActiveEff(s.groups[i])) s.groups.splice(i, 1);
         }
         if (s.activeGroupIndex >= s.groups.length) {
             s.activeGroupIndex = s.groups.length - 1;
@@ -7697,8 +7946,8 @@ class _FilterMixin {
         const list = f.shape === "list" ? (exclude ? group[f.idX as string] : group[f.id]) : null;
         const value = f.shape === "tri" ? group[f.id] : null;
         const op = spec.op ? spec.op(list, exclude, value)
-            : f.shape === "tri" ? (value ? "is" : "is not")
-            : (exclude ? "is not" : "is");
+            : wvStr((f.shape === "tri" ? value : !exclude)
+                ? "weavero-filter-chip-op-is" : "weavero-filter-chip-op-is-not");
         return this._buildFilterChip(doc, {
             field: f.chip,
             op,
@@ -7815,18 +8064,21 @@ class _FilterMixin {
         const selected = new Set((g0 && g0.readStatus) || []);
         const excluded = new Set((g0 && g0.readStatusExclude) || []);
         const entries = [...this._wvReadStatuses(), { name: "", icon: "\u2205" }];
+        // A status NAME is Zotero Reading List's stored value (compared to
+        // the item's Extra line), shown as it is; only "" is Weavero's word.
+        const noStatus = wvStr("weavero-filter-read-status-none");
         for (const st of entries) {
             const btn = wvHtmlEl(doc, "button");
             btn.type = "button";
             btn.className = "wv-filter-opt";
-            btn.title = (st.name || "No Status") + " \u2014 Alt+click to exclude";
+            btn.title = wvStr("weavero-filter-read-status-tip", { status: st.name || noStatus });
             if (selected.has(st.name)) btn.dataset.selected = "true";
             if (excluded.has(st.name)) btn.dataset.excluded = "true";
             const glyph = wvHtmlEl(doc, "span");
             glyph.className = "wv-filter-opt-glyph";
             glyph.textContent = st.icon || "";
             btn.appendChild(glyph);
-            const lbl = wvHtmlEl(doc, "span", undefined, st.name || "No Status", btn);
+            const lbl = wvHtmlEl(doc, "span", undefined, st.name || noStatus, btn);
             btn.addEventListener("click", (e) => {
                 e.stopPropagation();
                 const next = this._toggleIncludeExclude(
@@ -8004,26 +8256,29 @@ class _FilterMixin {
      *  `_wvOutlineTokens` / `_wvOeClassifyTree`. */
     _wvOutlineClassCatalogue() {
         return [
-            { value: "embedded", label: "Embedded" },
-            { value: "extracted", label: "Extracted" },
-            { value: "scan", label: "Scanned (no text)" },
-            { value: "empty", label: "Empty" },
-            { value: "unknown", label: "Unknown" },
-            { value: "flag:content-empty", label: "Content-empty" },
-            { value: "flag:entity-leak", label: "Entity leak" },
-            { value: "flag:ws-junk", label: "Whitespace junk" },
-            { value: "flag:fig-table", label: "Fig/Table headings" },
-            { value: "flag:spacing", label: "Spacing suspect" },
+            { value: "embedded", label: wvStr("weavero-filter-outline-embedded") },
+            { value: "extracted", label: wvStr("weavero-filter-outline-extracted") },
+            // Zotero's own outline shown (no structure data yet, or picked in
+            // the chip): outline2.4 names it apart from Weavero's Extracted.
+            { value: "zotero", label: wvStr("weavero-filter-outline-zotero") },
+            { value: "scan", label: wvStr("weavero-filter-outline-scanned") },
+            { value: "empty", label: wvStr("weavero-filter-outline-empty") },
+            { value: "unknown", label: wvStr("weavero-filter-outline-unknown") },
+            { value: "flag:content-empty", label: wvStr("weavero-filter-outline-flag-content-empty") },
+            { value: "flag:entity-leak", label: wvStr("weavero-filter-outline-flag-entity-leak") },
+            { value: "flag:ws-junk", label: wvStr("weavero-filter-outline-flag-ws-junk") },
+            { value: "flag:fig-table", label: wvStr("weavero-filter-outline-flag-fig-table") },
+            { value: "flag:spacing", label: wvStr("weavero-filter-outline-flag-spacing") },
         ];
     }
 
     /** DEV outline-eval: the outlineVerdict facet's token catalogue. */
     _wvOutlineVerdictCatalogue() {
         return [
-            { value: "verdict:good", label: "Good" },
-            { value: "verdict:bad", label: "Bad" },
-            { value: "verdict:scan", label: "Scan" },
-            { value: "verdict:unmarked", label: "Unmarked" },
+            { value: "verdict:good", label: wvStr("weavero-filter-outline-verdict-good") },
+            { value: "verdict:bad", label: wvStr("weavero-filter-outline-verdict-bad") },
+            { value: "verdict:scan", label: wvStr("weavero-filter-outline-verdict-scan") },
+            { value: "verdict:unmarked", label: wvStr("weavero-filter-outline-verdict-unmarked") },
         ];
     }
 
@@ -8063,15 +8318,15 @@ class _FilterMixin {
         const btn = wvHtmlEl(doc, "button");
         btn.type = "button";
         btn.className = "wv-filter-opt";
-        let btnText = "Scan library";
+        let btnText = wvStr("weavero-filter-outline-scan");
         if (running) {
             btnText = st.phase === "quick"
-                ? ("Quick scan… " + Math.min(st.quickIdx + 1, st.quickTotal) + "/" + st.quickTotal)
-                : ("Scanning… " + Math.min(st.idx + 1, st.total) + "/" + st.total);
+                ? wvStr("weavero-filter-outline-quick-scanning", { done: Math.min(st.quickIdx + 1, st.quickTotal), total: st.quickTotal })
+                : wvStr("weavero-filter-outline-scanning", { done: Math.min(st.idx + 1, st.total), total: st.total });
         }
         btn.textContent = btnText;
         (btn as any).disabled = running;
-        btn.title = "Classify every PDF's outline in this library (opens each in the background). Writes nothing to the library.";
+        btn.title = wvStr("weavero-filter-outline-scan-tip");
         btn.addEventListener("click", (e) => {
             e.stopPropagation();
             Promise.resolve(this._wvOeScanLibrary()).then(() => {
@@ -8094,7 +8349,7 @@ class _FilterMixin {
         lbl.style.fontSize = "12px";
         lbl.style.alignSelf = "center";
         lbl.style.marginLeft = "6px";
-        lbl.textContent = nClass + " classified · " + nCase + " marked";
+        lbl.textContent = wvStr("weavero-filter-outline-status", { classified: nClass, marked: nCase });
         row.appendChild(lbl);
     }
 
@@ -8117,9 +8372,9 @@ class _FilterMixin {
         const cat = this._wvOutlineClassCatalogue();
         const source = cat.filter(d => d.value.indexOf("flag:") !== 0);
         const flags = cat.filter(d => d.value.indexOf("flag:") === 0);
-        this._renderOutlineFacetGrid(doc, section, refreshAll, "Source", source, "outlineClass", "outlineClassExclude", true);
-        this._renderOutlineFacetGrid(doc, section, refreshAll, "Flags", flags, "outlineFlags", "outlineFlagsExclude", false);
-        this._renderOutlineFacetGrid(doc, section, refreshAll, "Verdict",
+        this._renderOutlineFacetGrid(doc, section, refreshAll, wvStr("weavero-filter-outline-row-source"), source, "outlineClass", "outlineClassExclude", true);
+        this._renderOutlineFacetGrid(doc, section, refreshAll, wvStr("weavero-filter-outline-row-flags"), flags, "outlineFlags", "outlineFlagsExclude", false);
+        this._renderOutlineFacetGrid(doc, section, refreshAll, wvStr("weavero-filter-outline-row-verdict"),
             this._wvOutlineVerdictCatalogue(), "outlineVerdict", "outlineVerdictExclude", true);
     }
 
@@ -8141,6 +8396,7 @@ class _FilterMixin {
             // classification source
             "embedded": doc0 + "<path d='M5.5 6h5M5.5 8h5M5.5 10h3' " + S + "/>",
             "extracted": doc0 + "<path d='M8 5v4.4M6 8l2 2 2-2' " + S + "/>",
+            "zotero": doc0 + "<path d='M5.8 5.5h4.4l-4.4 5h4.4' " + S + "/>",
             "scan": pic,
             "empty": doc0,
             "unknown": "<path d='M6 6.2a2 2 0 1 1 2.6 1.9c-.6.25-.85.6-.85 1.15V10' " + S + "/><circle cx='7.75' cy='12' r='.7' " + DOT + "/>",
@@ -8187,7 +8443,7 @@ class _FilterMixin {
             btn.type = "button";
             btn.className = "wv-filter-opt wv-filter-opt-icon";
             const n = counts.get(def.value) || 0;
-            btn.title = def.label + (n ? " (" + n + ")" : "") + " — click to include, Alt+click to exclude";
+            btn.title = wvStr("weavero-filter-outline-tile-tip", { label: def.label, count: n });
             if (selected.has(def.value)) btn.dataset.selected = "true";
             if (excluded.has(def.value)) btn.dataset.excluded = "true";
             const icon = wvHtmlEl(doc, "img", "wv-filter-svg");
@@ -8385,6 +8641,20 @@ class _FilterMixin {
         // label grids. Attachment-resolving facets over the eval store.
         const outlineScanSection = wvHtmlEl(doc, "div");
         const outlineClassSection = wvHtmlEl(doc, "div");
+        // Which dimension each section holds (DevTools, specs); the render
+        // functions reset `className`, never this.
+        const sectionNames: Array<[any, string]> = [[colorSection, "annotationColor"], [typeSection, "annotationType"],
+            [attachmentFileTypeSection, "attachmentFileType"], [notesSection, "notes"], [hasAnnotationsSection, "hasAnnotations"],
+            [itemTypeRowSection, "itemType"], [parentHasFieldsSection, "parentHasFields"], [searchSection, "search"],
+            [crossLevelSection, "crossLevel"], [outlineScanSection, "outlineScan"], [outlineClassSection, "outlineClass"]];
+        for (const [s, n] of sectionNames) s.dataset.wvSection = n;
+        // A FEED view (Zotero's Feeds row or one feed): only what a feed item
+        // can match (MJT 2026-11-22, "Clean-up"; the dimensions' `noFeed`,
+        // filter-facets.ts). The search (Publication, Author), Item Type and
+        // the parent row's kept tiles; no Cross-level tiles, no Attachment /
+        // Annotation / Outline group, no Selection Target (only parent rows),
+        // no Show Non-Matching options. What they held is dormant there.
+        const feedView = this._wvFilterWinIsFeed(doc.defaultView);
 
         // Selection Target uses include/exclude semantics like every
         // other filter group: empty include + empty exclude means
@@ -8416,9 +8686,9 @@ class _FilterMixin {
         const clearTextBtn = wvHtmlEl(doc, "button");
         clearTextBtn.type = "button";
         clearTextBtn.className = "wv-filter-clear-btn";
-        clearTextBtn.textContent = "Clear";
-        clearTextBtn.title = "Clear all filters (keep this window open)";
-        clearTextBtn.setAttribute("aria-label", "Clear all filters");
+        clearTextBtn.textContent = wvStr("weavero-filter-popup-clear");
+        clearTextBtn.title = wvStr("weavero-filter-popup-clear-tip");
+        clearTextBtn.setAttribute("aria-label", wvStr("weavero-filter-popup-clear-aria"));
         clearTextBtn.addEventListener("click", (e) => {
             e.stopPropagation();
             this._clearAllFilters();
@@ -8429,8 +8699,9 @@ class _FilterMixin {
         // The × glyph is drawn via CSS pseudo-elements (two rotated
         // bars) for pixel-perfect centering. `aria-label` carries the
         // semantics for screen readers; tooltip is set via `title`.
-        clearBtn.setAttribute("aria-label", "Clear and Close");
-        clearBtn.title = "Clear and Close";
+        const clearClose = wvStr("weavero-filter-popup-clear-close");
+        clearBtn.setAttribute("aria-label", clearClose);
+        clearBtn.title = clearClose;
         clearBtn.addEventListener("click", (e) => {
             e.stopPropagation();
             this._clearAllFilters();
@@ -8514,13 +8785,16 @@ class _FilterMixin {
         // so the new home is unambiguous. `renderHeader` (defined above)
         // toggles their visibility in lockstep with `_isFilterActive`.
         const headBar = wvHtmlEl(doc, "div", "wv-filter-popup-headbar");
-        const headTitle = wvHtmlEl(doc, "div", "wv-filter-popup-headtitle", "Filter Library", headBar);
+        const headTitle = wvHtmlEl(doc, "div", "wv-filter-popup-headtitle", wvStr("weavero-filter-popup-title"), headBar);
         headBar.appendChild(clearTextBtn);
         headBar.appendChild(clearBtn);
         inner.appendChild(headBar);
 
         addGroupHeader("Cross-level");
-        inner.appendChild(crossLevelSection);
+        // Its tiles (Has Tag / Related / External Link / Item Links /
+        // Backlinks) need a tag, a relation, a note or an annotation: none in
+        // a feed view, where the group is the search alone.
+        if (!feedView) inner.appendChild(crossLevelSection);
         // Multi-selection search bar (Tag / Author / Added By /
         // Collection / Saved Search) — sits in the Cross-level
         // group, directly under the Has Related / Has Link icons,
@@ -8531,48 +8805,52 @@ class _FilterMixin {
         addGroupHeader("Parent");
         // Read Status (Zotero Reading List) — renders only while that
         // plugin is active; sits below the Tag search, above Item Type.
-        const readStatusSection = wvHtmlEl(doc, "div", undefined, undefined, inner);
+        // Never in a feed view: an Extra line a feed item cannot have.
+        const readStatusSection = feedView ? null : wvHtmlEl(doc, "div", undefined, undefined, inner);
+        if (readStatusSection) readStatusSection.dataset.wvSection = "readStatus";
         inner.appendChild(itemTypeRowSection);
         // Item Type row already hosts the Standalone Note tile at
         // its right end (after a vertical separator), so the only
         // section to append here is the Has-fields row.
         inner.appendChild(parentHasFieldsSection);
 
-        addGroupHeader("Attachment");
-        // attachmentFileTypeSection now also renders the Item Note
-        // tile inline (right of the file-type icons, after a thin
-        // vertical separator).
-        inner.appendChild(attachmentFileTypeSection);
-        inner.appendChild(hasAnnotationsSection);
-        inner.appendChild(notesSection);
+        if (!feedView) {
+            addGroupHeader("Attachment");
+            // attachmentFileTypeSection now also renders the Item Note
+            // tile inline (right of the file-type icons, after a thin
+            // vertical separator).
+            inner.appendChild(attachmentFileTypeSection);
+            inner.appendChild(hasAnnotationsSection);
+            inner.appendChild(notesSection);
 
-        addGroupHeader("Annotation");
-        inner.appendChild(colorSection);
-        inner.appendChild(typeSection);
-        // The Annotation group ends 3px lower than the others: the flex gap
-        // of an empty Has Comment section that sat here until 2026-10-09
-        // (Has Comment moved into the type row). Kept, pixels unchanged.
-        typeSection.style.marginBottom = "3px";
+            addGroupHeader("Annotation");
+            inner.appendChild(colorSection);
+            inner.appendChild(typeSection);
+            // The Annotation group ends 3px lower than the others: the flex gap
+            // of an empty Has Comment section that sat here until 2026-10-09
+            // (Has Comment moved into the type row). Kept, pixels unchanged.
+            typeSection.style.marginBottom = "3px";
 
-        // DEV outline-eval group — only when the pref is on. The whole header
-        // + sections are omitted otherwise, so normal users never see them.
-        if (this._wvOeEnabled()) {
-            addGroupHeader("Outline (dev)");
-            inner.appendChild(outlineScanSection);
-            inner.appendChild(outlineClassSection);
+            // DEV outline-eval group — only when the pref is on. The whole header
+            // + sections are omitted otherwise, so normal users never see them.
+            if (this._wvOeEnabled()) {
+                addGroupHeader("Outline (dev)");
+                inner.appendChild(outlineScanSection);
+                inner.appendChild(outlineClassSection);
+            }
         }
 
         // Bottom: Selection Target bar (controls Ctrl+A scope only,
         // doesn't affect filtering itself).
         const selChoices = [
-            { key: "parent",     label: "Parent",
-              tip: "Regular items will be selectable in Ctrl+A." },
-            { key: "attachment", label: "Attachment",
-              tip: "Attachment rows (standalone included) will be selectable in Ctrl+A." },
-            { key: "note",       label: "Note",
-              tip: "Notes (standalone and item notes) will be selectable in Ctrl+A." },
-            { key: "annotation", label: "Annotation",
-              tip: "Annotation rows will be selectable in Ctrl+A." },
+            { key: "parent",     label: wvStr("weavero-filter-kind-parent"),
+              tip: wvStr("weavero-filter-seltarget-parent-tip") },
+            { key: "attachment", label: wvStr("weavero-filter-kind-attachment"),
+              tip: wvStr("weavero-filter-seltarget-attachment-tip") },
+            { key: "note",       label: wvStr("weavero-filter-kind-note"),
+              tip: wvStr("weavero-filter-seltarget-note-tip") },
+            { key: "annotation", label: wvStr("weavero-filter-kind-annotation"),
+              tip: wvStr("weavero-filter-seltarget-annotation-tip") },
         ];
         const buildToggleBar = (label, labelTip, stateInc, stateExc, choices, onToggle, extraClass, autoState?) => {
             const bar = wvHtmlEl(doc, "div");
@@ -8587,6 +8865,9 @@ class _FilterMixin {
                 btn.className = "wv-filter-opt wv-filter-scope-toggle";
                 btn.textContent = t.label;
                 btn.title = t.tip || t.label;
+                // The plain tooltip, for _updateSelectionTargetAutoCues to
+                // restore (the auto one is localized text, never parsed).
+                btn.dataset.wvBaseTip = t.tip || t.label;
                 btn.dataset.key = t.key;   // so _updateSelectionTargetAutoCues can find chips later
                 const isInc = !!stateInc[t.key], isExc = !!stateExc[t.key];
                 if (isInc) btn.dataset.selected = "true";
@@ -8595,8 +8876,7 @@ class _FilterMixin {
                 // filters pin this kind (autoState[key] truthy).
                 if (!isInc && !isExc && autoState && autoState[t.key]) {
                     btn.dataset.auto = "true";
-                    btn.title = (t.tip || t.label)
-                        + "  •  Auto: your active filters only target this kind, so that's what Ctrl+A selects. Click any kind to set it manually.";
+                    btn.title = wvStr("weavero-filter-seltarget-auto-tip", { tip: t.tip || t.label });
                 }
                 btn.addEventListener("click", (e) => {
                     e.stopPropagation();
@@ -8634,8 +8914,8 @@ class _FilterMixin {
             if (!(eff.parent && eff.attachment && eff.note && eff.annotation)) _selTargetAuto = eff;
         }
         const selBar = buildToggleBar(
-            "Selection Target:",
-            "Which row kinds Ctrl+A selects (out-of-scope rows are dimmed). Leave empty for the smart default: all kinds — or just the kind(s) your active filters target (annotation filters → annotations; item-type filters → items; both → both). Click a kind to override that, Alt+click to exclude.",
+            wvStr("weavero-filter-seltarget-label"),
+            wvStr("weavero-filter-seltarget-tip"),
             selTarget, selTargetExc, selChoices,
             (key, altKey) => {
                 toggleObjTriState(selTarget, selTargetExc, key, altKey);
@@ -8645,7 +8925,9 @@ class _FilterMixin {
             "wv-filter-seltarget-bar wv-filter-bottom-bar",
             _selTargetAuto
         );
-        inner.appendChild(selBar);
+        // A feed view has parent rows only: nothing to target (and a choice
+        // made in a library is dormant there, `_effectiveSelectionTargetKinds`).
+        if (!feedView) inner.appendChild(selBar);
 
         // Bottom row — just the Alt+Click hint, centered. Clear /
         // × moved up to the right end of the cross-level row (see
@@ -8653,7 +8935,7 @@ class _FilterMixin {
         const bottomBar = wvHtmlEl(doc, "div", "wv-filter-bottom-controls");
         const hint = wvHtmlEl(doc, "span");
         hint.className = "wv-filter-bottom-hint";
-        hint.textContent = "Alt+Click to Exclude";
+        hint.textContent = wvStr("weavero-common-alt-click-exclude");
         bottomBar.appendChild(hint);
         inner.appendChild(bottomBar);
 
@@ -8685,8 +8967,8 @@ class _FilterMixin {
             this._refreshForDisplayToggle();
         });
         annOpt.appendChild(annCb);
-        const annLbl = wvHtmlEl(doc, "span", undefined, " Show Non-Matching Annotations", annOpt);
-        annOpt.title = "Mirrors Zotero's 'Hide Non-Matching Annotations' (View menu). When off, only annotations matching the current search/filter appear under matched files.";
+        const annLbl = wvHtmlEl(doc, "span", undefined, " " + wvStr("weavero-filter-show-nonmatching-annotations"), annOpt);
+        annOpt.title = wvStr("weavero-filter-show-nonmatching-annotations-tip");
 
         const attOpt = wvHtmlEl(doc, "label", "wv-filter-display-opt");
         const attCb: any = wvHtmlEl(doc, "input");
@@ -8707,22 +8989,40 @@ class _FilterMixin {
             this._refreshForDisplayToggle();
         });
         attOpt.appendChild(attCb);
-        const attLbl = wvHtmlEl(doc, "span", undefined, " Show Non-Matching Attachments", attOpt);
-        attOpt.title = "When off, only attachments matching the current search/filter appear under matched parents. Hidden attachments take their annotation children with them.";
+        const attLbl = wvHtmlEl(doc, "span", undefined, " " + wvStr("weavero-filter-show-nonmatching-attachments"), attOpt);
+        attOpt.title = wvStr("weavero-filter-show-nonmatching-attachments-tip");
         // Attachment first (higher in the tree), annotation second
         // — matches the convention used by the Selection Target row
         // and other higher-level-on-top groupings in this popup.
-        inner.appendChild(attOpt);
-        inner.appendChild(annOpt);
+        // Not in a feed view: no attachment or annotation rows to show.
+        if (!feedView) {
+            inner.appendChild(attOpt);
+            inner.appendChild(annOpt);
+        }
 
-        const searchCtx = { libraryID: activeLibraryID, isGroupLibrary, panel };
+        // `feedLibs`: the libraries the search lists values from in a feed
+        // view (the Feeds row has no library of its own: the selected-library
+        // read above falls back to My Library there).
+        const searchCtx = { libraryID: activeLibraryID, isGroupLibrary, panel, feed: feedView,
+            feedLibs: feedView ? this._wvFilterFeedLibraryIDs(doc.defaultView) : null };
         const refreshAll = () => {
-            this._renderColorSection(doc, colorSection, refreshAll);
-            this._renderTypeSection(doc, typeSection, refreshAll);
-            this._renderAttachmentFileTypeSection(doc, attachmentFileTypeSection, refreshAll);
-            this._renderNotesSection(doc, notesSection, refreshAll);
-            this._renderHasAnnotationsSection(doc, hasAnnotationsSection, refreshAll);
-            this._renderReadStatusSection(doc, readStatusSection, refreshAll);
+            const paneT0 = Date.now();
+            try { refreshAllBody(); }
+            finally {
+                // In the persistent trace when it is slow (wvFilterDiskTrace).
+                const ms = Date.now() - paneT0;
+                if (ms > 100) wvFilterDiskTrace("panel", { ms }, ms > 1000);
+            }
+        };
+        const refreshAllBody = () => {
+            if (!feedView) {
+                this._renderColorSection(doc, colorSection, refreshAll);
+                this._renderTypeSection(doc, typeSection, refreshAll);
+                this._renderAttachmentFileTypeSection(doc, attachmentFileTypeSection, refreshAll);
+                this._renderNotesSection(doc, notesSection, refreshAll);
+                this._renderHasAnnotationsSection(doc, hasAnnotationsSection, refreshAll);
+                this._renderReadStatusSection(doc, readStatusSection, refreshAll);
+            }
             this._renderItemTypeRow(doc, itemTypeRowSection, refreshAll, searchCtx);
             // Tint the Rule 1 same-level OR groups so "pick any of
             // these" reads at a glance. Item Type, Attachment File Type
@@ -8737,10 +9037,10 @@ class _FilterMixin {
                              colorSection]) {
                 s.classList.add("wv-filter-or-group");
             }
-            this._renderParentHasFieldsSection(doc, parentHasFieldsSection, refreshAll);
+            this._renderParentHasFieldsSection(doc, parentHasFieldsSection, refreshAll, feedView);
             this._renderUnifiedSearchSection(doc, searchSection, refreshAll, searchCtx);
-            this._renderCrossLevelSection(doc, crossLevelSection, refreshAll);
-            if (this._wvOeEnabled()) {
+            if (!feedView) this._renderCrossLevelSection(doc, crossLevelSection, refreshAll);
+            if (!feedView && this._wvOeEnabled()) {
                 this._renderOutlineScanSection(doc, outlineScanSection, refreshAll);
                 this._renderOutlineClassSection(doc, outlineClassSection, refreshAll);
             }
@@ -8794,18 +9094,28 @@ class _FilterMixin {
         const libraryID = ctx.libraryID;
         const isGroupLibrary = ctx.isGroupLibrary;
         const panel = ctx.panel;
+        // A feed view lists the values of the feeds it shows (`ctx.feedLibs`).
+        const feedLibs: number[] | null = ctx.feedLibs || null;
+        const fromLibs = async (one: (lid: any) => Promise<any[]>) => {
+            if (!feedLibs) return one(libraryID);
+            const all = new Set<any>();
+            for (const lid of feedLibs) for (const v of ((await one(lid)) || [])) all.add(v);
+            return [...all].sort((a, b) => String(a).localeCompare(String(b)));
+        };
 
         // Mode definitions. Each mode supplies async value-loading +
         // selection accessors. `ranked` enables the exact / prefix /
         // substring tiering used by Tag / Author / Added By.
+        // `label` is the mode menu entry's text (`l10n`, its message), also
+        // the search box's placeholder and the pills' kind name.
         const modes = [];
         modes.push({
             key: "tag",
-            label: "Tag",
-            placeholder: "Search tags…",
+            l10n: "weavero-menu-filter-mode-tag",
+            label: wvStr("weavero-menu-filter-mode-tag"),
             queryField: "_tagSearchQuery",
-            emptyAll: "No tags in this library",
-            emptyFiltered: "No matching tags",
+            emptyAll: wvStr("weavero-filter-tag-empty-all"),
+            emptyFiltered: wvStr("weavero-filter-tag-empty-match"),
             ranked: true,
             getValues: async () => {
                 if (this._cachedAnnotationTags) return this._cachedAnnotationTags;
@@ -8890,15 +9200,16 @@ class _FilterMixin {
         });
         modes.push({
             key: "publication",
-            label: "Publication",
-            placeholder: "Search publications…",
+            l10n: "weavero-menu-filter-mode-publication",
+            label: wvStr("weavero-menu-filter-mode-publication"),
+            anyLabel: wvStr("weavero-filter-line-any-publication"),
             queryField: "_publicationSearchQuery",
-            emptyAll: "No publications in this library",
-            emptyFiltered: "No matching publications",
+            emptyAll: wvStr("weavero-filter-publication-empty-all"),
+            emptyFiltered: wvStr("weavero-filter-publication-empty-match"),
             ranked: true,
             getValues: async () => {
                 if (this._cachedPublications) return this._cachedPublications;
-                const t = await this._collectPublications(libraryID);
+                const t = await fromLibs((lid) => this._collectPublications(lid));
                 this._cachedPublications = t;
                 return t;
             },
@@ -8925,15 +9236,15 @@ class _FilterMixin {
         });
         modes.push({
             key: "author",
-            label: "Author",
-            placeholder: "Search authors…",
+            l10n: "weavero-menu-filter-mode-author",
+            label: wvStr("weavero-menu-filter-mode-author"),
             queryField: "_authorSearchQuery",
-            emptyAll: "No annotation authors in this library",
-            emptyFiltered: "No matching authors",
+            emptyAll: wvStr("weavero-filter-author-empty-all"),
+            emptyFiltered: wvStr("weavero-filter-author-empty-match"),
             ranked: true,
             getValues: async () => {
                 if (this._cachedAnnotationAuthors) return this._cachedAnnotationAuthors;
-                const a = await this._collectAnnotationAuthors(libraryID);
+                const a = await fromLibs((lid) => this._collectAnnotationAuthors(lid));
                 this._cachedAnnotationAuthors = a;
                 return a;
             },
@@ -8964,11 +9275,12 @@ class _FilterMixin {
         if (isGroupLibrary) {
             modes.push({
                 key: "addedBy",
-                label: "Added By",
-                placeholder: "Search users…",
+                l10n: "weavero-menu-filter-mode-added-by",
+                label: wvStr("weavero-menu-filter-mode-added-by"),
+                anyLabel: wvStr("weavero-filter-line-any-added-by"),
                 queryField: "_addedBySearchQuery",
-                emptyAll: "No tracked creators in this library",
-                emptyFiltered: "No matching users",
+                emptyAll: wvStr("weavero-filter-added-by-empty-all"),
+                emptyFiltered: wvStr("weavero-filter-added-by-empty-match"),
                 ranked: true,
                 getValues: async () => {
                     if (this._cachedAddedByUsers) return this._cachedAddedByUsers;
@@ -9009,11 +9321,11 @@ class _FilterMixin {
         // search box — see `_renderItemTypeRow`.)
         modes.push({
             key: "collection",
-            label: "Collection",
-            placeholder: "Search collections…",
+            l10n: "weavero-menu-filter-mode-collection",
+            label: wvStr("weavero-menu-filter-mode-collection"),
             queryField: "_collectionSearchQuery",
-            emptyAll: "No collections in this library",
-            emptyFiltered: "No matching collections",
+            emptyAll: wvStr("weavero-filter-collection-empty-all"),
+            emptyFiltered: wvStr("weavero-filter-collection-empty-match"),
             ranked: false,
             verticalList: true,
             // Indented, expandable tree (MJT 2026-09-28): rows in the
@@ -9039,7 +9351,7 @@ class _FilterMixin {
                         tw.classList.add(open ? "wv-open" : "wv-closed");
                         tw.textContent = "▸";
                         if (!q) {
-                            tw.title = open ? "Collapse" : "Expand";
+                            tw.title = wvStr(open ? "weavero-filter-collection-collapse" : "weavero-filter-collection-expand");
                             // Keep the focus in the search box (the list hides on blur).
                             tw.addEventListener("mousedown", (e: any) => { e.preventDefault(); e.stopPropagation(); });
                             tw.addEventListener("click", (e: any) => {
@@ -9105,11 +9417,11 @@ class _FilterMixin {
         });
         modes.push({
             key: "savedSearch",
-            label: "Saved Search",
-            placeholder: "Search saved searches…",
+            l10n: "weavero-menu-filter-mode-saved-search",
+            label: wvStr("weavero-menu-filter-mode-saved-search"),
             queryField: "_savedSearchSearchQuery",
-            emptyAll: "No saved searches in this library",
-            emptyFiltered: "No matching saved searches",
+            emptyAll: wvStr("weavero-filter-saved-search-empty-all"),
+            emptyFiltered: wvStr("weavero-filter-saved-search-empty-match"),
             ranked: false,
             verticalList: true,
             getValues: async () => {
@@ -9161,12 +9473,23 @@ class _FilterMixin {
             },
         });
 
-        // Resolve the active mode (default → first in list / "tag").
-        if (!this._unifiedSearchMode
-            || !modes.find(m => m.key === this._unifiedSearchMode)) {
+        // A feed view: only the modes a feed item can match -- the table's
+        // `noFeed` for the dimension a mode picks; Collection and Saved Search
+        // never (a feed item is in neither).
+        if (ctx.feed) {
+            const DIM_OF: Record<string, string> = { tag: "annotationTag", publication: "publication", author: "annotationAuthor", addedBy: "addedBy" };
+            for (let i = modes.length - 1; i >= 0; i--) {
+                const d = DIM_OF[modes[i].key];
+                if (!d || wvDimNoFeed(d)) modes.splice(i, 1);
+            }
+        }
+        // Resolve the active mode (default → first in list / "tag"). A feed
+        // view falls back without storing it: the library's mode stays.
+        if (!ctx.feed && (!this._unifiedSearchMode
+            || !modes.find(m => m.key === this._unifiedSearchMode))) {
             this._unifiedSearchMode = modes[0].key;
         }
-        let mode = modes.find(m => m.key === this._unifiedSearchMode);
+        let mode = modes.find(m => m.key === this._unifiedSearchMode) || modes[0];
 
         // Top row — dropdown trigger (▾) + search input on one line.
         // The trigger shows ONLY a chevron (no label), matching
@@ -9185,7 +9508,7 @@ class _FilterMixin {
         trigger.type = "button";
         trigger.className = "wv-filter-mode-trigger";
         trigger.textContent = "▾"; // ▾
-        trigger.title = "Choose what to filter";
+        trigger.title = wvStr("weavero-filter-mode-trigger-tip");
         searchWrap.appendChild(trigger);
 
         // XUL menupopup — renders as its own toplevel widget so it
@@ -9274,7 +9597,7 @@ class _FilterMixin {
         const placeholder = wvHtmlEl(doc, "span");
         placeholder.style.opacity = "0.5";
         placeholder.style.fontSize = "12px";
-        placeholder.textContent = "Loading…";
+        placeholder.textContent = wvStr("weavero-common-loading");
         box.appendChild(placeholder);
 
         const SUGGEST_LIMIT = 10;
@@ -9337,16 +9660,15 @@ class _FilterMixin {
                 pill.className = "wv-filter-selected-pill";
                 if (isExclude) pill.dataset.exclude = "true";
                 if (m.pillIconOnly) pill.dataset.iconOnly = "true";
-                pill.title = (isExclude ? "Not " : "")
-                    + m.label + ": " + label;
+                const excl = isExclude ? "yes" : "no";
+                pill.title = wvStr("weavero-filter-pill-tip", { exclude: excl, kind: m.label, value: label });
                 if (m.renderIcon) {
                     m.renderIcon(pill, id);
                 } else if (!onKindLine) {
                     // (On an "Any <kind>" line the line label already names
                     // the kind -- MJT 2026-09-28.)
                     const modeLbl = wvHtmlEl(doc, "span", "wv-filter-selected-pill-mode");
-                    modeLbl.textContent = (isExclude ? "Not " : "")
-                        + m.label + ":";
+                    modeLbl.textContent = wvStr("weavero-filter-pill-kind", { exclude: excl, kind: m.label });
                     pill.appendChild(modeLbl);
                 }
                 if (!m.pillIconOnly) {
@@ -9363,18 +9685,16 @@ class _FilterMixin {
                     const tagScope = (g && g.hasTagScope)
                         || { annotation: true, attachment: true, parent: true };
                     const KINDS_ROW_TAG = [
-                        { key: "parent",     label: "Parent" },
-                        { key: "attachment", label: "Attachment" },
-                        { key: "note",       label: "Note" },
-                        { key: "annotation", label: "Annotation" },
+                        { key: "parent",     label: wvStr("weavero-filter-kind-parent") },
+                        { key: "attachment", label: wvStr("weavero-filter-kind-attachment") },
+                        { key: "note",       label: wvStr("weavero-filter-kind-note") },
+                        { key: "annotation", label: wvStr("weavero-filter-kind-annotation") },
                     ];
                     const arrow = wvHtmlEl(doc, "button");
                     arrow.type = "button";
                     arrow.className = "wv-filter-selected-pill-scope";
                     arrow.textContent = "▾";
-                    arrow.title = "Choose which categories the Tag filter "
-                        + "applies to — parent items, attachments, notes, "
-                        + "annotations (shared with Has Tag).";
+                    arrow.title = wvStr("weavero-filter-tag-scope-tip");
                     const allOn = KINDS_ROW_TAG.every(
                         k => tagScope[k.key] !== false);
                     if (!allOn) arrow.dataset.modified = "true";
@@ -9392,7 +9712,7 @@ class _FilterMixin {
                 x.type = "button";
                 x.className = "wv-filter-selected-pill-x";
                 x.textContent = "×";
-                x.title = "Remove";
+                x.title = wvStr("weavero-filter-pill-remove");
                 x.addEventListener("click", async (e) => {
                     e.stopPropagation();
                     // Always pass the INCLUDE set as `sel` — onToggle's
@@ -9465,16 +9785,17 @@ class _FilterMixin {
                 if (!lines.has(key)) lines.set(key, { label, entries: [] });
                 return lines.get(key);
             };
-            lineFor("all", "All of");
+            const allOf = wvStr("weavero-filter-line-all-of");
+            lineFor("all", allOf);
             for (const k of this._pillOrder) {
                 const entry = activeMap.get(k);
                 if (!entry) continue;
                 if (entry.m.anyOf) {
                     const ln = lineFor(entry.m.key, entry.isExclude
-                        ? entry.m.label : "Any " + entry.m.label);
+                        ? entry.m.label : entry.m.anyLabel);
                     ln.entries.push(entry);
                 }
-                else lineFor("all", "All of").entries.push(entry);
+                else lineFor("all", allOf).entries.push(entry);
             }
             for (const ln of lines.values()) {
                 if (!ln.entries.length) continue;
@@ -9626,7 +9947,7 @@ class _FilterMixin {
                 more.style.opacity = "0.5";
                 more.style.fontSize = "12px";
                 more.style.alignSelf = "center";
-                more.textContent = "+" + overflow + " more";
+                more.textContent = wvStr("weavero-filter-suggest-more", { count: overflow });
                 box.appendChild(more);
             }
         };
@@ -9663,7 +9984,7 @@ class _FilterMixin {
             const ph = wvHtmlEl(doc, "span");
             ph.style.opacity = "0.5";
             ph.style.fontSize = "12px";
-            ph.textContent = "Loading…";
+            ph.textContent = wvStr("weavero-common-loading");
             box.appendChild(ph);
             loadAndRender();
         };
@@ -9677,9 +9998,10 @@ class _FilterMixin {
             }
             for (const m of modes) {
                 const item = doc.createXULElement("menuitem");
-                item.setAttribute("label", m.label);
+                wvL10n(item, m.l10n);
                 item.setAttribute("type", "radio");
                 item.setAttribute("name", "wv-filter-mode");
+                item.setAttribute("data-wv-mode", m.key);
                 wvSetBoolAttr(item, "checked", m.key === mode.key);
                 item.addEventListener("command", () => {
                     switchMode(m.key);
@@ -9802,9 +10124,9 @@ class _FilterMixin {
         // independently, so the closed control can hug its label.
         trigger.setAttribute("sizetopopup", "none");
         trigger.setAttribute("native", "true");
-        trigger.setAttribute("label", "Item Type");
+        trigger.setAttribute("label", wvStr("weavero-filter-itype-trigger"));
         trigger.className = "wv-filter-itype-trigger";
-        trigger.setAttribute("tooltiptext", "Item Type — click to choose");
+        trigger.setAttribute("tooltiptext", wvStr("weavero-filter-itype-trigger-tip"));
         // Empty popup — required for the menulist to render its
         // dropmarker. The popupshowing handler cancels the native
         // open and instead toggles our custom 2-col HTML grid.
@@ -9852,6 +10174,10 @@ class _FilterMixin {
         opts.appendChild(box);
 
         let cached = null;
+        // A feed view: the three types a feed item can have (WV_FEED_ITEM_TYPES),
+        // as the tiles AND the list; the library's MRU is neither read nor
+        // bumped there.
+        const feedTypes: string[] | null = (ctx && ctx.feed) ? WV_FEED_ITEM_TYPES : null;
 
         const loadValues = async () => {
             try {
@@ -9860,7 +10186,7 @@ class _FilterMixin {
                 ]);
                 const raw = Zotero.ItemTypes.getTypes() || [];
                 const all = raw
-                    .filter(t => !SPECIAL.has(t.name))
+                    .filter(t => !SPECIAL.has(t.name) && (!feedTypes || feedTypes.includes(t.name)))
                     .map(t => {
                         let label = t.name;
                         try {
@@ -9888,6 +10214,7 @@ class _FilterMixin {
             try {
                 const valid = new Set((Zotero.ItemTypes.getTypes() || [])
                     .map(t => t.name));
+                if (feedTypes) return feedTypes.filter(n => valid.has(n));
                 const wvMru = (String(Zotero.Prefs.get(
                     "extensions.zotero.weavero.itemTypeFilterMRU", true)) || "")
                     .split(",").filter(Boolean);
@@ -9909,6 +10236,7 @@ class _FilterMixin {
         };
 
         const bumpMRU = (id) => {
+            if (feedTypes) return;
             try {
                 const KEY = "extensions.zotero.weavero.itemTypeFilterMRU";
                 const cur = (String(Zotero.Prefs.get(KEY, true)) || "")
@@ -9930,7 +10258,7 @@ class _FilterMixin {
             let label = id;
             try { label = Zotero.ItemTypes.getLocalizedString(id); }
             catch (e) {}
-            chip.title = (isExclude ? "Not " : "") + label;
+            chip.title = isExclude ? wvStr("weavero-filter-itype-not", { type: label }) : label;
             chip.appendChild(icon);
             chip.addEventListener("click", (e) => {
                 e.stopPropagation();
@@ -10008,7 +10336,7 @@ class _FilterMixin {
                 const empty = wvHtmlEl(doc, "span");
                 empty.style.opacity = "0.5";
                 empty.style.fontSize = "12px";
-                empty.textContent = "No item types available";
+                empty.textContent = wvStr("weavero-filter-itype-empty");
                 box.appendChild(empty);
                 return;
             }
@@ -10097,8 +10425,9 @@ class _FilterMixin {
                 const btn = wvHtmlEl(doc, "button");
                 btn.type = "button";
                 btn.className = "wv-filter-opt wv-filter-opt-icon wv-itype-mru-tile";
-                btn.title = label + " — recently used. Click to filter; "
-                    + "Alt+click to exclude.";
+                // A feed view's tiles are not "recently used": the type's
+                // name, as in the list.
+                btn.title = feedTypes ? label : wvStr("weavero-filter-itype-mru-tip", { type: label });
                 if (sel.has(id)) btn.dataset.selected = "true";
                 else if (exc.has(id)) btn.dataset.excluded = "true";
                 const icon = wvHtmlEl(doc, "span");
@@ -10445,10 +10774,10 @@ class _FilterMixin {
         if (!sb) return;
         const wrapper = sb.querySelector("#search-wrapper") || sb;
         const KINDS_QS = [
-            { key: "parent",     label: "Parent" },
-            { key: "attachment", label: "Attachment" },
-            { key: "note",       label: "Note" },
-            { key: "annotation", label: "Annotation" },
+            { key: "parent",     label: wvStr("weavero-filter-kind-parent") },
+            { key: "attachment", label: wvStr("weavero-filter-kind-attachment") },
+            { key: "note",       label: wvStr("weavero-filter-kind-note") },
+            { key: "annotation", label: wvStr("weavero-filter-kind-annotation") },
         ];
         // The button is built once; its listeners are wired on EVERY call,
         // keyed and instance-tagged (lib/listen.ts): a reload used to find the
@@ -10465,8 +10794,8 @@ class _FilterMixin {
             // only the ▾ glyph to keep it compact inside the search
             // box (the visible "Restrict Quick Search to:" text was
             // wrapping and crowding the input).
-            btn.title = "Restrict Quick Search to: — choose which row kinds the toolbar quick-search may surface in the results. All-on (default) means no restriction.";
-            btn.setAttribute("aria-label", "Restrict Quick Search to");
+            btn.title = wvStr("weavero-filter-qs-scope-tip");
+            btn.setAttribute("aria-label", wvStr("weavero-filter-qs-scope-aria"));
             const arrow = wvHtmlEl(doc, "span");
             arrow.className = "wv-qs-scope-btn-arrow";
             arrow.textContent = "▾";
@@ -10520,7 +10849,9 @@ class _FilterMixin {
     _updateQuickSearchScopeButtonVisibility(sb, btn) {
         try {
             const v = (sb.value || "").trim();
-            btn.style.display = v ? "" : "none";
+            // Never over a feed view: parent rows only, nothing to restrict to
+            // (and a scope set in a library is dormant there, `_wvFeedGroup`).
+            btn.style.display = v && !this._wvFilterWinIsFeed(winOf(btn)) ? "" : "none";
         } catch (e) {}
     }
 
@@ -10591,7 +10922,7 @@ class _FilterMixin {
         // since here we're inside a XUL panel that positions itself.
         inner.style.position = "static";
 
-        const heading = wvHtmlEl(doc, "div", "wv-filter-scope-popup-head", "Apply to", inner);
+        const heading = wvHtmlEl(doc, "div", "wv-filter-scope-popup-head", wvStr("weavero-filter-scope-apply-to"), inner);
 
         for (const k of kinds) {
             const lbl = wvHtmlEl(doc, "label", "wv-filter-scope-popup-row");
@@ -10672,10 +11003,10 @@ class _FilterMixin {
         // level first) so every "Apply to" dropdown in the popup
         // reads consistently.
         const KINDS_ROW = [
-            { key: "parent",     label: "Parent" },
-            { key: "attachment", label: "Attachment" },
-            { key: "note",       label: "Note" },
-            { key: "annotation", label: "Annotation" },
+            { key: "parent",     label: wvStr("weavero-filter-kind-parent") },
+            { key: "attachment", label: wvStr("weavero-filter-kind-attachment") },
+            { key: "note",       label: wvStr("weavero-filter-kind-note") },
+            { key: "annotation", label: wvStr("weavero-filter-kind-annotation") },
         ];
         // Has Link's kind list — text-source-specific buckets
         // (URL detection only fires on annotation comments and
@@ -10685,9 +11016,9 @@ class _FilterMixin {
         // attachment tier, annotation comments at the annotation
         // tier.
         const KINDS_HAS_LINK = [
-            { key: "standaloneText",    label: "Standalone Note Text" },
-            { key: "itemNoteText",      label: "Item Note Text" },
-            { key: "annotationComment", label: "Annotation Comment" },
+            { key: "standaloneText",    label: wvStr("weavero-filter-kind-standalone-note-text") },
+            { key: "itemNoteText",      label: wvStr("weavero-filter-kind-item-note-text") },
+            { key: "annotationComment", label: wvStr("weavero-filter-kind-annotation-comment") },
         ];
 
         // Each cross-level filter renders as a slot containing the
@@ -10703,6 +11034,7 @@ class _FilterMixin {
             const btn = wvHtmlEl(doc, "button");
             btn.type = "button";
             btn.className = "wv-filter-opt wv-filter-opt-icon wv-filter-cross-main";
+            btn.dataset.wvDim = key;
             btn.title = tip;
             if (cur === true) btn.dataset.selected = "true";
             else if (cur === false) btn.dataset.excluded = "true";
@@ -10734,8 +11066,7 @@ class _FilterMixin {
                 // items / attachments / notes / annotations) — the
                 // pre-four-type "row kinds" wording survived the 2026-08
                 // reorganization until MJT flagged it (2026-08-20).
-                arrow.title = "Choose which categories this filter applies "
-                    + "to — parent items, attachments, notes, annotations";
+                arrow.title = wvStr("weavero-filter-scope-arrow-tip");
                 arrow.textContent = "▾";
                 const scope = (g0 && g0[scopeKey]) || {};
                 const allOn = kindList.every(k => scope[k.key] !== false);
@@ -10752,38 +11083,35 @@ class _FilterMixin {
         };
 
         // Order: Has Tag (leftmost) → Has Related → Has Link.
+        const hasTagName = wvStr("weavero-filter-dim-has-tag");
         buildBtn(
             "hasTag", "hasTagScope", KINDS_ROW,
-            "Has Tag",
+            hasTagName,
             (d) => {
                 const icon = wvHtmlEl(d, "img", "wv-filter-svg");
                 icon.src = "chrome://zotero/skin/16/universal/tag.svg";
-                icon.alt = "Has Tag";
+                icon.alt = hasTagName;
                 icon.style.color = "var(--accent-orange)";
                 return icon;
             },
-            "Has Tag — items carrying at least one tag. "
-            + "Alt+click to exclude. ▾ to scope by row kind.");
+            wvStr("weavero-filter-has-tag-tip"));
+        const hasRelatedName = wvStr("weavero-filter-dim-has-related");
         buildBtn(
             "hasRelated", "hasRelatedScope", KINDS_ROW,
-            "Has Related",
+            hasRelatedName,
             (d) => {
                 const icon = wvHtmlEl(d, "img", "wv-filter-svg");
                 icon.src = "chrome://zotero/skin/16/universal/related.svg";
-                icon.alt = "Has Related";
+                icon.alt = hasRelatedName;
                 icon.style.color = "var(--accent-wood)";
                 return icon;
             },
-            "Has Related — items with at least one related-item link. "
-            + "Alt+click to exclude. ▾ to scope by row kind.");
+            wvStr("weavero-filter-has-related-tip"));
         buildBtn(
             "hasLink", "hasLinkScope", KINDS_HAS_LINK,
-            "Has External Link",
+            wvStr("weavero-filter-dim-has-external-link"),
             (d) => this._makeLinkTileSvg(d),
-            "Has External Link — items whose annotation comment or note "
-            + "text contains a link that leaves Zotero (https://, mailto:, "
-            + "app links). A zotero:// link is Has Item Links'. Alt+click "
-            + "to exclude. ▾ to choose which text source(s) to scan.");
+            wvStr("weavero-filter-has-external-link-tip"));
         // Has Item Links (Links plan slice 3, MJT 2026-10-28): no scope --
         // the whole item, what the Links column counts. Only with the Links
         // switch on; between Has Link and Has Backlinks, the item pane's
@@ -10794,20 +11122,17 @@ class _FilterMixin {
             try { this._wvBlEnsure(); } catch (e) {}
             // Its ▾: where the link is written, Has External Link's three
             // sources (MJT 2026-10-30, "Ok for what is proposed").
+            const hasItemLinksName = wvStr("weavero-filter-dim-has-item-links");
             buildBtn(
                 "hasItemLinks", "hasItemLinksScope", KINDS_HAS_LINK,
-                "Has Item Links",
+                hasItemLinksName,
                 (d) => {
                     const icon = wvHtmlEl(d, "img", "wv-filter-svg");
                     icon.src = WV_LK_ICON_CONTEXT;
-                    icon.alt = "Has Item Links";
+                    icon.alt = hasItemLinksName;
                     return icon;
                 },
-                "Has Item Links — items whose notes or annotation comments "
-                + "link to another Zotero item (Zotero links and note "
-                + "citations), on the item, a note or an annotation. A web URL "
-                + "alone is Has External Link's. Alt+click to exclude. "
-                + "▾ to choose where the link is written.");
+                wvStr("weavero-filter-has-item-links-tip"));
         }
         // Has Backlinks (issue #60): no scope -- the whole item. Only with
         // the Backlinks switch on (Links & Relations -> Relations); opening
@@ -10817,23 +11142,21 @@ class _FilterMixin {
         if (blOn) {
             try { this._wvBlEnsure(); } catch (e) {}
             // Its ▾: what is linked, Has Tag's four kinds (MJT 2026-10-30).
+            const hasBacklinksName = wvStr("weavero-filter-dim-has-backlinks");
             buildBtn(
                 "hasBacklinks", "hasBacklinksScope", KINDS_ROW,
-                "Has Backlinks",
+                hasBacklinksName,
                 (d) => {
                     const icon = wvHtmlEl(d, "img", "wv-filter-svg");
                     icon.src = WV_BL_ICON_CONTEXT;
-                    icon.alt = "Has Backlinks";
+                    icon.alt = hasBacklinksName;
                     // No colour of its own: the tile's text colour, like
                     // its neighbour Has Link, whose glyph it extends
                     // (2026-10-23). A Zotero-link brown once sat here and
                     // read as Has Related's wood on the dark theme.
                     return icon;
                 },
-                "Has Backlinks — items linked from another annotation comment "
-                + "or note (Zotero links and note citations), on the item, a child or an "
-                + "annotation. Alt+click to exclude. ▾ to choose what is "
-                + "linked: the item, its attachments, notes or annotations.");
+                wvStr("weavero-filter-has-backlinks-tip"));
         }
     }
 
@@ -10882,7 +11205,7 @@ class _FilterMixin {
         // Anchor stamp read by the toggle check above.
         (pop as any)._wvScopeAnchor = anchor;
 
-        const heading = wvHtmlEl(doc, "div", "wv-filter-scope-popup-head", "Apply to", pop);
+        const heading = wvHtmlEl(doc, "div", "wv-filter-scope-popup-head", wvStr("weavero-filter-scope-apply-to"), pop);
 
         for (const k of kinds) {
             const lbl = wvHtmlEl(doc, "label", "wv-filter-scope-popup-row");
@@ -10940,7 +11263,7 @@ class _FilterMixin {
     /** Render a row of parent-targeting "Has *" tri-state icon
      *  buttons (Has DOI, Has URL, Has Abstract, Has Attachment File).
      *  All four sit on the same line in the Parent group. */
-    _renderParentHasFieldsSection(doc, section, refreshAll) {
+    _renderParentHasFieldsSection(doc, section, refreshAll, feed?: boolean) {
         while (section.firstChild) section.removeChild(section.firstChild);
         section.className = "wv-filter-section";
         const optsBox = wvHtmlEl(doc, "div", "wv-filter-options", undefined, section);
@@ -10951,10 +11274,15 @@ class _FilterMixin {
         // Has-* tiles read as the same surface as their right-pane
         // section header.
         const buildBtn = (key, label, iconSrc, tip, color?, afterChange?) => {
+            // A feed view (`feed`): only what a feed item can carry (the
+            // table's `noFeed`): Not In Your Library and Retracted | DOI,
+            // URL, Abstract.
+            if (feed && wvDimNoFeed(key)) return;
             const cur = g0 ? g0[key] : null;
             const btn = wvHtmlEl(doc, "button");
             btn.type = "button";
             btn.className = "wv-filter-opt wv-filter-opt-icon";
+            btn.dataset.wvDim = key;
             btn.title = tip;
             if (cur === true) btn.dataset.selected = "true";
             else if (cur === false) btn.dataset.excluded = "true";
@@ -11005,7 +11333,7 @@ class _FilterMixin {
         // link: at 16px a chain reads as Zotero's own Related glyph (user
         // caught the confusion). User-picked design D3 of eight rendered
         // candidates, 2026-08-05.
-        buildBtn("inOtherLibrary", "In Multiple Libraries",
+        buildBtn("inOtherLibrary", wvStr("weavero-filter-dim-in-other-library"),
             "data:image/svg+xml;utf8,"
             + "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'>"
             + "<defs><mask id='wvml'><rect width='16' height='16' fill='white'/>"
@@ -11023,10 +11351,7 @@ class _FilterMixin {
             + "<rect x='10.05' y='9.8' width='1.4' height='4.9'/>"
             + "<rect x='13.7' y='9.8' width='1.4' height='4.9'/>"
             + "<rect x='5.5' y='14.8' width='10.5' height='1.2'/></g></svg>",
-            "In Multiple Libraries — regular items that also belong to "
-            + "another library (a linked copy exists, e.g. dragged to or "
-            + "from a group). The item pane's Libraries and Collections "
-            + "section shows which ones. Alt+click to exclude.",
+            wvStr("weavero-filter-in-other-library-tip"),
             undefined,
             // The predicate answers from an async-built cache; make sure
             // it's warm (or being warmed) the moment the tile activates.
@@ -11035,44 +11360,51 @@ class _FilterMixin {
                     try { this._wvEnsureLinkedLibCache(winOf(section), true); } catch (e) {}
                 }
             });
+        // Not In Your Library (feeds.ts): a membership tile too, shown in a feed
+        // view only (the dimension is dormant elsewhere). Weavero's library
+        // badge (lib/library-badge.ts), barred.
+        try {
+            const fw: any = winOf(section);
+            const fv = fw && fw.ZoteroPane && fw.ZoteroPane.itemsView;
+            if (this._wvFdOn() && fv && this._wvFdIsFeedView(fv)) {
+                buildBtn("feedNotInLibrary", wvStr("weavero-filter-dim-feed-not-in-library"),
+                    "data:image/svg+xml;utf8,"
+                    + "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'>"
+                    + "<g fill='context-fill'><path d='M8 1.5L13.5 6.5H2.5Z'/><rect x='3.5' y='7' width='2' height='6'/>"
+                    + "<rect x='7' y='7' width='2' height='6'/><rect x='10.5' y='7' width='2' height='6'/><rect x='2' y='13' width='12' height='2'/></g>"
+                    + "<path d='M1.5 14.5L14.5 1.5' stroke='context-fill' stroke-width='1.6'/></svg>",
+                    wvStr("weavero-filter-feed-not-in-library-tip"));
+            }
+        } catch (e) {}
         // Retracted: what the item IS, so LEFT with In Multiple Libraries
         // (MJT 2026-09-28). The same red circled cross the items list puts
         // before a retracted title (itemTreeRow.js getCSSIcon('cross') +
         // .retracted; red = --accent-red as in the citation dialog).
-        buildBtn("retracted", "Retracted",
+        buildBtn("retracted", wvStr("weavero-filter-dim-retracted"),
             "chrome://zotero/skin/16/universal/cross.svg",
-            "Retracted — regular items Zotero marks as retracted (red "
-            + "retraction notice in the item pane), within the current "
-            + "collection or search. Alt+click to exclude them.",
+            wvStr("weavero-filter-retracted-tip"),
             "var(--accent-red)");
         const hasSep = wvHtmlEl(doc, "div", "wv-filter-vertical-separator");
         hasSep.style.marginLeft = "auto";
         optsBox.appendChild(hasSep);
-        buildBtn("hasDOI", "Has DOI",
+        buildBtn("hasDOI", wvStr("weavero-filter-dim-has-doi"),
             "chrome://zotero/skin/16/universal/crossref.svg",
-            "Has DOI — regular items with a DOI. Alt+click to exclude.");
+            wvStr("weavero-filter-has-doi-tip"));
+        // PMID / PMCID: the identifiers' own names, as DOI -- not translated.
         buildBtn("hasPMID", "PMID", null,
-            "Has PMID — regular items with a PMID (field or Extra). "
-            + "Alt+click to exclude.");
+            wvStr("weavero-filter-has-pmid-tip"));
         buildBtn("hasPMCID", "PMCID", null,
-            "Has PMCID — regular items with a PMCID (field or Extra). "
-            + "Alt+click to exclude.");
-        buildBtn("hasURL", "Has URL",
+            wvStr("weavero-filter-has-pmcid-tip"));
+        buildBtn("hasURL", wvStr("weavero-filter-dim-has-url"),
             "chrome://zotero/skin/16/universal/globe.svg",
-            "Has URL — regular items with a URL field. "
-            + "Alt+click to exclude.");
-        buildBtn("hasAbstract", "Has Abstract",
+            wvStr("weavero-filter-has-url-tip"));
+        buildBtn("hasAbstract", wvStr("weavero-filter-dim-has-abstract"),
             "chrome://zotero/skin/16/universal/abstract.svg",
-            "Has Abstract — regular items with a non-empty abstract. "
-            + "Alt+click to exclude.",
+            wvStr("weavero-filter-has-abstract-tip"),
             "var(--accent-azure)");
-        buildBtn("hasAttachment", "Has Attachment File",
+        buildBtn("hasAttachment", wvStr("weavero-filter-dim-has-attachment"),
             "chrome://zotero/skin/16/universal/attachment.svg",
-            "Has Attachment File — regular items with at least "
-            + "one attachment file (PDF, EPUB, snapshot, etc.). "
-            + "Distinct from Item Note — item notes are also "
-            + "attachment-level rows but have their own tile in "
-            + "the Attachment group. Alt+click to exclude.",
+            wvStr("weavero-filter-has-attachment-tip"),
             "var(--accent-green)");
     }
 
@@ -11107,13 +11439,12 @@ class _FilterMixin {
             const lfBtn = wvHtmlEl(doc, "button");
             lfBtn.type = "button";
             lfBtn.className = "wv-filter-opt wv-filter-opt-icon";
-            lfBtn.title = "Linked File — attachments stored as links to "
-                + "external files (any content type). Alt+click to exclude.";
+            lfBtn.title = wvStr("weavero-filter-linked-file-tip");
             if (selected.has("attachmentLinkedFile")) lfBtn.dataset.selected = "true";
             if (excluded.has("attachmentLinkedFile")) lfBtn.dataset.excluded = "true";
             const lfIcon = wvHtmlEl(doc, "img", "wv-filter-svg");
             lfIcon.src = linkedDef.icon;
-            lfIcon.alt = "Linked File";
+            lfIcon.alt = linkedDef.label;
             lfBtn.appendChild(lfIcon);
             lfBtn.addEventListener("click", (e) => {
                 e.stopPropagation();
@@ -11145,8 +11476,7 @@ class _FilterMixin {
         const saBtn = wvHtmlEl(doc, "button");
         saBtn.type = "button";
         saBtn.className = "wv-filter-opt wv-filter-opt-icon";
-        saBtn.title = "Standalone Attachment — show only top-level "
-            + "(parentless) attachments. Alt+click to exclude.";
+        saBtn.title = wvStr("weavero-filter-standalone-attachment-tip");
         if (saCur === true) saBtn.dataset.selected = "true";
         else if (saCur === false) saBtn.dataset.excluded = "true";
         const saIcon = wvHtmlEl(doc, "img", "wv-filter-svg");
@@ -11165,7 +11495,7 @@ class _FilterMixin {
             + " L7.4 12.9 a3.4 3.4 0 0 1 -4.8 -4.8 L8.3 2.4'/>"
             + "</g>"
             + "</svg>";
-        saIcon.alt = "Standalone Attachment";
+        saIcon.alt = wvStr("weavero-filter-dim-standalone-attachment");
         // Attachments accent per upstream's $item-pane-sections palette
         // (GREEN — blue is the Info section; the original 2026-08-19
         // tile shipped off-palette blue, caught by MJT 2026-08-20).
@@ -11201,8 +11531,7 @@ class _FilterMixin {
         const hbBtn = wvHtmlEl(doc, "button");
         hbBtn.type = "button";
         hbBtn.className = "wv-filter-opt wv-filter-opt-icon";
-        hbBtn.title = "Has Bookmarks — items whose attachment(s) have "
-            + "reader bookmarks saved. Alt+click to exclude.";
+        hbBtn.title = wvStr("weavero-filter-has-bookmarks-tip");
         if (hbCur === true) hbBtn.dataset.selected = "true";
         else if (hbCur === false) hbBtn.dataset.excluded = "true";
         hbBtn.appendChild(this._makeBookmarkSvg(doc));
@@ -11225,13 +11554,12 @@ class _FilterMixin {
         const haBtn = wvHtmlEl(doc, "button");
         haBtn.type = "button";
         haBtn.className = "wv-filter-opt wv-filter-opt-icon";
-        haBtn.title = "Has Annotations — file attachments with at least "
-            + "one annotation. Alt+click to exclude.";
+        haBtn.title = wvStr("weavero-filter-has-annotations-tip");
         if (cur === true) haBtn.dataset.selected = "true";
         else if (cur === false) haBtn.dataset.excluded = "true";
         const haIcon = wvHtmlEl(doc, "img", "wv-filter-svg");
         haIcon.src = "chrome://zotero/skin/16/universal/attachment-annotations.svg";
-        haIcon.alt = "Has Annotations";
+        haIcon.alt = wvStr("weavero-filter-dim-has-annotations");
         // Zotero maps `attachment-annotations` to `--tag-purple`
         // in the item-pane sections palette — same icon, same colour.
         haIcon.style.color = "var(--tag-purple)";
@@ -11263,9 +11591,7 @@ class _FilterMixin {
         // annotations, so the old "Shows ALL their annotations"
         // sentence read as a promise the tile doesn't keep (MJT
         // 2026-08-20).
-        heBtn.title = "Has Embedded Annotations — file attachments "
-            + "carrying at least one annotation embedded in the PDF by "
-            + "an outside reader. Alt+click to exclude.";
+        heBtn.title = wvStr("weavero-filter-has-embedded-annotations-tip");
         if (curEmb === true) heBtn.dataset.selected = "true";
         else if (curEmb === false) heBtn.dataset.excluded = "true";
         heBtn.appendChild(this._makeHasEmbeddedAnnotationsSvg(doc));
@@ -11288,11 +11614,7 @@ class _FilterMixin {
         const olBtn = wvHtmlEl(doc, "button");
         olBtn.type = "button";
         olBtn.className = "wv-filter-opt wv-filter-opt-icon";
-        olBtn.title = "Has Weavero Outline — attachments with an outline "
-            + "you curated in the reader's Outline tab (renamed entries, "
-            + "your own additions). NOT the document's own embedded or "
-            + "extracted outline: those can only be known by opening every "
-            + "file. Alt+click to exclude.";
+        olBtn.title = wvStr("weavero-filter-has-outline-tip");
         if (curOl === true) olBtn.dataset.selected = "true";
         else if (curOl === false) olBtn.dataset.excluded = "true";
         olBtn.appendChild(this._makeOutlineSourceSvg(doc));
@@ -11470,8 +11792,7 @@ class _FilterMixin {
         (btn as any).style.alignSelf = "center";
         if (cur === true) btn.dataset.selected = "true";
         else if (cur === false) btn.dataset.excluded = "true";
-        btn.title = "Has Comment — annotations with non-empty "
-            + "comment text. Alt+click to exclude.";
+        btn.title = wvStr("weavero-filter-has-comment-tip");
         btn.appendChild(this._makeHasCommentSvg(doc));
         btn.addEventListener("click", (e) => {
             e.stopPropagation();
@@ -11510,9 +11831,7 @@ class _FilterMixin {
         (btn as any).style.alignSelf = "center";
         if (cur === true) btn.dataset.selected = "true";
         else if (cur === false) btn.dataset.excluded = "true";
-        btn.title = "Annotation Source — embedded in the PDF by an "
-            + "outside reader (imported when Zotero first opens the "
-            + "file). Alt+click: made in Zotero Reader.";
+        btn.title = wvStr("weavero-filter-annotation-source-tip");
         btn.appendChild(this._makeAnnotationSourceSvg(doc));
         btn.addEventListener("click", (e) => {
             e.stopPropagation();
@@ -11890,9 +12209,7 @@ class _FilterMixin {
         const snBtn = wvHtmlEl(doc, "button");
         snBtn.type = "button";
         snBtn.className = "wv-filter-opt wv-filter-opt-icon";
-        snBtn.title = "Standalone Note — show only top-level "
-            + "(parentless) notes. Together with Item Note: either "
-            + "kind of note (OR). Alt+click to exclude.";
+        snBtn.title = wvStr("weavero-filter-standalone-note-tip");
         if (snCur === true) snBtn.dataset.selected = "true";
         else if (snCur === false) snBtn.dataset.excluded = "true";
         const snIcon = wvHtmlEl(doc, "img", "wv-filter-svg");
@@ -11913,7 +12230,7 @@ class _FilterMixin {
             + "<path d='M5.5 3.5 H13.5'/>"
             + "<path d='M14.5 10.5 H10.5 V14.5'/>"
             + "</svg>";
-        snIcon.alt = "Standalone Note";
+        snIcon.alt = wvStr("weavero-filter-dim-standalone-note");
         snIcon.style.color = "var(--accent-yellow)";
         snBtn.appendChild(snIcon);
         snBtn.addEventListener("click", (e) => {
@@ -11934,9 +12251,7 @@ class _FilterMixin {
         const inBtn = wvHtmlEl(doc, "button");
         inBtn.type = "button";
         inBtn.className = "wv-filter-opt wv-filter-opt-icon";
-        inBtn.title = "Item Note — show only notes attached to a regular item. "
-            + "Together with Standalone Note: either kind of note (OR). "
-            + "Alt+click to exclude.";
+        inBtn.title = wvStr("weavero-filter-item-note-tip");
         if (inCur === true) inBtn.dataset.selected = "true";
         else if (inCur === false) inBtn.dataset.excluded = "true";
         const inIcon = wvHtmlEl(doc, "img", "wv-filter-svg");
@@ -11975,7 +12290,7 @@ class _FilterMixin {
             // Folded bottom-right corner (inner L of the cut).
             + "<path d='M14.5 10.5 H10.5 V14.5'/>"
             + "</svg>";
-        inIcon.alt = "Item Note";
+        inIcon.alt = wvStr("weavero-filter-dim-item-note");
         // Same `--accent-yellow` Zotero uses for the notes section.
         inIcon.style.color = "var(--accent-yellow)";
         inBtn.appendChild(inIcon);
@@ -12425,6 +12740,7 @@ class _FilterMixin {
             // succession showed 2 closed book rows instead of the expanded
             // annotations (2026-08-04). Park the intent and retry shortly.
             wvTrace("bounce-suppress", { cascade: !!(opts && opts.cascade), deliberate: !!(opts && opts.deliberate) });
+            wvFilterDiskTrace("bounce", { why: "suppress", cascade: !!(opts && opts.cascade), deliberate: !!(opts && opts.deliberate) });
             if (opts && (opts.cascade || opts.deliberate)) this._wvScheduleCascadeRetry(opts);
             return;
         }
@@ -12456,6 +12772,7 @@ class _FilterMixin {
             // But a deliberate CASCADE apply must not be silently
             // swallowed — same reasoning as the suppression guard above.
             wvTrace("bounce-applying", { cascade: !!(opts && opts.cascade), deliberate: !!(opts && opts.deliberate) });
+            wvFilterDiskTrace("bounce", { why: "applying", cascade: !!(opts && opts.cascade), deliberate: !!(opts && opts.deliberate), depth: (this as any)._wvApplyStackDepth || 0 });
             if (opts && (opts.cascade || opts.deliberate)) this._wvScheduleCascadeRetry(opts);
             // A NON-cascade bounce is usually safe to drop (the comment
             // above), but not when it was the only apply that would have
@@ -12498,6 +12815,30 @@ class _FilterMixin {
         } catch (e) {}
         wvTrace("apply", { cascade: !!(opts && opts.cascade), via: !!(this as any)._wvViaSetFilter });
         const applyT0 = Date.now();
+        // The persistent trace (wvFilterDiskTrace). A user gesture's apply is
+        // written BEFORE it runs: if it never returns, its record is on disk.
+        // The depth counts nested applies on one JS stack (plugin-wide on
+        // purpose: re-entrancy is a property of the stack, not of a window).
+        const traceDepth = ((this as any)._wvApplyStackDepth = ((this as any)._wvApplyStackDepth || 0) + 1);
+        const ladderPass = (this as any)._wvInLadderPass;
+        const traceSrc = ladderPass != null ? "ladder:" + ladderPass
+            : ((opts && (opts.deliberate || opts.cascade)) ? "gesture" : "observer");
+        let tracePerf0: any = null;
+        try {
+            const ring0 = (Zotero as any)._wvFilterPerf;
+            tracePerf0 = ring0 && ring0.length ? ring0[ring0.length - 1] : null;
+            // Begin records for gestures only (the tree observer's applies --
+            // several a second while scrolling -- are recorded at their end).
+            if (traceSrc === "gesture") {
+                const rp0: any = this._wvApplyRpOf(this._wvFilterTargetWin());
+                wvFilterDiskTrace("apply", {
+                    src: traceSrc, cascade: !!(opts && opts.cascade), deliberate: !!(opts && opts.deliberate),
+                    via: !!(this as any)._wvViaSetFilter, depth: traceDepth,
+                    raw: rp0 && rp0._rows ? rp0._rows.length : null,
+                    state: wvFilterStateSummary(this._filterState),
+                }, true);
+            }
+        } catch (e) {}
         this._filterApplying = true;
         this._filterApplyDirty = false;
         this._filterApplyDirtyCascade = !!(opts && opts.cascade);
@@ -12588,6 +12929,23 @@ class _FilterMixin {
             wst.applyingTimer = wvTimeout(() => { wst.applyingTimer = null; wst.applying = false; }, 80);
             // The data-change ladder spaces its passes by this (DUTY CYCLE).
             wst.lastApplyMs = Date.now() - applyT0;
+            (this as any)._wvApplyStackDepth = Math.max(0, traceDepth - 1);
+            try {
+                const ring1 = (Zotero as any)._wvFilterPerf;
+                const perf1 = ring1 && ring1.length ? ring1[ring1.length - 1] : null;
+                const rp1: any = this._wvApplyRpOf(this._wvFilterTargetWin());
+                const noop = !!(this as any)._wvLastApplyNoop;
+                if (!(noop && wst.lastApplyMs < 50 && traceSrc === "observer")) {
+                    let shown: any = null;
+                    try { shown = rp1 && typeof rp1.getRowCount === "function" ? rp1.getRowCount() : null; } catch (e) {}
+                    wvFilterDiskTrace("apply-end", {
+                        src: traceSrc, ms: wst.lastApplyMs, depth: traceDepth, noop,
+                        shown, raw: rp1 && rp1._rows ? rp1._rows.length : null,
+                        state: traceSrc === "gesture" ? undefined : wvFilterStateSummary(this._filterState),
+                        perf: perf1 && perf1 !== tracePerf0 ? perf1 : undefined,
+                    }, wst.lastApplyMs > 1000);
+                }
+            } catch (e) {}
         }
     }
 
@@ -13404,7 +13762,10 @@ class _FilterMixin {
             const PARENT = new Set(wvDimLevels().parent);
             for (const g of (state.groups || [])) {
                 if (!g || !this._isGroupActive(g)) continue;
-                for (const [k, v] of Object.entries(g)) {
+                // for...in, not Object.entries: a feed view's shadow group
+                // (`_wvFeedGroup`) inherits its kept fields.
+                for (const k in g) {
+                    const v = g[k];
                     if (v == null) continue;
                     if (Array.isArray(v) && !v.length) continue;
                     if (k === "quickSearchScope") {
@@ -13525,6 +13886,7 @@ class _FilterMixin {
             // clicks (2026-11-22). Guard: test/filter-ladder-bounds.spec.js.
             if (note && !this._wvNotifyCanMoveView(win, note)) {
                 wvTrace("ladder-skip", { ev: note.ev, type: note.type, n: (note.ids && note.ids.length) || 0 });
+                wvFilterDiskTrace("ladder-skip", { ev: note.ev, type: note.type, n: (note.ids && note.ids.length) || 0 });
                 return;
             }
             const timers: Map<any, any> = self._wvDataChangeTimers
@@ -13573,6 +13935,7 @@ class _FilterMixin {
                             && lad.view === rpL._wvFilterView
                             && lad.rowsSig === lp._wvRowsSig(rpL)) {
                             wvTrace("pass-skip", { n });
+                            wvFilterDiskTrace("pass-skip", { n });
                             return true;
                         }
                         // AUTHORITATIVE, like the setFilter wrapper's re-apply.
@@ -13598,7 +13961,9 @@ class _FilterMixin {
                         lp._wvLastApplySig = null;
                         lp._filterApplying = false;
                         lp._suppressTreeObserverUntil = 0;
-                        lp._applyItemsListFilter({ cascade: true });
+                        lp._wvInLadderPass = n;
+                        try { lp._applyItemsListFilter({ cascade: true }); }
+                        finally { lp._wvInLadderPass = null; }
                         try {
                             const rpA: any = lp._wvApplyRpOf(win);
                             lad.rowsSig = rpA ? lp._wvRowsSig(rpA) : null;
@@ -13629,19 +13994,6 @@ class _FilterMixin {
             const handle = wvTimeout(() => pass(0), spaced(350));
             timers.set(win, handle);
         } catch (e) {}
-    }
-
-    /** Does `win`'s items view show Zotero's Feeds row or one feed? Zotero's
-     *  own answer (the items view's isFeedsOrFeed; without it, its first
-     *  collection-tree row's -- plural since Zotero 10). */
-    _wvFilterWinIsFeed(win: any): boolean {
-        try {
-            const v: any = win && win.ZoteroPane && win.ZoteroPane.itemsView;
-            if (!v) return false;
-            if (typeof v.isFeedsOrFeed === "function") return !!v.isFeedsOrFeed();
-            const r = (Array.isArray(v.collectionTreeRows) && v.collectionTreeRows[0]) || v.collectionTreeRow;
-            return !!(r && typeof r.isFeedsOrFeed === "function" && r.isFeedsOrFeed());
-        } catch (e) { return false; }
     }
 
     /** Can a notification change what `win`'s filtered view keeps? Feed
@@ -13814,6 +14166,16 @@ class _FilterMixin {
                 }
                 if (!indices.length) return null;
             }
+            // A feed view (MJT 2026-11-22, "Replace its rows with feed counts"): feed
+            // items have no children and no annotations, so the levels said nothing
+            // there; the box counts what a feed reader asks instead.
+            // The items view's own rows: ZoteroPane.getCollectionTreeRow() THROWS on Zotero
+            // 11 ("was removed -- use getCollectionTreeRows()"; citations.20 found it).
+            try {
+                const rows: any[] = (iv && iv.collectionTreeRows) || (zp.getCollectionTreeRows ? zp.getCollectionTreeRows() : []);
+                const ctr: any = rows && rows[0];
+                if (ctr && typeof ctr.isFeedsOrFeed === "function" && ctr.isFeedsOrFeed()) return this._wvFeedCountMessage(rp, indices, n);
+            } catch (e) {}
             // Only trust a primary set published for THIS view/state —
             // an unstamped read would report a previous filter's match
             // count against the current rows.
@@ -13850,7 +14212,8 @@ class _FilterMixin {
             // (advanced reports 0 parents because resultLevel=item needs
             // no child context.)
             const sources: any[] = [];
-            if (primary) sources.push({ label: "filter", set: primary });
+            // `label`: the source's name in the box's tooltip ("narrowed by ...").
+            if (primary) sources.push({ label: wvStr("weavero-filter-count-source", { source: "filter" }), set: primary });
             try {
                 if (rp._searchMode) {
                     const sIDs = rp._searchItemIDs || rp.searchItemIDs;
@@ -13862,7 +14225,7 @@ class _FilterMixin {
                         const live = (sb && sb.value)
                             ? String(sb.value).trim() : "";
                         sources.push({
-                            label: live ? "quick search" : "advanced search",
+                            label: wvStr("weavero-filter-count-source", { source: live ? "quick" : "advanced" }),
                             set: sIDs,
                         });
                     }
@@ -13895,7 +14258,8 @@ class _FilterMixin {
                 lv[d][isMatch ? 0 : 1]++;
             }
 
-            const LABELS = ["Top-level", "Children", "Annotations"];
+            const LABELS = [wvStr("weavero-filter-count-top-level"), wvStr("weavero-filter-count-children"),
+                wvStr("weavero-filter-count-annotations")];
             const rowsOut: any[] = [];
             for (let d = 0; d < 3; d++) {
                 // All three levels ALWAYS, including zeros: a missing
@@ -13919,6 +14283,31 @@ class _FilterMixin {
             dbg("[Weavero][filter] buildCountMessage err: " + e);
             return null;
         }
+    }
+
+    /** The count box of a feed view, over the rows shown (or the selected ones,
+     *  `indices`): Unread, then -- Feeds' relevance on -- Already in your library
+     *  and Not in your library (feeds.ts records; an item not scored yet counts in
+     *  neither), else Read. Filters narrow the rows, so the numbers follow them. */
+    _wvFeedCountMessage(rp: any, indices: number[] | null, n: number): any {
+        const P: any = this;
+        let scored = false;
+        try { scored = typeof P._wvFdOn === "function" && !!P._wvFdOn() && typeof P._wvFdRecOf === "function"; } catch (e) {}
+        let unread = 0, read = 0, inLib = 0, notInLib = 0;
+        const count = indices ? indices.length : n;
+        for (let k = 0; k < count; k++) {
+            const i = indices ? indices[k] : k;
+            let ref: any = null;
+            try { const row = rp.getRow(i); ref = row && row.ref; } catch (e) { ref = null; }
+            if (!ref || !ref.isFeedItem) continue;
+            if (ref.isRead) read++; else unread++;
+            if (scored) { const r = P._wvFdRecOf(ref.id); if (r) { if (r.inLib) inLib++; else notInLib++; } }
+        }
+        const row = (label: string, total: number) => ({ depth: 0, label, match: total, context: 0, total });
+        const rows = [row(wvStr("weavero-filter-count-unread"), unread)];
+        if (scored) rows.push(row(wvStr("weavero-feeds-inlib"), inLib), row(wvStr("weavero-filter-dim-feed-not-in-library"), notInLib));
+        else rows.push(row(wvStr("weavero-filter-count-read"), read));
+        return { rows, split: false, sourceLabel: "" };
     }
 
     /** Build the count box element. Shared by BOTH render paths — the
@@ -13992,19 +14381,19 @@ class _FilterMixin {
         fImg.setAttribute("width", "12");
         fImg.setAttribute("height", "12");
         fImg.setAttribute("title",
-            "narrowed by " + lines.sourceLabel);
+            wvStr("weavero-filter-count-narrowed", { sources: lines.sourceLabel }));
         fImg.style.setProperty(
             "-moz-context-properties", "fill, stroke");
         fImg.style.fill = "currentColor";
         fImg.style.opacity = "0.8";
         fImg.style.display = "block";
         head0.appendChild(fImg);
-        cell("Match", { num: true, head: true });
-        cell("Context", { num: true, head: true });
+        cell(wvStr("weavero-filter-count-match"), { num: true, head: true });
+        cell(wvStr("weavero-filter-count-context"), { num: true, head: true });
     }
     else {
         cell("");
-        cell("Rows", { num: true, head: true });
+        cell(wvStr("weavero-filter-count-rows"), { num: true, head: true });
     }
     for (const r of lines.rows) {
         cell(r.label, { indent: r.depth * 14 });
@@ -14294,7 +14683,9 @@ class _FilterMixin {
             _perfLast = n;
         };
 
-        const state = this._filterState;
+        // The EFFECTIVE state: in a feed view, the shadow without what a feed
+        // item cannot match (`_wvFeedState`). Every phase reads `ctx.state`.
+        const state = this._wvFeedState(this._filterState);
         const active = this._isFilterActive(state);
         const ctx: WvFilterApplyCtx = {
             win, itemsView, rp, isV9, cascade, state, active,

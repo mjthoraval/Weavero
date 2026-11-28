@@ -294,62 +294,82 @@ describe("Weavero — collections-pane toggle button", () => {
     // button row leaves -- a few characters once the toggle and Bookmarks
     // sit there). Zotero's own click listener opens it; hideCollectionSearch
     // closes it when empty.
+    // At the pane's NARROWEST width (Zotero's min-width, 200 px -- a fresh
+    // profile's width too): the row holds every button there, closed and open.
+    // 1.3.0-beta.1 (2026-11-28): the collections funnel's 40-px menu button
+    // (coll-funnel.ts) pushed the magnifier 20 px past the toolbar's end there
+    // (closed) and onto a line of its own (open).
     it("the collections search box opens on its own full-width line and the toolbar grows for it", async function () {
         const field = doc.getElementById("zotero-collections-search"), sbtn = doc.getElementById("zotero-tb-collections-search");
         const tb = doc.getElementById("zotero-toolbar-collection-tree"), bar = doc.getElementById("zotero-collections-toolbar");
         if (!field || !sbtn || pane.hasAttribute("collapsed")) this.skip();
         const r = el => el.getBoundingClientRect();
-        const rowTopBefore = Math.round(r(btn()).top), tbBefore = Math.round(r(tb).height);
-        const magnifierBefore = Math.round(r(sbtn).left);
-        sbtn.click();
-        await waitFor(() => field.classList.contains("visible"), 3000, "search box opened");
-        // Focused and enabled at once -- not after Zotero's 250-ms animation
-        // wait, which the full-width line has no use for.
-        await new Promise(res => win.setTimeout(res, 30));
-        assert.isFalse(field.hasAttribute("disabled"), "enabled at once");
-        assert.ok(doc.activeElement === field || (doc.activeElement && doc.activeElement.closest && doc.activeElement.closest("#zotero-collections-search")), "focused at once");
-        await new Promise(res => win.setTimeout(res, 400));
+        // The row's buttons, for the messages: id@left-right/top.
+        const row = () => [...bar.querySelectorAll(":scope > toolbarbutton, :scope > div > toolbarbutton")]
+            .map(b => b.id + "@" + Math.round(r(b).left) + "-" + Math.round(r(b).right) + "/" + Math.round(r(b).top)).join(" ")
+            + " | bar " + Math.round(r(bar).left) + "-" + Math.round(r(bar).right);
+        const widthWas = pane.style.width, minW = win.getComputedStyle(pane).minWidth;
+        pane.style.width = minW;
         try {
-            assert.isAtLeast(Math.round(r(field).top), Math.round(r(btn()).bottom), "below the button row");
-            assert.isAtLeast(r(field).width, r(bar).width * 0.9, "the pane's full width, not a slot");
-            assert.isAtLeast(Math.round(r(tb).height), tbBefore + 28, "the toolbar grew for the second line");
-            assert.strictEqual(Math.round(r(btn()).top), rowTopBefore, "row 1 stays where it was");
-            // The magnifier keeps its place at the end of row 1 (Zotero hides
-            // it inline) and shows Zotero's pressed look.
-            assert.isAbove(r(sbtn).width, 0, "the magnifier is still shown");
-            assert.strictEqual(Math.round(r(sbtn).top), rowTopBefore, "on row 1");
-            assert.isAtMost(Math.abs(Math.round(r(sbtn).right) - Math.round(r(bar).right)), 1, "at the row's right end");
-            assert.strictEqual(Math.round(r(sbtn).left), magnifierBefore, "the magnifier has not moved");
-            assert.strictEqual(sbtn.getAttribute("open"), "true", "pressed look while the box is open");
-            // A second click there collapses the box (Zotero's own would only focus it).
-            field.value = "abc";
+            await new Promise(res => win.requestAnimationFrame(() => win.setTimeout(res, 60)));
+            assert.isAtMost(Math.abs(r(pane).width - parseFloat(minW)), 1, "the pane at its narrowest width (" + minW + ")");
+            // Closed: one row, Zotero's magnifier at its end, inside the toolbar.
+            assert.isAtMost(Math.round(r(sbtn).right), Math.round(r(bar).right), "closed: the magnifier inside the toolbar: " + row());
+            assert.isAtMost(Math.abs(Math.round(r(sbtn).right) - Math.round(r(bar).right)), 1, "closed: at the row's right end: " + row());
+            assert.strictEqual(Math.round(r(sbtn).top), Math.round(r(btn()).top), "closed: on the button row: " + row());
+            const rowTopBefore = Math.round(r(btn()).top), tbBefore = Math.round(r(tb).height);
+            const magnifierBefore = Math.round(r(sbtn).left);
             sbtn.click();
-            await waitFor(() => !field.classList.contains("visible"), 3000, "second click collapsed the box");
-            await new Promise(res => win.setTimeout(res, 300));
-            assert.strictEqual(field.value, "", "and cleared the filter");
-            assert.isNull(sbtn.getAttribute("open"), "pressed look gone");
-            // A REAL click on an empty box: mousedown blurs it, Zotero's blur
-            // handler closes it, then the click arrives on a closed box -- it
-            // must not reopen it. (Past the 350-ms window first: the collapse
-            // above started one.)
-            await new Promise(res => win.setTimeout(res, 500));
-            sbtn.click();
-            await waitFor(() => field.classList.contains("visible"), 3000, "reopened for the real-click case");
-            await new Promise(res => win.setTimeout(res, 300));
-            field.blur();
-            await waitFor(() => !field.classList.contains("visible"), 3000, "blur closed the empty box");
-            await new Promise(res => win.setTimeout(res, 60));
-            sbtn.click();
+            await waitFor(() => field.classList.contains("visible"), 3000, "search box opened");
+            // Focused and enabled at once -- not after Zotero's 250-ms animation
+            // wait, which the full-width line has no use for.
+            await new Promise(res => win.setTimeout(res, 30));
+            assert.isFalse(field.hasAttribute("disabled"), "enabled at once");
+            assert.ok(doc.activeElement === field || (doc.activeElement && doc.activeElement.closest && doc.activeElement.closest("#zotero-collections-search")), "focused at once");
             await new Promise(res => win.setTimeout(res, 400));
-            assert.isFalse(field.classList.contains("visible"), "the same gesture's click did not reopen it");
+            try {
+                assert.isAtLeast(Math.round(r(field).top), Math.round(r(btn()).bottom), "below the button row");
+                assert.isAtLeast(r(field).width, r(bar).width * 0.9, "the pane's full width, not a slot");
+                assert.isAtLeast(Math.round(r(tb).height), tbBefore + 28, "the toolbar grew for the second line");
+                assert.strictEqual(Math.round(r(btn()).top), rowTopBefore, "row 1 stays where it was");
+                // The magnifier keeps its place at the end of row 1 (Zotero hides
+                // it inline) and shows Zotero's pressed look.
+                assert.isAbove(r(sbtn).width, 0, "the magnifier is still shown");
+                assert.strictEqual(Math.round(r(sbtn).top), rowTopBefore, "on row 1: " + row());
+                assert.isAtMost(Math.abs(Math.round(r(sbtn).right) - Math.round(r(bar).right)), 1, "at the row's right end: " + row());
+                assert.strictEqual(Math.round(r(sbtn).left), magnifierBefore, "the magnifier has not moved");
+                assert.strictEqual(sbtn.getAttribute("open"), "true", "pressed look while the box is open");
+                // A second click there collapses the box (Zotero's own would only focus it).
+                field.value = "abc";
+                sbtn.click();
+                await waitFor(() => !field.classList.contains("visible"), 3000, "second click collapsed the box");
+                await new Promise(res => win.setTimeout(res, 300));
+                assert.strictEqual(field.value, "", "and cleared the filter");
+                assert.isNull(sbtn.getAttribute("open"), "pressed look gone");
+                // A REAL click on an empty box: mousedown blurs it, Zotero's blur
+                // handler closes it, then the click arrives on a closed box -- it
+                // must not reopen it. (Past the 350-ms window first: the collapse
+                // above started one.)
+                await new Promise(res => win.setTimeout(res, 500));
+                sbtn.click();
+                await waitFor(() => field.classList.contains("visible"), 3000, "reopened for the real-click case");
+                await new Promise(res => win.setTimeout(res, 300));
+                field.blur();
+                await waitFor(() => !field.classList.contains("visible"), 3000, "blur closed the empty box");
+                await new Promise(res => win.setTimeout(res, 60));
+                sbtn.click();
+                await new Promise(res => win.setTimeout(res, 400));
+                assert.isFalse(field.classList.contains("visible"), "the same gesture's click did not reopen it");
+            }
+            finally {
+                if (field.classList.contains("visible")) { field.value = ""; field.blur(); win.ZoteroPane.hideCollectionSearch(); }
+                await waitFor(() => !field.classList.contains("visible"), 3000, "search box closed");
+                await new Promise(res => win.setTimeout(res, 300));
+            }
+            assert.strictEqual(Math.round(r(tb).height), tbBefore, "closed: the toolbar is one row again");
+            assert.strictEqual(Math.round(r(sbtn).left), magnifierBefore, "closed: the magnifier is where it started");
         }
-        finally {
-            if (field.classList.contains("visible")) { field.value = ""; field.blur(); win.ZoteroPane.hideCollectionSearch(); }
-            await waitFor(() => !field.classList.contains("visible"), 3000, "search box closed");
-            await new Promise(res => win.setTimeout(res, 300));
-        }
-        assert.strictEqual(Math.round(r(tb).height), tbBefore, "closed: the toolbar is one row again");
-        assert.strictEqual(Math.round(r(sbtn).left), magnifierBefore, "closed: the magnifier is where it started");
+        finally { pane.style.width = widthWas; }
     });
 
     // Ctrl+F / ⌘F with the focus in the collections pane opens the
@@ -359,6 +379,15 @@ describe("Weavero — collections-pane toggle button", () => {
     it("Ctrl+F in the collections pane opens the collections search; elsewhere it stays Zotero's", async function () {
         const field = doc.getElementById("zotero-collections-search"), tree = doc.getElementById("collection-tree") || doc.querySelector("#zotero-collections-pane .virtualized-table");
         if (!field || !tree || pane.hasAttribute("collapsed")) this.skip();
+        // Past the same-gesture window a previous close may have started, as the
+        // test after this one does: the handler opens the box through the
+        // magnifier's click, and a click within 350 ms of a close is swallowed
+        // (pane.ts _wvWireCollectionsSearchToggle). The previous test's `finally`
+        // ends 300 ms after the close it makes when an assertion failed there --
+        // this test then timed out on its own first step, a second red line for
+        // one defect (1.3.0-beta.1 gates, 2026-11-28).
+        if (field.classList.contains("visible")) { field.value = ""; field.blur(); win.ZoteroPane.hideCollectionSearch(); }
+        await new Promise(res => win.setTimeout(res, 500));
         const ev = () => ({ key: "f", ctrlKey: !Zotero.isMac, metaKey: !!Zotero.isMac, shiftKey: false, altKey: false, prevented: 0, preventDefault() { this.prevented++; }, stopPropagation() {} });
         // Find the wired handler through a probe: it is the capture keydown
         // that reacts to accel+F while the collections tree has focus.

@@ -25,7 +25,7 @@ describe("Weavero — Settings prefs have registered defaults", () => {
 
     // Mirrors prefs.html: grep -oE 'preference="extensions\.zotero\.weavero\.[A-Za-z.]+"'
     const PANE = ["advSearchShortcutNewWindow", "advSearchWindowHidePanes", "collectionsPaneToggle", "tagSelectorHandle", "readerLayoutMenu", "annListShowHighlight", "annListShowImage", "annListShowInk", "annListShowNote",
-        "annListShowText", "annListShowUnderline", "enableAnnPaneFilter", "annSelectorHandle",
+        "annListShowText", "annListShowUnderline", "enableReaderAnnFilter", "enableAnnPaneFilter", "annSelectorHandle",
         "autoHideEmptyLibraryBookmarks", "autoHideEmptyReaderBookmarks", "bookmarkPageNumbers", "compactTitleBar",
         "compactTitleBarMain", "compactTitleBarNote", "compactTitleBarReader", "debug", "defattMarkAuto",
         "defattSortFirstAuto", "defattSortFirstDefault", "enableAddRelatedMenu", "enableAddedByColors",
@@ -60,8 +60,30 @@ describe("Weavero — Settings prefs have registered defaults", () => {
         // 2026-11-18; the pref keeps its default in prefs-table.ts.)
         // Link previews tint the whole reference entry (2026-11-17).
         "previewEntryHighlight",
+        // References in your library: the citation popup, the reference list's
+        // marks, the item pane section (branch refs, 2026-11-18).
+        "enableReferences", "referencesBibliographyMarks", "referencesSection", "referencesCitedBy",
+        // Build Zotero's structure data for all PDFs (citations M5): its checkbox has no
+        // native binding (the warning first), its pref a default all the same (OFF).
+        "referencesBuildStructure",
+        // Notes: citations after Zotero links (2026-11-09).
+        "noteLinkCitations",
+        // Feeds: relevance, its column and sort, Why relevant; the journals signal (branch feeds, 2026-11-22).
+        "enableFeeds", "feedsJournals",
+        // People: the person card on the item pane's authors (branch people, 2026-11-22).
+        "enablePeople",
+        // Its button in the collections pane's toolbar (branch rsbtn, 2026-11-27).
+        "peopleToolbarButton",
+        // Backups: the daily one and the one before each update (branch backups, 2026-11-22).
+        "backup.auto",
         // file:// links to another computer, each asking once (1.2.1, 2026-11-23).
-        "remoteFileLinks"];
+        "remoteFileLinks",
+        // Zotero's progress window with minimize and maximize (branch progwin, 2026-11-26).
+        "progressWindowButtons",
+        // The collections funnel (branch collfunnel, 2026-11-27): its trial and its
+        // default's "Shown by default" boxes.
+        "collectionsFunnel", "collFunnelShowCollections", "collFunnelShowSearches", "collFunnelShowFeeds",
+        "collFunnelShowSpecial", "collFunnelShowBookmarks", "collFunnelShowFolders"];
         // The item pane sections' paneScope.* prefs (levels, kinds, "always
         // shown" pins) had their grid here from dev.114 to dev.161 and are
         // off the pane since (MJT 2026-11-03); registered still
@@ -70,7 +92,7 @@ describe("Weavero — Settings prefs have registered defaults", () => {
     // Getters written as `v === undefined ? true : !!v`.
     const DEFAULT_TRUE = ["advSearchWindowHidePanes", "collectionsPaneToggle", "tagSelectorHandle", "readerLayoutMenu", "advSearchShortcutNewWindow",
         "annListShowHighlight", "annListShowImage", "annListShowInk", "annListShowNote",
-        "annListShowText", "annListShowUnderline", "enableAnnPaneFilter", "annSelectorHandle", "bookmarkPageNumbers",
+        "annListShowText", "annListShowUnderline", "enableReaderAnnFilter", "enableAnnPaneFilter", "annSelectorHandle", "bookmarkPageNumbers",
         "enableAddRelatedMenu", "enableAddedByColors", "enableAnnSort",
         "enableAnnotationAddedBy", "enableAnnotationsCountColumn", "enableBacklinks", "enableBacklinksColumn", "enableBookmarks", "enableChainBadge",
         "enableCommentMarkdown", "enableCopyCollectionLink", "enableCopyItemLink", "enableDefaultChild",
@@ -86,6 +108,12 @@ describe("Weavero — Settings prefs have registered defaults", () => {
         "outlinePageNumbers", "readerItemPane", "readerOutlineTakeover", "recolorAmLinks",
         "showLibraryBookmarksInReader", "windowIcons", "itemPaneStickyHeaders", "enableTagsRelatedScope",
         "noteOutline", "noteFolding", "splitViewFooter", "previewEntryHighlight",
+        "enableReferences", "referencesBibliographyMarks", "referencesSection", "referencesCitedBy",
+        // (enablePeople: on by default in pre-release builds only, test/people-gate.spec.js.)
+        "noteLinkCitations", "enableFeeds", "feedsJournals", "backup.auto", "progressWindowButtons", "peopleToolbarButton",
+        // (collectionsFunnel: on by default in pre-release builds only, as enablePeople.)
+        "collFunnelShowCollections", "collFunnelShowSearches", "collFunnelShowFeeds", "collFunnelShowSpecial",
+        "collFunnelShowBookmarks", "collFunnelShowFolders",
         "paneScope.tags.own", "paneScope.related.own", "paneScope.links.note", "paneScope.links.ann", "paneScope.links.loop", "paneScope.links.broken",
         "paneScope.backlinks.own", "paneScope.backlinks.loop",
         "paneScope.links.zlinks", "paneScope.links.citations", "paneScope.backlinks.zlinks", "paneScope.backlinks.citations"];
@@ -113,6 +141,15 @@ describe("Weavero — Settings prefs have registered defaults", () => {
         assert.deepEqual(bad, [],
             "getter says on, checkbox would say off -- the windowIcons / "
             + "enableReadStatusFilter bug");
+    });
+
+    // The Researchers tab's choices (people.ts, branch people3, MJT 2026-11-24): the
+    // sort, the chip, the filters and the four name orders -- string prefs, their
+    // defaults on the default branch so that Settings' radios and the tab agree.
+    it("the Researchers tab's sort, filters and name orders have registered defaults", () => {
+        const str = (k) => { try { return db.getStringPref("weavero." + k); } catch (e) { return undefined; } };
+        assert.deepEqual(["people.sort", "people.show", "people.filters", "people.names.list", "people.names.title", "people.names.links", "people.names.tree"].map(k => k + "=" + str(k)),
+            ["people.sort=last", "people.show=all", "people.filters={}", "people.names.list=last", "people.names.title=last", "people.names.links=last", "people.names.tree=last"]);
     });
 
     it("the three that regressed are specifically covered", () => {
@@ -171,7 +208,7 @@ describe("Weavero — Settings prefs have registered defaults", () => {
     // box. Compared against the chip catalogue, not a copy of the URLs.
     it("the six type boxes carry the filter chips' glyphs", async () => {
         const wv = Zotero.Weavero.plugin;
-        const rootURI = await Zotero.Plugins.getRootURI("weavero@mjthoraval");
+        const rootURI = await wvT.rootURI();
         const html = await (await fetch(rootURI + "prefs.html")).text();
         const cap = k => k.charAt(0).toUpperCase() + k.slice(1);
         const missing = [];

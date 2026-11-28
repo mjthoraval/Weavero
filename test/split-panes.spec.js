@@ -1214,10 +1214,11 @@ describe("Weavero — split view: inside each side", function () {
             assert.deepEqual(shown(), [], "still none after a pane toggle");
             Zotero.Prefs.set(PREF, true); await sleep(400);
             assert.deepEqual(shown(), ids(t1.id, t2.id), "the setting on again: both back");
-            // The menu is the split's own, from either footer.
+            // The menu is the split's own, from either footer: Separate Tabs, Reverse Tabs,
+            // Close Tab (that side's, test/split-close-tab.spec.js), Close Both Tabs.
             footerOf(t1.id).querySelector(".wv-tsplit-more").click(); await sleep(400);
             const pop = doc.getElementById("wv-tsplit-menu");
-            assert.ok(pop && pop.querySelectorAll("menuitem").length === 3, "the selected-or-not side's footer opens the split's menu");
+            assert.ok(pop && pop.querySelectorAll("menuitem").length === 4, "the selected-or-not side's footer opens the split's menu");
             try { pop.hidePopup(); } catch (er) {}
             await sleep(200);
         }

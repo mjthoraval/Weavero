@@ -35,7 +35,28 @@ describe("Weavero — default-branch registrations (characterization)", () => {
         const got = measure();
         try { await IOUtils.writeUTF8(PathUtils.join(PathUtils.tempDir, "wv-prefs-registry.json"), JSON.stringify(got, null, 1)); } catch (_) {}
         assert.isOk(EXPECTED, "EXPECTED is recorded (see the file the run just wrote)");
-        assert.deepEqual(got, EXPECTED);
+        // People is in testing (peoplenet, MJT 2026-11-25): on by default in a
+        // pre-release build only (test/people-gate.spec.js).
+        // The Bookmarks pane is a trial (bmpane, 2026-11-27): the same rule (prefs-table.ts devOnly).
+        // So are the saved-search folders (search-folders.ts, paneorg 2026-11-27) and the
+        // collections funnel (coll-funnel.ts, collfunnel 2026-11-27).
+        // The folders stay off in a public beta (betaOff, MJT 2026-11-28).
+        const pre = String(wv._version || "").includes("-");
+        const beta = /-beta\.\d+$/.test(String(wv._version || ""));
+        const want = Object.assign({}, EXPECTED, { enablePeople: pre, collectionsBookmarksPane: pre, collectionsSearchFolders: pre && !beta, collectionsSearchFoldersNames: pre,
+            collectionsFunnel: pre });
+        assert.deepEqual(got, want);
+    });
+
+    it("a trial's default follows the build: dev on, public beta on except the folders, release off", function () {
+        const d = (k, v) => wv._wvPrefDefault(k, v);
+        for (const k of ["collectionsSearchFolders", "collectionsFunnel", "collectionsBookmarksPane", "enablePeople"]) {
+            assert.isTrue(d(k, "1.3.0-dev.106"), k + " on a dev build");
+            assert.isFalse(d(k, "1.3.0"), k + " on a release");
+        }
+        assert.isFalse(d("collectionsSearchFolders", "1.3.0-beta.1"), "the folders off in a public beta");
+        assert.isTrue(d("collectionsFunnel", "1.3.0-beta.1"), "the funnel on in a public beta");
+        assert.isTrue(d("collectionsSearchFolders", "1.3.0-collfunnel.7"), "a branch build is not a public beta");
     });
 
     it("registering again changes nothing (idempotent)", function () {
@@ -61,12 +82,32 @@ describe("Weavero — default-branch registrations (characterization)", () => {
         "annSelectorHidden": false,
         "autoHideEmptyLibraryBookmarks": false,
         "autoHideEmptyReaderBookmarks": false,
+        // Backups (backups.ts, branch backups): the automatic ones, the dailies kept.
+        "backup.auto": true,
+        "backup.keepDaily": "i:7",
         "bookmarkCollectionScroll": "s:top",
         "bookmarkPageNumbers": true,
         "collapseAdvancedToQuickSearch": true,
+        // The collections funnel's default (coll-funnel.ts, 1.3.0-collfunnel.1): its JSON and
+        // its Settings boxes, everything shown.
+        "collFunnelDefault": "s:",
+        "collFunnelShowBookmarks": true,
+        "collFunnelShowCollections": true,
+        "collFunnelShowFeeds": true,
+        "collFunnelShowFolders": true,
+        "collFunnelShowSearches": true,
+        "collFunnelShowSpecial": true,
+        // devOnly: the test above sets it from the build's version.
+        "collectionsBookmarksPane": true,
+        // The collections funnel (coll-funnel.ts): a devOnly trial, the same override.
+        "collectionsFunnel": true,
         "collectionsIndentGuides": true,
         "collectionsPaneToggle": true,
         "collectionsPathTooltip": true,
+        // Folders for saved searches (search-folders.ts, paneorg 2026-11-27): a devOnly trial,
+        // on by default in a pre-release build only (the override in the test above).
+        "collectionsSearchFolders": true,
+        "collectionsSearchFoldersNames": true,
         "collectionsStickyMax": "i:7",
         "collectionsStickyParents": true,
         "compactTitleBar": true,
@@ -122,12 +163,17 @@ describe("Weavero — default-branch registrations (characterization)", () => {
         "enableOpenExternalViewer": true,
         "enableOpenRelatedSubmenu": true,
         "enableOutlineTextHighlight": true,
+        // People (people.ts, 1.2.1-people.1): on by default on the branch.
+        "enablePeople": true,
         "enablePluginsSearch": true,
         "enableReadStatusFilter": true,
+        "enableReaderAnnFilter": true,
         "enableReaderBookmarks": true,
         "enableReaderSidebar": true,
         "enableReaderView": true,
         "enableReaderViewIcons": true,
+        "enableFeeds": true,
+        "enableReferences": true,
         "enableRelatedColumn": true,
         "enableRelations": true,
         "enableRightPane": true,
@@ -151,16 +197,23 @@ describe("Weavero — default-branch registrations (characterization)", () => {
         "enableZoomScheme": false,
         "enableZoteroLinks": true,
         "filterBuildMode": true,
+        // The Group Libraries line folded (group-fold.ts, 1.2.1-grpfold.1): open by default.
+        "groupLibrariesCollapsed": false,
         "hideNativeAnnSelector": false,
         "inlineLinks": true,
         "itemCountBreakdown": true,
         // Pinned section headers in the item pane (2026-11-03).
         "itemPaneStickyHeaders": true,
+        // The long item-pane lists' sort, per section (list-filter.ts, citations M4).
+        "listSort.citedBy": "s:newest",
+        "listSort.references": "s:paper",
         // The local file links opened after Weavero's question (1.2.3).
         "localFileLinksOpened": "s:",
         "newMainWindow": true,
         // Notes: the heading folds and the outline (2026-11-03).
         "noteFolding": true,
+        // Notes: citations after Zotero links (2026-11-09).
+        "noteLinkCitations": true,
         "noteOpenInDeckWindow": true,
         "noteOutline": true,
         "outlineKey.anchorBottom": "s:",
@@ -170,6 +223,13 @@ describe("Weavero — default-branch registrations (characterization)", () => {
         "outlinePageNumbers": true,
         "outlineTextSize": "s:zotero",
         "paneDragNoCollapse": true,
+        // The sections locked at the bottom of the item pane, per view (a JSON
+        // list since 1.2.1-panelock.2), and their heights (pane-lock.ts): the
+        // feeds lock Why relevant.
+        "paneLock.feed": "s:[\"weavero-feeds\"]",
+        "paneLock.heights": "s:{}",
+        "paneLock.library": "s:[]",
+        "paneLock.reader": "s:[]",
         // The item pane sections' Settings defaults for a new window
         // (pane-scope.ts; dev.112 per level, dev.113 + the item itself).
         "paneScope.backlinks.ann": false,
@@ -216,13 +276,40 @@ describe("Weavero — default-branch registrations (characterization)", () => {
         "paneScope.tags.pin.att": false,
         "paneScope.tags.pin.note": false,
         "paneScope.tags.pin.own": false,
+        // The Researchers tab (people.ts, 1.3.0-people3.1): the list's sort, its
+        // chip, its filters (JSON), the name order of each place; the table's
+        // columns (JSON, 1.3.0-peoplenet.15); the right pane's width and state
+        // (JSON, 1.3.0-peoplenet.16).
+        "people.columns": "s:{}",
+        "people.filters": "s:{}",
+        "people.names.links": "s:last",
+        "people.names.list": "s:last",
+        "people.names.title": "s:last",
+        "people.names.tree": "s:last",
+        "people.pane": "s:{}",
+        "people.show": "s:all",
+        "people.sort": "s:last",
+        // The Researchers button in the collections pane's toolbar (people-toolbar.ts,
+        // 1.3.0-rsbtn, MJT 2026-11-27).
+        "peopleToolbarButton": true,
+        // A pinned library tab's name (dev.68, MJT 2026-11-21).
+        "pinnedLibraryTabName": true,
         "previewEntryHighlight": true,
         "previewLinkZones": true,
+        // Zotero's progress window with minimize and maximize (branch progwin, 2026-11-26).
+        "progressWindowButtons": true,
         "readerItemPane": true,
         "readerLayoutMenu": true,
         "readerOutlineTakeover": true,
         "readerUndoButtons": true,
         "recolorAmLinks": true,
+        "referencesBibliographyMarks": true,
+        // Build Zotero's structure data for all PDFs (sdt-build.ts, citations M5): OFF.
+        "referencesBuildStructure": false,
+        "referencesBuildStructurePaused": false,
+        "feedsJournals": true,
+        "referencesCitedBy": true,
+        "referencesSection": true,
         "remoteFileLinks": false,
         "remoteFileLinksOpened": "s:",
         "selectedTabRing": true,

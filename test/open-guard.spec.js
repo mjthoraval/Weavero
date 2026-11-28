@@ -249,6 +249,26 @@ describe("Weavero — links open files only when that is safe", function () {
         await wv.handleZoteroURI("zotero://open/library/items/" + doi.key);
         assert.deepEqual(opened("launchURL").map((c) => c.url), ["https://doi.org/10.1000%2Fxyz123"], "else its DOI at doi.org");
     });
-    // (1.2.1: the reference card's picture case is not here -- 1.2.0 has no
-    // References section or card.)
+
+    it("the reference card's picture opens only an image file, through the same check", async () => {
+        if (typeof wv._wvRefsCardImage !== "function") wvT.absent("plugin._wvRefsCardImage");
+        const paper = await mkItem();
+        const hta = await mkAttachment("Graphical abstract.hta", "image/png", paper.id);
+        assert.isNotOk(wv._wvRefsCardImage(paper), "a picture whose file name is not an image's is not shown");
+        install();
+        answer = true;
+        await wv._wvRefsCardOpenImage(hta.id);
+        assert.lengthOf(opened("viewAttachment"), 0, "and never opened");
+        const png = await mkAttachment("Graphical abstract.png", "image/png", paper.id);
+        assert.strictEqual(wv._wvRefsCardImage(paper).id, png.id, "an image file is the card's picture");
+        install();
+        answer = false;
+        await wv._wvRefsCardOpenImage(png.id);
+        assert.deepEqual(asked, ["Graphical abstract.png"], "its click asks first");
+        assert.lengthOf(opened("viewAttachment"), 0, "Cancel opens nothing");
+        install();
+        answer = true;
+        await wv._wvRefsCardOpenImage(png.id);
+        assert.deepEqual(opened("viewAttachment").map((c) => c.id), [png.id], "Open opens it");
+    });
 });

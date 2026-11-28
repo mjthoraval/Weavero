@@ -11,13 +11,24 @@
 // RECORDED on 0.22.2-prefs.2 and embedded; the table must reproduce it.
 // prefs.4 (MJT 2026-10-17): Links & Relations also re-applies Firefox's
 // app-link prompt settings (skip-confirm follows that master).
+// 1.2.1-defpane.1: the default attachment's four options also clear the
+// derived default/automatic pair and redraw the item panes
+// (_wvDefattPrefChanged, attachments.ts).
+// noteLinkCitations (the notecite merge, 1.2.1-dev.11) logs only --
+// note-cite.ts reads it at use time (_wvNoteCiteOn); missing from the record
+// until the dev.17 full suite (2026-11-20).
+// groupLibrariesCollapsed (1.2.1-grpfold.1) logs only: the Group Libraries
+// fold's state, read when a tree is built (group-fold.ts); a change folds no
+// open tree, as Zotero's own `sourceList.persist`.
+// peopleToolbarButton (1.3.0-rsbtn) logs only: the Researchers switch's own pref
+// watch (people.ts) shows or hides the button.
 //
 // Every run writes what it measured to
 // <tempDir>/wv-prefs-observer.json (how EXPECTED was recorded).
 
 describe("Weavero — pref observer dispatch (characterization)", () => {
     let wv;
-    const PASS = /^(_get[A-Z]\w*|_wvPref|_wvPrefsTable|_wvLive|_wvMultiMainOn|_tagsColumnWidth)$/;
+    const PASS = /^(_get[A-Z]\w*|_wvPref|_wvPrefDefault|_wvPrefsTable|_wvLive|_wvMultiMainOn|_tagsColumnWidth)$/;
 
     before(function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
@@ -134,12 +145,31 @@ describe("Weavero — pref observer dispatch (characterization)", () => {
         "extensions.zotero.weavero.annSelectorHidden": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.annSelectorHidden\")"],
         "extensions.zotero.weavero.autoHideEmptyLibraryBookmarks": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.autoHideEmptyLibraryBookmarks\")", "_teardownBookmarksToolbarButton(win:navigator:browser)", "_setupBookmarksToolbarButton(win:navigator:browser)"],
         "extensions.zotero.weavero.autoHideEmptyReaderBookmarks": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.autoHideEmptyReaderBookmarks\")", "_teardownBookmarksToolbarButton(win:navigator:browser)", "_setupBookmarksToolbarButton(win:navigator:browser)"],
+        // Backups (branch backups, 2026-11-22): read when a backup is due, nothing to apply.
+        "extensions.zotero.weavero.backup.auto": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.backup.auto\")"],
         "extensions.zotero.weavero.bookmarkCollectionScroll": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.bookmarkCollectionScroll\")"],
         "extensions.zotero.weavero.bookmarkPageNumbers": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.bookmarkPageNumbers\")"],
+        "extensions.zotero.weavero.collFunnelShowBookmarks": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.collFunnelShowBookmarks\")"],
+        "extensions.zotero.weavero.collFunnelShowCollections": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.collFunnelShowCollections\")"],
+        "extensions.zotero.weavero.collFunnelShowFeeds": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.collFunnelShowFeeds\")"],
+        "extensions.zotero.weavero.collFunnelShowFolders": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.collFunnelShowFolders\")"],
+        "extensions.zotero.weavero.collFunnelShowSearches": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.collFunnelShowSearches\")"],
+        "extensions.zotero.weavero.collFunnelShowSpecial": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.collFunnelShowSpecial\")"],
         "extensions.zotero.weavero.collapseAdvancedToQuickSearch": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.collapseAdvancedToQuickSearch\")"],
+        // The Bookmarks pane (1.3.0-bmpane): logs only here; its own observer (bookmarks-pane.ts
+        // _wvBmpWatch, Zotero.Prefs.registerObserver) builds or removes the panes.
+        "extensions.zotero.weavero.collectionsBookmarksPane": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.collectionsBookmarksPane\")"],
+        // The collections funnel (1.3.0-collfunnel, a devOnly trial), its default and its Settings
+        // boxes (the collFunnelShow* lines above): logs only here; its own observers
+        // (coll-funnel.ts _wvCfWatch, Zotero.Prefs.registerObserver) act.
+        "extensions.zotero.weavero.collectionsFunnel": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.collectionsFunnel\")"],
         "extensions.zotero.weavero.collectionsIndentGuides": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.collectionsIndentGuides\")", "_wvApplyCollectionsTreeAids(win:navigator:browser)"],
         "extensions.zotero.weavero.collectionsPaneToggle": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.collectionsPaneToggle\")", "_wvApplyCollectionsPaneToggle(win:navigator:browser)"],
         "extensions.zotero.weavero.collectionsPathTooltip": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.collectionsPathTooltip\")", "_wvApplyCollectionsTreeAids(win:navigator:browser)"],
+        // Folders for saved searches (search-folders.ts, paneorg 2026-11-27, a devOnly trial): its own
+        // pref observers (_wvSfPrefObs) act; this one logs only.
+        "extensions.zotero.weavero.collectionsSearchFolders": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.collectionsSearchFolders\")"],
+        "extensions.zotero.weavero.collectionsSearchFoldersNames": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.collectionsSearchFoldersNames\")"],
         "extensions.zotero.weavero.collectionsStickyMax": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.collectionsStickyMax\")", "_wvApplyCollectionsTreeAids(win:navigator:browser)"],
         "extensions.zotero.weavero.collectionsStickyParents": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.collectionsStickyParents\")", "_wvApplyCollectionsTreeAids(win:navigator:browser)"],
         "extensions.zotero.weavero.compactTitleBar": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.compactTitleBar\")", "_wvPMReapplyChrome()", "_applyCompactTitleBar(win:navigator:browser)", "_wvReaderWindowTargets()"],
@@ -149,9 +179,9 @@ describe("Weavero — pref observer dispatch (characterization)", () => {
         "extensions.zotero.weavero.compactTitleBarReader": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.compactTitleBarReader\")", "_wvPMReapplyChrome()", "_applyCompactTitleBar(win:navigator:browser)", "_wvReaderWindowTargets()"],
         "extensions.zotero.weavero.ctrlClickSplit": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.ctrlClickSplit\")"],
         "extensions.zotero.weavero.debug": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.debug\")"],
-        "extensions.zotero.weavero.defattMarkAuto": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.defattMarkAuto\")"],
-        "extensions.zotero.weavero.defattSortFirstAuto": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.defattSortFirstAuto\")"],
-        "extensions.zotero.weavero.defattSortFirstDefault": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.defattSortFirstDefault\")"],
+        "extensions.zotero.weavero.defattMarkAuto": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.defattMarkAuto\")", "_wvDefattPrefChanged()"],
+        "extensions.zotero.weavero.defattSortFirstAuto": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.defattSortFirstAuto\")", "_wvDefattPrefChanged()"],
+        "extensions.zotero.weavero.defattSortFirstDefault": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.defattSortFirstDefault\")", "_wvDefattPrefChanged()"],
         "extensions.zotero.weavero.enableAddRelatedMenu": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableAddRelatedMenu\")", "_setupItemsListContextMenu()"],
         "extensions.zotero.weavero.enableAddedByColors": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableAddedByColors\")", "_markCellLinks(doc:navigator:browser)"],
         "extensions.zotero.weavero.enableAnnPaneFilter": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableAnnPaneFilter\")"],
@@ -168,11 +198,13 @@ describe("Weavero — pref observer dispatch (characterization)", () => {
         "extensions.zotero.weavero.enableCommentMarkdown": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableCommentMarkdown\")", "_stripRightPane()", "_applySurfacePref(\"itemsList\")", "_applySurfacePref(\"rightPane\")", "_applySurfacePref(\"readerSidebar\")", "_applySurfacePref(\"readerView\")"],
         "extensions.zotero.weavero.enableCopyCollectionLink": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableCopyCollectionLink\")", "_setupCollectionsContextMenu()"],
         "extensions.zotero.weavero.enableCopyItemLink": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableCopyItemLink\")", "_setupItemsListContextMenu()"],
-        "extensions.zotero.weavero.enableDefaultChild": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableDefaultChild\")"],
+        "extensions.zotero.weavero.enableDefaultChild": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableDefaultChild\")", "_wvDefattPrefChanged()"],
         "extensions.zotero.weavero.enableDiscordScheme": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableDiscordScheme\")", "_applyAppLinkConfirmPref()", "_refreshAllNoteEditorStyles()", "_refreshNoteLinkifyRegex()", "_stripRightPane()", "_applySurfacePref(\"itemsList\")", "_applySurfacePref(\"rightPane\")", "_applySurfacePref(\"readerSidebar\")", "_applySurfacePref(\"readerView\")"],
         "extensions.zotero.weavero.enableEvernoteScheme": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableEvernoteScheme\")", "_applyAppLinkConfirmPref()", "_refreshAllNoteEditorStyles()", "_refreshNoteLinkifyRegex()", "_stripRightPane()", "_applySurfacePref(\"itemsList\")", "_applySurfacePref(\"rightPane\")", "_applySurfacePref(\"readerSidebar\")", "_applySurfacePref(\"readerView\")"],
         // The External Links column (2026-10-30): re-registered with the other columns.
         "extensions.zotero.weavero.enableExtLinksColumn": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableExtLinksColumn\")", "_unregisterItemTreeColumns()", "_registerItemTreeColumns()"],
+        // Feeds (feeds.ts, 2026-11-22): its own pref observers (_wvFdPrefObs) act; this one logs only.
+        "extensions.zotero.weavero.enableFeeds": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableFeeds\")"],
         "extensions.zotero.weavero.enableFigmaScheme": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableFigmaScheme\")", "_applyAppLinkConfirmPref()", "_refreshAllNoteEditorStyles()", "_refreshNoteLinkifyRegex()", "_stripRightPane()", "_applySurfacePref(\"itemsList\")", "_applySurfacePref(\"rightPane\")", "_applySurfacePref(\"readerSidebar\")", "_applySurfacePref(\"readerView\")"],
         "extensions.zotero.weavero.enableFileScheme": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableFileScheme\")", "_applyAppLinkConfirmPref()", "_refreshAllNoteEditorStyles()", "_refreshNoteLinkifyRegex()", "_stripRightPane()", "_applySurfacePref(\"itemsList\")", "_applySurfacePref(\"rightPane\")", "_applySurfacePref(\"readerSidebar\")", "_applySurfacePref(\"readerView\")"],
         // The item pane's detailed count follows its master (1.2.1-countcard.1, re-recorded 2026-11-19).
@@ -200,12 +232,16 @@ describe("Weavero — pref observer dispatch (characterization)", () => {
         "extensions.zotero.weavero.enableOpenExternalViewer": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableOpenExternalViewer\")", "_setupItemsListContextMenu()"],
         "extensions.zotero.weavero.enableOpenRelatedSubmenu": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableOpenRelatedSubmenu\")", "_dbg(\"[Weavero] OpenRelatedSubmenu toggle applies to newly-rendered rows.\")"],
         "extensions.zotero.weavero.enableOutlineTextHighlight": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableOutlineTextHighlight\")"],
+        // People (people.ts, 1.2.1-people.1): its own pref observer (_wvPeoplePrefObs) acts; this one logs only.
+        "extensions.zotero.weavero.enablePeople": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enablePeople\")"],
         "extensions.zotero.weavero.enablePluginsSearch": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enablePluginsSearch\")", "_registerPluginsSearch()"],
         "extensions.zotero.weavero.enableReadStatusFilter": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableReadStatusFilter\")", "_setupItemsListFilter(win:navigator:browser)"],
+        "extensions.zotero.weavero.enableReaderAnnFilter": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableReaderAnnFilter\")"],
         "extensions.zotero.weavero.enableReaderBookmarks": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableReaderBookmarks\")", "_teardownBookmarksToolbarButton(win:navigator:browser)", "_setupBookmarksToolbarButton(win:navigator:browser)"],
         "extensions.zotero.weavero.enableReaderSidebar": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableReaderSidebar\")", "_applySurfacePref(\"readerSidebar\")"],
         "extensions.zotero.weavero.enableReaderView": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableReaderView\")", "_applySurfacePref(\"readerView\")"],
         "extensions.zotero.weavero.enableReaderViewIcons": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableReaderViewIcons\")", "_applySurfacePref(\"readerView\")"],
+        "extensions.zotero.weavero.enableReferences": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableReferences\")"],
         "extensions.zotero.weavero.enableRelatedColumn": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableRelatedColumn\")", "_unregisterItemTreeColumns()", "_registerItemTreeColumns()"],
         "extensions.zotero.weavero.enableRelations": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableRelations\")", "_setupItemsListContextMenu()", "_markCellLinks()", "_setupLibrariesBoxHighlight(win:navigator:browser)", "_unregisterItemTreeColumns()", "_registerItemTreeColumns()", "_wvBlApplySectionPref()", "_wvLkApplySectionPref()", "_wvScopeRefresh()", "_dbg(\"[Weavero] OpenRelatedSubmenu toggle applies to newly-rendered rows.\")"],
         "extensions.zotero.weavero.enableRightPane": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableRightPane\")", "_applySurfacePref(\"rightPane\")"],
@@ -228,7 +264,9 @@ describe("Weavero — pref observer dispatch (characterization)", () => {
         "extensions.zotero.weavero.enableVscodeScheme": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableVscodeScheme\")", "_applyAppLinkConfirmPref()", "_refreshAllNoteEditorStyles()", "_refreshNoteLinkifyRegex()", "_stripRightPane()", "_applySurfacePref(\"itemsList\")", "_applySurfacePref(\"rightPane\")", "_applySurfacePref(\"readerSidebar\")", "_applySurfacePref(\"readerView\")"],
         "extensions.zotero.weavero.enableZoomScheme": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableZoomScheme\")", "_applyAppLinkConfirmPref()", "_refreshAllNoteEditorStyles()", "_refreshNoteLinkifyRegex()", "_stripRightPane()", "_applySurfacePref(\"itemsList\")", "_applySurfacePref(\"rightPane\")", "_applySurfacePref(\"readerSidebar\")", "_applySurfacePref(\"readerView\")"],
         "extensions.zotero.weavero.enableZoteroLinks": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.enableZoteroLinks\")", "_applyAppLinkConfirmPref()", "_refreshAllNoteEditorStyles()", "_refreshNoteLinkifyRegex()", "_stripRightPane()", "_applySurfacePref(\"itemsList\")", "_applySurfacePref(\"rightPane\")", "_applySurfacePref(\"readerSidebar\")", "_applySurfacePref(\"readerView\")"],
+        "extensions.zotero.weavero.feedsJournals": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.feedsJournals\")"],
         "extensions.zotero.weavero.filterBuildMode": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.filterBuildMode\")"],
+        "extensions.zotero.weavero.groupLibrariesCollapsed": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.groupLibrariesCollapsed\")"],
         "extensions.zotero.weavero.hideNativeAnnSelector": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.hideNativeAnnSelector\")"],
         "extensions.zotero.weavero.inlineLinks": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.inlineLinks\")", "_applyInlineLinksPref(true)"],
         // The detailed count drawn again at once (no observer until 1.2.1-countcard.1; MJT 2026-11-19).
@@ -237,6 +275,7 @@ describe("Weavero — pref observer dispatch (characterization)", () => {
         "extensions.zotero.weavero.itemPaneStickyHeaders": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.itemPaneStickyHeaders\")", "_wvApplyItemPaneStickyHeadsAll()"],
         "extensions.zotero.weavero.newMainWindow": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.newMainWindow\")"],
         "extensions.zotero.weavero.noteFolding": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.noteFolding\")", "_wvNoteNavRefreshAll()"],
+        "extensions.zotero.weavero.noteLinkCitations": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.noteLinkCitations\")"],
         "extensions.zotero.weavero.noteOpenInDeckWindow": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.noteOpenInDeckWindow\")"],
         "extensions.zotero.weavero.noteOutline": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.noteOutline\")", "_wvNoteNavRefreshAll()"],
         "extensions.zotero.weavero.outlineKey.anchorBottom": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.outlineKey.anchorBottom\")"],
@@ -291,14 +330,27 @@ describe("Weavero — pref observer dispatch (characterization)", () => {
         "extensions.zotero.weavero.paneScope.tags.pin.att": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.paneScope.tags.pin.att\")", "_wvScopeRefreshAll()"],
         "extensions.zotero.weavero.paneScope.tags.pin.note": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.paneScope.tags.pin.note\")", "_wvScopeRefreshAll()"],
         "extensions.zotero.weavero.paneScope.tags.pin.own": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.paneScope.tags.pin.own\")", "_wvScopeRefreshAll()"],
+        // The Researchers button (people-toolbar.ts, 1.3.0-rsbtn) logs only here: the
+        // Researchers switch's own watch (people.ts _wvPeopleWirePrefWatch) acts on it.
+        "extensions.zotero.weavero.peopleToolbarButton": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.peopleToolbarButton\")"],
+        // A pinned library tab's name (dev.68, MJT 2026-11-21): the pins drawn again.
+        "extensions.zotero.weavero.pinnedLibraryTabName": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.pinnedLibraryTabName\")", "_applyPinnedTabs(win:navigator:browser)"],
         // Read when a preview opens (preview-highlight.ts): nothing to re-apply.
         "extensions.zotero.weavero.previewEntryHighlight": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.previewEntryHighlight\")"],
         "extensions.zotero.weavero.previewLinkZones": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.previewLinkZones\")"],
+        // Read at each open of Zotero's progress window and each click of its Minimize button
+        // (progress-window.ts): nothing to re-apply.
+        "extensions.zotero.weavero.progressWindowButtons": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.progressWindowButtons\")"],
         "extensions.zotero.weavero.readerItemPane": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.readerItemPane\")", "_wvReaderWindowTargets()"],
         "extensions.zotero.weavero.readerLayoutMenu": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.readerLayoutMenu\")"],
         "extensions.zotero.weavero.readerOutlineTakeover": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.readerOutlineTakeover\")"],
         "extensions.zotero.weavero.readerUndoButtons": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.readerUndoButtons\")"],
         "extensions.zotero.weavero.recolorAmLinks": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.recolorAmLinks\")"],
+        "extensions.zotero.weavero.referencesBibliographyMarks": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.referencesBibliographyMarks\")"],
+        "extensions.zotero.weavero.referencesBuildStructure": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.referencesBuildStructure\")"],
+        "extensions.zotero.weavero.referencesBuildStructurePaused": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.referencesBuildStructurePaused\")"],
+        "extensions.zotero.weavero.referencesCitedBy": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.referencesCitedBy\")"],
+        "extensions.zotero.weavero.referencesSection": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.referencesSection\")"],
         // 1.2.1 (2026-11-23): file:// links to another computer -- switched off, the remembered links are forgotten.
         "extensions.zotero.weavero.remoteFileLinks": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.remoteFileLinks\")", "_wvRemoteFileLinksSync()"],
         "extensions.zotero.weavero.remoteFileLinksOpened": ["_dbg(\"[Weavero] pref changed at path: extensions.zotero.weavero.remoteFileLinksOpened\")"],

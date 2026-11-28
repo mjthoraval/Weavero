@@ -21,6 +21,10 @@ name: Test build for an issue
 # 2026-09-29): the links in old issues stay valid, an old build installed
 # later updates itself to the current release, and GitHub's cap is 1,000
 # assets per release with no limit on total size.
+#
+# Two jobs (2026-11-22): `build` runs the branch's code and npm's packages
+# with a read-only token; `hand` holds the write token and runs only
+# GitHub's `gh` on the XPI it built.
 
 on:
   workflow_dispatch:
@@ -33,9 +37,8 @@ on:
         required: false
         default: ""
 
-permissions:
-  contents: write     # the test-builds pre-release and its assets
-  issues: write       # the comment on the issue
+# Nothing unless a job asks for it.
+permissions: {}
 
 # Same Node 24 opt-in as test.yml.
 env:
@@ -46,20 +49,39 @@ env:
 
 jobs:
   build:
-    name: Build and hand to the issue
+    name: Build (read-only)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      file: ${{ steps.name.outputs.file }}
 
     steps:
+      # The input reaches a shell only through the environment, checked.
+      - name: Check the issue number
+        shell: bash
+        env:
+          ISSUE: ${{ github.event.inputs.issue }}
+        run: |
+          if ! [[ "$ISSUE" =~ ^[0-9]+$ ]]; then
+            echo "::error::Not an issue number: $ISSUE"
+            exit 1
+          fi
+
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v7
         with:
           node-version: lts/*
           cache: npm
 
+      # No install script of any package runs (release.yml says why the
+      # build needs none).
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Type-check
         run: npm run typecheck
@@ -72,36 +94,76 @@ jobs:
 
       - name: Name the file after the version (and the issue, if the version lacks it)
         id: name
+        shell: bash
         env:
           ISSUE: ${{ github.event.inputs.issue }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
+          if ! [[ "$VERSION" =~ ^[0-9A-Za-z.+-]+$ ]]; then
+            echo "::error::Unexpected version: $VERSION"
+            exit 1
+          fi
           case "$VERSION" in
             *issue${ISSUE}*) FILE="weavero-${VERSION}.xpi" ;;
             *)               FILE="weavero-${VERSION}-issue${ISSUE}.xpi" ;;
           esac
-          cp .scaffold/build/weavero.xpi "$FILE"
+          mkdir -p hand-out
+          cp .scaffold/build/weavero.xpi "hand-out/$FILE"
           echo "file=$FILE" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hand-out
+          path: hand-out
+          if-no-files-found: error
+          retention-days: 7
+
+  hand:
+    name: Hand to the issue
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write     # the test-builds pre-release and its assets
+      issues: write       # the comment on the issue
+
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: hand-out
+          path: ${{ runner.temp }}/hand-out
+
+      # No checkout, no npm: only gh, with the XPI the build job made.
       - name: Upload to the test-builds pre-release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          FILE: ${{ needs.build.outputs.file }}
+          OUT: ${{ runner.temp }}/hand-out
         run: |
+          if ! [[ "$FILE" =~ ^weavero-[0-9A-Za-z.+-]+\.xpi$ ]]; then
+            echo "::error::Unexpected file name: $FILE"
+            exit 1
+          fi
           if ! gh release view test-builds --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create test-builds --repo "$GITHUB_REPOSITORY" --prerelease \
               --target "$ANCHOR_SHA" --title "Test builds" \
               --notes "Builds made for individual issues, for their reporters to try. Not releases: install one only when an issue asks you to; each one updates itself to the next regular release. The tag is an anchor, not the build's commit -- the issue comment names the commit and branch."
           fi
-          gh release upload test-builds "${{ steps.name.outputs.file }}" --clobber --repo "$GITHUB_REPOSITORY"
+          gh release upload test-builds "$OUT/$FILE" --clobber --repo "$GITHUB_REPOSITORY"
 
       - name: Tell the reporter
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          FILE: ${{ steps.name.outputs.file }}
+          FILE: ${{ needs.build.outputs.file }}
           ISSUE: ${{ github.event.inputs.issue }}
           NOTE: ${{ github.event.inputs.note }}
         run: |
+          if ! [[ "$ISSUE" =~ ^[0-9]+$ ]]; then
+            echo "::error::Not an issue number: $ISSUE"
+            exit 1
+          fi
           URL="https://github.com/$GITHUB_REPOSITORY/releases/download/test-builds/$FILE"
           {
             echo "A test build for this issue is ready: **[$FILE]($URL)** (built from \`${GITHUB_SHA::7}\` on \`$GITHUB_REF_NAME\`)."
@@ -110,5 +172,5 @@ jobs:
             if [ -n "$NOTE" ]; then echo; echo "$NOTE"; fi
             echo
             echo "Please say here whether it fixes the problem."
-          } > body.md
-          gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body-file body.md
+          } > "$RUNNER_TEMP/body.md"
+          gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/body.md"

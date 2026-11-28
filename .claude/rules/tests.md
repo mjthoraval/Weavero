@@ -32,6 +32,11 @@ paths:
   uiReadyPromise, the items tree's load, a free DB): without it the first
   spec's `saveTx` timed out at 20 s. The readiness spec in the same file
   is the first of every run.
+- RETRIES: on CI every test gets 2 retries (test/000-helpers.spec.js, after
+  Zotero's own CI; MJT 2026-11-20), at most 10 retried attempts per run;
+  locally none, so a flake shows. Each retry is logged ("[wv-test] retry")
+  and lands in the job's summary: a test that passed on a retry is still a
+  flake to fix, never a green to forget. A hook is never retried.
 - SHARED HELPERS: `wvT` (test/000-helpers.spec.js, a global of the runner
   page; typed in test/wvT.d.ts) — plugin/lib/win, sleep/waitFor, withPref
   (restores a user value, clears a defaulted pref, never writes a default
@@ -112,11 +117,17 @@ paths:
   1.0.0-beta.1 CI's Windows runner and not in the recording (2026-11-03).
   Such marks go into wiringNormalize's `lazyPane` pattern; the section's
   own spec checks them.
-- Zotero's OWN strings reach a live check in the runner's UI locale
-  (French here: Zotero's Tags header read "1 marqueur", 2026-10-29,
-  pane-scope.spec.js): assert the l10n id, or what Weavero adds to the text,
-  never Zotero's English words. Weavero's own strings are English
-  everywhere (weavero.ftl is copied into every locale).
+- The runner's UI locale is PINNED to en-US (zotero-plugin.config.ts,
+  `intl.locale.requested`), as CI's: a temp profile follows the OS, so local
+  runs were French, and since the l10n branch (2026-11-19) Weavero ships
+  fr-FR, de, es-ES and zh-CN files -- a French runner would show Weavero's
+  French and fail every spec that asserts its English.
+  `WV_TEST_LOCALE=fr-FR` runs the suite in another language on purpose.
+  Still assert Zotero's OWN strings by their l10n id or through
+  Zotero.getString, never Zotero's English words (a French runner read
+  Zotero's Tags header as "1 marqueur", 2026-10-29, pane-scope.spec.js).
+  The translations themselves are checked through Localizations of their
+  own locale (test/l10n-locales.spec.js), whatever the runner's language.
 - A DOM read right after an async reload (a tree's `reload()`, a manager
   build) is a race: the row paints on a later frame, and the CI's xvfb
   runner is slower than this machine (the manager's "no arrow" check read
@@ -127,7 +138,11 @@ paths:
   after 5 s there while the pane's row repainted (test.yml on feb95875,
   2026-10-22). Guard a RENDER RULE through the tree's own `renderItem`
   (deterministic, paint or no paint) and gate a live-DOM check of a
-  secondary window on `!win.document.hidden`.
+  secondary window on `!win.document.hidden`. But a DOM read never waits
+  for a paint: after a synchronous rebuild (`tree.invalidate()` ->
+  rerenderItem) read the row the table holds (`_jsWindow.getElementByIndex`)
+  at once -- a row that still disagrees after a poll is another defect, not a
+  late paint (hidden-collections.spec.js, 2026-11-20).
 - A change that leaves something new on a main window (a `_wv*` expando,
   a wrap on ZoteroPane / Zotero_Tabs / the views, a keyed listener)
   re-records `test/window-wiring.spec.js` in the same commit, and the
@@ -141,6 +156,26 @@ paths:
   (dev.21, dev.38) went in unrecorded and the full suite stayed red until
   2026-10-17. Per-window state that must not show up there (or keep a
   closed window alive) goes in a module-level WeakMap keyed by window.
+- A spec that opens a reader on Zotero 9/10 with two main windows takes the
+  window the reader OPENED in (`reader._window`) -- the one in front, which a
+  `focus()` in the fixture does not always make the one it meant
+  (move-tab-context-pane.spec.js, "tab is undefined", 2026-11-20); to test a
+  path where a window never comes forward, stub that window's `focus` and
+  check `Services.wm.getMostRecentWindow` before and after.
+- Zotero 11 resets a PDF page's overlays when that page's structure data
+  lands, some time after the reader opens (pdf-view.js
+  `_resetSemanticOverlayState`: the overlay revision moves, a hover still
+  rendering is dropped, an open popup is closed). A spec that hovers links
+  waits for both the pages' structure data first and hovers again only when
+  a wait FAILED after the revision moved (preview-entry-highlight.spec.js;
+  every CI failure of that spec was a beta job, 2026-11-19/20).
+- A sweep "after the disable" waits for the disable's own deferred work:
+  `_wvDisableCloseExtraWindows` runs 1.5 s after the shutdown and writes
+  disable-closed.json through the store, whose chain table sits on the Zotero
+  global while that write is in flight (zzz-disable-leftovers.spec.js,
+  2026-11-20). A read-back of a file Zotero writes on a timer (engines.json)
+  waits for the content, never only for the call that schedules it
+  (locate-icons.spec.js).
 - A NEW or changed spec is run in the runner BEFORE it is committed, and
   the full-suite gate ("after the user validates") does not excuse it:
   `WV_TEST_ENTRIES=test/foo.spec.js[,test/bar.spec.js] npm test` runs only
@@ -162,7 +197,17 @@ paths:
   plugin's own stored `onCommand(null, { menuElem })`
   (`test/menubar-window-entries.spec.js`, via `_wvMenubarMenus`). And when
   an `onShowing` both moves a menuitem and labels it: move FIRST -- a fresh
-  `acceltext` does not survive `insertBefore`.
+  `acceltext` does not survive `insertBefore`. Zotero's menubar handlers
+  live on window-level `const` objects (`ZoteroStandalone`, standalone.js):
+  a lexical binding, so `win.ZoteroStandalone` is undefined in a spec --
+  call what the handler runs (View > Layout > Tag Selector is
+  `ZoteroPane.toggleTagSelector()`, upstream-fixes.spec.js; 2026-11-20).
+- A spec that fakes an ITEM drop onto a collection row (Zotero 11's
+  `canDropOnTreeRow` / `dropOnTreeRow`) sets `Zotero.DragDrop.currentDragSource`
+  to the collection-tree row the items come from, as itemTree's onDragStart
+  does, and clears it after: Zotero's check reads
+  `currentDragSource.isTrash()` unguarded and throws on null
+  (bookmarks-pane.spec.js, 2026-11-27).
 - A test that cares about the selected collection sets it FIRST -- never
   rely on the previous test's trailing restore: an assertion failure there
   skips it, and the next test then fails on the leftover state and looks

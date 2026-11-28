@@ -20,13 +20,17 @@ describe("Weavero — lookup engine icons survive a moved data directory (WV-TEM
     const engine = () => LM.getEngines().find((e) => /^file:/.test(String(e.icon || "")));
     /** Set the icon, wait until Zotero has written engines.json (a 0-ms
      *  timer), then make Zotero read the file back as at startup. */
-    const storeAndReload = async (url) => {
-        engine().icon = url;
+    const written = async (url) => {
         for (let i = 0; i < 60; i++) {
             const s = String(await Zotero.File.getContentsAsync(jsonFile));
-            if (s.includes(url)) break;
+            if (s.includes(url)) return true;
             await wvT.sleep(50);
         }
+        return false;
+    };
+    const storeAndReload = async (url) => {
+        engine().icon = url;
+        await written(url);
         await LM.init();
     };
 
@@ -65,9 +69,15 @@ describe("Weavero — lookup engine icons survive a moved data directory (WV-TEM
         const fixed = PathUtils.toFileURI(PathUtils.join(locateDir, fileName));
         assert.strictEqual(engine().icon, fixed);
         assert.isTrue(await exists(engine().icon), "the icon loads again");
-        // Written back, so the repair holds without Weavero.
+        // Written back, so the repair holds without Weavero. Zotero writes
+        // engines.json on a timer after the icon changes: read back only once
+        // it is written, as storeAndReload does -- after an immediate
+        // LM.init() the icon was another path once on CI (Ubuntu, Zotero beta,
+        // 1.2.0 gate run 44514526443; the message cut both paths at the same
+        // prefix, as the dead path's would be).
+        assert.isTrue(await written(fixed), "engines.json carries the repaired path");
         await LM.init();
-        assert.strictEqual(engine().icon, fixed, "engines.json carries the repaired path");
+        assert.strictEqual(engine().icon, fixed, "and Zotero reads it back from there");
     });
 
     it("an icon with no copy in the current folder is downloaded again from its source", async function () {

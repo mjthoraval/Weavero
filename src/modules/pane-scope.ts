@@ -225,6 +225,9 @@ class _PaneScopeMixin {
             + "|pin:" + Array.from(pinned).sort().join("+");
         if (old && old._wvScopeSig === sig && old._wvScopeSec === (ctl && ctl.sec)) return;
         const doc = title.ownerDocument;
+        // The callers' preposition (backlinks.ts "To", links.ts "In", Tags and
+        // Related "On") picks the tooltip's wording in weavero.ftl.
+        const prepKey = String(prep || "").toLowerCase();
         // The levels, and the two kinds of reference: sets a row or a
         // reference holds only one of, each on the grey card of the funnel
         // filter's "pick any of these" groups (MJT 2026-11-02, "When the
@@ -253,9 +256,7 @@ class _PaneScopeMixin {
             else if (v === -1) c.dataset.excluded = "true";
             // Pinned: kept whatever the room (`_wvScopeFit`), as an active one.
             if (pinned.has(key)) c.dataset.pinned = "true";
-            c.title = base + "\n" + (v === 1 ? "Only these are shown · click again: show all"
-                : v === -1 ? "These are hidden · Alt+click again: show them"
-                : "Click: show only these · Alt+click: hide these");
+            c.title = base + "\n" + wvStr("weavero-scope-toggle-hint", { state: v === 1 ? "only" : v === -1 ? "hidden" : "off" });
             const sec = ctl.sec, kind = ctl.kind;
             const fire = (alt: boolean) => { const lp: any = wvLivePlugin(); if (lp) lp._wvScopeFilterToggle(sec, kind, key, alt); };
             c.addEventListener("click", (e: any) => { e.preventDefault(); e.stopPropagation(); fire(!!e.altKey); });
@@ -272,7 +273,7 @@ class _PaneScopeMixin {
             ic.classList.add("wv-scope-count-icon", "wv-scope-count-type");
             c.appendChild(ic);
             wvHtmlEl(doc, "span", "wv-scope-count-n", String(levels!.own), c);
-            toggle(c, "own", prep + " this item: " + levels!.own);
+            toggle(c, "own", wvStr("weavero-scope-count-own", { prep: prepKey, count: levels!.own }));
         }
         for (const l of parts) {
             const n = levels![l.key];
@@ -280,7 +281,7 @@ class _PaneScopeMixin {
             c.dataset.kind = l.key;
             c.appendChild(self._makeChromeIcon(doc, l.icon, "wv-scope-count-icon"));
             wvHtmlEl(doc, "span", "wv-scope-count-n", String(n), c);
-            toggle(c, l.key, prep + " its " + l.name + ": " + n);
+            toggle(c, l.key, wvStr(l.key === "att" ? "weavero-scope-count-att" : l.key === "note" ? "weavero-scope-count-note" : "weavero-scope-count-ann", { prep: prepKey, count: n }));
         }
         if (refsShown) {
             const kinds = wvHtmlEl(doc, "span", "wv-scope-kinds wv-scope-or-group", undefined, end);
@@ -288,26 +289,26 @@ class _PaneScopeMixin {
             cl.dataset.kind = "link";
             cl.appendChild(wvRefMarkGlyphEl(doc, "zotero", { cls: "wv-scope-count-icon" }));
             wvHtmlEl(doc, "span", "wv-scope-count-n", String(refs!.link), cl);
-            toggle(cl, "link", "Zotero links: " + refs!.link);
+            toggle(cl, "link", wvStr("weavero-scope-count-zotero-links", { count: refs!.link }));
             const cz = wvHtmlEl(doc, "span", "wv-scope-count", undefined, kinds);
             cz.dataset.kind = "zotero";
             cz.appendChild(wvRefMarkGlyphEl(doc, "cite", { cls: "wv-scope-count-icon" }));
             wvHtmlEl(doc, "span", "wv-scope-count-n", String(refs!.zotero), cz);
-            toggle(cz, "zotero", "Note citations: " + refs!.zotero);
+            toggle(cz, "zotero", wvStr("weavero-scope-count-note-citations", { count: refs!.zotero }));
         }
         if (loopShown) {
             const c = wvHtmlEl(doc, "span", "wv-scope-count", undefined, end);
             c.dataset.kind = "internal";
             c.appendChild(wvLinkGlyphEl(doc, { cls: "wv-scope-count-icon", backlink: "loop" }));
             wvHtmlEl(doc, "span", "wv-scope-count-n", String(loops!.n), c);
-            toggle(c, "loop", "Internal " + loops!.what + ": " + loops!.n + " of " + loops!.of + " (both ends in the same item)");
+            toggle(c, "loop", wvStr("weavero-scope-count-internal", { what: loops!.what, count: loops!.n, total: loops!.of }));
         }
         if (brokenShown) {
             const c = wvHtmlEl(doc, "span", "wv-scope-count", undefined, end);
             c.dataset.kind = "broken";
             c.appendChild(wvLinkGlyphEl(doc, { cls: "wv-scope-count-icon", backlink: "broken" }));
             wvHtmlEl(doc, "span", "wv-scope-count-n", String(broken), c);
-            toggle(c, "broken", "Broken links: " + broken + " (the item is gone, or its group library is not in this profile)");
+            toggle(c, "broken", wvStr("weavero-scope-count-broken", { count: broken }));
         }
         for (const o of olds) o.remove();
         // The levels beside the title; the rest last in the title's box,
@@ -785,8 +786,9 @@ class _PaneScopeMixin {
             h.setAttribute("data-wv-owned", "true");
             const head = wvHtmlEl(doc, "div", "wv-count-group-head", undefined, h);
             head.appendChild(self._wvCountItemIcon(doc, win, item));
-            let label = "This item";
-            try { label = self._wvCountSourceLabel(item, item) || label; } catch (e) {}
+            let label = "";
+            try { label = self._wvCountSourceLabel(item, item) || ""; } catch (e) {}
+            if (!label) label = wvStr("weavero-count-this-item");
             wvHtmlEl(doc, "span", "wv-count-group-title", label, head);
             wvHtmlEl(doc, "span", "wv-count-group-n", String(own), head);
             h._wvScopeSig = sig;
@@ -839,6 +841,7 @@ class _PaneScopeMixin {
             el.addEventListener("click", (e: any) => { e.stopPropagation(); fn(e); });
             el.addEventListener("keydown", (e: any) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); fn(e); } });
         };
+        const untitled = wvStr("weavero-common-untitled");
         for (const g of groups) {
             const box = wvHtmlEl(doc, "div", "wv-count-group", undefined, parent);
             const head = wvHtmlEl(doc, "div", "wv-count-group-head", undefined, box);
@@ -855,7 +858,7 @@ class _PaneScopeMixin {
                 const row = wvHtmlEl(doc, "div", "wv-rel-row wv-count-row", undefined, box);
                 if (kind === "related") {
                     row.appendChild(self._wvCountItemIcon(doc, win, ent));
-                    let t = "(untitled)";
+                    let t = untitled;
                     try { t = ent.getDisplayTitle() || t; } catch (e) {}
                     const span = wvHtmlEl(doc, "span", "wv-rel-title", t, row);
                     // Its links coloured and live, as Zotero's Related labels

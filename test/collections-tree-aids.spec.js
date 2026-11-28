@@ -160,29 +160,37 @@ describe("Weavero — collections-tree reading aids", () => {
         assert.equal(f.tree.querySelectorAll(".row").length, 0);
     });
 
-    it("a pinned parent gets an arrow only where Zotero draws one (none on a header)", () => {
+    // Zotero's own rule: a twisty unless isContainerEmpty (collectionTree.jsx renderItem).
+    // A header answers "empty" -- unless another plugin makes it a folder (Saved Search
+    // Folders 1.1: header rows with children, "not empty"), which has its arrow on its row
+    // and pinned (2026-11-27, ssf F4: `isContainer` decided here and drew none).
+    it("a pinned parent gets an arrow only where Zotero draws one (none on a header, one on another plugin's folder)", () => {
         Zotero.Prefs.set(PREF, 5);
         const f = fake(30);
-        f.win.ZoteroPane.collectionsView.isContainer = (i) => i !== 0;   // row 0 as a header
-        f.win.ZoteroPane.collectionsView.isContainerEmpty = () => false;
+        f.win.ZoteroPane.collectionsView.isContainer = (i) => i > 1;   // rows 0 and 1 are headers to Zotero
+        f.win.ZoteroPane.collectionsView.isContainerEmpty = (i) => i === 0;   // row 1: a plugin's folder
         wv._wvCollAidsUpdate(f.win);
         const rows = [...f.tree.querySelectorAll(".wv-coll-sticky .row")];
         assert.isNotNull(rows[0].querySelector(".spacer-twisty"), "header: spacer");
         assert.isNull(rows[0].querySelector(".twisty"), "header: no arrow");
-        assert.isNotNull(rows[1].querySelector(".twisty"), "collection: arrow");
+        assert.isNotNull(rows[1].querySelector(".twisty"), "a plugin's folder (a header to Zotero, not empty): arrow");
+        if (rows[2]) assert.isNotNull(rows[2].querySelector(".twisty"), "collection: arrow");
     });
 
-    it("no indent guide for a parent without an arrow (the Group Libraries header)", () => {
-        // Rows: 0 header (not a container, level 0), 1 group (level 1),
-        // 2 collection in the group (level 2); 3 My Library, 4 its child.
+    it("no indent guide for a parent without an arrow (the Group Libraries header), one under another plugin's folder", () => {
+        // Rows: 0 header (level 0), 1 group (level 1), 2 collection in the group
+        // (level 2); 3 My Library, 4 its child; 5 a plugin's folder under My
+        // Library (a header to Zotero, with children), 6 its search.
         const cv = {
-            getParentIndex: (i) => ({ 0: -1, 1: 0, 2: 1, 3: -1, 4: 3 })[i],
-            getLevel: (i) => ({ 0: 0, 1: 1, 2: 2, 3: 0, 4: 1 })[i],
-            isContainer: (i) => i !== 0,
+            getParentIndex: (i) => ({ 0: -1, 1: 0, 2: 1, 3: -1, 4: 3, 5: 3, 6: 5 })[i],
+            getLevel: (i) => ({ 0: 0, 1: 1, 2: 2, 3: 0, 4: 1, 5: 1, 6: 2 })[i],
+            isContainer: (i) => i !== 0 && i !== 5,
+            isContainerEmpty: (i) => i === 0,
         };
         assert.equal(wv._wvCollGuideSkipPx(cv, 1), 16, "group: header column skipped");
         assert.equal(wv._wvCollGuideSkipPx(cv, 2), 16, "collection in a group: only the header column");
         assert.equal(wv._wvCollGuideSkipPx(cv, 4), 0, "under My Library: every guide drawn");
+        assert.equal(wv._wvCollGuideSkipPx(cv, 6), 0, "under a plugin's folder: every guide drawn");
     });
 
     // MJT 2026-10-21: "Can you do the same pinning in the Hidden Manager?" --

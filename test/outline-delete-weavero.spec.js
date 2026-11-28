@@ -34,7 +34,7 @@ describe("Weavero — Delete Weavero Outline", () => {
             wv._wvOutlineShowChipMenu({}, d, anchor(d), "extracted");
             assert.deepEqual(labels(d), [], "Extracted shown: no menu");
             wv._wvOutlineShowChipMenu({}, d, anchor(d), "weavero");
-            assert.deepEqual(labels(d), ["Delete Weavero Outline…"]);
+            assert.deepEqual(labels(d), ["Delete Edited Outline…"]);
         }
         finally { unstub(); }
     });
@@ -60,7 +60,7 @@ describe("Weavero — Delete Weavero Outline", () => {
             row.dispatchEvent(new ME("auxclick", { bubbles: true, cancelable: true, button: 2 }));
             // The dropdown stays open, the delete opens beside the row (MJT:
             // "should not collapse the dropdown menu").
-            assert.deepEqual(labels(d), ["Extracted", "Weavero", "Delete Weavero Outline…"]);
+            assert.deepEqual(labels(d), ["Extracted", "Edited", "Delete Edited Outline…"]);
             assert.isOk(d.querySelector(".wv-outline-src-weavero"), "Weavero row still there");
             const side = d.querySelector(".wv-ctx-sidemenu");
             assert.isOk(side, "the delete sits in its own side menu");

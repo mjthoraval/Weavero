@@ -27,6 +27,7 @@ import { BOOKMARK_PATH, BOOKMARK_PATH_14, BOOKMARK_PATH_20, URL_GLOBE_SVG, URL_E
 import { wvLinkGlyphMarkup, wvLinkGlyphEl, WV_LINK_MENU_ICON } from "../lib/link-glyph";
 import { wvPopupHost, wvDismissTooltip, wvSetBoolAttr, wvBoolAttrOn, wvReaderMenuEvent, wvWithin, wvIsTextEntry, wvHtmlEl } from "../lib/dom";
 import { wvLivePlugin } from "../lib/live";
+import { wvOpenedInstance, wvZoteroAccelShiftCommand } from "../lib/compat";
 import { wvStoreWrite, wvStoreRead } from "../lib/store";
 import { wvTimeout, wvClearTimeout } from "../lib/timers";
 import { wvMenuItem, wvMenuItemByLabel } from "../lib/menu";
@@ -38,6 +39,9 @@ import { wvCloneFor } from "../lib/xray";
 import { wvSvgEl } from "../lib/svg";
 import { wvLinkClassRules } from "../lib/links";
 import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
+import { wvSdtModule, wvSdtOpen, wvSdtVersionOk } from "../lib/sdt";
+import { wvOutlineFromSdt, WvOlSdt } from "../lib/outline-sdt";
+import { wvOutlineBuild, wvOlSameTree } from "../lib/outline-build";
 
 declare const Components: any;
 declare const Services: any;
@@ -53,7 +57,7 @@ const RP_BM_CTX_ID = "wv-bm-reader-ctxmenu";
 // Wiring version for the window-scoped context-menu listeners. Bump to force a
 // clean unhook/re-hook; a plain boolean guard let a plugin reload leave the old
 // instance's handler in place (see the comment at the bookmark ctx wiring).
-const RP_BM_CTX_WIRE_V = 21;   // v20: the strip's history menu opens at the pointer (the shim now passes the event); v19: history menu on the outline header strip's right-click (MJT 2026-09-30); v18: Outline-tab menu from any tab (gated on the takeover pref, MJT 2026-09-29); v17: Bookmarks-tab right-click menu (page numbers, MJT 2026-09-18); v16: Outline-tab right-click menu (#42, page numbers); v11: Tab-out stuck-check includes body (every wired-closure change MUST bump this); v10: Tab-out fallback + clear-x fix + rename-input exclusions (dev.1-7 shipped WITHOUT a bump -- existing readers kept v9 closures and none of those fixes wired; 2026-07-29); v9: Esc keeps focus in the left pane; v8: sidebar click focus; v7-5: search wiring
+const RP_BM_CTX_WIRE_V = 23;   // v23: the Bookmarks tab goes off on every other tab of the strip, another plugin's included (Jasminum, 2026-11-24); v22: the outline tab handlers know Weavero's own Outline button and every other tab of the strip (another plugin's: Jasminum, 2026-11-24); v20: the strip's history menu opens at the pointer (the shim now passes the event); v19: history menu on the outline header strip's right-click (MJT 2026-09-30); v18: Outline-tab menu from any tab (gated on the takeover pref, MJT 2026-09-29); v17: Bookmarks-tab right-click menu (page numbers, MJT 2026-09-18); v16: Outline-tab right-click menu (#42, page numbers); v11: Tab-out stuck-check includes body (every wired-closure change MUST bump this); v10: Tab-out fallback + clear-x fix + rename-input exclusions (dev.1-7 shipped WITHOUT a bump -- existing readers kept v9 closures and none of those fixes wired; 2026-07-29); v9: Esc keeps focus in the left pane; v8: sidebar click focus; v7-5: search wiring
 // Wiring version for the reader PANEL DOM (bookmark tab/view, outline view,
 // filter buttons). A hot plugin update (install/reload WITHOUT a Zotero restart)
 // leaves an already-open reader's injected buttons wired to the DEAD instance --
@@ -75,11 +79,12 @@ const RP_STYLE_ID = "wv-reader-panels-style";
 // the handle's selector.
 // "Outline Pane" is Better Notes' (its toolbar button: "Toggle Outline
 // Pane"), shown in a note tab that has its outline (MJT 2026-10-15).
+// The second column is the entry's weavero.ftl id.
 const WV_LAYOUT_ITEMS: Array<[string, string]> = [
-    ["sidebar", "Sidebar"],
-    ["outline", "Outline Pane"],
-    ["pane", "Context Pane"],
-    ["selector", "Colour and Tag Selector"],
+    ["sidebar", "weavero-rpanel-layout-sidebar"],
+    ["outline", "weavero-rpanel-layout-outline"],
+    ["pane", "weavero-rpanel-layout-context-pane"],
+    ["selector", "weavero-rpanel-layout-selector"],
 ];
 // Zotero's own Layout items: they toggle the LIBRARY's panes whatever the
 // tab (standalone.js onViewMenuItemClick) and are hidden in reader / note
@@ -591,6 +596,33 @@ export const RP_BM_TAB_ON = "wv-bm-tab-on";
 const RP_OUTLINE_VIEW_TYPES = new Set(["pdf", "snapshot", "epub"]);
 const RP_OUTLINE_VIEW_CLASS = "wv-outline-reader-view";
 export const RP_OUTLINE_TAB_ON = "wv-outline-tab-on";
+/** On the reader document's root while Weavero's outline takeover is on
+ *  (_wvEnsureReaderPanelStyles): Zotero's loading outline stays hidden. */
+export const RP_OUTLINE_ON_ROOT = "wv-outline-takeover";
+// The document's own outline sources (not the hand-edited one, key "weavero",
+// label "Edited"): Weavero's extracted outline ("extracted", outline2 P2), the
+// PDF's own ("embedded"), Zotero's as Zotero stores or shows it ("zotero").
+// Their order is `_wvOutlineOriginalOrder` (MJT 2026-11-24, "Ok for the
+// proposed order": Edited > Extracted > Embedded > Zotero; Reading Mode's own
+// outline after Extracted while it is on); _wvReaderFetchOutline's `alts`
+// carries the ones a document has.
+const RP_OUTLINE_ORIGINALS = ["extracted", "embedded", "zotero"];
+// Weavero's own way into its outline while ANOTHER plugin hides Zotero's
+// Outline button (Jasminum: an inline display:none on #viewOutline, its pref
+// disableZoteroOutline, default on; measured 2026-11-24 on Zotero 10.0.8): a
+// tab of the sidebar strip next to it. An id as well as the class: it holds
+// Zotero's own icon markup, and the shutdown sweep unwraps a class-only shell.
+const RP_OUTLINE_ENTRY_CLASS = "wv-outline-entry-tab";
+const RP_OUTLINE_ENTRY_ID = "wv-outline-entry-tab";
+// Zotero's Outline icon, verbatim from zotero/reader res/icons/20/outline.svg
+// (AGPL-3.0, https://github.com/zotero/reader): drawn only when Zotero's own
+// button is missing from the strip; otherwise its icon is copied from it.
+const RP_OUTLINE_ICON_SVG = '<svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">'
+    + '<path d="M2 3.25H3.25V2H2V3.25Z" fill="currentColor"/><path d="M5 3.25H18V2H5V3.25Z" fill="currentColor"/>'
+    + '<path d="M3.25 7.25H2V6H3.25V7.25Z" fill="currentColor"/><path d="M18 7.25H5V6H18V7.25Z" fill="currentColor"/>'
+    + '<path d="M6.25 11H5V9.75H6.25V11Z" fill="currentColor"/><path d="M18 11H8V9.75H18V11Z" fill="currentColor"/>'
+    + '<path d="M3.25 18H2V16.75H3.25V18Z" fill="currentColor"/><path d="M18 18H5V16.75H18V18Z" fill="currentColor"/>'
+    + '<path d="M5 14H6.25V12.75H5V14Z" fill="currentColor"/><path d="M8 14H18V12.75H8V14Z" fill="currentColor"/></svg>';
 
 /** A keyboard-navigable row list of the reader sidebar -- the outline and the
  *  Bookmarks tab -- as the one key handler sees it (survey 2026-10-06 §4,
@@ -1472,6 +1504,12 @@ const RP_BM_CSS = [
     "#sidebarContainer." + RP_BM_TAB_ON + " #sidebarContent > .viewWrapper:not(." + RP_BM_VIEW_CLASS + "){display:none!important;}",
     "." + RP_BM_VIEW_CLASS + "{display:none;flex-direction:column;height:100%;min-height:0;overflow:hidden;}",
     "#sidebarContainer." + RP_BM_TAB_ON + " ." + RP_BM_VIEW_CLASS + "{display:flex!important;}",
+    // ...and nothing ANOTHER plugin put in the sidebar shows with it, as for
+    // the outline takeover (RP_OUTLINE_CSS): Jasminum's #jasminum-outline and
+    // its toolbar stayed up beside Weavero's Bookmarks pane (live check on
+    // outline2.2, 2026-11-24). Guard: test/outline-entry-foreign.spec.js.
+    "#sidebarContainer." + RP_BM_TAB_ON + " > #sidebarContent > :not(.viewWrapper):not([class*='wv-']):not([id^='wv-']){display:none!important;}",
+    "#sidebarContainer." + RP_BM_TAB_ON + " > :not(.sidebar-toolbar):not(#sidebarContent):not([class*='wv-']):not([id^='wv-']){display:none!important;}",
     "." + RP_BM_TAB_CLASS + " svg{width:20px;height:20px;}",
     ".wv-bm-reader-head{display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid rgba(127,127,127,.2);}",
     ".wv-bm-reader-head .wv-bm-reader-htitle{flex:1;font-weight:600;opacity:.75;font-size:11px;text-transform:uppercase;letter-spacing:.04em;}",
@@ -1849,8 +1887,26 @@ const RP_OUTLINE_FIXED = ["8", "9", "10", "11", "12", "13", "14", "15", "16", "1
 
 const RP_OUTLINE_CSS = [
     "#sidebarContainer." + RP_OUTLINE_TAB_ON + " #sidebarContent > .viewWrapper:has(> .outline-view){display:none!important;}",
+    // Before Weavero's outline takes over: Zotero's own while it is still being worked
+    // out (its `loading` class, the spinner -- reader outline-view.js) shows nothing,
+    // where Weavero's outline is on (the document's RP_OUTLINE_ON_ROOT, set with these
+    // styles). Measured 2026-11-25 in MJT's Zotero: the wheel up 115 ms before
+    // Weavero's panel came (MJT: "When I open a PDF tab, I see a spinning wheel before
+    // the content appears"). Once loaded, Zotero's outline shows as ever if Weavero's
+    // panel never came.
+    ":root." + RP_OUTLINE_ON_ROOT + " #sidebarContent > .viewWrapper:has(> .outline-view.loading){visibility:hidden!important;}",
     "." + RP_OUTLINE_VIEW_CLASS + "{display:none;flex-direction:column;height:100%;min-height:0;overflow:hidden;}",
     "#sidebarContainer." + RP_OUTLINE_TAB_ON + " ." + RP_OUTLINE_VIEW_CLASS + "{display:flex!important;}",
+    // While Weavero's outline shows, nothing ANOTHER plugin put in the sidebar
+    // shows with it: a panel of its own under #sidebarContent, a toolbar of its
+    // own in #sidebarContainer (Jasminum's #jasminum-outline and
+    // #j-outline-toolbar stayed up under Weavero's outline after a click on
+    // Weavero's Outline button, 2026-11-24). Zotero's own children (the tab
+    // strip, #sidebarContent, its .viewWrapper views) and Weavero's are left
+    // alone; the other plugin's own state is untouched and back when the
+    // takeover goes off. Guard: test/outline-entry-foreign.spec.js.
+    "#sidebarContainer." + RP_OUTLINE_TAB_ON + " > #sidebarContent > :not(.viewWrapper):not([class*='wv-']):not([id^='wv-']){display:none!important;}",
+    "#sidebarContainer." + RP_OUTLINE_TAB_ON + " > :not(.sidebar-toolbar):not(#sidebarContent):not([class*='wv-']):not([id^='wv-']){display:none!important;}",
     // Scroll region + rows -- values match Zotero's native _outline-view.scss
     // (font-size .6875rem, line-height 1.2, title padding .21875rem, toggle
     //  9px wide × 1.25rem tall with 3px inline margins, 16px nesting via the
@@ -1870,6 +1926,14 @@ const RP_OUTLINE_CSS = [
     // landing passes focus({focusVisible:true}) to force the ring.
     ".wv-outline-row:focus:not(:focus-visible){outline:none;}",
     ".wv-outline-row:focus-visible{outline:2px solid var(--color-accent,#5e6ad2);outline-offset:-2px;border-radius:4px;}",
+    // ONE ring for the keyboard cursor: the cursor row's own ring around its
+    // words (wv-outline-active, below) stands for its focus too. Both drew,
+    // two blue boxes on one row (MJT 2026-11-26, "Is it normal to have 2 blue
+    // square boxes?"). A focused row that is not the cursor keeps the focus
+    // ring. The context-menu cue and the drop-into box stay (a menu opened
+    // from the keyboard is on the cursor row). Guard:
+    // test/outline-one-ring.spec.js.
+    ".wv-outline-row.wv-outline-active:focus-visible:not(.wv-outline-ctx):not(.wv-outline-drop-into){outline:none;}",
     // Drag-reorder: the dragged row (and its subtree) dims; a blue drop bar shows
     // where the block lands, indented to the target level (margin-left set inline).
     ".wv-outline-row.wv-outline-dragging{opacity:.4;}",
@@ -1929,6 +1993,8 @@ const RP_OUTLINE_CSS = [
     ".wv-outline-src-embedded .wv-outline-src-dot{background:#3ca03c;}",
     ".wv-outline-src-extracted .wv-outline-src-dot{background:#d99a2b;}",
     ".wv-outline-src-weavero .wv-outline-src-dot{background:var(--color-accent,#5e6ad2);}",
+    // Zotero's own outline, kept for comparison: a neutral grey (MJT 2026-11-24).
+    ".wv-outline-src-zotero .wv-outline-src-dot{background:#8a8a8a;}",
     ".wv-outline-src-none .wv-outline-src-dot{background:#888;opacity:.6;}",
     ".wv-outline-src-caret{display:inline-flex;opacity:.6;}",
     ".wv-outline-src-caret svg{width:8px;height:8px;}",
@@ -2419,7 +2485,14 @@ class _ReaderPanelsMixin {
                 : ([] as Array<"a" | "m">).concat(shown.added ? ["a"] : [], shown.modified ? ["m"] : []);
             const on = order.length > 0;
             const map: any = idoc._wvAnnDates || {};
-            const LBL: any = { a: "Added", m: "Modified" };
+            // Each message formatted once per pass, its date slotted in per
+            // card (a pass covers every card of the document).
+            const tpl = (id: string) => {
+                const s = wvStr(id, { date: "\u0001" });
+                return (date: string) => s.replace("\u0001", () => date);
+            };
+            const LBL: any = { a: tpl("weavero-rpanel-ann-date-added"), m: tpl("weavero-rpanel-ann-date-modified") };
+            const FULL: any = { a: tpl("weavero-rpanel-ann-date-added-full"), m: tpl("weavero-rpanel-ann-date-modified-full") };
             for (const card of idoc.querySelectorAll("#annotationsView .annotation")) {
                 try {
                     const key = card.getAttribute("data-sidebar-annotation-id");
@@ -2435,7 +2508,7 @@ class _ReaderPanelsMixin {
                             if (curT !== hd.getAttribute("data-wv-title")) hd.setAttribute("data-wv-native-title", curT);
                             const nat = hd.getAttribute("data-wv-native-title") || "";
                             const um = nat.match(/\s(\([^()]*\))$/);
-                            const t = [d.a ? "Date Added: " + d.a.f : "", d.m ? "Date Modified: " + d.m.f + (um ? " " + um[1] : "") : ""].filter(Boolean).join("\n");
+                            const t = [d.a ? FULL.a(d.a.f) : "", d.m ? FULL.m(d.m.f + (um ? " " + um[1] : "")) : ""].filter(Boolean).join("\n");
                             if (curT !== t) { hd.setAttribute("data-wv-title", t); hd.setAttribute("title", t); }
                         }
                     } catch (_) {}
@@ -2451,7 +2524,7 @@ class _ReaderPanelsMixin {
                         el.className = "wv-ann-date";
                         card.appendChild(el);
                     }
-                    const lines = d ? order.filter(k => d[k]).map(k => LBL[k] + ": " + d[k].s) : [];
+                    const lines = d ? order.filter(k => d[k]).map(k => LBL[k](d[k].s)) : [];
                     const sig = lines.join("\n");
                     if (el.getAttribute("data-wv-sig") !== sig || el.childElementCount !== lines.length) {
                         el.setAttribute("data-wv-sig", sig);
@@ -2460,7 +2533,7 @@ class _ReaderPanelsMixin {
                             const ln = wvHtmlEl(idoc, "div", "wv-ann-date-line", t, el);
                         }
                     }
-                    const full = d ? [d.a ? "Date Added: " + d.a.f : "", d.m ? "Date Modified: " + d.m.f : ""].filter(Boolean).join("\n") : "";
+                    const full = d ? [d.a ? FULL.a(d.a.f) : "", d.m ? FULL.m(d.m.f) : ""].filter(Boolean).join("\n") : "";
                     if (el.getAttribute("title") !== full) el.setAttribute("title", full);
                 } catch (e) {}
             }
@@ -2505,13 +2578,11 @@ class _ReaderPanelsMixin {
             // outline header (user call 2026-08-28: consistency).
             const title = wvHtmlEl(idoc, 'span');
             title.className = 'wv-outline-head-title';
-            title.textContent = 'Annotations';
+            title.textContent = wvStr("weavero-rpanel-ann-title");
             bar.appendChild(title);
-            const labels: any = { position: "Position", dateAdded: "Date Added",
-                dateModified: "Date Modified", manual: "Manual" };
             const drop = wvHtmlEl(idoc, "button", "wv-outline-src-chip wv-outline-src-switchable wv-ann-sortdrop");
-            drop.setAttribute("title", "Annotation sort");
-            const lab = wvHtmlEl(idoc, "span", undefined, labels[cur.field] || cur.field, drop);
+            drop.setAttribute("title", wvStr("weavero-rpanel-ann-sort-tip"));
+            const lab = wvHtmlEl(idoc, "span", undefined, wvStr("weavero-rpanel-ann-sort-field", { field: cur.field }), drop);
             const caret = wvHtmlEl(idoc, "span");
             caret.className = "wv-outline-src-caret";
             caret.innerHTML = RP_OUTLINE_CHEVRON;
@@ -2528,7 +2599,7 @@ class _ReaderPanelsMixin {
             if (cur.field !== "manual") {
                 const dir = wvHtmlEl(idoc, "button", "wv-ann-sortchip wv-on wv-ann-sortdir");
                 dir.textContent = cur.dir === "asc" ? "↑" : "↓";
-                dir.setAttribute("title", "Toggle sort direction");
+                dir.setAttribute("title", wvStr("weavero-rpanel-ann-sort-direction"));
                 dir.addEventListener("click", (ev: any) => {
                     try {
                         ev.preventDefault(); ev.stopPropagation();
@@ -2978,19 +3049,19 @@ class _ReaderPanelsMixin {
             // (`heading("Sort by")`): three bare field names with a tick gave
             // no clue what axis they set (user request 2026-08-24).
             const heading = (text: string) => this._wvCtxHeading(idoc, menu, text);
-            heading("Sort by");
+            heading(wvStr("weavero-rpanel-sort-by"));
             // Direction lives in the sort BAR (one click on the active chip
             // toggles it) -- the menu stays fields-only (user call 2026-08-03).
-            row("Position", cur.field === "position", () => this._wvAnnSetSort("position", undefined, reader), true);
-            row("Date Added", cur.field === "dateAdded", () => this._wvAnnSetSort("dateAdded", undefined, reader));
-            row("Date Modified", cur.field === "dateModified", () => this._wvAnnSetSort("dateModified", undefined, reader));
+            row(wvStr("weavero-rpanel-ann-sort-field", { field: "position" }), cur.field === "position", () => this._wvAnnSetSort("position", undefined, reader), true);
+            row(wvStr("weavero-rpanel-ann-sort-field", { field: "dateAdded" }), cur.field === "dateAdded", () => this._wvAnnSetSort("dateAdded", undefined, reader));
+            row(wvStr("weavero-rpanel-ann-sort-field", { field: "dateModified" }), cur.field === "dateModified", () => this._wvAnnSetSort("dateModified", undefined, reader));
             // Manual is offered only when this document actually HAS a
             // manually-arranged order (user call 2026-08-28) -- dragging a
             // card is how one comes to exist in the first place.
             try {
                 const attM = this._wvReaderAtt(reader);
                 if (attM && this._wvAnnOrderGet(attM.libraryID, attM.itemKey).length) {
-                    row("Manual (drag to reorder)", cur.field === "manual", () => this._wvAnnSetSort("manual", undefined, reader));
+                    row(wvStr("weavero-rpanel-ann-sort-manual-row"), cur.field === "manual", () => this._wvAnnSetSort("manual", undefined, reader));
                 }
             } catch (e) {}
             // Card dates for this document (issue #49): a tick per date,
@@ -3002,9 +3073,9 @@ class _ReaderPanelsMixin {
                     const sep = wvHtmlEl(idoc, "div");
                     sep.className = "wv-ctx-sep";
                     menu.appendChild(sep);
-                    heading("Show on cards");
-                    row("Date Added", shown.added, () => { this._wvAnnSetDateShown(reader, "added", !shown.added); }, shown.added === def.added);
-                    row("Date Modified", shown.modified, () => { this._wvAnnSetDateShown(reader, "modified", !shown.modified); }, shown.modified === def.modified);
+                    heading(wvStr("weavero-rpanel-ann-show-on-cards"));
+                    row(wvStr("weavero-rpanel-ann-sort-field", { field: "dateAdded" }), shown.added, () => { this._wvAnnSetDateShown(reader, "added", !shown.added); }, shown.added === def.added);
+                    row(wvStr("weavero-rpanel-ann-sort-field", { field: "dateModified" }), shown.modified, () => { this._wvAnnSetDateShown(reader, "modified", !shown.modified); }, shown.modified === def.modified);
                 }
             } catch (e) {}
             (idoc.body || idoc.documentElement).appendChild(menu);
@@ -3140,6 +3211,7 @@ class _ReaderPanelsMixin {
             rm("." + RP_BM_TAB_CLASS);
             rm("." + RP_BM_VIEW_CLASS);
             rm("." + RP_OUTLINE_VIEW_CLASS);
+            rm("." + RP_OUTLINE_ENTRY_CLASS);
             rm(".wv-bm-sidebar-actions");
             rm(".wv-al-actions");
             rm(".wv-sel-handle");
@@ -3172,6 +3244,9 @@ class _ReaderPanelsMixin {
                         && typeof ir0.setSidebarView === "function") ir0.setSidebarView("annotations");
             } catch (_) {}
             try { this._wvUnwatchNativeOutline(reader); } catch (_) {}
+            try { this._wvOutlineTabBtnUnwatch(idoc); } catch (_) {}
+            // The root's takeover mark (RP_OUTLINE_ON_ROOT) goes with the styles.
+            try { if (idoc.documentElement) idoc.documentElement.classList.remove(RP_OUTLINE_ON_ROOT); } catch (_) {}
             this._wvReaderRewirePanels(reader, idoc);
             try { this._wvAnnSortTeardown(reader, idoc); } catch (_) {}
             // The selector handle's watch (issue #58); the handle itself went
@@ -3330,10 +3405,14 @@ class _ReaderPanelsMixin {
             if (!this._getEnableOutlineTakeover()) {
                 // The one strip implementation (view removal included).
                 try { this._wvReaderDeactivateOutlineTakeover(reader, idoc); } catch (_) {}
+                try { this._wvOutlineTabBtnRemove(idoc); } catch (_) {}
                 return;
             }
             const content = idoc.getElementById("sidebarContent");
             if (!content) return;
+            // Weavero's own Outline button while another plugin hides Zotero's.
+            try { this._wvOutlineTabBtnEnsure(reader, idoc); } catch (_) {}
+            try { this._wvOutlineTabBtnWatch(reader, idoc); } catch (_) {}
             // Ensure our outline view wrapper exists (built-DOM, Weavero-owned).
             let view = content.querySelector("." + RP_OUTLINE_VIEW_CLASS);
             if (!view) {
@@ -3363,7 +3442,7 @@ class _ReaderPanelsMixin {
                 });
                 const head = wvHtmlEl(idoc, "div");
                 head.className = "wv-outline-head";
-                head.textContent = "Outline";
+                head.textContent = wvStr("weavero-outline-title");
                 const list = wvHtmlEl(idoc, "div");
                 list.className = "wv-outline-list";
                 view.appendChild(head);
@@ -3411,15 +3490,14 @@ class _ReaderPanelsMixin {
                             && Number.isInteger(a.position.pageIndex)
                             && Array.isArray(a.position.rects) && a.position.rects.length);
                         if (!ann) return;
-                        const title = String(ann.text || "").replace(/\s+/g, " ").trim().slice(0, 160) || "Selection";
+                        const title = String(ann.text || "").replace(/\s+/g, " ").trim().slice(0, 160) || wvStr("weavero-rpanel-selection-default");
                         const pos = { pageIndex: ann.position.pageIndex, rects: ann.position.rects };
                         Promise.resolve(live._wvOutlineCreateEntry(reader, idoc, title, pos))
                             .then((res: any) => {
                                 if (!res || !res.stored) return;
                                 try {
-                                    live._wvReaderPanelNote(idoc, "Added “"
-                                        + title.slice(0, 40) + (title.length > 40 ? "…" : "")
-                                        + "” from the selection.");
+                                    live._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-added-selection",
+                                        { title: title.slice(0, 40) + (title.length > 40 ? "…" : "") }));
                                 } catch (_) {}
                             }).catch(() => {});
                     } catch (er) { Zotero.debug("[Weavero] outline selection-drop err: " + er); }
@@ -3463,8 +3541,15 @@ class _ReaderPanelsMixin {
                         if (!t || !t.closest) return;
                         if (t.closest("#viewOutline")) {
                             P._wvReaderActivateOutlineTakeover(reader, idoc, true);
+                        } else if (t.closest("." + RP_OUTLINE_ENTRY_CLASS)) {
+                            P._wvOutlineTabBtnActivate(reader, idoc);
                         } else if (t.closest("#viewThumbnail,#viewAnnotations")
-                                || t.closest("." + RP_BM_TAB_CLASS)) {
+                                || t.closest("." + RP_BM_TAB_CLASS)
+                                || P._wvOutlineIsOtherStripTab(t)) {
+                            // ANY other tab of the strip, another plugin's
+                            // included: Jasminum's own outline tab left
+                            // Weavero's outline shown under its panel
+                            // (2026-11-24).
                             P._wvReaderActivateOutlineTakeover(reader, idoc, false);
                         }
                         // Reading Mode TOGGLE watcher (#18: toggling RM never
@@ -3498,7 +3583,7 @@ class _ReaderPanelsMixin {
                         const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                         if (!P) return;
                         const t = e.target;
-                        if (!t || !t.closest || !t.closest("#viewOutline")) return;
+                        if (!t || !t.closest || !t.closest("#viewOutline, ." + RP_OUTLINE_ENTRY_CLASS)) return;
                         const container = idoc.getElementById("sidebarContainer");
                         if (container && container.classList.contains(RP_OUTLINE_TAB_ON)) {
                             P._wvOutlineToggleAll(reader, idoc);
@@ -3532,7 +3617,7 @@ class _ReaderPanelsMixin {
                         // The history menu lives on the toolbar arrows only
                         // (MJT 2026-10-01, removed from the outline and
                         // bookmarks header strips).
-                        const tab = t.closest("#viewOutline");
+                        const tab = t.closest("#viewOutline, ." + RP_OUTLINE_ENTRY_CLASS);
                         if (!tab) return;
                         // Gated on Weavero's outline being ENABLED, not on its
                         // tab being selected: the menu is for this document's
@@ -3547,7 +3632,7 @@ class _ReaderPanelsMixin {
                     try {
                         const t = e.target;
                         if (!t || !t.closest) return;
-                        if (t.closest("#viewOutline") || t.closest("." + RP_BM_TAB_CLASS)) e.preventDefault();
+                        if (t.closest("#viewOutline, ." + RP_OUTLINE_ENTRY_CLASS) || t.closest("." + RP_BM_TAB_CLASS)) e.preventDefault();
                     } catch (_) {}
                 };
                 (idoc as any)._wvOutlineTabClickH = tabClickH;
@@ -4020,6 +4105,7 @@ class _ReaderPanelsMixin {
                                 if (!idoc) continue;
                                 if (!on) {
                                     lp._wvReaderDeactivateOutlineTakeover(r, idoc);
+                                    lp._wvOutlineTabBtnRemove(idoc);
                                 } else {
                                     lp._wvReaderEnsureOutlinePanel(r, idoc);
                                     // If the Outline tab is showing, take over
@@ -4058,6 +4144,7 @@ class _ReaderPanelsMixin {
             } catch (_) {}
             try { if (reader && reader._wvSpyRangeCache) reader._wvSpyRangeCache.clear(); } catch (_) {}
             try { this._wvUnwatchNativeOutline(reader); } catch (_) {}
+            try { this._wvOutlineTabBtnSync(idoc); } catch (_) {}
         } catch (e) { Zotero.debug("[Weavero] _wvReaderDeactivateOutlineTakeover err: " + e); }
     }
 
@@ -4117,6 +4204,187 @@ class _ReaderPanelsMixin {
         try { if (reader) reader._wvNativeOutlineMO = null; } catch (_) {}
     }
 
+    // ---- Weavero's own Outline button (another plugin hides Zotero's) ------
+    // Jasminum 1.1.48 at its defaults puts an inline display:none on
+    // #viewOutline (pref disableZoteroOutline) and offers outline and bookmark
+    // tabs of its own; the takeover's only way in was a click on #viewOutline,
+    // so a Jasminum user never reached Weavero's outline (measured 2026-11-24 in
+    // a throwaway Zotero 10.0.8 profile with Jasminum). Weavero then shows a tab
+    // of its own beside the hidden one, and takes it away when Zotero's is back.
+    // Zotero's button is never un-hidden: hiding it is the other plugin's
+    // setting. Guard: test/outline-entry-foreign.spec.js.
+
+    /** The sidebar's tab strip (Zotero's role=tablist); null while the sidebar is closed. */
+    _wvOutlineTabStrip(idoc: any): any {
+        return idoc.querySelector("#sidebarContainer > .sidebar-toolbar > .start")
+            || idoc.querySelector("#sidebarContainer .sidebar-toolbar .start");
+    }
+
+    /** Whether a click target is a tab of the strip other than Zotero's Outline
+     *  button and Weavero's: another view, Zotero's, Weavero's bookmarks or
+     *  another plugin's. */
+    _wvOutlineIsOtherStripTab(t: any): boolean {
+        const tab = this._wvSidebarStripTabOf(t);
+        return !!tab && !tab.closest("#viewOutline, ." + RP_OUTLINE_ENTRY_CLASS);
+    }
+
+    /** The tab of the sidebar strip a click target is in (Zotero's, Weavero's
+     *  or another plugin's), or null. */
+    _wvSidebarStripTabOf(t: any): any {
+        try {
+            const tab = t && t.closest && t.closest("button, [role='tab']");
+            return tab && tab.closest("#sidebarContainer .sidebar-toolbar .start") ? tab : null;
+        } catch (_) { return null; }
+    }
+
+    /** Whether a click target is a tab of the strip other than Weavero's
+     *  Bookmarks tab: every such tab closes the Bookmarks pane. */
+    _wvBmIsOtherStripTab(t: any): boolean {
+        const tab = this._wvSidebarStripTabOf(t);
+        return !!tab && !tab.classList.contains(RP_BM_TAB_CLASS);
+    }
+
+    /** A Weavero tab takes the sidebar: no other plugin's tab stays marked
+     *  selected (it marks and unmarks only on its own clicks and Zotero's).
+     *  Zotero's tabs are React's and Weavero's own follow their pane: left
+     *  alone. */
+    _wvSidebarClearForeignActive(idoc: any) {
+        try {
+            const strip = this._wvOutlineTabStrip(idoc);
+            const skip = /^(viewThumbnail|viewAnnotations|viewOutline)$/;
+            for (const t of (strip ? Array.from(strip.querySelectorAll(".active, [aria-selected='true']")) : []) as any[]) {
+                if (t.id === RP_OUTLINE_ENTRY_ID || skip.test(t.id || "") || t.classList.contains(RP_BM_TAB_CLASS)) continue;
+                t.classList.remove("active");
+                if (t.hasAttribute("aria-selected")) t.setAttribute("aria-selected", "false");
+            }
+        } catch (_) {}
+    }
+
+    /** Whether Zotero's Outline button is out of the user's reach: not in the
+     *  strip, or hidden there (a style or the attribute). */
+    _wvOutlineNativeTabHidden(idoc: any, strip: any): boolean {
+        const nat = idoc.getElementById("viewOutline");
+        if (!nat || !strip.contains(nat) || nat.hidden) return true;
+        const cs = idoc.defaultView && idoc.defaultView.getComputedStyle(nat);
+        return !!cs && (cs.display === "none" || cs.visibility === "hidden" || cs.visibility === "collapse");
+    }
+
+    /** Weavero's Outline button for the strip as it is NOW: added beside
+     *  Zotero's hidden one, removed once that one shows. Writes only what
+     *  changed (its own observer sees every write). */
+    _wvOutlineTabBtnEnsure(reader: any, idoc: any) {
+        const strip = this._wvOutlineTabStrip(idoc);
+        let btn = idoc.getElementById(RP_OUTLINE_ENTRY_ID);
+        if (!strip || !this._wvOutlineNativeTabHidden(idoc, strip)) {
+            if (btn) btn.remove();
+            return;
+        }
+        const nat = idoc.getElementById("viewOutline");
+        // Built once per instance (data-wv-tag): another instance's is rebuilt.
+        if (btn && btn.getAttribute("data-wv-tag") !== this._wvWireTag()) { btn.remove(); btn = null; }
+        if (!btn) {
+            btn = wvHtmlEl(idoc, "button");
+            btn.id = RP_OUTLINE_ENTRY_ID;
+            btn.className = "toolbar-button " + RP_OUTLINE_ENTRY_CLASS;
+            btn.setAttribute("data-wv-tag", this._wvWireTag());
+            btn.setAttribute("tabindex", "-1");
+            btn.setAttribute("role", "tab");
+            btn.setAttribute("aria-selected", "false");
+            const tip = wvStr("weavero-outline-entry-tip");
+            btn.setAttribute("title", tip);
+            btn.setAttribute("aria-label", tip);
+            // Zotero's own icon, copied from its button (whatever this Zotero
+            // draws there); the reader's drawing when the button is gone.
+            if (nat && nat.firstElementChild) { for (const c of Array.from(nat.childNodes) as any[]) btn.appendChild(c.cloneNode(true)); }
+            else btn.innerHTML = RP_OUTLINE_ICON_SVG;
+        }
+        // Right after Zotero's button (where it would be), else after the
+        // Annotations tab, else at the end of the strip.
+        const anchor = (nat && strip.contains(nat)) ? nat
+            : (idoc.getElementById("viewAnnotations") && strip.contains(idoc.getElementById("viewAnnotations")) ? idoc.getElementById("viewAnnotations") : null);
+        if (btn.parentNode !== strip || (anchor && btn.previousElementSibling !== anchor)) {
+            if (anchor) strip.insertBefore(btn, anchor.nextSibling);
+            else strip.appendChild(btn);
+        }
+        this._wvOutlineTabBtnSync(idoc);
+    }
+
+    /** Weavero's Outline button marked as the selected tab while Weavero's
+     *  outline shows (what React does for Zotero's tabs). */
+    _wvOutlineTabBtnSync(idoc: any) {
+        const btn = idoc && idoc.getElementById(RP_OUTLINE_ENTRY_ID);
+        if (!btn) return;
+        const sc = idoc.getElementById("sidebarContainer");
+        const on = !!(sc && sc.classList.contains(RP_OUTLINE_TAB_ON));
+        if (btn.classList.contains("active") !== on) btn.classList.toggle("active", on);
+        const sel = on ? "true" : "false";
+        if (btn.getAttribute("aria-selected") !== sel) btn.setAttribute("aria-selected", sel);
+    }
+
+    /** A click on Weavero's Outline button: what a click on Zotero's does --
+     *  the reader's Outline view (its own outline resolves while that view is
+     *  open), Weavero's outline over it -- and no other plugin's tab still
+     *  marked selected (it marks only its own clicks). Zotero's tabs are
+     *  React's and Weavero's Bookmarks tab its own: left to them. */
+    _wvOutlineTabBtnActivate(reader: any, idoc: any) {
+        try {
+            const ir = reader && reader._internalReader;
+            if (ir && typeof ir.setSidebarView === "function") ir.setSidebarView("outline");
+        } catch (_) {}
+        this._wvReaderActivateOutlineTakeover(reader, idoc, true);
+        this._wvSidebarClearForeignActive(idoc);
+        this._wvOutlineTabBtnSync(idoc);
+    }
+
+    /** Re-check Weavero's Outline button whenever the strip changes (a tab
+     *  added, a style or class set: Jasminum's display:none is an ATTRIBUTE
+     *  change, which the reader page's own observer does not watch) or the
+     *  sidebar's view class does (the active mark). One observer per document
+     *  and instance (`_wvWireTag`), attached again when React has made a new
+     *  strip; given back by the page teardown (`_wvOutlineTabBtnUnwatch`). */
+    _wvOutlineTabBtnWatch(reader: any, idoc: any) {
+        const strip = this._wvOutlineTabStrip(idoc);
+        const sc = idoc.getElementById("sidebarContainer");
+        const cw: any = idoc.defaultView;
+        if (!strip || !sc || !cw || !cw.MutationObserver) return;
+        const D: any = idoc;
+        const tag = this._wvWireTag();
+        if (D.__wvOlTabObs && D.__wvOlTabObsV === tag && D.__wvOlTabStrip === strip && D.__wvOlTabSc === sc) return;
+        this._wvOutlineTabBtnUnwatch(idoc);
+        const obs = new cw.MutationObserver(() => {
+            try {
+                if (D.__wvOlTabT) return;
+                D.__wvOlTabT = wvTimeout(() => {
+                    D.__wvOlTabT = null;
+                    try {
+                        const lp: any = wvLivePlugin();
+                        if (lp && !lp._wvDestroyed && lp._getEnableOutlineTakeover()) lp._wvOutlineTabBtnEnsure(reader, idoc);
+                    } catch (_) {}
+                }, 60);
+            } catch (_) {}
+        });
+        obs.observe(strip, wvCloneFor({ childList: true, subtree: true, attributes: true, attributeFilter: ["style", "class", "hidden"] }, cw));
+        obs.observe(sc, wvCloneFor({ attributes: true, attributeFilter: ["class"] }, cw));
+        D.__wvOlTabObs = obs;
+        D.__wvOlTabObsV = tag;
+        D.__wvOlTabStrip = strip;
+        D.__wvOlTabSc = sc;
+    }
+
+    _wvOutlineTabBtnUnwatch(idoc: any) {
+        const D: any = idoc;
+        if (!D) return;
+        try { if (D.__wvOlTabObs) D.__wvOlTabObs.disconnect(); } catch (_) {}
+        try { if (D.__wvOlTabT) wvClearTimeout(D.__wvOlTabT); } catch (_) {}
+        for (const k of ["__wvOlTabObs", "__wvOlTabObsV", "__wvOlTabStrip", "__wvOlTabSc", "__wvOlTabT"]) { try { delete D[k]; } catch (_) {} }
+    }
+
+    /** Weavero's Outline button and its watch gone (the takeover turned off). */
+    _wvOutlineTabBtnRemove(idoc: any) {
+        try { const b = idoc && idoc.getElementById(RP_OUTLINE_ENTRY_ID); if (b) b.remove(); } catch (_) {}
+        try { this._wvOutlineTabBtnUnwatch(idoc); } catch (_) {}
+    }
+
     _wvReaderActivateOutlineTakeover(reader: any, idoc: any, on: boolean) {
         if (!on) {
             // Single implementation for the strip: partial teardowns through
@@ -4131,6 +4399,7 @@ class _ReaderPanelsMixin {
             if (!container) return;
             try { this._wvReaderSetBmActive(reader, idoc, false); } catch (_) {}
             container.classList.add(RP_OUTLINE_TAB_ON);
+            try { this._wvOutlineTabBtnSync(idoc); } catch (_) {}
             reader._wvOutlineFetchTries = 0;   // restart extraction-retry budget
             this._wvReaderRenderOutline(reader, idoc);
             try { this._wvWatchNativeOutline(reader, idoc); } catch (_) {}
@@ -4162,8 +4431,91 @@ class _ReaderPanelsMixin {
      *  getOutline2 result IS the embedded one; empty means it was extracted.
      *  (There is no API to force extraction when an embedded outline exists --
      *  verified in pdf.js: getOutline2's arg is ignored, module.getOutline is
-     *  embedded-else-extract.) A Weavero-curated outline (Phase 3) overrides. */
-    async _wvReaderFetchOutline(reader: any): Promise<{ source: string, tree: any[], fromState?: boolean } | null> {
+     *  embedded-else-extract.) A Weavero-curated outline (Phase 3) overrides.
+     *
+     *  A PDF with Zotero's structure data (outline2 P1, 2026-11-24): the outline
+     *  comes from the pack (`_wvOutlineSdtFor`) -- the PDF's own outline when it
+     *  has one, else Zotero's extracted outline -- with each entry on its
+     *  heading block's exact box. `alts` holds every original source the pack
+     *  gives (RP_OUTLINE_ORIGINALS order) and `source`/`tree` the one shown
+     *  (`reader._wvOutlinePick`, else the first). No usable pack, a pack with
+     *  no outline, or a Zotero without SDT: the reader's own outline, exactly
+     *  as before (`_wvReaderFetchOutlineOwn`). Every PDF result carries
+     *  `sdtStamp`, the pack stamp it was read at ("" without one): the render
+     *  reads again when the stamp has moved.
+     *
+     *  Weavero's extracted outline IDENTICAL to Zotero's (wvOlSameTree) is not
+     *  a source of its own (MJT 2026-11-24, outline2.6): no `alts.extracted`,
+     *  Zotero's shown with its grey dot, `extractedSame` set (the chip's
+     *  tooltip says it; the Eval mark records it); a pick of "extracted" falls
+     *  back to "zotero". Amber means Weavero changed something. Guard:
+     *  test/outline-extracted-same.spec.js. */
+    async _wvReaderFetchOutline(reader: any): Promise<{ source: string, tree: any[], fromState?: boolean, alts?: any, order?: string[], sdtStamp?: string, extractedSame?: boolean, embeddedSame?: boolean, embeddedFirst?: boolean } | null> {
+        try {
+            if (reader._type && reader._type !== "pdf") return this._wvReaderFetchOutlineOwn(reader);
+            let stamp = "";
+            try {
+                const s = await this._wvOutlineSdtFor(reader);
+                stamp = s.stamp;
+                // A copy: the borrow below never writes into the kept pack data.
+                const d: WvOlSdt | null = s.data ? JSON.parse(JSON.stringify(s.data)) : null;
+                const alts: any = {};
+                if (d && d.extracted && d.extracted.length) alts.extracted = d.extracted;
+                if (d && d.embedded && d.embedded.length) alts.embedded = d.embedded;
+                if (d && d.zotero && d.zotero.length) alts.zotero = d.zotero;
+                const same = !!(alts.extracted && alts.zotero && wvOlSameTree(alts.extracted, alts.zotero));
+                if (same) delete alts.extracted;
+                // The same for the PDF's own outline (outline2.13: GOOD bookmarks
+                // are Extracted's skeleton, so with nothing filled in the two
+                // match): Embedded shown, no amber Extracted.
+                const sameEmb = !!(alts.extracted && alts.embedded && wvOlSameTree(alts.extracted, alts.embedded));
+                if (sameEmb) delete alts.extracted;
+                let order = this._wvOutlineOriginalOrder().filter((k) => alts[k]);
+                // Safety net (outline2.13, MJT 2026-11-24): good bookmarks that
+                // Extracted disagrees with badly (lib/outline-sdt.ts) -- Embedded first.
+                const embFirst = !!(d && d.embeddedFirst && alts.embedded && alts.extracted);
+                if (embFirst) order = ["embedded"].concat(order.filter((k) => k !== "embedded"));
+                if (order.length) {
+                    // Zotero 10.0.8's worker stores no destination with the PDF's
+                    // own entries, only the heading block it found: an entry whose
+                    // heading was not found borrows the reader's destination.
+                    if (alts.embedded && this._wvOutlineSdtMissingPos(alts.embedded)) {
+                        const own = await this._wvReaderFetchOutlineOwn(reader);
+                        if (own && own.tree) this._wvOutlineSdtBorrowPos(alts.embedded, own.tree);
+                    }
+                    let pick = (reader._wvOutlinePick && alts[reader._wvOutlinePick]) ? reader._wvOutlinePick : order[0];
+                    if (same && reader._wvOutlinePick === "extracted") pick = "zotero";
+                    if (sameEmb && reader._wvOutlinePick === "extracted") pick = "embedded";
+                    // Copies: what the panel shows (and a copy-on-first-edit
+                    // stores) never shares objects with the kept pack data.
+                    return { source: pick, tree: JSON.parse(JSON.stringify(alts[pick])), alts, order, sdtStamp: stamp, extractedSame: same, embeddedSame: sameEmb, embeddedFirst: embFirst };
+                }
+                if (!stamp) this._wvOutlineSdtRequest(reader);
+            } catch (e) { Zotero.debug("[Weavero] outline: structure data skipped: " + e); }
+            const own = await this._wvReaderFetchOutlineOwn(reader);
+            return own ? Object.assign(own, { sdtStamp: stamp }) : own;
+        } catch (_) { return null; }
+    }
+
+    /** The order of the document's own outline sources (RP_OUTLINE_ORIGINALS),
+     *  the first one available being the default: Weavero's extracted outline,
+     *  then the PDF's own, then Zotero's (MJT 2026-11-24: "I just want to scan
+     *  through the PDF files of my library and directly see the Weavero
+     *  extracted outlines"). The hidden pref `weavero.outlineDefaultSource`
+     *  ("extracted", the default; "embedded") swaps the first two -- a setting
+     *  later, maybe. */
+    _wvOutlineOriginalOrder(): string[] {
+        let pref: any = null;
+        try { pref = Zotero.Prefs.get("weavero.outlineDefaultSource"); } catch (_) {}
+        return pref === "embedded" ? ["embedded", "extracted", "zotero"] : ["extracted", "embedded", "zotero"];
+    }
+
+    /** The reader's OWN outline (no structure data): Zotero 9/10's getOutline2,
+     *  Zotero 11's state.outline, a DOM view's outline. The fetch before
+     *  outline2, except for its name: what the reader extracts itself is
+     *  Zotero's outline, "zotero" (MJT 2026-11-24: "Extracted" now names
+     *  Weavero's). */
+    async _wvReaderFetchOutlineOwn(reader: any): Promise<{ source: string, tree: any[], fromState?: boolean } | null> {
         try {
             // Non-PDF (DOM) views -- EPUB and snapshot -- have no pdf.js
             // document, but Zotero DOES build an outline for them and hands it
@@ -4179,7 +4531,7 @@ class _ReaderPanelsMixin {
                 const tree = (st && st.outline) || null;
                 if (!tree || !tree.length) return null;
                 return {
-                    source: reader._type === "epub" ? "embedded" : "extracted",
+                    source: reader._type === "epub" ? "embedded" : "zotero",
                     tree: this._wvOutlineCopyTree(tree),
                 };
             }
@@ -4205,7 +4557,7 @@ class _ReaderPanelsMixin {
                 const st = reader._internalReader && reader._internalReader._state;
                 const tree = st ? st.outline : null;
                 if (!tree) return null;   // still loading: the render retries
-                let src = "extracted";
+                let src = "zotero";
                 try {
                     const emb = pdfDoc.getOutline ? await pdfDoc.getOutline() : null;
                     if (emb && emb.length) src = "embedded";
@@ -4213,13 +4565,191 @@ class _ReaderPanelsMixin {
                 return { source: src, tree: this._wvOutlineCopyTree(tree), fromState: true };
             }
             const raw = await pdfDoc.getOutline2();
-            let source = "extracted";
+            let source = "zotero";
             try {
                 const emb = pdfDoc.getOutline ? await pdfDoc.getOutline() : null;
                 if (emb && emb.length) source = "embedded";
             } catch (_) {}
             return { source, tree: this._wvOutlineCopyTree(raw) };
         } catch (_) { return null; }
+    }
+
+    // ---- Zotero's structure data as the outline's source (outline2 P1) -----
+    // The pack (`.zotero-sdt-cache`, Zotero.SDT) is READ here, never written,
+    // and never built except for the PDF a reader shows, through the one call
+    // the reader itself makes (`_wvOutlineSdtRequest`). What the panel keeps
+    // from a pack lives in memory, keyed to its stamp, and is read again
+    // whenever the stamp moves (MJT 2026-11-24, "If data is stored, make sure
+    // that it is properly updated when the Zotero data is refreshed"). An
+    // edited outline (outlines.json) is the user's: a pack appearing or
+    // changing never replaces or re-derives it (MJT 2026-11-24, "the data
+    // produced by Weavero is not overwritten by the Zotero data"); its entries
+    // keep title + page + box, never a block index. Guard:
+    // test/outline-sdt.spec.js.
+
+    /** The stamp of attachment `att`'s structure data NOW, from stats alone:
+     *  the pack's size and time with the PDF's path, size and time, and the
+     *  reading code's instance (`_wvWireTag`: what the reader object keeps
+     *  across a Weavero update or reload is read again by the new code). ""
+     *  when this Zotero has no structure data, when there is no pack, and when
+     *  the pack is OLDER than the PDF -- made from an earlier file, so not this
+     *  PDF's (the rule of cited-by.ts _wvCbStamp). */
+    async _wvOutlineSdtStamp(att: any): Promise<string> {
+        try {
+            if (!att || typeof att.isPDFAttachment !== "function" || !att.isPDFAttachment()) return "";
+            if (!(Zotero as any).SDT || !wvSdtModule()) return "";
+            const pdf = await att.getFilePathAsync();
+            if (!pdf) return "";
+            const pack = PathUtils.join(Zotero.Attachments.getStorageDirectory(att).path, ".zotero-sdt-cache");
+            const st = async (p: string) => { try { return await IOUtils.stat(p); } catch (e) { return null; } };
+            const [ss, ps]: any[] = await Promise.all([st(pack), st(pdf)]);
+            if (!ss || !ps || !ss.size) return "";
+            if (ss.lastModified < ps.lastModified) return "";
+            return "sdt:" + ss.size + ":" + ss.lastModified + "|pdf:" + ps.size + ":" + ps.lastModified + ":" + pdf
+                + "|meta:" + this._wvOutlineSdtMetaSig(att) + "|code:" + this._wvWireTag();
+        } catch (e) { return ""; }
+    }
+
+    /** Weavero's extraction on plain data (lib/outline-build.ts), for specs and
+     *  probes: catalog.outline, the block summaries, catalog.pages, meta. */
+    _wvOutlineBuild(cat: any[], blocks: any[], pages: any[], meta: any, notes?: string[]): any[] {
+        return wvOutlineBuild(cat, blocks, pages, meta || {}, notes);
+    }
+
+    /** The parent item's title and creators: Weavero's extraction reads them
+     *  (bylines, title lines; lib/outline-build.ts rules 1-2). */
+    _wvOutlineSdtMeta(att: any): { title: string; creators: Array<{ lastName?: string; firstName?: string }>; labels: { references: string } } {
+        // The entry titles Weavero writes itself (rule 16's "References"), in the UI's language.
+        let references = "References";
+        try { references = wvStr("weavero-outline-references") || references; } catch (_) {}
+        const labels = { references };
+        try {
+            const p = att && att.parentItem;
+            if (!p) return { title: "", creators: [], labels };
+            const creators = (p.getCreators ? p.getCreators() : []).map((c: any) => ({ lastName: String(c.lastName || ""), firstName: String(c.firstName || "") }));
+            return { title: String(p.getField("title") || ""), creators, labels };
+        } catch (_) { return { title: "", creators: [], labels }; }
+    }
+
+    /** A short signature of that metadata, part of the stamp: an edited title
+     *  or creator makes the extraction read again. */
+    _wvOutlineSdtMetaSig(att: any): string {
+        const s = JSON.stringify(this._wvOutlineSdtMeta(att));
+        let h = 2166136261;
+        for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+        return h.toString(36) + ":" + s.length.toString(36);
+    }
+
+    /** The outlines of attachment `att` from its DOCUMENT LAYER (doc layer
+     *  Phase 1, modules/doc-layer.ts): the saved file when it describes the
+     *  pack, the PDF, the parent's title and creators and the code now; else
+     *  computed from the pack FILE -- validated as Zotero validates a pack
+     *  (sdt.js _validateBytes: pack and schema versions, a PDF processor, the
+     *  PDF's own hash; a pack of another version of the file is not read) --
+     *  in the layer's worker, off the main thread, and saved. Extracted is the
+     *  tree the builder makes, kept as it is (lib/doc-layer.ts wvDlFlatten /
+     *  wvDlUnflatten): the layer changes where the outline comes from, not
+     *  what it is. Null when it is not usable. */
+    async _wvOutlineSdtRead(att: any): Promise<WvOlSdt | null> {
+        try { return await this._wvDlOutline(att); }
+        catch (e) {
+            Zotero.debug("[Weavero] outline: no usable structure data for " + (att && att.id) + ": " + e);
+            return null;
+        }
+    }
+
+    /** The reader's PDF's outline from its structure data, kept on the reader
+     *  with the stamp it was read at: `{stamp, data}`, read again whenever the
+     *  stamp is another one -- a pack built, rebuilt or removed, the PDF
+     *  changed -- so a stale copy is never shown. `data` is null when there is
+     *  no usable pack (then not read again until the stamp moves). */
+    async _wvOutlineSdtFor(reader: any): Promise<{ stamp: string; data: WvOlSdt | null; ms?: number }> {
+        const a = this._wvReaderAtt(reader);
+        const att = a && a.att;
+        const stamp = await this._wvOutlineSdtStamp(att);
+        if (!stamp) return { stamp, data: null };
+        // What an earlier instance kept may be a dead object by now: unread, replaced.
+        try { const had = reader._wvOutlineSdt; if (had && had.stamp === stamp) return { stamp, data: had.data, ms: had.ms }; } catch (_) {}
+        // The read's time (file, checks, hash, catalog, heading blocks) is kept
+        // with it: what an open costs (plan P1, "measures the catalog read").
+        const t0 = Date.now();
+        const data = await this._wvOutlineSdtRead(att);
+        const rec = { stamp, data, ms: Date.now() - t0 };
+        Zotero.debug("[Weavero] outline: structure data of " + (att && att.id) + " read in " + rec.ms + " ms ("
+            + (data ? data.extracted.length + " extracted, " + data.embedded.length + " embedded, " + data.zotero.length + " Zotero top-level entries" : "not usable") + ")"
+            + (data && data.notes && data.notes.length ? "; extraction notes: " + data.notes.join(" | ") : ""));
+        // A pack rewritten during the read: not kept, so the next render reads again.
+        if ((await this._wvOutlineSdtStamp(att)) === stamp) reader._wvOutlineSdt = rec;
+        return rec;
+    }
+
+    /** The open PDF has no pack yet: ask Zotero for it ONCE per reader --
+     *  `Zotero.SDT.getPack`, which builds a missing pack; on Zotero 11 the
+     *  reader makes the same call at its init (xpcom/reader.js
+     *  _createGetSDTPack, isPriority) and the two share one build (sdt.js
+     *  _generate) -- and refresh the panel when the pack is there. No poll.
+     *  Only for the PDF this reader shows: nothing else starts a build. */
+    _wvOutlineSdtRequest(reader: any) {
+        try {
+            const SDT = (Zotero as any).SDT;
+            if (!SDT || typeof SDT.getPack !== "function" || !wvSdtModule()) return;
+            if (!reader || reader._wvOutlineSdtAsked || !reader.itemID) return;
+            reader._wvOutlineSdtAsked = true;
+            Promise.resolve(SDT.getPack(reader.itemID, { isPriority: true })).then((r: any) => {
+                if (!r || !r.ok) return;
+                const lp: any = wvLivePlugin();
+                if (lp && !lp._wvDestroyed) return lp._wvOutlineSdtRefresh(reader);
+            }).catch(() => {});
+        } catch (_) {}
+    }
+
+    /** The reader's PDF has a new pack: re-render its Outline panel when that
+     *  changes what it shows -- the panel open, its outline not already this
+     *  pack's, the pack giving an outline -- and no rename under way (the next
+     *  render switches then). Otherwise the next render's stamp check does it. */
+    async _wvOutlineSdtRefresh(reader: any) {
+        try {
+            const idoc = reader._iframeWindow && reader._iframeWindow.document;
+            if (!idoc) return;
+            const c = idoc.getElementById("sidebarContainer");
+            if (!c || !c.classList.contains(RP_OUTLINE_TAB_ON)) return;
+            const s = await this._wvOutlineSdtFor(reader);
+            if (!s.stamp || !s.data || !(s.data.embedded.length || s.data.extracted.length || s.data.zotero.length)) return;
+            const cache = reader._wvOutlineCache;
+            if (cache && cache.sdtStamp === s.stamp) return;
+            if (idoc.querySelector(".wv-outline-rename-input")) return;
+            this._wvReaderRenderOutline(reader, idoc);
+        } catch (_) {}
+    }
+
+    /** Whether a tree has an entry without a position or a link. */
+    _wvOutlineSdtMissingPos(tree: any[]): boolean {
+        for (const n of tree || []) {
+            if (!n.position && !n.url) return true;
+            if (this._wvOutlineSdtMissingPos(n.items)) return true;
+        }
+        return false;
+    }
+
+    /** Give each pack entry without a position the reader's destination for
+     *  the same entry of the PDF's own outline: both trees list it in the same
+     *  order, so entries pair by title in sequence (the reader's tree may drop
+     *  a single root; a title that does not pair is left alone). */
+    _wvOutlineSdtBorrowPos(tree: any[], own: any[]) {
+        const flat = (t: any[]): any[] => { const o: any[] = []; const w = (l: any[]) => { for (const n of l || []) { o.push(n); w(n.items); } }; w(t); return o; };
+        const norm = (s: any) => String(s == null ? "" : s).replace(/\s+/g, " ").trim();
+        const mine = flat(tree), theirs = flat(own);
+        let j = 0;
+        for (const n of mine) {
+            let k = j;
+            while (k < theirs.length && norm(theirs[k].title) !== norm(n.title)) k++;
+            if (k >= theirs.length) continue;
+            if (!n.position && !n.url) {
+                if (theirs[k].position) n.position = JSON.parse(JSON.stringify(theirs[k].position));
+                else if (theirs[k].url) n.url = theirs[k].url;
+            }
+            j = k + 1;
+        }
     }
 
     /** Deep-copy an outline tree to plain JS (the source is Xray-wrapped) and
@@ -4249,18 +4779,39 @@ class _ReaderPanelsMixin {
 
     /** Human label + tooltip for an outline source. */
     _wvOutlineSourceLabel(source: string): string {
-        if (source === "embedded") return "Embedded";
-        if (source === "weavero") return "Weavero";
-        if (source === "none") return "None";
-        if (source === "readingMode") return "Reading Mode";
-        return "Extracted";
+        return wvStr("weavero-outline-source", { source: String(source || "") });
     }
-    _wvOutlineSourceTip(source: string): string {
-        if (source === "embedded") return "Outline embedded in the document";
-        if (source === "weavero") return "Outline curated in Weavero";
-        if (source === "none") return "No outline in this document";
-        if (source === "readingMode") return "Outline generated by Reading Mode from the document text";
-        return "Outline extracted automatically by Zotero";
+    /** One source as the chip's tooltip and its menu rows tell it (outline2.5,
+     *  MJT 2026-11-24: "The tooltip should explain what each label means"):
+     *  its label and what it is; `current` marks the one shown; `same`:
+     *  Zotero's line adds that Weavero's extraction is identical (outline2.6). */
+    _wvOutlineSourceTip(source: string, current?: boolean, same?: boolean, flags?: { embeddedSame?: boolean; embeddedFirst?: boolean }): string {
+        const s = String(source || "");
+        // outline2.13: Embedded's line says when Weavero's extraction is
+        // identical to it, or why it is shown first (the safety net).
+        const key = s === "zotero" && same ? "zoteroSame"
+            : s === "embedded" && flags && flags.embeddedSame ? "embeddedSame"
+            : s === "embedded" && flags && flags.embeddedFirst ? "embeddedFirst" : s;
+        return wvStr("weavero-outline-source-line", {
+            current: current ? "yes" : "no",
+            label: this._wvOutlineSourceLabel(s),
+            meaning: wvStr("weavero-outline-source-meaning", { source: key }),
+        });
+    }
+
+    /** The source chip's tooltip: what the chip is (and that a click switches
+     *  it), then every source this document has (`sources`, the menu's order)
+     *  with its meaning, the shown one marked, and the delete hint while the
+     *  edited outline is shown (its right-click). Plain `title` text, a line
+     *  per "\n", as the annotation pane's funnel button does: the reader's
+     *  browser shows titles through the main window's page tooltip
+     *  (xpcom/reader.js _createBrowser: tooltip="html-tooltip"). Guard:
+     *  test/outline-source-tip.spec.js. */
+    _wvOutlineChipTip(sources: string[], current: string, same?: boolean, flags?: { embeddedSame?: boolean; embeddedFirst?: boolean }): string {
+        const lines = [wvStr("weavero-outline-source-head", { switch: sources.length > 1 ? "yes" : "no" })];
+        for (const s of sources) lines.push(this._wvOutlineSourceTip(s, s === current, same, flags));
+        if (current === "weavero") lines.push(wvStr("weavero-outline-source-delete-hint"));
+        return lines.join("\n");
     }
 
     // ---- Reading Mode outline support (2026-07-29) ------------------------
@@ -4784,7 +5335,7 @@ class _ReaderPanelsMixin {
                         return;
                     }
                 }
-                this._wvReaderPanelNote(idoc, "Couldn’t locate this entry in the Reading Mode text.");
+                this._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-rm-not-found"));
                 return;
             }
             // Position entry: build a mappable (real-rect) position.
@@ -4860,7 +5411,7 @@ class _ReaderPanelsMixin {
                 }
             }
             if (!hit) {
-                this._wvReaderPanelNote(idoc, "Couldn’t locate this entry in the Reading Mode text.");
+                this._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-rm-not-found"));
                 return;
             }
             landOn(hit);
@@ -4890,11 +5441,25 @@ class _ReaderPanelsMixin {
             const viewOriginal = reader._wvOutlineViewSource === "original";
             const rmEntriesAvail = rmActive ? this._wvOutlineRmEntries(reader) : null;
             // RM source shows when explicitly chosen, or by default (no curated
-            // copy, RM outline non-empty). Falls through to the usual sources
-            // when RM has no outline of its own.
+            // copy, RM outline non-empty) -- after Weavero's extracted outline
+            // when the document has one and it comes first (MJT 2026-11-24:
+            // Edited > Extracted > Reading Mode > Embedded > Zotero). Falls
+            // through to the usual sources when RM has no outline of its own.
+            let rmDefault = !!(rmActive && rmEntriesAvail && rmEntriesAvail.length
+                && reader._wvOutlineViewSource == null && !hasCurated);
+            if (rmDefault && this._wvOutlineOriginalOrder()[0] === "extracted") {
+                try {
+                    let c0 = reader._wvOutlineCache;
+                    if (!c0 || !c0.tree) {
+                        c0 = await this._wvReaderFetchOutline(reader);
+                        if (!idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS)) return;
+                        if (c0 && c0.tree && c0.tree.length) reader._wvOutlineCache = c0;
+                    }
+                    if (c0 && c0.alts && c0.alts.extracted && (reader._wvOutlinePick == null || reader._wvOutlinePick === "extracted")) rmDefault = false;
+                } catch (_) {}
+            }
             const rmView = !!(rmActive && rmEntriesAvail && rmEntriesAvail.length
-                && (reader._wvOutlineViewSource === "rm"
-                    || (reader._wvOutlineViewSource == null && !hasCurated)));
+                && (reader._wvOutlineViewSource === "rm" || rmDefault));
             const curatedView = !rmView && hasCurated && !viewOriginal;
 
             // Build a UNIFIED flat entries list (both curated and original render
@@ -4913,6 +5478,15 @@ class _ReaderPanelsMixin {
                 source = "weavero";
             } else {
                 let cache = reader._wvOutlineCache;
+                // A kept PDF outline is read again once the structure data it
+                // was read at (or the lack of it) has changed: a pack Zotero has
+                // built since, rebuilt, or removed (outline2 P1). Stats only.
+                if (cache && cache.tree && (reader._type || "pdf") === "pdf") {
+                    let now = "";
+                    try { now = await this._wvOutlineSdtStamp(att && att.att); } catch (_) {}
+                    if (!idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS)) return;
+                    if (now !== (cache.sdtStamp || "")) { cache = null; reader._wvOutlineCache = null; }
+                }
                 if (!cache || !cache.tree) {
                     cache = await this._wvReaderFetchOutline(reader);
                     if (!idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS)) return;
@@ -5039,7 +5613,7 @@ class _ReaderPanelsMixin {
             // the empty branch would show "No outline for this document" (a
             // lie) and could arm its extraction-retry loop.
             if (outlineFilter && !outlineFilter.visible.size) {
-                const none = wvHtmlEl(idoc, "div", "wv-outline-empty", "No outline entries match the search.", list);
+                const none = wvHtmlEl(idoc, "div", "wv-outline-empty", wvStr("weavero-outline-search-no-match"), list);
                 return;
             }
             if (!entries.length) {
@@ -5057,22 +5631,20 @@ class _ReaderPanelsMixin {
                 const stillTrying = !settled && outlineActive && tries <= 25 && (extracting || tries <= 3);
                 const empty = wvHtmlEl(idoc, "div");
                 empty.className = "wv-outline-empty";
-                empty.textContent = curatedView
-                    ? "Your outline is empty."
-                    : (stillTrying ? "Extracting outline…" : "No outline for this document.");
+                empty.textContent = wvStr("weavero-outline-empty", { state: curatedView ? "curated" : (stillTrying ? "extracting" : "none") });
                 list.appendChild(empty);
                 // Empty-state paths to a curated outline (without these, a doc
                 // whose extraction found nothing had NO way to start one --
                 // reported 2026-07-21). Curated-but-empty: how to add. Non-curated
                 // & settled: a button that bootstraps an editable Weavero outline.
                 if (curatedView) {
-                    const hint = wvHtmlEl(idoc, "div", "wv-outline-empty wv-outline-empty-sub", "Select text in the document, then right-click → Add Selected Text to Outline.", list);
+                    const hint = wvHtmlEl(idoc, "div", "wv-outline-empty wv-outline-empty-sub", wvStr("weavero-outline-empty-hint"), list);
                 } else if (!stillTrying) {
                     const wrap = wvHtmlEl(idoc, "div", "wv-outline-empty wv-outline-empty-sub");
                     const btn = wvHtmlEl(idoc, "button");
                     btn.className = "wv-outline-create-btn";
-                    btn.textContent = "Create Weavero Outline";
-                    btn.setAttribute("title", "Start an editable outline for this document");
+                    btn.textContent = wvStr("weavero-outline-create-button");
+                    btn.setAttribute("title", wvStr("weavero-outline-create-button", null, "title"));
                     btn.addEventListener("click", () => this._wvOutlineCreateEmpty(reader, idoc));
                     wrap.appendChild(btn);
                     list.appendChild(wrap);
@@ -5209,6 +5781,17 @@ class _ReaderPanelsMixin {
         const showPages = this._wvOutlinePagesShown(att);
         const expandedSet: Set<string> = reader._wvOutlineExpanded || (reader._wvOutlineExpanded = new Set());
         const keyOf = (entry: any, i: number) => curatedView ? String(entry.id) : ("idx-" + i);
+        // The texts every row repeats, formatted once per render.
+        const txtUntitled = wvStr("weavero-common-untitled");
+        const txtRowTip = wvStr("weavero-outline-row-tip");
+        const txtBoxTip = wvStr("weavero-outline-kind-box-tip");
+        const txtAnchorTip: any = {
+            point: wvStr("weavero-rpanel-anchor", { anchor: "point" }),
+            bottom: wvStr("weavero-rpanel-anchor", { anchor: "bottom" }),
+            top: wvStr("weavero-rpanel-anchor", { anchor: "top" }),
+        };
+        const pageTpl = wvStr("weavero-rpanel-page-short", { page: "\u0001" });
+        const txtPage = (lbl: string) => pageTpl.replace("\u0001", () => lbl);
         let hideBelow = Infinity;
         for (let i = 0; i < entries.length; i++) {
             const entry = entries[i];
@@ -5241,8 +5824,8 @@ class _ReaderPanelsMixin {
             tw.innerHTML = RP_OUTLINE_CHEVRON;
             const label = wvHtmlEl(idoc, "span");
             label.className = "wv-outline-label";
-            label.textContent = entry.title || "(untitled)";
-            label.setAttribute("title", "Double-click to rename, right-click for more");
+            label.textContent = entry.title || txtUntitled;
+            label.setAttribute("title", txtRowTip);
             row.appendChild(tw);
             row.appendChild(label);
             // Kind icons go AFTER the label (end of row, before the page
@@ -5250,7 +5833,7 @@ class _ReaderPanelsMixin {
             // Box/sidebar entries get a framed-panel icon.
             if (entry.kind === "box") {
                 const kic = wvHtmlEl(idoc, "span", "wv-outline-kind-ic");
-                kic.setAttribute("title", "Sidebar / box");
+                kic.setAttribute("title", txtBoxTip);
                 kic.innerHTML = RP_BOX_SVG;
                 row.appendChild(kic);
             }
@@ -5264,8 +5847,7 @@ class _ReaderPanelsMixin {
                         : tgtK.anchor === "top" ? WV_PAGE_TOP_SVG : null;
                 if (kindIcon) {
                     const tic = wvHtmlEl(idoc, "span", "wv-outline-kind-ic");
-                    tic.setAttribute("title", tgtK.anchor === "point" ? "Pinned spot"
-                        : tgtK.anchor === "bottom" ? "Bottom of page" : "Top of page");
+                    tic.setAttribute("title", txtAnchorTip[tgtK.anchor]);
                     tic.innerHTML = kindIcon;
                     row.appendChild(tic);
                 }
@@ -5279,7 +5861,7 @@ class _ReaderPanelsMixin {
                 const probe = { type: "position", position: { pageIndex: pi },
                     srcLibraryID: att && att.libraryID, srcItemKey: att && att.itemKey };
                 const lbl = this._bmReaderPageLabel(probe) || String(pi + 1);
-                pg.textContent = "p. " + lbl;
+                pg.textContent = txtPage(lbl);
                 row.appendChild(pg);
             }
             else if (showPages && !entry.url && (reader._type || "pdf") === "epub") {
@@ -5288,7 +5870,7 @@ class _ReaderPanelsMixin {
                 // own page map (the toolbar's "22 / 356") labels a range.
                 const elbl = this._wvEpubEntryPageLabel(reader, entry);
                 if (elbl) {
-                    const pg = wvHtmlEl(idoc, "span", "wv-outline-page", "p. " + elbl, row);
+                    const pg = wvHtmlEl(idoc, "span", "wv-outline-page", txtPage(elbl), row);
                 }
             }
             if (hasKids) {
@@ -6686,32 +7268,29 @@ class _ReaderPanelsMixin {
      *  actions (annotation-manager.js) in words. */
     _wvReaderPointLabel(p: any): string {
         const n = (p && Number(p.count)) || 1;
-        const verbs: { [k: string]: string } = { "add-annotations": "Add", "update-annotations": "Edit", "delete-annotations": "Delete", "convert-annotations": "Convert", "merge-annotations": "Merge" };
-        const verb = verbs[p && p.action] || "Edit";
+        const verbs: { [k: string]: string } = { "add-annotations": "add", "update-annotations": "edit", "delete-annotations": "delete", "convert-annotations": "convert", "merge-annotations": "merge" };
+        const verb = verbs[p && p.action] || "edit";
         // The annotations' kind when they share one (MJT 2026-10-06:
         // "improve the description of the different actions"): "Add
         // Highlight", "Delete 2 Notes"; mixed or unknown -> "Annotation".
-        const kinds: { [k: string]: [string, string] } = {
-            // Always "... Annotation" (MJT 2026-10-06: "Add Underline" ->
-            // "Add Underline Annotation").
-            highlight: ["Highlight Annotation", "Highlight Annotations"], underline: ["Underline Annotation", "Underline Annotations"],
-            note: ["Note Annotation", "Note Annotations"], text: ["Text Annotation", "Text Annotations"],
-            image: ["Image Annotation", "Image Annotations"], ink: ["Ink Annotation", "Ink Annotations"],
-        };
-        const k = (p && kinds[p._wvType]) || ["Annotation", "Annotations"];
-        const one = k[0], many = n + " " + k[1];
+        // Always "... Annotation" (MJT 2026-10-06: "Add Underline" -> "Add
+        // Underline Annotation"): weavero.ftl's weavero-undo-ann-kind.
+        const KINDS = ["highlight", "underline", "note", "text", "image", "ink"];
+        const type = (p && KINDS.includes(p._wvType)) ? p._wvType : "other";
         // An edit names what changed when it was one field (MJT 2026-10-05:
         // "Edit Annotation" -> "Edit Annotation Comment").
         const f = p && p.action === "update-annotations" ? p._wvField : null;
         // A geometry-only edit says what the hand did (MJT 2026-10-06:
         // "Undo Resize Annotation"): see _wvReaderPointField.
-        if (f === "@Resize" || f === "@Move") return f.slice(1) + " " + (n === 1 ? one : many);
+        if (f === "@Resize" || f === "@Move") return wvStr("weavero-undo-ann-step", { action: f === "@Move" ? "move" : "resize", type, count: n });
         // A text annotation's comment IS its text.
-        if (f === "Comment" && p._wvType === "text") return "Edit " + (n === 1 ? one : many);
+        if (f === "Comment" && p._wvType === "text") return wvStr("weavero-undo-ann-step", { action: "edit", type, count: n });
         // A colour is CHANGED, the rest is EDITED.
-        if (f === "Color") return n === 1 ? "Change " + one + " Color" : "Change Color of " + many;
-        if (f) return n === 1 ? "Edit " + one + " " + f : "Edit " + f + " of " + many;
-        return verb + " " + (n === 1 ? one : many);
+        if (f === "Color") return wvStr("weavero-undo-ann-change-color", { type, count: n });
+        // The field's name, as _wvReaderPointField spells it (data, not words).
+        const FIELDS: { [k: string]: string } = { "Comment": "comment", "Tags": "tags", "Text": "text", "Page Number": "pageNumber", "Position": "position", "Font Size": "fontSize" };
+        if (f && FIELDS[f]) return wvStr("weavero-undo-ann-edit-field", { field: FIELDS[f], type, count: n });
+        return wvStr("weavero-undo-ann-step", { action: verb, type, count: n });
     }
 
     /** The annotation type a reader history point touched, when all share
@@ -6870,6 +7449,29 @@ class _ReaderPanelsMixin {
         } catch (_) {}
     }
 
+    /** Zotero's global undo history when `reader` reports its annotation
+     *  history to it (zotero#6021: the reader's `_externalUndoHistory`, Zotero's
+     *  `UndoHistory.registerProvider`), else null -- Zotero 10, 11 beta.5 and a
+     *  reader without the PR keep the reader's own undo. Feature-tested. */
+    _wvReaderUndoHistory(reader: any): any {
+        try {
+            const ir = reader && reader._internalReader;
+            const UH: any = (Zotero as any).UndoHistory;
+            if (!ir || !ir._externalUndoHistory || !UH) return null;
+            if (typeof UH.registerProvider !== "function" || typeof UH.undo !== "function" || typeof UH.redo !== "function") return null;
+            return UH;
+        } catch (_) { return null; }
+    }
+
+    /** Whether the reader's point `pointId` is the top of its `dir` stack. */
+    _wvReaderPointIsTop(reader: any, dir: "undo" | "redo", pointId: any): boolean {
+        try {
+            const am = reader._internalReader && reader._internalReader._annotationManager;
+            const st: any[] = am && (dir === "undo" ? am._undoStack : am._redoStack);
+            return Array.isArray(st) && st.length > 0 && !!st[st.length - 1] && st[st.length - 1].id === pointId;
+        } catch (_) { return false; }
+    }
+
     /** Which history the tab's undo / redo acts on right now, by recency:
      *  the newest top across the visible Weavero scopes and the reader's
      *  own history (its top point's stamp, else the manager's
@@ -6930,14 +7532,20 @@ class _ReaderPanelsMixin {
     async _wvTabUndoRedo(reader: any, idoc: any, dir: "undo" | "redo", pick?: { scope?: string; stepId?: string; reader?: boolean; pointId?: any }): Promise<string | null> {
         try {
             const d = idoc || (reader._iframeWindow && reader._iframeWindow.document);
-            const prefix = dir === "undo" ? "Undone: " : "Redone: ";
+            const doneNote = (label: string) => wvStr("weavero-undo-note-done", { dir, label });
             let ch: any;
             if (pick && pick.reader) {
                 // The reader's own step: its top, or with `pointId` one
                 // INDEPENDENT point below it, moved to the top first (see
                 // _wvReaderPointToTop).
                 const am = reader._internalReader && reader._internalReader._annotationManager;
-                if (pick.pointId != null && !this._wvReaderPointToTop(am, dir, pick.pointId)) return null;
+                // Under Zotero's global history (zotero#6021) a point is never
+                // moved: Zotero's entries follow the reader's order, and only the
+                // top can run (through Zotero, below).
+                if (pick.pointId != null && this._wvReaderUndoHistory(reader)) {
+                    if (!this._wvReaderPointIsTop(reader, dir, pick.pointId)) return null;
+                }
+                else if (pick.pointId != null && !this._wvReaderPointToTop(am, dir, pick.pointId)) return null;
                 const st: any[] = (am && (dir === "undo" ? am._undoStack : am._redoStack)) || [];
                 ch = { kind: "reader", label: st.length ? this._wvReaderPointLabel(st[st.length - 1]) : null };
             }
@@ -6950,6 +7558,24 @@ class _ReaderPanelsMixin {
             if (ch.kind === "reader") {
                 const ir = reader._internalReader;
                 if (!ir) return null;
+                // zotero#6021: the reader reports its history to Zotero's global
+                // one, and only Zotero's own undo / redo move Zotero's entries
+                // (undoHistory.js _apply / _applyProviderEntry). Running the
+                // reader's directly left Zotero's stacks behind it, and one step
+                // per desync could no longer be undone or redone from Zotero's
+                // commands (canary 791a2110, 2026-11-22). So the step runs as
+                // Zotero's, which calls the reader for its own entry.
+                const UH = this._wvReaderUndoHistory(reader);
+                if (UH) {
+                    const label = ch.label;
+                    const ok = !!(await UH[dir]());
+                    if (!ok) return null;
+                    if (dir === "undo") ir._wvReaderUndoneAt = Date.now();
+                    if (d) this._wvRevealReaderStep(reader, d, dir);
+                    if (d) this._wvReaderPanelNote(d, doneNote(label || wvStr("weavero-undo-ann-change")));
+                    this._wvUndoAfterChange();
+                    return label || "";
+                }
                 const orig = ir._wvUndoOrig && ir._wvUndoOrig[dir];
                 const fn = orig || ir[dir];
                 if (typeof fn !== "function") return null;
@@ -6958,7 +7584,7 @@ class _ReaderPanelsMixin {
                 if (!ok) return null;
                 if (dir === "undo") ir._wvReaderUndoneAt = Date.now();
                 if (d) this._wvRevealReaderStep(reader, d, dir);
-                if (d) this._wvReaderPanelNote(d, prefix + (label || "Annotation Change"));
+                if (d) this._wvReaderPanelNote(d, doneNote(label || wvStr("weavero-undo-ann-change")));
                 this._wvUndoAfterChange();
                 return label || "";
             }
@@ -6966,7 +7592,7 @@ class _ReaderPanelsMixin {
             const label = pick && pick.stepId
                 ? await this._wvUndoRunStep(ch.scope, dir, pick.stepId)
                 : await this._wvUndoRun(ch.scope, dir);
-            if (label && d) this._wvReaderPanelNote(d, prefix + label);
+            if (label && d) this._wvReaderPanelNote(d, doneNote(label));
             this._wvUndoAfterChange();
             return label;
         } catch (e) { Zotero.debug("[Weavero] _wvTabUndoRedo err: " + e); return null; }
@@ -7190,7 +7816,6 @@ class _ReaderPanelsMixin {
      *  the reader's top. Stops at the first step that will not run. */
     async _wvTabUndoRows(reader: any, idoc: any, rows: any[], dir: "undo" | "redo" = "undo"): Promise<number> {
         let n = 0;
-        const word = dir === "undo" ? "undo" : "redo", done = dir === "undo" ? "Undone" : "Redone";
         try {
             const order = rows.slice().sort((a, b) => b.at - a.at);
             for (const r of order) {
@@ -7202,12 +7827,12 @@ class _ReaderPanelsMixin {
                     const s = r.kind === "weavero" && this._wvUndoStacks().get(r.scope);
                     const gone = !!s && !(dir === "undo" ? s.undo : s.redo).some((x: any) => x.id === r.stepId);
                     if (gone) continue;
-                    if (idoc) this._wvReaderPanelNote(idoc, "Stopped: could not " + word + " " + r.label + (n ? " (" + n + " done)" : ""));
+                    if (idoc) this._wvReaderPanelNote(idoc, wvStr("weavero-undo-note-stopped", { dir, label: String(r.label || ""), done: n }));
                     return n;
                 }
                 n++;
             }
-            if (idoc && n > 1) this._wvReaderPanelNote(idoc, done + ": " + n + " steps");
+            if (idoc && n > 1) this._wvReaderPanelNote(idoc, wvStr("weavero-undo-note-steps", { dir, count: n }));
         } catch (e) { Zotero.debug("[Weavero] _wvTabUndoRows err: " + e); }
         return n;
     }
@@ -7221,14 +7846,14 @@ class _ReaderPanelsMixin {
     _wvUndoStackGlyph(idoc: any, row: any, ic: any, kind: string, scope?: string): string {
         try {
             let stack: string, name: string, icon: string | null = null, inline: string | null = null;
-            if (kind === "reader") { stack = "reader"; name = "Annotations"; inline = RP_ANN_SVG; }
+            if (kind === "reader") { stack = "reader"; inline = RP_ANN_SVG; }
             else if (scope && scope.indexOf("bookmarks:") === 0) {
                 const lib = scope === "bookmarks:lib";
                 stack = lib ? "bookmarks-lib" : "bookmarks-doc";
-                name = lib ? "Bookmarks (library)" : "Bookmarks (this document)";
                 inline = RP_BM_RIBBON_TAB;
             }
-            else { stack = "outline"; name = "Outline"; icon = this._wvReaderOutlineMenuIconURL(); }
+            else { stack = "outline"; icon = this._wvReaderOutlineMenuIconURL(); }
+            name = wvStr("weavero-undo-stack", { stack });
             row.setAttribute("data-wv-stack", stack);
             if (ic) {
                 while (ic.firstChild) ic.firstChild.remove();
@@ -7352,9 +7977,8 @@ class _ReaderPanelsMixin {
                 const b = idoc.querySelector(".toolbar [data-wv-undo='" + dir + "']");
                 if (!b) continue;
                 const ch = this._wvTabUndoChoice(reader, dir, idoc);
-                const word = this._wvUndoPlainWord(dir);
-                const label = ch && ch.label ? word + " " + ch.label : word;
-                b.setAttribute("title", label + " (" + this._wvNativeEditAccel(dir) + ")\nRight-click: history");
+                const label = ch && ch.label ? this._wvUndoActionLabel(dir, ch.label) : this._wvUndoPlainWord(dir);
+                b.setAttribute("title", wvStr("weavero-undo-button-tip", { action: label, accel: this._wvNativeEditAccel(dir) }));
                 // Greyed by class, never by the `disabled` attribute: a disabled
                 // button swallows every mouse event, and the right-click must
                 // still open the history (MJT 2026-10-01).
@@ -7383,12 +8007,12 @@ class _ReaderPanelsMixin {
     _wvTabUndoAgo(at: number): string {
         if (!at) return "";
         const s = Math.max(0, Math.round((Date.now() - at) / 1000));
-        if (s < 60) return "just now";
+        if (s < 60) return wvStr("weavero-undo-ago", { unit: "now", count: 0 });
         const m = Math.round(s / 60);
-        if (m < 60) return m + " min ago";
+        if (m < 60) return wvStr("weavero-undo-ago", { unit: "min", count: m });
         const h = Math.round(m / 60);
-        if (h < 24) return h + " h ago";
-        return Math.round(h / 24) + " d ago";
+        if (h < 24) return wvStr("weavero-undo-ago", { unit: "h", count: h });
+        return wvStr("weavero-undo-ago", { unit: "d", count: Math.round(h / 24) });
     }
 
     // ---- Edit menu: Undo / Redo for the current tab (MJT 2026-09-30) ----
@@ -7502,7 +8126,7 @@ class _ReaderPanelsMixin {
                         const st: any[] = (am && (dir === "undo" ? am._redoStack : am._undoStack)) || [];
                         const p = st.length ? st[st.length - 1] : null;
                         if (P2 && !P2._wvDestroyed && idoc2) P2._wvRevealReaderStep(reader, idoc2, dir);
-                        if (P2 && !P2._wvDestroyed && idoc2 && p) P2._wvReaderPanelNote(idoc2, (dir === "undo" ? "Undone: " : "Redone: ") + P2._wvReaderPointLabel(p));
+                        if (P2 && !P2._wvDestroyed && idoc2 && p) P2._wvReaderPanelNote(idoc2, wvStr("weavero-undo-note-done", { dir, label: P2._wvReaderPointLabel(p) }));
                     }
                 } catch (_) {}
                 return r;
@@ -7669,8 +8293,19 @@ class _ReaderPanelsMixin {
      *  toolkit's text-action-undo message lives in the window's async
      *  bundle, out of reach here. */
     _wvUndoPlainWord(dir: "undo" | "redo"): string {
-        try { return String((Zotero as any).ftl.formatValueSync("menu-edit-" + dir + "-action", { action: "" }) || "").trim() || (dir === "undo" ? "Undo" : "Redo"); }
-        catch (_) { return dir === "undo" ? "Undo" : "Redo"; }
+        try { return String((Zotero as any).ftl.formatValueSync("menu-edit-" + dir + "-action", { action: "" }) || "").trim() || wvStr("weavero-undo-plain", { dir }); }
+        catch (_) { return wvStr("weavero-undo-plain", { dir }); }
+    }
+
+    /** "Undo Add Outline Entry": Zotero's own action template with the
+     *  step's name, as its Edit menu labels its own steps; Weavero's
+     *  where this Zotero has none. */
+    _wvUndoActionLabel(dir: "undo" | "redo", label: string): string {
+        try {
+            const s = String((Zotero as any).ftl.formatValueSync("menu-edit-" + dir + "-action", { action: label }) || "").trim();
+            if (s) return s;
+        } catch (_) {}
+        return wvStr("weavero-undo-action", { dir, label });
     }
 
     /** popupshowing (after Zotero's own handler, which set the disabled
@@ -7685,14 +8320,20 @@ class _ReaderPanelsMixin {
             // Labels: the tab's merged choice -- a Weavero step's name, the
             // reader's point in words ("" = enabled, plain word, when a point
             // has no words; null = nothing to do).
+            const choice = { undo: this._wvTabUndoChoice(ctx.reader, "undo"), redo: this._wvTabUndoChoice(ctx.reader, "redo") };
             const forDir = (dir: "undo" | "redo") => {
-                const ch = this._wvTabUndoChoice(ctx.reader, dir);
+                const ch = choice[dir];
                 return ch ? (ch.label || "") : null;
             };
             const peek = { undo: forDir("undo"), redo: forDir("redo") };
             dbg("tab undo=" + JSON.stringify(peek.undo) + " redo=" + JSON.stringify(peek.redo));
             const doc = popup.ownerDocument;
             const UH: any = (Zotero as any).UndoHistory;
+            // zotero#6021: the reader's steps are in Zotero's global history,
+            // whose Edit > Undo / Redo already offer them (labels included): the
+            // items stay Zotero's unless the tab's newest step is Weavero's own
+            // (an outline or a bookmark step, which Zotero's history lacks).
+            const zoteroOwns = !!this._wvReaderUndoHistory(ctx.reader);
             const plain = (dir: "undo" | "redo") => this._wvUndoPlainWord(dir);
             // In the outline context BOTH items show the outline's history and
             // nothing else (MJT 2026-09-30: "specific to the current window" --
@@ -7701,6 +8342,7 @@ class _ReaderPanelsMixin {
             const own = (id: string, dir: "undo" | "redo", label: string | null) => {
                 const mi: any = doc.getElementById(id);
                 if (!mi) return;
+                if (zoteroOwns && !(choice[dir] && choice[dir]!.kind === "weavero")) { dbg(id + " left to Zotero's global history (zotero#6021)"); return; }
                 // Zotero enabled the item by a focused text control (its typing
                 // undo): leave it. Enabled by its own UndoHistory: ours wins here.
                 // Read as the platform applies it: Zotero 11 matches presence
@@ -7732,7 +8374,7 @@ class _ReaderPanelsMixin {
                     mi.setAttribute("disabled", "true");
                     return;
                 }
-                mi.setAttribute("label", label ? plain(dir) + " " + label : plain(dir));
+                mi.setAttribute("label", label ? this._wvUndoActionLabel(dir, label) : plain(dir));
                 mi.removeAttribute("disabled");
                 const h = (e: any) => {
                     try {
@@ -7764,16 +8406,33 @@ class _ReaderPanelsMixin {
      *  Page key events reach the CHROME window's capture phase (traced
      *  2026-10-06; the reader frame's own window never sees them), so the
      *  listener sits there. Stamped (src-ts.md): re-wired on a new build. */
+    //
+    // zotero#6021 adds the other half: the reader no longer handles Mod-Z
+    // itself, Zotero's cmd_undo / cmd_redo run its GLOBAL history, which has
+    // the reader's steps but not Weavero's -- an outline step made after a
+    // highlight stayed while Ctrl+Z in the page undid the highlight (canary
+    // 791a2110, "most recent action wins" lost). Where the reader reports to
+    // Zotero's history, the same listener takes Mod-Z / Mod-Shift-Z (and
+    // Ctrl+Y) in the page ONLY when the tab's newest step is Weavero's, on every
+    // platform; otherwise the key goes on to Zotero. Zotero's own stacks are
+    // never touched by a Weavero step, so the two cannot drift.
     _wvWireReaderRedoKey(win: any) {
         try {
-            if (!win || !Zotero.isWin) return;
+            const UH: any = (Zotero as any).UndoHistory;
+            const global = !!(UH && typeof UH.registerProvider === "function");
+            if (!win || (!Zotero.isWin && !global)) return;
             const tag = this._wvWireTag();
             if (win._wvRedoKeyH && win._wvRedoKeyH._wvTag === tag) return;
             this._wvUnwireReaderRedoKey(win);
             const h: any = (e: any) => {
                 try {
-                    if (!e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) return;
-                    if (String(e.key || "").toLowerCase() !== "y") return;
+                    if (e.altKey) return;
+                    const k = String(e.key || "").toLowerCase();
+                    const accel = Zotero.isMac ? (e.metaKey && !e.ctrlKey) : (e.ctrlKey && !e.metaKey);
+                    let dir: "undo" | "redo" | null = null;
+                    if (Zotero.isWin && k === "y" && e.ctrlKey && !e.shiftKey && !e.metaKey) dir = "redo";
+                    else if (accel && k === "z") dir = e.shiftKey ? "redo" : "undo";
+                    if (!dir) return;
                     const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                     if (!P || P._wvDestroyed) return;
                     const t: any = e.target;
@@ -7783,10 +8442,18 @@ class _ReaderPanelsMixin {
                     const ctx = P._wvEditUndoRoute(win);
                     if (!ctx) return;
                     if (tdoc === ctx.idoc && !(t.closest && t.closest("#annotationsView"))) return;   // other sidebar parts
+                    // zotero#6021: Zotero's key_undo / key_redo (cmd_undo, cmd_redo)
+                    // reach the reader's steps through its global history; the key
+                    // is taken only for a Weavero step that is the tab's newest.
+                    if (P._wvReaderUndoHistory(ctx.reader)) {
+                        const ch = P._wvTabUndoChoice(ctx.reader, dir);
+                        if (!ch || ch.kind !== "weavero") return;
+                    }
+                    else if (k !== "y") return;   // Mod-Z without Zotero's history: the reader's own (wrapped) undo
                     e.preventDefault(); e.stopPropagation();
                     if (e.repeat) return;   // a held key would start overlapping async redos
-                    P._wvTabUndoRedo(ctx.reader, ctx.idoc, "redo");
-                } catch (er) { Zotero.debug("[Weavero] reader Ctrl+Y err: " + er); }
+                    P._wvTabUndoRedo(ctx.reader, ctx.idoc, dir);
+                } catch (er) { Zotero.debug("[Weavero] reader undo key err: " + er); }
             };
             h._wvTag = tag;
             win.addEventListener("keydown", h, true);
@@ -7932,7 +8599,7 @@ class _ReaderPanelsMixin {
             }
             if (!popup) return;
             let after: any = isReaderWin ? null : doc.getElementById("view-menuitem-tag-selector");
-            for (const [key, label] of WV_LAYOUT_ITEMS) {
+            for (const [key, l10nId] of WV_LAYOUT_ITEMS) {
                 let it: any = null;
                 for (const c of popup.children) { if (c.getAttribute && c.getAttribute("data-wv-layout") === key) { it = c; break; } }
                 if (!it) {
@@ -7941,7 +8608,7 @@ class _ReaderPanelsMixin {
                     it.className = "wv-layout-item";
                     it.setAttribute("type", "checkbox");
                     it.setAttribute("autocheck", "false");
-                    it.setAttribute("label", label);
+                    wvL10n(it, l10nId);
                     it.setAttribute("data-wv-layout", key);
                     it.hidden = true;
                     if (after && after.parentNode === popup) popup.insertBefore(it, after.nextSibling);
@@ -7970,7 +8637,7 @@ class _ReaderPanelsMixin {
             const l = m && m.getAttribute("label");
             if (l) return l;
         } catch (_) {}
-        return "Layout";
+        return wvStr("weavero-rpanel-layout-menu");
     }
 
     /** The reader the submenu speaks for: the selected tab's in a main
@@ -8281,12 +8948,9 @@ class _ReaderPanelsMixin {
     // keyboard layout; `label` is what the key showed when it was recorded.
 
     _wvOutlineKeyActions(): Array<{ id: string; label: string }> {
-        return [
-            { id: "selection", label: "Add Selected Text to Outline" },
-            { id: "pin", label: "Pin a Spot to Outline" },
-            { id: "anchorTop", label: "Add Top of Page to Outline" },
-            { id: "anchorBottom", label: "Add Bottom of Page to Outline" },
-        ];
+        // Labels read only when shown: the keydown path walks this list.
+        const act = (id: string) => ({ id, get label() { return wvStr("weavero-outline-key-action", { action: id }); } });
+        return [act("selection"), act("pin"), act("anchorTop"), act("anchorBottom")];
     }
 
     _wvOutlineKeyGet(id: string): any {
@@ -8317,11 +8981,13 @@ class _ReaderPanelsMixin {
         if (!s) return "";
         const mac = !!(Zotero as any).isMac;
         const parts: string[] = [];
-        if (s.ctrl) parts.push(mac ? "Control" : "Ctrl");
-        if (s.alt) parts.push(mac ? "Option" : "Alt");
-        if (s.shift) parts.push("Shift");
-        if (s.meta) parts.push(mac ? "Cmd" : "Win");
-        parts.push(String(s.label || s.code));
+        // macOS: the names on its keys, as they are.
+        if (s.ctrl) parts.push(mac ? "Control" : wvStr("weavero-key-ctrl"));
+        if (s.alt) parts.push(mac ? "Option" : wvStr("weavero-key-alt"));
+        if (s.shift) parts.push(wvStr("weavero-key-shift"));
+        if (s.meta) parts.push(mac ? "Cmd" : wvStr("weavero-key-win"));
+        // The stored label stays "Space" (the menu-key match reads it).
+        parts.push(s.code === "Space" ? wvStr("weavero-outline-key-space") : String(s.label || s.code));
         return parts.join("+");
     }
 
@@ -8345,39 +9011,43 @@ class _ReaderPanelsMixin {
         const c = s.code;
         const NAV = ["Space", "Enter", "NumpadEnter", "Escape", "Delete", "Backspace", "Tab", "ArrowUp", "ArrowDown",
             "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"];
+        // The owner's words: weavero-outline-key-owner, keyed on what owns it.
+        const owner = (k: string) => wvStr("weavero-outline-key-owner", { owner: k });
         if (none) {
             const bare: any = {
-                KeyH: "the reader’s Hand tool (and Read Aloud highlight)", KeyS: "the reader’s Select tool",
-                KeyU: "Read Aloud (underline)", KeyN: "next page", KeyJ: "next page", KeyP: "previous page",
-                KeyK: "previous page", KeyR: "rotate pages", F4: "the PDF sidebar",
+                KeyH: "hand", KeyS: "select",
+                KeyU: "read-aloud", KeyN: "next-page", KeyJ: "next-page", KeyP: "previous-page",
+                KeyK: "previous-page", KeyR: "rotate", F4: "pdf-sidebar",
             };
-            if (bare[c]) return bare[c];
-            if (/^Digit[1-9]$/.test(c) || /^Numpad[1-9]$/.test(c)) return "the annotation colours";
-            if (NAV.includes(c)) return "reading and navigation in the reader";
+            if (bare[c]) return owner(bare[c]);
+            if (/^Digit[1-9]$/.test(c) || /^Numpad[1-9]$/.test(c)) return owner("colors");
+            if (NAV.includes(c)) return owner("navigation");
         }
-        if (shiftOnly && (c === "KeyR" || NAV.includes(c))) return c === "KeyR" ? "rotate pages" : "text selection in the reader";
-        if (altOnly && (/^Digit[1-8]$/.test(c) || c === "ArrowLeft" || c === "ArrowRight")) return /^Digit/.test(c) ? "the reader’s annotation tools" : "Back / Forward in the reader";
+        if (shiftOnly && (c === "KeyR" || NAV.includes(c))) return owner(c === "KeyR" ? "rotate" : "text-selection");
+        if (altOnly && (/^Digit[1-8]$/.test(c) || c === "ArrowLeft" || c === "ArrowRight")) return owner(/^Digit/.test(c) ? "annotation-tools" : "back-forward");
         if (accel && !s.alt) {
             const a: any = s.shift
-                ? { KeyZ: "Redo", KeyG: "Find Previous", KeyR: "rotate pages", KeyL: "rotate pages", KeyT: "Reopen Closed Tab" }
-                : { KeyA: "Select All", KeyZ: "Undo", KeyY: "Redo", KeyF: "Find", KeyG: "Find Next", KeyP: "Print",
-                    KeyC: "Copy", KeyX: "Cut", KeyV: "Paste", KeyW: "Close Tab", KeyN: "New Main Window",
-                    Equal: "Zoom In", Minus: "Zoom Out", Digit0: "Reset Zoom", NumpadAdd: "Zoom In",
-                    NumpadSubtract: "Zoom Out", BracketLeft: "Back", BracketRight: "Forward", Tab: "the next tab" };
-            if (a[c]) return a[c];
-            if (!s.shift && /^Digit[1-9]$/.test(c)) return "switching tabs";
+                ? { KeyZ: "redo", KeyG: "find-previous", KeyR: "rotate", KeyL: "rotate", KeyT: "reopen-tab" }
+                : { KeyA: "select-all", KeyZ: "undo", KeyY: "redo", KeyF: "find", KeyG: "find-next", KeyP: "print",
+                    KeyC: "copy", KeyX: "cut", KeyV: "paste", KeyW: "close-tab", KeyN: "new-main-window",
+                    Equal: "zoom-in", Minus: "zoom-out", Digit0: "reset-zoom", NumpadAdd: "zoom-in",
+                    NumpadSubtract: "zoom-out", BracketLeft: "back", BracketRight: "forward", Tab: "next-tab" };
+            if (a[c]) return owner(a[c]);
+            if (!s.shift && /^Digit[1-9]$/.test(c)) return owner("switch-tabs");
             if (s.shift) {
                 try {
                     const ch = /^Key[A-Z]$/.test(c) ? c.slice(3) : (s.label || "");
-                    const cmd = ch && (Zotero as any).Keys && (Zotero as any).Keys.getCommand(ch);
+                    // Zotero.Keys, or Zotero.Shortcuts on zotero#6080 (lib/compat.ts).
+                    const cmd = wvZoteroAccelShiftCommand(ch);
                     if (cmd) {
+                        // Zotero's command id spelled out ("newNote" -> "New note").
                         const nice = String(cmd).replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase().replace(/^./, (x: string) => x.toUpperCase());
-                        return "Zotero’s “" + nice + "” shortcut (Settings → Advanced → Shortcuts)";
+                        return wvStr("weavero-outline-key-owner-zotero", { command: nice });
                     }
                 } catch (_) {}
             }
         }
-        if (accel && s.alt && !s.shift && c === "KeyG") return "Find";
+        if (accel && s.alt && !s.shift && c === "KeyG") return owner("find");
         // Menu shortcuts of the main window (<key> elements).
         try {
             const doc = Zotero.getMainWindow() && Zotero.getMainWindow().document;
@@ -8396,14 +9066,14 @@ class _ReaderPanelsMixin {
                     : (kc && kc.replace(/^VK_/, "") === String(s.label || "").toUpperCase());
                 if (!hit) continue;
                 const mi: any = k.id ? doc.querySelector('menuitem[key="' + k.id + '"]') : null;
-                return (mi && mi.getAttribute("label")) ? "the menu item “" + mi.getAttribute("label") + "”" : "a Zotero menu shortcut";
+                return (mi && mi.getAttribute("label")) ? wvStr("weavero-outline-key-owner-menu-item", { label: mi.getAttribute("label") }) : owner("menu");
             }
         } catch (_) {}
         for (const a of this._wvOutlineKeyActions()) {
             if (a.id === exceptId) continue;
             const o = this._wvOutlineKeyGet(a.id);
             if (o && o.code === s.code && !!o.ctrl === !!s.ctrl && !!o.alt === !!s.alt && !!o.shift === !!s.shift && !!o.meta === !!s.meta) {
-                return "“" + a.label + "”";
+                return wvStr("weavero-outline-key-owner-action", { label: a.label });
             }
         }
         return null;
@@ -8457,11 +9127,11 @@ class _ReaderPanelsMixin {
                 else this._wvOutlineAddWithSelection(reader, idoc);
             }
             else if (id === "pin") {
-                if (rmOn) this._wvReaderPanelNote(idoc, "Pins can’t be placed in Reading Mode.");
+                if (rmOn) this._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-no-pin-rm"));
                 else this._wvOutlineAddWithPin(reader, idoc);
             }
             else {
-                if (!isPdf) this._wvReaderPanelNote(idoc, "Page anchors are for PDFs only.");
+                if (!isPdf) this._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-anchor-pdf-only"));
                 else this._wvOutlineAddWithAnchor(reader, idoc, id === "anchorTop" ? "top" : "bottom");
             }
             return true;
@@ -8746,8 +9416,7 @@ class _ReaderPanelsMixin {
         // across loads (this one lost every inline <svg>, and the pin's
         // selector was the bare tag "svg"), so the target genuinely is
         // not there.
-        this._wvReaderPanelNote(idoc,
-            "This pin's target is no longer in the document — the page rendered differently. Drag a new pin to re-anchor it.");
+        this._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-pin-gone"));
     }
 
     /** Apply the current-section marker. Shared by the page-based (PDF) and
@@ -9456,7 +10125,7 @@ class _ReaderPanelsMixin {
     _wvOutlinePromptTitle(): string | null {
         try {
             const o: any = { value: "" };
-            const ok = Services.prompt.prompt(null, "Weavero", "New outline entry title:", o, null, {});
+            const ok = Services.prompt.prompt(null, "Weavero", wvStr("weavero-outline-prompt-new-title"), o, null, {});
             if (!ok) return null;
             const t = String(o.value || "").trim();
             return t || null;
@@ -9476,8 +10145,8 @@ class _ReaderPanelsMixin {
                 const en = d && d.entries ? d.entries.find((x: any) => x.id === res.stored.id) : null;
                 if (en) this._wvOutlineNavigate(reader, idoc, en, null);
             } catch (_) {}
-            this._wvReaderPanelNote(idoc, "Added “" + title + "” → " + anchor + " of page "
-                + this._wvBmPageLabelFor(res.att, pageIndex) + ".");
+            this._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-added-anchor",
+                { title, anchor, page: String(this._wvBmPageLabelFor(res.att, pageIndex)) }));
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineAddWithAnchor err: " + e); }
     }
 
@@ -9493,13 +10162,13 @@ class _ReaderPanelsMixin {
             // shape the select-text flow moved to on 2026-08-21.
             this._wvOutlineArmPinPlacement(reader, idoc, (pageIndex, x, y, pageNum) => {
                 const att = this._wvReaderAtt(reader);
-                const title = "Page " + (att ? this._wvBmPageLabelFor(att, pageIndex) : String(pageIndex + 1)) + " pin";
+                const title = wvStr("weavero-outline-pin-title", { page: String(att ? this._wvBmPageLabelFor(att, pageIndex) : pageIndex + 1) });
                 const pos = { pageIndex, rects: [[x, y, x, y]], anchor: "point" };
                 Promise.resolve(this._wvOutlineCreateEntry(reader, idoc, title, pos))
                     .then((res: any) => {
                         if (!res || !res.stored) return;
                         this._wvOutlineShowEntryPin(reader, idoc, res.att.libraryID, res.att.itemKey, res.stored.id, pos);
-                        this._wvReaderPanelNote(idoc, "Pinned. Type its title (Enter to keep); drag the pin to adjust.");
+                        this._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-pinned"));
                         try {
                             const dd = this._wvOutlineDoc(res.att.libraryID, res.att.itemKey);
                             const ix = dd && dd.entries ? dd.entries.findIndex((z: any) => z.id === res.stored.id) : -1;
@@ -9529,7 +10198,7 @@ class _ReaderPanelsMixin {
                         };
                     }
                 } catch (_) {}
-                const title = "Pinned spot";   // plain default by request (2026-08-26): the clicked-text title was never useful
+                const title = wvStr("weavero-rpanel-pinned-spot");   // plain default by request (2026-08-26): the clicked-text title was never useful
                 Promise.resolve(this._wvOutlineCreateEntry(reader, idoc, title, pos, orderOpts))
                     .then((res: any) => {
                         if (!res || !res.stored) return;
@@ -9538,7 +10207,7 @@ class _ReaderPanelsMixin {
                         // CONTENT doc, so panel clicks left it standing
                         // forever ("the pin is not disappearing", 2026-08-26).
                         try { this._wvOutlineShowDomEntryPin(reader, res.stored, pos); } catch (_) {}
-                        this._wvReaderPanelNote(idoc, "Pinned. Type its title (Enter to keep); drag the pin to adjust.");
+                        this._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-pinned"));
                         try {
                             const dd = this._wvOutlineDoc(res.att.libraryID, res.att.itemKey);
                             const ix = dd && dd.entries ? dd.entries.findIndex((z: any) => z.id === res.stored.id) : -1;
@@ -9558,8 +10227,8 @@ class _ReaderPanelsMixin {
             const sdtv = this._wvOutlineRmView(reader);
             const iwin = sdtv && (Components as any).utils.waiveXrays(sdtv._iframeWindow);
             const doc = iwin && iwin.document;
-            if (!doc) { this._wvReaderPanelNote(idoc, "Reading Mode view not ready."); return; }
-            this._wvReaderPanelNote(idoc, "Select text in the document (Esc to cancel).");
+            if (!doc) { this._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-rm-not-ready")); return; }
+            this._wvReaderPanelNote(idoc, wvStr("weavero-rpanel-note-select-text"));
             // Same zombie-arm guard as _wvOutlineArmSelectRegion (shared
             // per-reader generation): without it two arms stacked and one
             // selection created two entries, and an arm from a dead instance
@@ -9580,7 +10249,7 @@ class _ReaderPanelsMixin {
             };
             onKey = (e: any) => {
                 if (armStale()) { cleanup(); return; }
-                if (e.key === "Escape") { cleanup(); this._wvReaderPanelNote(idoc, "Cancelled."); }
+                if (e.key === "Escape") { cleanup(); this._wvReaderPanelNote(idoc, wvStr("weavero-rpanel-note-cancelled")); }
             };
             onUp = () => {
                 if (armStale()) { cleanup(); return; }
@@ -9595,7 +10264,7 @@ class _ReaderPanelsMixin {
                         cleanup();
                         try { selObj.removeAllRanges(); } catch (_) {}
                         if (!pos || !Number.isInteger(pos.pageIndex)) {
-                            this._wvReaderPanelNote(idoc, "Couldn’t map that selection back to the document.");
+                            this._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-rm-unmapped"));
                             return;
                         }
                         const title = this._wvOutlinePromptTitle();
@@ -9604,8 +10273,9 @@ class _ReaderPanelsMixin {
                         Promise.resolve(this._wvOutlineCreateEntry(reader, idoc, title, clean))
                             .then((res: any) => {
                                 if (!res || !res.stored) return;
-                                this._wvReaderPanelNote(idoc, "Added “" + title + "” from selection"
-                                    + (text ? " (" + text.slice(0, 30) + (text.length > 30 ? "…" : "") + ")" : "") + ".");
+                                this._wvReaderPanelNote(idoc, text
+                                    ? wvStr("weavero-outline-note-added-selection-text", { title, text: text.slice(0, 30) + (text.length > 30 ? "…" : "") })
+                                    : wvStr("weavero-outline-note-added-selection-plain", { title }));
                             }).catch(() => {});
                     } catch (_) {}
                 }, 30);
@@ -9627,7 +10297,7 @@ class _ReaderPanelsMixin {
                 // callback hands over -- "Page 17" on printed page 573
                 // (2026-08-04). Same resolver as the row display.
                 const pageLabel = this._wvBmPageLabelFor(att, pageIndex);
-                const name = this._bmPromptName(Zotero.getMainWindow(), "New Bookmark", "Page " + pageLabel);
+                const name = this._bmPromptName(Zotero.getMainWindow(), wvStr("weavero-bm-prompt-new-bookmark"), wvStr("weavero-bm-page-name", { page: String(pageLabel), anchor: "top" }));
                 if (!name) return;   // cancelled after placing -> nothing created
                 const rec: any = {
                     type: "position", viewType: "pdf",
@@ -9640,7 +10310,7 @@ class _ReaderPanelsMixin {
                     .then((stored: any) => {
                         try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {}
                         try { this._wvReaderShowPin(reader, rec.position, stored && stored.id); } catch (_) {}
-                        this._wvReaderPanelNote(idoc, "Bookmark pinned on page " + pageLabel + ". Drag the pin to adjust.");
+                        this._wvReaderPanelNote(idoc, wvStr("weavero-bm-note-pinned-page", { page: String(pageLabel) }));
                     }).catch(() => {});
             }, (_pos, dom) => {
                 // DOM completion — same record shape as the right-click "Add
@@ -9649,7 +10319,7 @@ class _ReaderPanelsMixin {
                 // sort key. The pin drawn is the shared draggable one.
                 const att = this._wvReaderAtt(reader);
                 if (!att) return;
-                const name = this._bmPromptName(Zotero.getMainWindow(), "New Bookmark", "Pinned spot");
+                const name = this._bmPromptName(Zotero.getMainWindow(), wvStr("weavero-bm-prompt-new-bookmark"), wvStr("weavero-rpanel-pinned-spot"));
                 if (!name) return;   // cancelled after placing -> nothing created
                 const rec: any = { type: "position", viewType: reader._type, label: name };
                 if (dom.position) rec.position = dom.position;
@@ -9666,7 +10336,7 @@ class _ReaderPanelsMixin {
                             if (dom.cfi) this._wvReaderShowEpubPin(reader, dom.cfi, stored, false);
                             else this._wvReaderShowSnapshotPin(reader, rec.position, stored, false);
                         } catch (_) {}
-                        this._wvReaderPanelNote(idoc, "Bookmark pinned. Drag the pin to adjust.");
+                        this._wvReaderPanelNote(idoc, wvStr("weavero-bm-note-pinned"));
                     }).catch(() => {});
             });
         } catch (e) { Zotero.debug("[Weavero] _wvBmAddWithPin err: " + e); }
@@ -9683,12 +10353,12 @@ class _ReaderPanelsMixin {
                     position: sel.position,
                     pageLabel: (sel.position && Number.isInteger(sel.position.pageIndex))
                         ? this._wvBmPageLabelFor(att, sel.position.pageIndex) : null,
-                    label: (txt || "Selection").slice(0, 160),
+                    label: (txt || wvStr("weavero-rpanel-selection-default")).slice(0, 160),
                 };
                 Promise.resolve(this._bmReaderAdd(att.libraryID, att.itemKey, rec, { allowDuplicate: true }))
                     .then(() => {
                         try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {}
-                        this._wvReaderPanelNote(idoc, "Bookmark added from selection.");
+                        this._wvReaderPanelNote(idoc, wvStr("weavero-bm-note-added-selection"));
                     }).catch(() => {});
             });
         } catch (e) { Zotero.debug("[Weavero] _wvBmAddWithSelection err: " + e); }
@@ -9746,7 +10416,7 @@ class _ReaderPanelsMixin {
             };
             const viewerC = pdoc.getElementById("viewerContainer")
                 || (isDom ? pdoc.documentElement : null);
-            this._wvReaderPanelNote(idoc, "Move to a spot and click to drop the pin (Esc to cancel).");
+            this._wvReaderPanelNote(idoc, wvStr("weavero-rpanel-note-drop-pin"));
             // A GHOST pin that REPLACES the cursor and follows the mouse until the
             // click drops it. Same marker as the anchored/bookmark pin, tip at the
             // pointer. pointer-events:none so it never eats the click. (2026-07-23)
@@ -9781,7 +10451,7 @@ class _ReaderPanelsMixin {
             };
             onKey = (e: any) => {
                 if (pinStale()) { cleanup(); return; }
-                if (e.key === "Escape") { cleanup(); this._wvReaderPanelNote(idoc, "Pin cancelled."); }
+                if (e.key === "Escape") { cleanup(); this._wvReaderPanelNote(idoc, wvStr("weavero-rpanel-note-pin-cancelled")); }
             };
             onClick = (e: any) => {
                 if (pinStale()) { cleanup(); return; }
@@ -9791,7 +10461,7 @@ class _ReaderPanelsMixin {
                         const dom = this._wvDomAnchorFromContentPoint(pv, e.clientX, e.clientY);
                         cleanup();
                         if (!dom || !dom.selector) {
-                            this._wvReaderPanelNote(idoc, "No text at that point.");
+                            this._wvReaderPanelNote(idoc, wvStr("weavero-rpanel-note-no-text"));
                             return;
                         }
                         if (onPlacedDom) {
@@ -9811,7 +10481,7 @@ class _ReaderPanelsMixin {
                     let pdfPt: any = null;
                     try { pdfPt = vp && vp.convertToPdfPoint(e.clientX - rect.left, e.clientY - rect.top); } catch (_) {}
                     cleanup();
-                    if (!pdfPt || pageIndex < 0) { this._wvReaderPanelNote(idoc, "Could not read that position."); return; }
+                    if (!pdfPt || pageIndex < 0) { this._wvReaderPanelNote(idoc, wvStr("weavero-rpanel-note-no-position")); return; }
                     try { onPlaced(pageIndex, pdfPt[0], pdfPt[1], pageNum); } catch (_) {}
                 } catch (_) { cleanup(); }
             };
@@ -9835,8 +10505,8 @@ class _ReaderPanelsMixin {
                     .then(() => this._wvReaderRenderOutline(reader, idoc))
                     .then(() => {
                         this._wvOutlineShowEntryPin(reader, idoc, ref.att.libraryID, ref.att.itemKey, ref.id, pos);
-                        this._wvReaderPanelNote(idoc, "Target pinned on page "
-                            + this._wvBmPageLabelFor(ref.att, pageIndex) + ". Drag the pin to adjust.");
+                        this._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-target-pinned-page",
+                            { page: String(this._wvBmPageLabelFor(ref.att, pageIndex)) }));
                     }).catch(() => {});
             }, (pos) => {
                 Promise.resolve(this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, pos))
@@ -9845,7 +10515,7 @@ class _ReaderPanelsMixin {
                         const d = this._wvOutlineDoc(ref.att.libraryID, ref.att.itemKey);
                         const en = d && Array.isArray(d.entries) ? d.entries.find((z: any) => z.id === ref.id) : null;
                         if (en) { try { this._wvOutlineShowDomEntryPin(reader, en, pos, true); } catch (_) {} }
-                        this._wvReaderPanelNote(idoc, "Target pinned. Drag the pin to adjust.");
+                        this._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-target-pinned"));
                     }).catch(() => {});
             });
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineBeginManualPin err: " + e); }
@@ -9907,12 +10577,12 @@ class _ReaderPanelsMixin {
                     await this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, pending);
                     await this._wvOutlineReplaceByPosition(reader, idoc, ref.att.libraryID, ref.att.itemKey, ref.id);
                 })
-                    .then(() => this._wvReaderPanelNote(idoc, "Pin position saved."))
+                    .then(() => this._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-pin-saved")))
                     .catch(() => {});
             };
             // The Done button rides ON the pin (re-created with it on every drag),
             // so approval is obvious and right where the eye is.
-            const showOpts = { onMove, persist: true, approve: { label: "Done", onClick: commit } };
+            const showOpts = { onMove, persist: true, approve: { label: wvStr("weavero-common-done"), onClick: commit } };
             // Same immediate-or-wait rule as _wvOutlineShowEntryPin.
             if (this._wvPdfPageViewReady(reader, tgt.pageIndex)) {
                 try { this._wvReaderShowPin(reader, tgt, undefined, showOpts); } catch (_) {}
@@ -10136,7 +10806,7 @@ class _ReaderPanelsMixin {
                     return;
                 }
             } catch (_) {}
-            this._wvReaderPanelNote(idoc, "Select text in the document (Esc to cancel).");
+            this._wvReaderPanelNote(idoc, wvStr("weavero-rpanel-note-select-text"));
             // Suppress the reader's own annotation popup for the duration of
             // the arm. Selecting text here means "this is my outline entry",
             // not "highlight this", and the popup covers the words just
@@ -10177,7 +10847,7 @@ class _ReaderPanelsMixin {
             const cleanup = () => { detach(); dropSuppression(); };
             onKey = (e: any) => {
                 if (armStale()) { cleanup(); return; }
-                if (e.key === "Escape") { cleanup(); this._wvReaderPanelNote(idoc, "Cancelled."); }
+                if (e.key === "Escape") { cleanup(); this._wvReaderPanelNote(idoc, wvStr("weavero-rpanel-note-cancelled")); }
             };
             onUp = () => {
                 if (armStale()) { cleanup(); return; }
@@ -10225,7 +10895,7 @@ class _ReaderPanelsMixin {
                         const d = this._wvOutlineDoc(ref.att.libraryID, ref.att.itemKey);
                         const en = d && Array.isArray(d.entries) ? d.entries.find((z: any) => z.id === ref.id) : null;
                         if (en) this._wvOutlineNavigate(reader, idoc, en, null);
-                        this._wvReaderPanelNote(idoc, "Target set from selection.");
+                        this._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-target-selection"));
                     }).catch(() => {});
             });
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineBeginSelectRegion err: " + e); }
@@ -10261,8 +10931,8 @@ class _ReaderPanelsMixin {
                 const e = d && Array.isArray(d.entries) ? d.entries.find((x: any) => x.id === ref.id) : null;
                 if (e) this._wvOutlineNavigate(reader, idoc, e, null);
             } catch (_) {}
-            this._wvReaderPanelNote(idoc, "Position: " + anchor + " of page "
-                + this._wvBmPageLabelFor(ref.att, pageIndex) + ".");
+            this._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-position",
+                { anchor, page: String(this._wvBmPageLabelFor(ref.att, pageIndex)) }));
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineEditPosition err: " + e); }
     }
 
@@ -10278,7 +10948,7 @@ class _ReaderPanelsMixin {
                 const dlg = wvHtmlEl(idoc, "div", "wv-bm-url-dialog");
 
                 const title = wvHtmlEl(idoc, "div", "wv-bm-url-dialog-label");
-                title.textContent = (opts && opts.title) || "Edit Position";
+                title.textContent = (opts && opts.title) || wvStr("weavero-outline-edit-position-title");
                 title.setAttribute("style", "font-size:13px;opacity:.9;margin-bottom:2px;");
 
                 // Optional NAME field. Page BOOKMARKS edit name, position and
@@ -10293,7 +10963,7 @@ class _ReaderPanelsMixin {
                 if (opts && opts.withName) {
                     nameRow = wvHtmlEl(idoc, "div");
                     nameRow.className = "wv-bm-url-dialog-row";
-                    const nLbl = wvHtmlEl(idoc, "label", "wv-bm-url-dialog-label", "Name");
+                    const nLbl = wvHtmlEl(idoc, "label", "wv-bm-url-dialog-label", wvStr("weavero-rpanel-dialog-name"));
                     nInput = wvHtmlEl(idoc, "input");
                     nInput.className = "wv-bm-url-dialog-input";
                     nInput.setAttribute("type", "text");
@@ -10314,7 +10984,7 @@ class _ReaderPanelsMixin {
                         origText.setAttribute("style", "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;");
                         resetBtn = wvHtmlEl(idoc, "button");
                         resetBtn.className = "wv-bm-url-dialog-btn";
-                        resetBtn.textContent = "Reset";
+                        resetBtn.textContent = wvStr("weavero-rpanel-dialog-reset-name");
                         resetBtn.setAttribute("style", "font-size:11px;padding:1px 8px;");
                         oRow.appendChild(origText); oRow.appendChild(resetBtn);
                         nameRow.appendChild(oRow);
@@ -10322,7 +10992,7 @@ class _ReaderPanelsMixin {
                 }
 
                 const pageRow = wvHtmlEl(idoc, "div", "wv-bm-url-dialog-row");
-                const pLbl = wvHtmlEl(idoc, "label", "wv-bm-url-dialog-label", "Page" + (pageCount ? " (1–" + pageCount + ")" : ""));
+                const pLbl = wvHtmlEl(idoc, "label", "wv-bm-url-dialog-label", wvStr("weavero-rpanel-dialog-page", { count: pageCount || 0, max: String(pageCount || 0) }));
                 const pInput: any = wvHtmlEl(idoc, "input", "wv-bm-url-dialog-input");
                 pInput.setAttribute("type", "number");
                 pInput.setAttribute("min", "1");
@@ -10332,7 +11002,7 @@ class _ReaderPanelsMixin {
                 pageRow.appendChild(pLbl); pageRow.appendChild(pInput);
 
                 const posRow = wvHtmlEl(idoc, "div", "wv-bm-url-dialog-row");
-                const posLbl = wvHtmlEl(idoc, "label", "wv-bm-url-dialog-label", "Position");
+                const posLbl = wvHtmlEl(idoc, "label", "wv-bm-url-dialog-label", wvStr("weavero-rpanel-dialog-position"));
                 const optsBox = wvHtmlEl(idoc, "div");
                 optsBox.setAttribute("style", "display:flex;gap:16px;margin-top:3px;");
                 const mkRadio = (val: string, label: string, checked: boolean) => {
@@ -10345,8 +11015,8 @@ class _ReaderPanelsMixin {
                     wrap.appendChild(r); wrap.appendChild(t);
                     return r;
                 };
-                const topR = mkRadio("top", "Top of page", !initialBottom);
-                const botR = mkRadio("bottom", "Bottom of page", !!initialBottom);
+                const topR = mkRadio("top", wvStr("weavero-rpanel-anchor", { anchor: "top" }), !initialBottom);
+                const botR = mkRadio("bottom", wvStr("weavero-rpanel-anchor", { anchor: "bottom" }), !!initialBottom);
                 optsBox.appendChild(topR.parentNode); optsBox.appendChild(botR.parentNode);
                 posRow.appendChild(posLbl); posRow.appendChild(optsBox);
 
@@ -10357,7 +11027,7 @@ class _ReaderPanelsMixin {
                 if (opts && opts.withComment) {
                     commentRow = wvHtmlEl(idoc, "div");
                     commentRow.className = "wv-bm-url-dialog-row";
-                    const cLbl = wvHtmlEl(idoc, "label", "wv-bm-url-dialog-label", "Comment");
+                    const cLbl = wvHtmlEl(idoc, "label", "wv-bm-url-dialog-label", wvStr("weavero-bm-edit-comment-caption"));
                     cInput = wvHtmlEl(idoc, "textarea");
                     cInput.className = "wv-bm-url-dialog-input";
                     cInput.setAttribute("rows", "3");
@@ -10367,8 +11037,8 @@ class _ReaderPanelsMixin {
                 }
 
                 const btnRow = wvHtmlEl(idoc, "div", "wv-bm-url-dialog-btns");
-                const cancelBtn: any = wvHtmlEl(idoc, "button", undefined, "Cancel"); cancelBtn.className = "wv-bm-url-dialog-btn";
-                const okBtn: any = wvHtmlEl(idoc, "button", undefined, "OK"); okBtn.className = "wv-bm-url-dialog-btn wv-bm-url-dialog-btn-primary";
+                const cancelBtn: any = wvHtmlEl(idoc, "button", undefined, wvStr("weavero-common-cancel")); cancelBtn.className = "wv-bm-url-dialog-btn";
+                const okBtn: any = wvHtmlEl(idoc, "button", undefined, wvStr("weavero-rpanel-dialog-ok")); okBtn.className = "wv-bm-url-dialog-btn wv-bm-url-dialog-btn-primary";
                 btnRow.appendChild(cancelBtn); btnRow.appendChild(okBtn);
 
                 dlg.appendChild(title);
@@ -10388,12 +11058,12 @@ class _ReaderPanelsMixin {
                     if (pageCount) p = Math.min(p, pageCount);
                     const lbl = (opts && typeof opts.pageLabelFor === "function")
                         ? (opts.pageLabelFor(p - 1) || String(p)) : String(p);
-                    return "Page " + lbl + (botR.checked ? " (bottom)" : "");
+                    return wvStr("weavero-bm-page-name", { page: String(lbl), anchor: botR.checked ? "bottom" : "top" });
                 };
                 const syncOrig = () => {
                     if (!origText) return;
                     const a = autoName();
-                    origText.textContent = a ? ("Default name: " + a) : "";
+                    origText.textContent = a ? wvStr("weavero-rpanel-dialog-default-name", { name: a }) : "";
                     if (resetBtn) {
                         const same = String(nInput.value || "").trim() === a;
                         resetBtn.disabled = same;
@@ -10823,8 +11493,7 @@ class _ReaderPanelsMixin {
                 } catch (_) {}
                 const found = this._wvDomFindTextRange(pv, title0, nearR);
                 if (!found) {
-                    this._wvReaderPanelNote(idoc,
-                        "Couldn\u2019t find that text in the document \u2014 the region is unchanged.");
+                    this._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-text-not-found-doc"));
                     return;
                 }
                 // Through the verified anchor builder, not raw toSelector:
@@ -10833,7 +11502,7 @@ class _ReaderPanelsMixin {
                 let selr: any = null;
                 try { const a = this._wvDomAnchorFromRange(pv, found); selr = a && a.selector; } catch (_) {}
                 if (!selr) {
-                    this._wvReaderPanelNote(idoc, "Couldn\u2019t anchor to that text.");
+                    this._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-no-anchor"));
                     return;
                 }
                 const precise = JSON.parse(JSON.stringify(selr));
@@ -10861,7 +11530,7 @@ class _ReaderPanelsMixin {
             const r0 = (base && base.rects && base.rects[0]) || [0, 0, 0, 0];
             const res: any = await this._wvOutlineRecoverRect(pv, pageIndex, r0[0], r0[1], title);
             if (!res) {
-                this._wvReaderPanelNote(idoc, "Couldn’t find that text on the page — the region is unchanged.");
+                this._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-text-not-found-page"));
                 return;
             }
             const rects = (res.rects && res.rects.length) ? res.rects : [res.rect];
@@ -11017,7 +11686,7 @@ class _ReaderPanelsMixin {
             const pr = pv.getRange(pos.value, true);
             const seed = pr && ((typeof pr.toRange === "function") ? pr.toRange() : pr);
             if (!seed || typeof seed.cloneRange !== "function") {
-                this._wvReaderPanelNote(idoc, "The bookmarked text could not be located."); return;
+                this._wvReaderPanelNote(idoc, wvStr("weavero-bm-note-text-not-located")); return;
             }
             return this._wvDomRegionEditorOpen(reader, idoc, seed, {
                 editorId: "bm:" + bm.id,
@@ -11125,9 +11794,9 @@ class _ReaderPanelsMixin {
             b.style.setProperty("background-color", bg, "important");
             bar.appendChild(b); return b;
         };
-        const saveTextBtn = mkBtn("Save Region and Text", "#2e7d32");
-        const saveBtn = mkBtn("Save Region", "#2e7d32");
-        const cancelBtn = mkBtn("Cancel", "#555");
+        const saveTextBtn = mkBtn(wvStr("weavero-outline-region-save-text"), "#2e7d32");
+        const saveBtn = mkBtn(wvStr("weavero-outline-region-save"), "#2e7d32");
+        const cancelBtn = mkBtn(wvStr("weavero-common-cancel"), "#555");
         container.appendChild(bar);
         const HANDLE_COL = "#4072e5";
         const mkHandle = (atStart: boolean) => {
@@ -11181,8 +11850,7 @@ class _ReaderPanelsMixin {
         doc.addEventListener("keydown", onKey, true);
         try { if (idoc && idoc !== doc) idoc.addEventListener("keydown", onKey, true); } catch (_) {}
         pv._wvRegionEditor = { _id: opts.editorId, destroy };
-        this._wvReaderPanelNote(idoc, "Drag the handles to reshape the region — Save Region and Text also reloads the "
-            + (opts.noteWord || "title") + "; Save Region keeps it. (Enter = Save Region and Text, Esc = cancel.)");
+        this._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-region-editor", { what: opts.noteWord === "label" ? "label" : "title" }));
         return { bar, start, end, destroy, alive: () => !destroyed, wireHandle };
     }
 
@@ -11432,13 +12100,13 @@ class _ReaderPanelsMixin {
             const win = pv && pv._iframeWindow;
             const app = win && win.PDFViewerApplication;
             if (!app || !app.pdfViewer || !win || !win.document) {
-                this._wvReaderPanelNote(idoc, "Open the PDF view to edit the region."); return;
+                this._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-open-pdf-view")); return;
             }
             const pageIndex = (base && base.pageIndex) || 0;
             const pd = await this._wvReaderGetPageData(reader, pageIndex);
             const chars = pd && pd.chars;
             if (!Array.isArray(chars) || !chars.length) {
-                this._wvReaderPanelNote(idoc, "This page has no selectable text to snap to."); return;
+                this._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-no-selectable-text")); return;
             }
             const range = await this._wvRegionEditorSeedRange(
                 pv, chars, pageIndex, base, opts && opts.seedTitle);
@@ -11703,8 +12371,10 @@ class _ReaderPanelsMixin {
         } catch (_) {}
     }
 
-    /** "Open in New Window": open this document in a new reader window with the
-     *  heading highlighted. Rather than race the new window's own coarse
+    /** "Open in New Window": open this document in a window of its own with
+     *  the heading highlighted (Zotero 9/10: a reader window; Zotero 11: a main
+     *  window holding only its reader tab, or the document's open tab in any
+     *  window where there is one -- xpcom/reader.js open). Rather than race the new window's own coarse
      *  open-highlight (and fight the highlight machinery's Xray/timing quirks in
      *  a standalone window), we recover the heading's precise box HERE -- in the
      *  already-loaded source reader, where recovery is reliable -- and hand that
@@ -12003,8 +12673,7 @@ class _ReaderPanelsMixin {
                             // one moment when re-detecting is likely to be wanted:
                             // the usual reason to retype a heading is that the PDF's
                             // outline text was truncated or wrong.
-                            this._wvReaderPanelNote(idoc,
-                                "Title updated. To move the highlight to match, right-click → Re-detect Region from Title.");
+                            this._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-title-updated"));
                             settle(String(ref.id));
                         } catch (_) {}
                         return;
@@ -12144,8 +12813,8 @@ class _ReaderPanelsMixin {
             await this._wvReaderRenderOutline(reader, idoc);
             // Renamed like a Rename: the dashed afterglow shows where (2026-09-24).
             if (changed.length) this._wvOutlineAfterglow(idoc, changed);
-            this._wvReaderPanelNote(idoc, n ? ("Cleaned spacing on " + n + " title" + (n === 1 ? "" : "s") + ".")
-                : "Nothing changed — if a title is already correct, use “Spacing is Correct” to dismiss.");
+            this._wvReaderPanelNote(idoc, n ? wvStr("weavero-outline-note-spacing-cleaned", { count: n })
+                : wvStr("weavero-outline-note-spacing-unchanged"));
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineCleanSpacing err: " + e); }
     }
 
@@ -12358,9 +13027,8 @@ class _ReaderPanelsMixin {
                         const main = wvHtmlEl(idoc, "span", undefined, lb.textContent);
                         lb.textContent = "";
                         lb.appendChild(main); lb.appendChild(sub);
-                        it.setAttribute("title", this._wvOutlineExactOriginal(reader, entry)
-                            ? "Name and region back to the original: “" + orig + "”."
-                            : "Name back to “" + orig + "”; the region is detected again from that name.");
+                        it.setAttribute("title", wvStr("weavero-outline-reset-original-tip",
+                            { exact: this._wvOutlineExactOriginal(reader, entry) ? "yes" : "no", name: orig }));
                     }
                 } catch (_) {}
             }
@@ -12414,15 +13082,15 @@ class _ReaderPanelsMixin {
                 const renamed = entries.filter((e: any) => e.source
                     && typeof e.source.title === "string" && e.title !== e.source.title).length;
                 const added = entries.filter((e: any) => e.source && e.source.origin === "user").length;
-                let what = entries.length + " entries";
-                if (renamed) what += ", " + renamed + " renamed";
-                if (added) what += ", " + added + " added by you";
+                // The counts, each its own message; ", " joins them.
+                const parts = [wvStr("weavero-outline-revert-count", { what: "entries", count: entries.length })];
+                if (renamed) parts.push(wvStr("weavero-outline-revert-count", { what: "renamed", count: renamed }));
+                if (added) parts.push(wvStr("weavero-outline-revert-count", { what: "added", count: added }));
                 let accel = "";
                 try { accel = this._wvNativeEditAccel("undo") || ""; } catch (_) {}
                 ok = !!Services.prompt.confirm(null, "Weavero",
-                    "Delete the Weavero outline of this document?\n\n"
-                    + "Your Weavero outline (" + what + ") is deleted; Undo" + (accel ? " (" + accel + ")" : "")
-                    + " in this tab brings it back. The document's own outline is not changed.");
+                    wvStr("weavero-outline-revert-question") + "\n\n"
+                    + wvStr("weavero-outline-revert-detail", { what: parts.join(", "), accel: accel || "none" }));
             } catch (_) { ok = false; }
             if (!ok) return;
             Promise.resolve(this._wvOutlineRevert(att.libraryID, att.itemKey))
@@ -12448,14 +13116,14 @@ class _ReaderPanelsMixin {
             while (head.firstChild) head.firstChild.remove();
             const title = wvHtmlEl(idoc, "span");
             title.className = "wv-outline-head-title";
-            title.textContent = "Outline";
+            title.textContent = wvStr("weavero-outline-title");
             head.appendChild(title);
             // "Add Entry": create a hand-made outline entry (an Abstract /
             // Introduction with no PDF heading, etc.). Prompts for a title and
             // targets the current page; refine via the row's "Set Target" menu.
             // 2026-07-23.
             const addBtn = wvHtmlEl(idoc, "button", "wv-outline-head-btn wv-outline-add-btn");
-            addBtn.setAttribute("title", "Add a new outline entry");
+            addBtn.setAttribute("title", wvStr("weavero-outline-add-tip"));
             addBtn.innerHTML = RP_PLUS_SVG;
             addBtn.addEventListener("click", (e: any) => {
                 e.stopPropagation();
@@ -12481,13 +13149,15 @@ class _ReaderPanelsMixin {
             // Source chip at the RIGHT end -- a switcher when >1 source exists.
             const chip = wvHtmlEl(idoc, "button");
             chip.className = "wv-outline-src-chip wv-outline-src-" + source;
-            chip.setAttribute("title", this._wvOutlineSourceTip(source));
             const dot = wvHtmlEl(idoc, "span");
             dot.className = "wv-outline-src-dot";
             const lab = wvHtmlEl(idoc, "span", undefined, this._wvOutlineSourceLabel(source));
             chip.appendChild(dot);
             chip.appendChild(lab);
             const sources = this._wvOutlineAvailableSources(reader, source);
+            const oc = reader._wvOutlineCache;
+            const same = !!(oc && oc.extractedSame);
+            chip.setAttribute("title", this._wvOutlineChipTip(sources, source, same, { embeddedSame: !!(oc && oc.embeddedSame), embeddedFirst: !!(oc && oc.embeddedFirst) }));
             if (sources.length > 1) {
                 chip.classList.add("wv-outline-src-switchable");
                 const caret = wvHtmlEl(idoc, "span");
@@ -12503,9 +13173,6 @@ class _ReaderPanelsMixin {
                     if (idoc.getElementById(RP_BM_CTX_ID)) { this._wvCloseReaderBmContextMenu(idoc); return; }
                     this._wvOutlineShowSourceMenu(reader, idoc, chip, sources, source);
                 });
-                chip.setAttribute("title", source === "weavero"
-                    ? "Click to switch source · Right-click to delete the Weavero outline"
-                    : "Click to switch source");
             }
             // Reset lives on a RIGHT-CLICK of the chip (the outline-type button,
             // top-right) -- user choice 2026-07-21. The menu no-ops until a
@@ -12540,7 +13207,7 @@ class _ReaderPanelsMixin {
                     const cur = P._wvOeCase ? P._wvOeCase(att.libraryID, att.itemKey) : null;
                     const v = cur && cur.verdict;
                     b.textContent = v === "good" ? "👍" : v === "bad" ? "👎" : v === "scan" ? "🖼" : "🧪";
-                    b.setAttribute("title", "Eval (dev): " + (v ? String(v).toUpperCase() : "not marked") + " — click to mark");
+                    b.setAttribute("title", wvStr("weavero-outline-eval-tip", { verdict: v ? String(v) : "none" }));
                     b.classList.toggle("wv-outline-eval-marked", !!v);
                 };
                 setIcon();
@@ -12612,18 +13279,18 @@ class _ReaderPanelsMixin {
             menu.id = RP_BM_CTX_ID;
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
             const heading = (text: string) => this._wvCtxHeading(idoc, menu, text);
-            heading("History");
-            const row = (name: string, ch: any, hint: string, dir: "undo" | "redo") => {
+            heading(wvStr("weavero-undo-history"));
+            const row = (ch: any, hint: string, dir: "undo" | "redo") => {
                 const label: string | null = ch ? (ch.label || "") : null;
-                const it = this._wvCtxItem(idoc, menu, { label: label ? name + " " + label : name, hint, off: label === null,
+                const it = this._wvCtxItem(idoc, menu, { label: label ? this._wvUndoActionLabel(dir, label) : this._wvUndoPlainWord(dir), hint, off: label === null,
                     close, onClick: ch ? () => this._wvTabUndoRedo(reader, idoc, dir) : undefined });
                 if (ch) {
                     const stackName = this._wvUndoStackGlyph(idoc, it, it.firstChild, ch.kind, ch.scope);
                     if (stackName) it.title = stackName;
                 }
             };
-            row("Undo", this._wvTabUndoChoice(reader, "undo", idoc), this._wvNativeEditAccel("undo"), "undo");
-            row("Redo", this._wvTabUndoChoice(reader, "redo", idoc), this._wvNativeEditAccel("redo"), "redo");
+            row(this._wvTabUndoChoice(reader, "undo", idoc), this._wvNativeEditAccel("undo"), "undo");
+            row(this._wvTabUndoChoice(reader, "redo", idoc), this._wvNativeEditAccel("redo"), "redo");
             // The two lists (MJT 2026-10-01: "There can be multiple redo in a
             // row. So there should be also a Redo History list below?"):
             // "Undo history" over the undo stacks, newest first; "Redo
@@ -12644,11 +13311,16 @@ class _ReaderPanelsMixin {
                 const STEP = 12;
                 const full = this._wvTabUndoList(reader, idoc, 100000, dir);
                 if (full.length < 2) return;
-                const Word = dir === "undo" ? "Undo" : "Redo";
                 const sep = wvHtmlEl(idoc, "div");
                 sep.className = "wv-ctx-sep";
                 menu.appendChild(sep);
-                heading(dir === "undo" ? "Undo history" : "Redo history");
+                heading(wvStr("weavero-undo-history-list", { dir }));
+                // The check box's three tooltips, formatted once.
+                const tickTip = {
+                    auto: wvStr("weavero-undo-tick-tip", { state: "auto", dir }),
+                    on: wvStr("weavero-undo-tick-tip", { state: "on", dir }),
+                    off: wvStr("weavero-undo-tick-tip", { state: "off", dir }),
+                };
                 const boxEl = wvHtmlEl(idoc, "div", "wv-ctx-histbox");
                 boxEl.setAttribute("data-wv-dir", dir);
                 menu.appendChild(boxEl);
@@ -12690,12 +13362,12 @@ class _ReaderPanelsMixin {
                         const on = all.has(r.key), auto = on && !manual.has(r.key);
                         cb.classList.toggle("on", on); cb.classList.toggle("auto", auto);
                         const box = cb.querySelector(".wv-ctx-box"); if (box) box.textContent = on ? "✓" : "";
-                        cb.title = auto ? "Needed by your pick: " + (dir === "undo" ? "undone" : "redone") + " together" : (on ? "Ticked" : "Tick to " + dir + " with others");
+                        cb.title = auto ? tickTip.auto : (on ? tickTip.on : tickTip.off);
                         el.classList.toggle("wv-ctx-picked", on);
                     }
                     if (footer) {
                         footer.style.display = all.size ? "" : "none";
-                        footer.children[1].textContent = Word + " " + all.size + " selected";
+                        footer.children[1].textContent = wvStr("weavero-undo-run-selected", { dir, count: all.size });
                     }
                 };
                 const toggle = (r: any) => {
@@ -12734,9 +13406,9 @@ class _ReaderPanelsMixin {
                     // tooltip said "and the 3 after it" while the bracket showed
                     // 2; the linear reach-back undid an unrelated bookmark step).
                     const group = depsOf.get(r.key) || new Set<string>();
-                    const reach = group.size === 0 ? Word + " this step"
-                        : Word + " this step and the " + group.size + " that go" + (group.size === 1 ? "es" : "") + " with it";
-                    it.title = (stackName ? stackName + " — " : "") + reach + "\nCtrl+click or the box: tick it";
+                    const reach = wvStr("weavero-undo-row-reach", { dir, count: group.size });
+                    it.title = stackName ? wvStr("weavero-undo-row-tip", { stack: stackName, reach })
+                        : wvStr("weavero-undo-row-tip-plain", { reach });
                     rowEls.set(r.key, it);
                     it.addEventListener("mouseenter", () => showGroup(r, true));
                     it.addEventListener("mouseleave", () => showGroup(r, false));
@@ -12751,9 +13423,7 @@ class _ReaderPanelsMixin {
                     // shows what goes with it. A row that cannot go alone says
                     // why in its tooltip.
                     if (group.size) {
-                        it.title += "\n" + (r.kind === "reader"
-                            ? "The " + (group.size === 1 ? "step" : "steps") + " above changed the same annotation" + (group.size === 1 ? "" : "s")
-                            : "The " + (group.size === 1 ? "step" : "steps") + " above touched the same entries");
+                        it.title += "\n" + wvStr("weavero-undo-row-dependent", { kind: r.kind === "reader" ? "reader" : "other", count: group.size });
                     }
                     boxEl.appendChild(it);
                 });
@@ -12764,8 +13434,8 @@ class _ReaderPanelsMixin {
                     const mic = wvHtmlEl(idoc, "span", "wv-ctx-ic", "…");
                     const mlb = wvHtmlEl(idoc, "span");
                     const n = Math.min(STEP, full.length - shown);
-                    mlb.textContent = "Show " + n + " older step" + (n === 1 ? "" : "s");
-                    const mhn = wvHtmlEl(idoc, "span", "wv-ctx-hint", (full.length - shown) + " more");
+                    mlb.textContent = wvStr("weavero-undo-show-older", { count: n });
+                    const mhn = wvHtmlEl(idoc, "span", "wv-ctx-hint", wvStr("weavero-undo-more", { count: full.length - shown }));
                     more.appendChild(mic); more.appendChild(mlb); more.appendChild(mhn);
                     more.addEventListener("click", (e: any) => { e.stopPropagation(); shown += STEP; build(); fitMenu(); });
                     boxEl.appendChild(more);
@@ -12775,10 +13445,10 @@ class _ReaderPanelsMixin {
                 footer.className = "wv-ctx-item wv-ctx-run";
                 footer.setAttribute("data-wv-dir", dir);
                 const fic = wvHtmlEl(idoc, "span", "wv-ctx-ic", dir === "undo" ? "↶" : "↷");
-                const flb = wvHtmlEl(idoc, "span", undefined, Word + " 0 selected");
+                const flb = wvHtmlEl(idoc, "span", undefined, wvStr("weavero-undo-run-selected", { dir, count: 0 }));
                 footer.appendChild(fic); footer.appendChild(flb);
                 footer.style.display = "none";
-                footer.title = Word + " every ticked step, in order";
+                footer.title = wvStr("weavero-undo-run-tip", { dir });
                 footer.addEventListener("click", (e: any) => {
                     e.stopPropagation();
                     const all = closure();
@@ -12864,40 +13534,52 @@ class _ReaderPanelsMixin {
                 const mods = String(k.getAttribute("modifiers") || "").toLowerCase();
                 const shift = /shift/.test(mods), accel = /accel|control|meta/.test(mods);
                 if (mac) return (shift ? "⇧" : "") + (accel ? "⌘" : "") + key.toUpperCase();
-                return (accel ? "Ctrl+" : "") + (shift ? "Shift+" : "") + key.toUpperCase();
+                return (accel ? wvStr("weavero-key-ctrl") + "+" : "") + (shift ? wvStr("weavero-key-shift") + "+" : "") + key.toUpperCase();
             }
         } catch (_) {}
-        if (dir === "undo") return mac ? "⌘Z" : "Ctrl+Z";
-        return mac ? "⇧⌘Z" : ((Zotero as any).isWin ? "Ctrl+Y" : "Ctrl+Shift+Z");
+        const ctrl = wvStr("weavero-key-ctrl"), shiftK = wvStr("weavero-key-shift");
+        if (dir === "undo") return mac ? "⌘Z" : ctrl + "+Z";
+        return mac ? "⇧⌘Z" : ((Zotero as any).isWin ? ctrl + "+Y" : ctrl + "+" + shiftK + "+Z");
     }
 
     /** Outline sources available for this document, in a STABLE order (the menu
      *  marks the current one with a check -- switching must not reorder the
-     *  list). When a curated outline exists: the ORIGINAL source (embedded /
-     *  extracted) first, then the derived Weavero copy; otherwise the single
-     *  source. */
+     *  list), the order of the defaults (MJT 2026-11-24, "Ok for the proposed
+     *  order"): Edited (key "weavero") when there is one, then the document's
+     *  own sources in `_wvOutlineOriginalOrder` -- Extracted (Weavero's),
+     *  Embedded, Zotero -- with Reading Mode's own outline right after
+     *  Extracted while Reading Mode is on. */
     _wvOutlineAvailableSources(reader: any, current: string): string[] {
-        let out: string[] = [current];
+        let originals: string[] = [];
+        try {
+            const c = reader._wvOutlineCache;
+            if (c && Array.isArray(c.order) && c.order.length) originals = c.order.filter((k: string) => RP_OUTLINE_ORIGINALS.indexOf(k) >= 0);
+            else if (c && c.tree && c.tree.length && c.source) originals = [c.source];
+        } catch (_) {}
+        let curated = false;
         try {
             const att = this._wvReaderAtt(reader);
             if (att && this._wvOutlineHasCurated(att.libraryID, att.itemKey)) {
-                const d = this._wvOutlineDoc(att.libraryID, att.itemKey);
-                const orig = (d && d.importedFrom) || "extracted";
-                out = [orig, "weavero"];   // original first; current shown via the check
-            }
-        } catch (_) {}
-        // While Reading Mode is on, its own generated outline is one more source.
-        try {
-            if (this._wvReadingModeActive(reader) && this._wvOutlineRmEntries(reader).length) {
-                if (out.indexOf("readingMode") < 0) out.push("readingMode");
-                // The base source is still switchable-to even when RM is the
-                // only "current" (uncurated doc defaulting to the RM view).
-                if (out.length === 1 && current === "readingMode") {
-                    const c = reader._wvOutlineCache;
-                    if (c && c.tree && c.tree.length) out.unshift(c.source || "extracted");
+                curated = true;
+                if (!originals.length) {
+                    const d = this._wvOutlineDoc(att.libraryID, att.itemKey);
+                    originals = [(d && d.importedFrom) || "extracted"];
                 }
             }
         } catch (_) {}
+        if (!originals.length && current && current !== "weavero" && current !== "readingMode" && current !== "none") originals = [current];
+        let rm = false;
+        try { rm = this._wvReadingModeActive(reader) && this._wvOutlineRmEntries(reader).length > 0; } catch (_) {}
+        const out: string[] = curated ? ["weavero"] : [];
+        for (const k of originals) {
+            out.push(k);
+            if (rm && k === "extracted") out.push("readingMode");
+        }
+        if (rm && out.indexOf("readingMode") < 0) {
+            // No Extracted: Reading Mode's own comes before the others.
+            out.splice(curated ? 1 : 0, 0, "readingMode");
+        }
+        if (!out.length) out.push(current);
         return out;
     }
 
@@ -13000,10 +13682,10 @@ class _ReaderPanelsMixin {
                 it.appendChild(ic); it.appendChild(lb);
                 if (isDefault && !hint) {
                     // Dim like the size column (MJT 2026-09-29).
-                    const df = wvHtmlEl(idoc, "span", "wv-ctx-def", "(default)", it);
+                    const df = wvHtmlEl(idoc, "span", "wv-ctx-def", wvStr("weavero-menu-default-hint"), it);
                 }
                 if (hint) {
-                    const hn = wvHtmlEl(idoc, "span", "wv-ctx-hint", hint + (isDefault ? " (default)" : ""), it);
+                    const hn = wvHtmlEl(idoc, "span", "wv-ctx-hint", hint + (isDefault ? " " + wvStr("weavero-menu-default-hint") : ""), it);
                 }
             };
             // Text-size lines: the size in fixed-width columns -- the number
@@ -13017,7 +13699,7 @@ class _ReaderPanelsMixin {
                 const cols = wvHtmlEl(idoc, "span");
                 cols.className = "wv-ctx-cols";
                 const sz = wvHtmlEl(idoc, "span", "wv-ctx-size", size);
-                const df = wvHtmlEl(idoc, "span", "wv-ctx-defcol", isDefault ? "(default)" : "");
+                const df = wvHtmlEl(idoc, "span", "wv-ctx-defcol", isDefault ? wvStr("weavero-menu-default-hint") : "");
                 const ar = wvHtmlEl(idoc, "span", "wv-ctx-arrowcol", arrow ? "▸" : "");
                 cols.appendChild(sz); cols.appendChild(df); cols.appendChild(ar);
                 it.appendChild(ic); it.appendChild(lb); it.appendChild(cols);
@@ -13040,10 +13722,12 @@ class _ReaderPanelsMixin {
                     const { expandedSet, parentKeys } = this._wvOutlineParentKeys(reader);
                     anyCollapsed = parentKeys.some((k: any) => !expandedSet.has(k));
                 } catch (_) {}
-                const dbl = "Double-click, ";
-                heading("Entries Tree");   // MJT 2026-09-30: says what expands
-                row("Expand All", false, () => { this._wvOutlineSetAllExpanded(reader, idoc, true); }, false, (anyCollapsed ? dbl : "") + "+");
-                row("Collapse All", false, () => { this._wvOutlineSetAllExpanded(reader, idoc, false); }, false, (anyCollapsed ? "" : dbl) + "−");
+                // The hint: the key, after "Double-click" on the row the
+                // double-click would perform.
+                const hint = (key: string, dbl: boolean) => dbl ? wvStr("weavero-outline-hint-dblclick", { key }) : key;
+                heading(wvStr("weavero-outline-entries-tree"));   // MJT 2026-09-30: says what expands
+                row(wvStr("weavero-menu-outline-expand-all"), false, () => { this._wvOutlineSetAllExpanded(reader, idoc, true); }, false, hint("+", anyCollapsed));
+                row(wvStr("weavero-menu-outline-collapse-all"), false, () => { this._wvOutlineSetAllExpanded(reader, idoc, false); }, false, hint("−", !anyCollapsed));
             }
             // Page numbers: not in a web snapshot, which has no pages (MJT
             // 2026-09-24). PDFs and EPUBs keep it.
@@ -13054,9 +13738,9 @@ class _ReaderPanelsMixin {
                 const shown = this._wvOutlinePagesShown(att);
                 const globalOn = this._getOutlinePageNumbers();
                 const setPages = (v: boolean) => () => { this._wvOutlineSetPageNumbers(att, v).then(rerender, rerender); };
-                heading("Page numbers");
-                row("Show", shown, setPages(true), globalOn);
-                row("Hide", !shown, setPages(false), !globalOn);
+                heading(wvStr("weavero-rpanel-page-numbers"));
+                row(wvStr("weavero-rpanel-page-numbers-show"), shown, setPages(true), globalOn);
+                row(wvStr("weavero-rpanel-page-numbers-hide"), !shown, setPages(false), !globalOn);
             }
             // Text size for this document (MJT 2026-09-29): Zotero Outline and
             // Zotero Item Pane (both follow View -> Font Size, shown with
@@ -13070,18 +13754,18 @@ class _ReaderPanelsMixin {
                 const apply = () => { this._wvApplyOutlineTextScale(idoc, reader); };
                 const set = (v: string) => { this._wvOutlineSetTextSize(att, v).then(apply, apply); };
                 const px = (v: string) => this._wvOutlineSizePx(v) + " px";
-                heading("Text size");
+                heading(wvStr("weavero-outline-text-size"));
                 const sizeRow = (name: string, v: string) => {
                     const r = wvHtmlEl(idoc, "div", "wv-ctx-item");
                     fillCols(r, name, cur === v, g === v, px(v), false);
                     r.addEventListener("click", () => { close(); set(v); });
                     menu.appendChild(r);
                 };
-                sizeRow("Zotero Outline", "zotero");
-                sizeRow("Zotero Item Pane", "itemPane");
+                sizeRow(wvStr("weavero-outline-size", { size: "zotero" }), "zotero");
+                sizeRow(wvStr("weavero-outline-size", { size: "itemPane" }), "itemPane");
                 const fixedCur = RP_OUTLINE_FIXED.includes(cur);
                 const it = wvHtmlEl(idoc, "div", "wv-ctx-item wv-ctx-haschild");
-                fillCols(it, "Fixed", fixedCur, fixedCur && cur === g, fixedCur ? cur + " px" : "", true);
+                fillCols(it, wvStr("weavero-outline-size", { size: "fixed" }), fixedCur, fixedCur && cur === g, fixedCur ? cur + " px" : "", true);
                 const fly = wvHtmlEl(idoc, "div", "wv-ctx-submenu");
                 fly.style.minWidth = "0";
                 for (const v of RP_OUTLINE_FIXED) {
@@ -13158,9 +13842,9 @@ class _ReaderPanelsMixin {
             const row = (label: string, ticked: boolean, value: boolean, isDefault: boolean) =>
                 this._wvCtxItem(idoc, menu, { label, ticked, def: isDefault, close,
                     onClick: () => { this._wvBmSetPageNumbers(att, value).then(rerender, rerender); } });
-            this._wvCtxHeading(idoc, menu, "Page numbers");
-            row("Show", shown, true, globalOn);
-            row("Hide", !shown, false, !globalOn);
+            this._wvCtxHeading(idoc, menu, wvStr("weavero-rpanel-page-numbers"));
+            row(wvStr("weavero-rpanel-page-numbers-show"), shown, true, globalOn);
+            row(wvStr("weavero-rpanel-page-numbers-hide"), !shown, false, !globalOn);
             (idoc.body || idoc.documentElement).appendChild(menu);
             const r = anchor.getBoundingClientRect();
             menu.style.left = Math.max(6, r.left) + "px";
@@ -13288,8 +13972,7 @@ class _ReaderPanelsMixin {
 
     /** Display label: "Zotero Outline, 12.65 px", "Zotero Item Pane, 14.95 px", "13 px". */
     _wvOutlineSizeLabel(v: string): string {
-        if (v === "zotero") return "Zotero Outline, " + this._wvOutlineSizePx(v) + " px";
-        if (v === "itemPane") return "Zotero Item Pane, " + this._wvOutlineSizePx(v) + " px";
+        if (v === "zotero" || v === "itemPane") return wvStr("weavero-outline-size-label", { size: v, px: this._wvOutlineSizePx(v) });
         return v + " px";
     }
 
@@ -13388,6 +14071,9 @@ class _ReaderPanelsMixin {
                 // Layout: [dot][label] left-aligned across all rows, with the
                 // current row's check pushed to the RIGHT so the dots line up.
                 it.className = "wv-ctx-item wv-outline-src-" + src;
+                // The row says what its source is, as the chip's tooltip does.
+                const oc = reader && reader._wvOutlineCache;
+                it.setAttribute("title", this._wvOutlineSourceTip(src, false, !!(oc && oc.extractedSame), { embeddedSame: !!(oc && oc.embeddedSame), embeddedFirst: !!(oc && oc.embeddedFirst) }));
                 const dot = wvHtmlEl(idoc, "span");
                 dot.className = "wv-outline-src-dot";
                 const lb = wvHtmlEl(idoc, "span", undefined, this._wvOutlineSourceLabel(src));
@@ -13461,6 +14147,16 @@ class _ReaderPanelsMixin {
         try {
             reader._wvOutlineViewSource = (source === "weavero") ? null
                 : (source === "readingMode") ? "rm" : "original";
+            // One original among several (the structure data's `alts`): the
+            // pick is kept for this reader and shown at once.
+            if (RP_OUTLINE_ORIGINALS.indexOf(source) >= 0) {
+                reader._wvOutlinePick = source;
+                const c = reader._wvOutlineCache;
+                if (c && c.alts && c.alts[source]) {
+                    c.source = source;
+                    c.tree = JSON.parse(JSON.stringify(c.alts[source]));
+                }
+            }
             this._wvReaderRenderOutline(reader, idoc);
         } catch (_) {}
     }
@@ -13720,8 +14416,7 @@ class _ReaderPanelsMixin {
                             { position: target, href: node && node.href });
                         if (rng) this._wvDomHighlightRange(pvD, rng);
                         else if (target && (target.type || target.value)) {
-                            this._wvReaderPanelNote(idoc,
-                                "This entry's target is no longer in the document.");
+                            this._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-entry-gone"));
                         }
                     } catch (_) {}
                 }
@@ -13733,7 +14428,7 @@ class _ReaderPanelsMixin {
      *  Reading Mode is on. Cheap and self-removing -- better than a silent no-op
      *  or a scroll the user can't see. */
     _wvReaderNotifyReadingMode(reader: any, idoc: any) {
-        this._wvReaderPanelNote(idoc, "Turn off Reading Mode to jump to this location.");
+        this._wvReaderPanelNote(idoc, wvStr("weavero-rpanel-note-rm-jump"));
     }
 
     /** A transient note at the bottom of whichever Weavero panel is showing.
@@ -14021,6 +14716,12 @@ class _ReaderPanelsMixin {
     _wvEnsureReaderPanelStyles(idoc: any) {
         const css = RP_POPUP_CSS + RP_BM_CSS + BM_HOVERCARD_CSS + RP_OUTLINE_CSS;
         this._wvApplyOutlineTextScale(idoc);
+        // Weavero's outline on: Zotero's still-loading one hidden (RP_OUTLINE_CSS).
+        try {
+            const root = idoc.documentElement;
+            const on = !!this._getEnableOutlineTakeover();
+            if (root && root.classList.contains(RP_OUTLINE_ON_ROOT) !== on) root.classList.toggle(RP_OUTLINE_ON_ROOT, on);
+        } catch (_) {}
         const existing = idoc.getElementById(RP_STYLE_ID);
         if (existing) {
             // A reader left open across a plugin update keeps its stale
@@ -14043,53 +14744,76 @@ class _ReaderPanelsMixin {
         if (!this._wvReaderFilters) this._wvReaderFilters = new WeakMap();
         let st = this._wvReaderFilters.get(reader);
         if (!st) {
-            st = {
-                // Colour / tag / author INCLUDES live in the reader's own
-                // annotation-filter (the native sidebar strip's channel), so
-                // the strip and this popup share one source of truth and never
-                // stack. Only EXCLUDES and the dimensions the native filter
-                // lacks (type, has-comment, has-related, has-link, modified-by)
-                // are stored here and applied by removing the annotations from
-                // the reader (_wvReaderSyncHidden). Author dims are
-                // keyed by display name (what the native `authors` filter uses).
-                types: [], typesExcl: [],
-                colorsExcl: [],
-                tagsExcl: [],
-                addedByExcl: [],
-                modifiedBy: [], modifiedByExcl: [],
-                hasComment: null as (boolean | null),
-                hasRelated: null as (boolean | null),
-                hasLink: null as (boolean | null),
-                hasTag: null as (boolean | null),
-                // Linked from another comment or note (backlinks.ts index;
-                // ignored while the Backlinks switch is off). 2026-10-23.
-                hasBacklinks: null as (boolean | null),
-                // Links another Zotero item (the Links column's count;
-                // ignored while the Links switch is off). 2026-10-28.
-                hasItemLinks: null as (boolean | null),
-                // TWO independent date-range dimensions (2026-08-03) --
-                // Added and Modified each get a mode (null = off; "last" =
-                // rolling window of N hours/days; "custom" = absolute bounds,
-                // YYYY-MM-DD local, either end open). Both apply together
-                // (AND) so "added last 30 days AND modified last 2 hours" is
-                // expressible. Four fixed presets were tried first and
-                // rejected as clutter (user call): N is free.
-                dateAddedMode: null as (string | null),
-                dateAddedN: 1,
-                dateAddedUnit: "d" as string,   // "h" | "d"
-                dateAddedFrom: null as (string | null),
-                dateAddedTo: null as (string | null),
-                dateAddedNeg: false,   // Alt+click: show only OUTSIDE the range
-                dateModMode: null as (string | null),
-                dateModN: 1,
-                dateModUnit: "d" as string,
-                dateModFrom: null as (string | null),
-                dateModTo: null as (string | null),
-                dateModNeg: false,
-            };
+            st = this._wvReaderFilterBlank();
             this._wvReaderFilters.set(reader, st);
         }
         return st;
+    }
+
+    /** A reader-funnel state that filters nothing: a document's first, and
+     *  what a resting funnel applies (`_wvReaderEffectiveState`). */
+    _wvReaderFilterBlank() {
+        return {
+            // Colour / tag / author INCLUDES live in the reader's own
+            // annotation-filter (the native sidebar strip's channel), so
+            // the strip and this popup share one source of truth and never
+            // stack. Only EXCLUDES and the dimensions the native filter
+            // lacks (type, has-comment, has-related, has-link, modified-by)
+            // are stored here and applied by removing the annotations from
+            // the reader (_wvReaderSyncHidden). Author dims are
+            // keyed by display name (what the native `authors` filter uses).
+            types: [], typesExcl: [],
+            colorsExcl: [],
+            tagsExcl: [],
+            addedByExcl: [],
+            modifiedBy: [], modifiedByExcl: [],
+            hasComment: null as (boolean | null),
+            hasRelated: null as (boolean | null),
+            hasLink: null as (boolean | null),
+            hasTag: null as (boolean | null),
+            // Linked from another comment or note (backlinks.ts index;
+            // ignored while the Backlinks switch is off). 2026-10-23.
+            hasBacklinks: null as (boolean | null),
+            // Links another Zotero item (the Links column's count;
+            // ignored while the Links switch is off). 2026-10-28.
+            hasItemLinks: null as (boolean | null),
+            // TWO independent date-range dimensions (2026-08-03) --
+            // Added and Modified each get a mode (null = off; "last" =
+            // rolling window of N hours/days; "custom" = absolute bounds,
+            // YYYY-MM-DD local, either end open). Both apply together
+            // (AND) so "added last 30 days AND modified last 2 hours" is
+            // expressible. Four fixed presets were tried first and
+            // rejected as clutter (user call): N is free.
+            dateAddedMode: null as (string | null),
+            dateAddedN: 1,
+            dateAddedUnit: "d" as string,   // "h" | "d"
+            dateAddedFrom: null as (string | null),
+            dateAddedTo: null as (string | null),
+            dateAddedNeg: false,   // Alt+click: show only OUTSIDE the range
+            dateModMode: null as (string | null),
+            dateModN: 1,
+            dateModUnit: "d" as string,
+            dateModFrom: null as (string | null),
+            dateModTo: null as (string | null),
+            dateModNeg: false,
+        };
+    }
+
+    /** The funnel above the reader: its own Settings box beside the pane
+     *  funnel's, under Extras (MJT 2026-11-24). Off, the button is gone and
+     *  the document's filter RESTS: kept, not applied, back with the box --
+     *  nothing could show or reset a filter applied without its button. */
+    _wvReaderFunnelShown(): boolean {
+        try { return this._wvAnnPaneEnabled() && !!this._getEnableReaderAnnFilter(); }
+        catch (_) { return false; }
+    }
+
+    /** The state the reader funnel APPLIES: the document's own, or nothing
+     *  while the funnel rests. The colour / tag / author includes are not in
+     *  it (`_wvReaderNativeIncludes`): Zotero's own selector shares them,
+     *  shows them and resets them, funnel or not. */
+    _wvReaderEffectiveState(reader: any) {
+        return this._wvReaderFunnelShown() ? this._wvReaderFilterState(reader) : this._wvReaderFilterBlank();
     }
 
     /** The reader's own annotation filter includes ({colors,tags,authors})
@@ -14121,7 +14845,7 @@ class _ReaderPanelsMixin {
     }
 
     _wvReaderFilterActive(reader: any) {
-        const st = this._wvReaderFilterState(reader);
+        const st = this._wvReaderEffectiveState(reader);
         const nat = this._wvReaderNativeIncludes(reader);
         return !!(nat.colors.length || nat.tags.length || nat.authors.length
             || st.types.length || st.typesExcl.length
@@ -14298,10 +15022,20 @@ class _ReaderPanelsMixin {
         if (node.kind === "annotation") return { ann: true, type: node.annType || null, color: node.annColor || null, itemType: null };
         if (node.kind) return { ann: false, type: null, color: null, itemType: String(node.kind) };
         const lbl = String(node.originalLabel || node.label || "").trim();
-        const byLabel: { [k: string]: string | null } = {
-            "Image annotation": "image", "Ink annotation": "ink", "Text annotation": "text",
-            "Note": "note", "Highlight": "highlight", "Underline": "underline", "Annotation": null,
-        };
+        // The type names _wvReaderAnnLabel stores as a name: in English (every
+        // bookmark made before weavero.ftl had them) and in the UI language.
+        if (!this._wvAnnKindByLabel) {
+            const byLabel: { [k: string]: string | null } = {
+                "Image annotation": "image", "Ink annotation": "ink", "Text annotation": "text",
+                "Note": "note", "Highlight": "highlight", "Underline": "underline", "Annotation": null,
+            };
+            for (const t of ["image", "ink", "text", "note", "highlight", "underline"]) {
+                byLabel[wvStr("weavero-rpanel-ann-kind", { type: t })] = t;
+            }
+            byLabel[wvStr("weavero-rpanel-ann-kind", { type: "other" })] = null;
+            this._wvAnnKindByLabel = byLabel;
+        }
+        const byLabel = this._wvAnnKindByLabel;
         if (Object.prototype.hasOwnProperty.call(byLabel, lbl)) return { ann: true, type: byLabel[lbl], color: null, itemType: null };
         return none;
     }
@@ -14525,6 +15259,10 @@ class _ReaderPanelsMixin {
 
     _wvReaderEnsureFilterButton(reader: any, idoc: any) {
         try {
+            if (!this._wvReaderFunnelShown()) {
+                this._wvReaderRemoveFilterButton(idoc);
+                return;
+            }
             const find = idoc.querySelector(".toolbar-button.find");
             const end = (find && find.parentNode)
                 || idoc.querySelector(".toolbar .end")
@@ -14535,7 +15273,7 @@ class _ReaderPanelsMixin {
                 btn = wvHtmlEl(idoc, "button");
                 btn.className = "toolbar-button " + RP_FILTER_BTN_CLASS;
                 btn.setAttribute("tabindex", "-1");
-                btn.setAttribute("title", "Filter annotations");
+                btn.setAttribute("title", wvStr("weavero-annfilter-toolbar-tip"));
                 // `<img>` with a BAKED-IN data: URI of Zotero's
                 // filter.svg — same `context-fill` icon as the library
                 // popup's funnel button, but ready at the first paint
@@ -14569,6 +15307,42 @@ class _ReaderPanelsMixin {
         } catch (e) {
             Zotero.debug("[Weavero] _wvReaderEnsureFilterButton err: " + e);
         }
+    }
+
+    /** The reader funnel switched off: its button goes, with its popup -- only
+     *  a popup of ITS kind. The pane funnel opens one under the same id, and
+     *  every reader-panels scan runs this while the switch is off (the mirror
+     *  of issue #69). */
+    _wvReaderRemoveFilterButton(idoc: any) {
+        try { for (const el of idoc.querySelectorAll("." + RP_FILTER_BTN_CLASS)) el.remove(); } catch (_) {}
+        try {
+            const op = idoc.getElementById(RP_FILTER_POPUP_ID);
+            if (op && op.dataset && op.dataset.wvKind !== "list") this._wvCloseReaderFilterPopup(idoc);
+        } catch (_) {}
+    }
+
+    /** The reader funnel's switch (or Extras) moved: the button follows it,
+     *  and the document's filter rests or applies again. "Hide Annotations in
+     *  the Reader" is a box of the funnel's popup only, so it rests with the
+     *  funnel and comes back with it. */
+    _wvReaderFunnelSync(reader: any, idoc: any) {
+        try {
+            if (!this._wvReaderHideRestWM) this._wvReaderHideRestWM = new WeakMap();
+            if (!this._wvReaderFunnelShown()) {
+                if (this._wvReaderAnnotationsHidden(reader)) {
+                    this._wvReaderApplyHideAnnotations(reader, false);
+                    this._wvReaderHideRestWM.set(reader, true);
+                }
+            }
+            else if (this._wvReaderHideRestWM.get(reader)) {
+                this._wvReaderHideRestWM.delete(reader);
+                this._wvReaderApplyHideAnnotations(reader, true);
+            }
+            this._wvReaderEnsureFilterButton(reader, idoc);
+            // The toolbar's overflow menu counts the button (WV-TEMP-4185).
+            try { this._wvTbOverflowEnsure(reader, idoc); } catch (_) {}
+            this._wvApplyReaderFilter(reader);
+        } catch (e) { Zotero.debug("[Weavero] _wvReaderFunnelSync err: " + e); }
     }
 
     // ---- Annotations-list funnel (issue #43) --------------------------------
@@ -14858,32 +15632,34 @@ class _ReaderPanelsMixin {
         };
         const pair = (inc: string[], exc: string[], name: (v: string) => string) => {
             for (const v of (inc || [])) out.push(name(v));
-            for (const v of (exc || [])) out.push("not " + name(v));
+            for (const v of (exc || [])) out.push(wvStr("weavero-annfilter-desc-not", { name: name(v) }));
         };
         pair(st.types, st.typesExcl, v => lbl(this._ANNOTATION_TYPES, v));
         pair(st.colors, st.colorsExcl, v => lbl(this._ANNOTATION_COLORS, v));
         pair(st.tags, st.tagsExcl, v => v);
-        pair(st.addedBy, st.addedByExcl, v => "added by " + v);
-        pair(st.modifiedBy, st.modifiedByExcl, v => "modified by " + v);
-        const flag = (v: any, yes: string, no: string) => { if (v === true) out.push(yes); else if (v === false) out.push(no); };
-        flag(st.hasComment, "Has Comment", "No Comment");
-        flag(st.hasTag, "Has Tag", "No Tag");
-        flag(st.hasRelated, "Has Related", "No Related");
-        flag(st.hasLink, "Has External Link", "No External Link");
-        flag(st.hasItemLinks, "Has Item Links", "No Item Links");
-        flag(st.hasBacklinks, "Has Backlinks", "No Backlinks");
-        const date = (pre: string, word: string) => {
+        pair(st.addedBy, st.addedByExcl, v => wvStr("weavero-annfilter-desc-person", { who: "added", name: v }));
+        pair(st.modifiedBy, st.modifiedByExcl, v => wvStr("weavero-annfilter-desc-person", { who: "modified", name: v }));
+        const flag = (v: any, which: string) => {
+            if (v === true || v === false) out.push(wvStr("weavero-annfilter-flag", { flag: which, has: v ? "yes" : "no" }));
+        };
+        flag(st.hasComment, "comment");
+        flag(st.hasTag, "tag");
+        flag(st.hasRelated, "related");
+        flag(st.hasLink, "link");
+        flag(st.hasItemLinks, "itemLinks");
+        flag(st.hasBacklinks, "backlinks");
+        const date = (pre: string, field: string) => {
             const mode = st[pre + "Mode"];
             if (!mode) return;
-            const neg = st[pre + "Neg"] ? "not " : "";
+            const neg = st[pre + "Neg"] ? "yes" : "no";
             if (mode === "last") {
-                const u = st[pre + "Unit"] === "m" ? "min" : st[pre + "Unit"] === "h" ? "h" : st[pre + "Unit"] === "y" ? "y" : "d";
-                out.push(word + ": " + neg + "last " + (st[pre + "N"] || 1) + " " + u);
+                const unit = ["m", "h", "y"].includes(st[pre + "Unit"]) ? st[pre + "Unit"] : "d";
+                out.push(wvStr("weavero-annfilter-desc-date-last", { field, neg, count: st[pre + "N"] || 1, unit }));
             }
-            else out.push(word + ": " + neg + ((st[pre + "From"] || "\u2026") + " to " + (st[pre + "To"] || "\u2026")));
+            else out.push(wvStr("weavero-annfilter-desc-date-range", { field, neg, from: st[pre + "From"] || "\u2026", to: st[pre + "To"] || "\u2026" }));
         };
-        date("dateAdded", "Added");
-        date("dateMod", "Modified");
+        date("dateAdded", "added");
+        date("dateMod", "modified");
         return out;
     }
 
@@ -15195,10 +15971,7 @@ class _ReaderPanelsMixin {
             if (h.getAttribute("data-wv-mark") !== mark) h.setAttribute("data-wv-mark", mark);
             const exp = collapsed ? "false" : "true";
             if (h.getAttribute("aria-expanded") !== exp) h.setAttribute("aria-expanded", exp);
-            const title = collapsed
-                ? (marked ? "Show the colour and tag selector (a selection is active: it filters the pane and the document)"
-                    : "Show the colour and tag selector")
-                : "Hide the colour and tag selector";
+            const title = wvStr("weavero-rpanel-selector-handle-tip", { state: collapsed ? (marked ? "folded-marked" : "folded") : "open" });
             if (h.getAttribute("title") !== title) h.setAttribute("title", title);
         } catch (e) { Zotero.debug("[Weavero] _wvAnnSelHandleEnsure err: " + e); }
     }
@@ -15350,7 +16123,7 @@ class _ReaderPanelsMixin {
                 btn.className = "toolbar-button wv-al-btn";
                 btn.setAttribute("type", "button");
                 btn.setAttribute("tabindex", "-1");
-                btn.setAttribute("aria-label", "Filter Annotations Pane");
+                btn.setAttribute("aria-label", wvStr("weavero-annfilter-popup-title", { kind: "list" }));
                 // The SAME baked two-tone funnel the toolbar funnel uses
                 // (outline context-fill, amber stem), so the two read as one
                 // control in two places; the prefetch swaps in its fetched
@@ -15395,12 +16168,8 @@ class _ReaderPanelsMixin {
             const img = btn.querySelector("img.wv-filter-svg");
             if (img && img.getAttribute("src") !== RP_FUNNEL_DATA_URI) img.setAttribute("src", RP_FUNNEL_DATA_URI);
             const hidden = this._wvAnnPaneHiddenKeys(reader).length;
-            const effect = hidden
-                ? " — hides " + hidden + " annotation" + (hidden === 1 ? "" : "s") + " here"
-                : " — every annotation shown";
-            const lines = ["Filter Annotations Pane (the document keeps every annotation)"];
-            if (departs) lines.push("This document departs from the default" + effect);
-            else if (defaultModified) lines.push("Following the default" + effect);
+            const lines = [wvStr("weavero-annfilter-pane-tip-head")];
+            if (departs || defaultModified) lines.push(wvStr("weavero-annfilter-pane-tip-state", { state: departs ? "departs" : "default", hidden }));
             btn.setAttribute("title", lines.join("\n"));
         } catch (e) { Zotero.debug("[Weavero] _wvAnnListEnsureButton err: " + e); }
     }
@@ -15439,10 +16208,8 @@ class _ReaderPanelsMixin {
         // Row 1 -- what the filter does right now.
         const countRow = mk("div", "wv-al-foot-row");
         const count = mk("span", "wv-al-foot-count" + (hiddenKeys.length ? " wv-al-count-on" : ""));
-        count.textContent = hiddenKeys.length
-            ? hiddenKeys.length + " of " + total + " hidden from the pane"
-            : "Every annotation shown";
-        count.title = "The document still holds every annotation; only this pane is filtered.";
+        count.textContent = wvStr("weavero-annfilter-count", { hidden: hiddenKeys.length, total });
+        count.title = wvStr("weavero-annfilter-count", { hidden: hiddenKeys.length, total }, "title");
         countRow.appendChild(count);
         foot.appendChild(countRow);
 
@@ -15457,10 +16224,8 @@ class _ReaderPanelsMixin {
         const btns = mk("div", "wv-al-foot-btns");
         let noteEl: any = null;
         const scope = mk("span", "wv-al-scope");
-        scope.textContent = departure ? "This Document Only" : "Default for All Documents";
-        scope.title = departure
-            ? "This document has its own filter; other documents follow the default."
-            : "This filter is the default every document starts from.";
+        scope.textContent = wvStr("weavero-annfilter-scope", { scope: departure ? "document" : "default" });
+        scope.title = wvStr("weavero-annfilter-scope", { scope: departure ? "document" : "default" }, "title");
         scopeLine.appendChild(scope);
         if (departure) {
             // What the default would do here, so it stays visible in the one
@@ -15479,20 +16244,18 @@ class _ReaderPanelsMixin {
                 // show the same thing chip by chip.
                 const parts = this._wvAnnPaneDescribe(defState);
                 const note = mk("div", "wv-al-scope-note");
-                note.textContent = "Default: " + (parts.length ? parts.join(", ") : "everything")
-                    + " \u00b7 " + (n ? "hides " + n + " here" : "hides none here");
-                note.title = "The default filter, which this document does not use:\n"
-                    + (parts.length ? parts.join("\n") : "(shows everything)")
-                    + "\n\nReset applies it here.";
+                note.textContent = wvStr("weavero-annfilter-default-note", { all: parts.length ? "no" : "yes", parts: parts.join(", "), hidden: n });
+                note.title = wvStr("weavero-annfilter-default-note-tip") + "\n"
+                    + (parts.length ? parts.join("\n") : wvStr("weavero-annfilter-default-shows-everything"))
+                    + "\n\n" + wvStr("weavero-annfilter-default-note-reset");
                 noteEl = note;
             }
         }
         if (departure) {
             const useBtn = mk("button", "wv-al-foot-btn");
             useBtn.type = "button";
-            useBtn.textContent = "Use as Default";
-            useBtn.title = "Make this filter, exactly as it stands, the default for every document"
-                + "\nAlt+click to ADD its chips to the existing default instead of replacing it";
+            useBtn.textContent = wvStr("weavero-annfilter-use-default");
+            useBtn.title = wvStr("weavero-annfilter-use-default", null, "title");
             useBtn.addEventListener("click", async (e: any) => {
                 e.stopPropagation();
                 await this._wvAnnListUseAsDefault(reader, !!e.altKey);
@@ -15506,8 +16269,8 @@ class _ReaderPanelsMixin {
             // to the statement that it is the default.
             const clearDef = mk("button", "wv-al-foot-btn");
             clearDef.type = "button";
-            clearDef.textContent = "Clear Default";
-            clearDef.title = "Show every annotation in every document again (clears the default, not this document)";
+            clearDef.textContent = wvStr("weavero-annfilter-clear-default");
+            clearDef.title = wvStr("weavero-annfilter-clear-default", null, "title");
             clearDef.addEventListener("click", async (e: any) => {
                 e.stopPropagation();
                 await this._wvAnnPaneClearDefault(reader, idoc);
@@ -15541,9 +16304,13 @@ class _ReaderPanelsMixin {
             // sort it gates shares the pane): the root observer only re-ran
             // the sort, so the funnel stayed applied or absent until the next
             // scan (survey 2026-10-06).
+            // The reader funnel's box and its master move the toolbar's button
+            // and rest / re-apply its filter (`_wvReaderFunnelSync`).
+            const funnelPrefs = ["weavero.enableReaderAnnFilter", "weavero.enableVisualExtras"];
             const watched = typePrefs.concat(["weavero.annPaneDefault",
                 "weavero.enableAnnPaneFilter", "weavero.hideNativeAnnSelector", "weavero.annSelectorHandle",
-                "weavero.annSelectorHidden", "weavero.readerLayoutMenu", "weavero.enableVisualExtras", "weavero.enableFilters"]);
+                "weavero.annSelectorHidden", "weavero.readerLayoutMenu", "weavero.enableVisualExtras", "weavero.enableFilters",
+                "weavero.enableReaderAnnFilter"]);
             g._wvAnnListPrefObs = watched.map(name => Zotero.Prefs.registerObserver(
                 name,
                 () => {
@@ -15561,6 +16328,7 @@ class _ReaderPanelsMixin {
                                 if (!lp._wvAnnListIsDeparture(r)) lp._wvAnnPaneForget(r);
                                 const idoc = r._iframeWindow && r._iframeWindow.document;
                                 if (!idoc) continue;
+                                if (funnelPrefs.indexOf(name) >= 0) lp._wvReaderFunnelSync(r, idoc);
                                 lp._wvAnnListEnsure(r, idoc);
                                 // An open pane popup shows state; repaint it,
                                 // or its chips describe the old default.
@@ -15911,7 +16679,7 @@ class _ReaderPanelsMixin {
         const markDef = (btn: any, on: boolean) => {
             if (!on) return;
             btn.classList.add("wv-al-def-chip");
-            try { btn.title = (btn.title ? btn.title + "\n" : "") + "Part of the default filter"; } catch (_) {}
+            try { btn.title = (btn.title ? btn.title + "\n" : "") + wvStr("weavero-annfilter-part-of-default"); } catch (_) {}
         };
         const anns = this._wvReaderAnnotations(reader);
 
@@ -16008,7 +16776,7 @@ class _ReaderPanelsMixin {
         // Header + Clear / Clear-and-Close (mirrors the library filter).
         const head = mk("div", "wv-rf-head");
         const title = mk("div", "wv-rf-title");
-        title.textContent = pane ? "Filter Annotations Pane" : "Filter Annotations";
+        title.textContent = wvStr("weavero-annfilter-popup-title", { kind: pane ? "list" : "reader" });
         head.appendChild(title);
         // Async: callers must AWAIT before re-rendering the popup — the popup
         // renders selection from the LIVE native filter, and the (async) apply
@@ -16037,14 +16805,13 @@ class _ReaderPanelsMixin {
         // "Clear" / "Clear All" — clears every filter but keeps the popup open.
         const clearBtn = mk("button", "wv-filter-clear-btn");
         clearBtn.type = "button";
-        clearBtn.textContent = paneDefault ? "Clear All" : "Clear";
+        const clearId = paneDefault ? "weavero-annfilter-clear-all" : "weavero-rpanel-filter-clear";
+        clearBtn.textContent = wvStr(clearId);
         // With a default in place, Clear All is a choice FOR THIS DOCUMENT
         // that outranks the default -- MJT expected it to return to the
         // default instead, so the tooltip says which is which.
-        clearBtn.title = paneDefault
-            ? "Show every annotation in this document. This document's own choice: the default stays as it is; Reset follows it again."
-            : "Clear all filters (keep this window open)";
-        clearBtn.setAttribute("aria-label", "Clear all filters");
+        clearBtn.title = wvStr(clearId, null, "title");
+        clearBtn.setAttribute("aria-label", wvStr("weavero-rpanel-filter-clear", null, "aria-label"));
         clearBtn.addEventListener("click", async (e: any) => {
             e.stopPropagation();
             await clearState();
@@ -16056,7 +16823,7 @@ class _ReaderPanelsMixin {
         // the document follows the default again, then the popup goes.
         const clearCloseBtn = mk("button", "wv-filter-clear-icon");
         clearCloseBtn.type = "button";
-        clearCloseBtn.title = paneDefault ? "Back to Default and Close" : "Clear and Close";
+        clearCloseBtn.title = paneDefault ? wvStr("weavero-annfilter-back-close") : wvStr("weavero-rpanel-filter-clear-close");
         clearCloseBtn.setAttribute("aria-label", clearCloseBtn.title);
         clearCloseBtn.addEventListener("click", async (e: any) => {
             e.stopPropagation();
@@ -16082,9 +16849,9 @@ class _ReaderPanelsMixin {
             // remain).
             const backBtn = mk("button", "wv-filter-clear-btn wv-al-back-btn");
             backBtn.type = "button";
-            backBtn.textContent = "Reset";
-            backBtn.title = "Back to Default";
-            backBtn.setAttribute("aria-label", "Back to Default");
+            backBtn.textContent = wvStr("weavero-annfilter-reset");
+            backBtn.title = wvStr("weavero-annfilter-reset", null, "title");
+            backBtn.setAttribute("aria-label", wvStr("weavero-annfilter-reset", null, "title"));
             backBtn.style.visibility = paneDeparts ? "" : "hidden";
             backBtn.addEventListener("click", async (e: any) => {
                 e.stopPropagation();
@@ -16098,7 +16865,7 @@ class _ReaderPanelsMixin {
 
         if (!anns.length) {
             const empty = mk("div", "wv-rf-empty");
-            empty.textContent = "No annotations in this document.";
+            empty.textContent = wvStr("weavero-annfilter-empty");
             stack.appendChild(empty);
             this._wvReaderPopupKeepOnScreen(idoc, popup);
             return;
@@ -16239,7 +17006,7 @@ class _ReaderPanelsMixin {
         addRow((opts: any) => {
             const tile = (value: string, label: string) => {
                 opts.appendChild(mkNativeOpt("colors", nat.colors, st.colorsExcl, value,
-                    label + " — Alt+click to exclude",
+                    wvStr("weavero-annfilter-chip-tip", { name: label }),
                     (b: any) => { b.appendChild((this as any)._wvNativeColorSwatch(idoc, value)); },
                     actColors, defHas("colors", value)));
             };
@@ -16263,7 +17030,7 @@ class _ReaderPanelsMixin {
                 sp.appendChild(mk("div", "wv-filter-vertical-separator"));
                 opts.appendChild(sp);
                 const black = this._ANNOTATION_COLORS.find((d: any) => d.value === "#000000");
-                tile("#000000", black ? black.label : "Black");
+                tile("#000000", black ? black.label : wvStr("weavero-annfilter-color-black"));
             }
         }, true, undefined, "wv-rf-colors-row");
 
@@ -16275,7 +17042,7 @@ class _ReaderPanelsMixin {
                 if (!typesPresent.has(def.value)) continue;
                 any = true;
                 const btn = mkOpt("types", def.value,
-                    def.label + " — Alt+click to exclude",
+                    wvStr("weavero-annfilter-chip-tip", { name: def.label }),
                     (b: any) => { const img = mk("img"); img.className = "wv-filter-svg"; img.src = this._wvReaderIconUri(def.icon) || def.icon; b.appendChild(img); },
                     actTypes, defHas("types", def.value));
                 grp.appendChild(btn);
@@ -16296,7 +17063,7 @@ class _ReaderPanelsMixin {
         //      needle logo). Single-level here → no per-kind scope arrow.
         addRow((opts: any) => {
             opts.appendChild(mkTriTile(st.hasTag,
-                "Has Tag — annotations with at least one tag. Alt+click to exclude.",
+                wvStr("weavero-annfilter-tile-tip", { tile: "tag" }),
                 // Use Zotero's `tag.svg` (same source as the library
                 // popup's Has Tag icon) so both popups render visually
                 // identical artwork at the same 16×16 size. The earlier
@@ -16323,12 +17090,12 @@ class _ReaderPanelsMixin {
                 (alt: boolean) => { st.hasTag = alt ? (st.hasTag === false ? null : false) : (st.hasTag === true ? null : true); },
                 defFlag("hasTag"), act.hasTag));
             opts.appendChild(mkTriTile(st.hasRelated,
-                "Has Related — annotations with at least one related-item link. Alt+click to exclude.",
+                wvStr("weavero-annfilter-tile-tip", { tile: "related" }),
                 () => { const img = mk("img"); img.className = "wv-filter-svg"; img.src = this._wvReaderIconUri(RP_RELATED_ICON) || RP_RELATED_ICON; img.style.color = "var(--accent-wood)"; return img; },
                 (alt: boolean) => { st.hasRelated = alt ? (st.hasRelated === false ? null : false) : (st.hasRelated === true ? null : true); },
                 defFlag("hasRelated"), act.hasRelated));
             opts.appendChild(mkTriTile(st.hasLink,
-                "Has External Link — annotations whose comment contains a link that leaves Zotero (https://, mailto:, app links); a zotero:// link is Has Item Links'. Alt+click to exclude.",
+                wvStr("weavero-annfilter-tile-tip", { tile: "link" }),
                 () => this._makeLinkTileSvg(idoc),
                 (alt: boolean) => { st.hasLink = alt ? (st.hasLink === false ? null : false) : (st.hasLink === true ? null : true); },
                 defFlag("hasLink"), act.hasLink));
@@ -16338,7 +17105,7 @@ class _ReaderPanelsMixin {
             // switch on; before Has Backlinks, the item pane's order.
             if (lkOn) {
                 opts.appendChild(mkTriTile(st.hasItemLinks,
-                    "Has Item Links — annotations whose comment links another Zotero item. Alt+click to exclude.",
+                    wvStr("weavero-annfilter-tile-tip", { tile: "itemLinks" }),
                     () => wvLinkGlyphEl(idoc, { cls: "wv-filter-svg", size: 16, backlink: "out" }),
                     (alt: boolean) => { st.hasItemLinks = alt ? (st.hasItemLinks === false ? null : false) : (st.hasItemLinks === true ? null : true); },
                     defFlag("hasItemLinks"), act.hasItemLinks));
@@ -16349,7 +17116,7 @@ class _ReaderPanelsMixin {
             // in the library filter; the glyph is Has Link's with the arrow.
             if (blOn) {
                 opts.appendChild(mkTriTile(st.hasBacklinks,
-                    "Has Backlinks — annotations another comment or note links to. Alt+click to exclude.",
+                    wvStr("weavero-annfilter-tile-tip", { tile: "backlinks" }),
                     () => wvLinkGlyphEl(idoc, { cls: "wv-filter-svg", size: 16, backlink: true }),
                     (alt: boolean) => { st.hasBacklinks = alt ? (st.hasBacklinks === false ? null : false) : (st.hasBacklinks === true ? null : true); },
                     defFlag("hasBacklinks"), act.hasBacklinks));
@@ -16376,7 +17143,7 @@ class _ReaderPanelsMixin {
                 for (const tg of tagsSorted) {
                     const col = wvDataColor(tagColors[tg]);
                     opts.appendChild(mkNativeOpt("tags", nat.tags, st.tagsExcl, tg,
-                        "Tag: " + tg + " — Alt+click to exclude",
+                        wvStr("weavero-annfilter-tag-tip", { tag: tg }),
                         (b: any) => {
                             if (col) { b.classList.add("wv-filter-tag-colored"); b.style.setProperty("--wv-tag-color", col); }
                             const sp = mk("span"); sp.textContent = tg; b.appendChild(sp);
@@ -16391,11 +17158,11 @@ class _ReaderPanelsMixin {
         //      doesn't eat chip space, and to separate it from Modified By.
         if (isGroupLib && addedByNames.size) {
             const names = Array.from(addedByNames).sort((a, b) => a.localeCompare(b));
-            addHead("Added by");
+            addHead(wvStr("weavero-annfilter-head", { head: "addedBy" }));
             addRow((opts: any) => {
                 for (const name of names) {
                     opts.appendChild(mkNativeOpt("authors", nat.authors, st.addedByExcl, name,
-                        "Added by " + name + " — Alt+click to exclude",
+                        wvStr("weavero-annfilter-person-tip", { who: "added", name }),
                         (b: any) => { const ic = mk("span", "wv-rf-user-svg"); ic.innerHTML = RP_USER_SVG; b.appendChild(ic); const sp = mk("span"); sp.textContent = name; b.appendChild(sp); },
                         actAddedBy, defHas("addedBy", name)));
                 }
@@ -16404,11 +17171,11 @@ class _ReaderPanelsMixin {
         // ---- Modified By (group libraries only) — plugin-only (no native dim).
         if (isGroupLib && modifiedByNames.size) {
             const names = Array.from(modifiedByNames).sort((a, b) => a.localeCompare(b));
-            addHead("Modified by");
+            addHead(wvStr("weavero-annfilter-head", { head: "modifiedBy" }));
             addRow((opts: any) => {
                 for (const name of names) {
                     opts.appendChild(mkOpt("modifiedBy", name,
-                        "Modified by " + name + " — Alt+click to exclude",
+                        wvStr("weavero-annfilter-person-tip", { who: "modified", name }),
                         (b: any) => { const ic = mk("span", "wv-rf-user-svg"); ic.innerHTML = RP_USER_SVG; b.appendChild(ic); const sp = mk("span"); sp.textContent = name; b.appendChild(sp); },
                         actModifiedBy, defHas("modifiedBy", name)));
                 }
@@ -16418,7 +17185,7 @@ class _ReaderPanelsMixin {
         // ---- Date ranges (2026-08-03): Added and Modified are SEPARATE
         //      lines with independent presets so they compose (AND) -- e.g.
         //      "added in the last 30 days AND modified today" (user call).
-        addHead("Date");
+        addHead(wvStr("weavero-annfilter-head", { head: "date" }));
         const applyDate = async () => {
             await applyF();
             this._wvRenderReaderFilterPopup(reader, idoc, popup);
@@ -16438,15 +17205,18 @@ class _ReaderPanelsMixin {
         };
         // One dimension = one labeled chip line (+ its own custom row and
         // calendar when the Custom preset is on). pKey/fKey/tKey index st.
-        const dateDim = (label: string, pKey: string, nnKey: string, uKey: string, fKey: string, tKey: string, nKey: string) => {
+        // `field`: added or modified (weavero-annfilter-date-field names it).
+        const dateDim = (field: string, pKey: string, nnKey: string, uKey: string, fKey: string, tKey: string, nKey: string) => {
+            const label = wvStr("weavero-annfilter-date-field", { field });
             addRow((opts: any) => {
                 // Rolling window: [Last] [N] [hours|days]. The Last chip
                 // arms/disarms the dimension (plain click = only IN the
                 // window; Alt+click = only OUTSIDE, red); N and the unit are
                 // free -- fixed presets were rejected as clutter.
-                const unitWord = st[uKey] === "m" ? "minutes" : st[uKey] === "h" ? "hours" : st[uKey] === "y" ? "years" : "days";
-                opts.appendChild(mkTextChip("Last", st[pKey] === "last" && !st[nKey], st[pKey] === "last" && !!st[nKey],
-                    label + " within the last N " + unitWord + " — Alt+click to exclude",
+                const unit = ["m", "h", "y"].includes(st[uKey]) ? st[uKey] : "d";
+                const unitWord = wvStr("weavero-annfilter-unit", { unit });
+                opts.appendChild(mkTextChip(wvStr("weavero-annfilter-date-last"), st[pKey] === "last" && !st[nKey], st[pKey] === "last" && !!st[nKey],
+                    wvStr("weavero-annfilter-date-last-tip", { field, unit }),
                     (alt: boolean) => {
                         if (st[pKey] === "last" && !!st[nKey] === alt) { st[pKey] = null; st[nKey] = false; }
                         else { st[pKey] = "last"; st[nKey] = alt; }
@@ -16456,7 +17226,7 @@ class _ReaderPanelsMixin {
                 num.type = "number";
                 num.min = "1"; num.max = "999";
                 num.value = String(st[nnKey] || 1);
-                num.setAttribute("aria-label", label + " window size");
+                num.setAttribute("aria-label", wvStr("weavero-annfilter-date-window-aria", { field }));
                 let numT: any = null;
                 num.addEventListener("input", (e: any) => {
                     e.stopPropagation();
@@ -16497,15 +17267,15 @@ class _ReaderPanelsMixin {
                 const ub = mk("button", "wv-rf-unitbtn");
                 ub.type = "button";
                 ub.textContent = unitWord + " ▾";
-                ub.title = "Unit of the window";
+                ub.title = wvStr("weavero-annfilter-unit-tip");
                 ub.addEventListener("click", (e: any) => {
                     e.stopPropagation();
                     const old = popup.querySelector(".wv-rf-unitmenu");
                     if (old) { old.remove(); return; }
                     const menu = mk("div", "wv-rf-unitmenu");
-                    for (const [lbl, u] of [["minutes", "m"], ["hours", "h"], ["days", "d"], ["years", "y"]] as any) {
+                    for (const u of ["m", "h", "d", "y"]) {
                         const it = mk("div", "wv-rf-unititem" + (st[uKey] === u ? " wv-on" : ""));
-                        it.textContent = lbl;
+                        it.textContent = wvStr("weavero-annfilter-unit", { unit: u });
                         it.addEventListener("click", (e2: any) => {
                             e2.stopPropagation();
                             menu.remove();
@@ -16529,8 +17299,8 @@ class _ReaderPanelsMixin {
                     idoc.addEventListener("pointerdown", closer, true);
                 });
                 opts.appendChild(ub);
-                opts.appendChild(mkTextChip("Custom", st[pKey] === "custom" && !st[nKey], st[pKey] === "custom" && !!st[nKey],
-                    "Custom " + label.toLowerCase() + " date range — Alt+click to exclude",
+                opts.appendChild(mkTextChip(wvStr("weavero-annfilter-date-custom"), st[pKey] === "custom" && !st[nKey], st[pKey] === "custom" && !!st[nKey],
+                    wvStr("weavero-annfilter-date-custom-tip", { field }),
                     (alt: boolean) => {
                         if (st[pKey] === "custom" && !!st[nKey] === alt) { st[pKey] = null; st[nKey] = false; }
                         else { st[pKey] = "custom"; st[nKey] = alt; }
@@ -16559,7 +17329,7 @@ class _ReaderPanelsMixin {
                 inp.dataset.open = "true";
                 const pop = mk("div", "wv-rf-calpop");
                 const head = mk("div", "wv-rf-calpop-head");
-                head.textContent = label + " — " + which;
+                head.textContent = wvStr("weavero-annfilter-cal-head", { field, bound: which });
                 pop.appendChild(head);
                 pop.appendChild(this._wvRfMiniCal(idoc, st[key], async (isoV: string) => {
                     st[key] = isoV;
@@ -16587,7 +17357,9 @@ class _ReaderPanelsMixin {
             };
             const focusEl = (el: any) => this._wvRfFocusEl(el);
             const popupFocusables = () => this._wvRfPopupFocusables(popup);
-            const mkDateField = (which: string, lbl: string, key: string) => {
+            // `which`: from or to (weavero-annfilter-bound names it).
+            const mkDateField = (which: string, key: string) => {
+                const lbl = wvStr("weavero-annfilter-bound", { bound: which });
                 // One unbreakable unit per bound ("from [date] x"), so the
                 // row wraps between the two bounds and never widens the
                 // popup (MJT, 2026-09-21: two lines, not a wider popup).
@@ -16600,7 +17372,7 @@ class _ReaderPanelsMixin {
                 const inp: any = mk("input", "wv-rf-dateinput");
                 inp.type = "date";
                 if (st[key]) inp.value = st[key];
-                inp.setAttribute("aria-label", label + " range " + lbl);
+                inp.setAttribute("aria-label", wvStr("weavero-annfilter-range-aria", { field, bound: which }));
                 const onCalBtn = (e: any) => {
                     try {
                         const ot: any = e.originalTarget;
@@ -16745,17 +17517,15 @@ class _ReaderPanelsMixin {
                     if (invalid) {
                         inp.dataset.invalid = "true";
                         delete inp.dataset.applied;
-                        inp.title = which === "from"
-                            ? "Not applied — after the 'to' date"
-                            : "Not applied — before the 'from' date";
+                        inp.title = wvStr("weavero-annfilter-bound-invalid", { bound: which });
                         return;
                     }
                     delete inp.dataset.invalid;
                     if (st[key]) {
                         inp.dataset.applied = "true";
                         const m2 = /^(\d{4})-(\d{2})-(\d{2})$/.exec(st[key]);
-                        inp.title = "Filtering " + lbl + " "
-                            + (m2 ? new Date(+m2[1], +m2[2] - 1, +m2[3]).toLocaleDateString() : st[key]);
+                        inp.title = wvStr("weavero-annfilter-bound-applied", { bound: which,
+                            date: m2 ? new Date(+m2[1], +m2[2] - 1, +m2[3]).toLocaleDateString() : String(st[key]) });
                     }
                     else {
                         delete inp.dataset.applied;
@@ -16837,7 +17607,7 @@ class _ReaderPanelsMixin {
                 const x = mk("button", "wv-rf-dateclear");
                 x.type = "button";
                 x.textContent = "×";
-                x.title = "Clear " + lbl;
+                x.title = wvStr("weavero-annfilter-bound-clear", { bound: which });
                 x.addEventListener("click", async (e: any) => {
                     e.stopPropagation();
                     st[key] = null;
@@ -16846,18 +17616,18 @@ class _ReaderPanelsMixin {
                 grp.appendChild(x);
                 return inp;
             };
-            const fromInp: any = mkDateField("from", "from", fKey);
-            const toInp: any = mkDateField("to", "to", tKey);
+            const fromInp: any = mkDateField("from", fKey);
+            const toInp: any = mkDateField("to", tKey);
             if (fromInp && toInp) { fromInp._wvPairNext = toInp; toInp._wvPairPrev = fromInp; }
             stack.appendChild(rangeRow);
         };
-        dateDim("Added", "dateAddedMode", "dateAddedN", "dateAddedUnit", "dateAddedFrom", "dateAddedTo", "dateAddedNeg");
-        dateDim("Modified", "dateModMode", "dateModN", "dateModUnit", "dateModFrom", "dateModTo", "dateModNeg");
+        dateDim("added", "dateAddedMode", "dateAddedN", "dateAddedUnit", "dateAddedFrom", "dateAddedTo", "dateAddedNeg");
+        dateDim("modified", "dateModMode", "dateModN", "dateModUnit", "dateModFrom", "dateModTo", "dateModNeg");
 
         // ---- Bottom hint (same as the library filter).
         const bottom = mk("div", "wv-filter-bottom-controls");
         const hint = mk("span", "wv-filter-bottom-hint");
-        hint.textContent = "Alt+Click to Exclude";
+        hint.textContent = wvStr("weavero-common-alt-click-exclude");
         bottom.appendChild(hint);
         stack.appendChild(bottom);
 
@@ -16873,12 +17643,12 @@ class _ReaderPanelsMixin {
         }
         const hidden = this._wvReaderAnnotationsHidden(reader);
         const hideRow = mk("label", "wv-rf-hideann");
-        hideRow.title = "Hide the annotation marks in the document view (the sidebar list is unaffected).";
+        hideRow.title = wvStr("weavero-annfilter-hide-reader", null, "title");
         const hideCb: any = mk("input");
         hideCb.type = "checkbox";
         hideCb.checked = hidden;
         const hideLbl = mk("span");
-        hideLbl.textContent = "Hide Annotations in the Reader";
+        hideLbl.textContent = wvStr("weavero-annfilter-hide-reader");
         hideRow.appendChild(hideCb);
         hideRow.appendChild(hideLbl);
         hideCb.addEventListener("change", (e: any) => {
@@ -17060,11 +17830,11 @@ class _ReaderPanelsMixin {
         if (st.hasComment === true) btn.dataset.selected = "true";
         else if (st.hasComment === false) btn.dataset.excluded = "true";
         else if (active === false) btn.dataset.inactive = "true";   // nothing visible has a comment
-        btn.title = "Has Comment — annotations with non-empty comment text. Alt+click to exclude.";
+        btn.title = wvStr("weavero-annfilter-tile-tip", { tile: "comment" });
         // Same green marking as the chips the renderer builds itself.
         if (defOn) {
             btn.classList.add("wv-al-def-chip");
-            btn.title += "\nPart of the default filter";
+            btn.title += "\n" + wvStr("weavero-annfilter-part-of-default");
         }
         try { btn.appendChild(this._makeHasCommentSvg(idoc)); } catch (_) {}
         btn.addEventListener("click", async (e: any) => {
@@ -17230,7 +18000,7 @@ class _ReaderPanelsMixin {
                 if ((minIso && cellIso < minIso) || (maxIso && cellIso > maxIso)) {
                     cell.classList.add("wv-off");
                     cell.disabled = true;
-                    cell.title = "Would conflict with the other bound";
+                    cell.title = wvStr("weavero-annfilter-cal-conflict");
                 }
                 else {
                     cell.addEventListener("click", (e: any) => {
@@ -17452,7 +18222,9 @@ class _ReaderPanelsMixin {
      *  Regression suite: test/reader-filter.spec.js. */
     async _wvApplyReaderFilter(reader: any, inc?: any) {
         try {
-            const st = this._wvReaderFilterState(reader);
+            // A resting funnel applies nothing: its switch's re-apply puts
+            // back what the document's filter took out.
+            const st = this._wvReaderEffectiveState(reader);
             const anns = this._wvReaderAnnotations(reader);
             // Colour / tag / author INCLUDES go through the native channel
             // (shared with the sidebar strip). `inc` lets a chip click pass the
@@ -17527,7 +18299,7 @@ class _ReaderPanelsMixin {
             const anns = this._wvReaderAnnotations(reader);
             const a = anns.find((x: any) => x.key === key);
             if (!a) return;
-            const st = this._wvReaderFilterState(reader);
+            const st = this._wvReaderEffectiveState(reader);
             const nat = this._wvReaderNativeIncludes(reader);
             const natPass = (x: any) => {
                 try {
@@ -17888,7 +18660,7 @@ class _ReaderPanelsMixin {
                 tab.className = "toolbar-button " + RP_BM_TAB_CLASS;
                 tab.setAttribute("tabindex", "-1");
                 tab.setAttribute("role", "tab");
-                tab.setAttribute("title", "Bookmarks");
+                tab.setAttribute("title", wvStr("weavero-bm-title"));
                 tab.innerHTML = RP_BM_RIBBON_TAB;
                 tab.addEventListener("click", (e: any) => {
                     try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
@@ -17938,8 +18710,16 @@ class _ReaderPanelsMixin {
                         const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                         if (!P) return;
                         const t = e.target;
-                        if (t && t.closest && t.closest("#viewThumbnail,#viewAnnotations,#viewOutline")) {
+                        if (!t || !t.closest) return;
+                        // Zotero's tabs, Weavero's Outline button and ANY other
+                        // tab of the strip: another plugin's left the
+                        // Bookmarks pane up under its own (Jasminum, live
+                        // check 2026-11-24).
+                        if (t.closest("#viewThumbnail,#viewAnnotations,#viewOutline") || P._wvBmIsOtherStripTab(t)) {
                             P._wvReaderSetBmActive(reader, idoc, false);
+                        }
+                        else if (t.closest("." + RP_BM_TAB_CLASS)) {
+                            P._wvSidebarClearForeignActive(idoc);
                         }
                     } catch (_) {}
                 };
@@ -18059,7 +18839,7 @@ class _ReaderPanelsMixin {
                     const isActive = (initialScope === "both") || (scope === initialScope);
                     b.className = "wv-bm-scope-btn" + (isActive ? " wv-bm-scope-active" : "");
                     b.setAttribute("data-scope", scope);
-                    b.setAttribute("title", "Click: switch scope. Ctrl-click: merge both scopes (show together).");
+                    b.setAttribute("title", wvStr("weavero-bm-scope-tip"));
                     b.textContent = lbl;
                     b.addEventListener("click", (e: any) => {
                         // Prevent the click from bubbling up to Zotero's
@@ -18116,9 +18896,9 @@ class _ReaderPanelsMixin {
                     this._wvWireScopeBtnDrop(b, scope, reader, idoc);
                     scopeGroup.appendChild(b);
                 };
-                mkScope("Document", "document");
+                mkScope(wvStr("weavero-bm-scope", { scope: "document" }), "document");
                 if (this._getShowLibraryBookmarksInReader()) {
-                    mkScope("Library", "library");
+                    mkScope(wvStr("weavero-bm-scope", { scope: "library" }), "library");
                 } else {
                     // Pref hid the Library tab — if the user was last on
                     // it (or in merged "both" state), fall back to the
@@ -18173,7 +18953,7 @@ class _ReaderPanelsMixin {
                 searchBtn.setAttribute("type", "button");
                 searchBtn.setAttribute("tabindex", "-1");
                 blockBmRowDrag(searchBtn);
-                searchBtn.setAttribute("title", "Search bookmarks");
+                searchBtn.setAttribute("title", wvStr("weavero-bm-search-tip"));
                 // The reader sidebar search box's OWN collapsed glyph: the
                 // 20-px `res/icons/20/magnifier.svg` (a 20-viewBox drawing),
                 // byte-identical path. The 16-px magnifier scaled to 20
@@ -18189,15 +18969,15 @@ class _ReaderPanelsMixin {
                 // hand tool, …) while typing in this field. Matches the reader
                 // Annotations tab's search box, which uses type="text" too.
                 searchInput.setAttribute("type", "text");
-                searchInput.setAttribute("placeholder", "Search bookmarks…");
+                searchInput.setAttribute("placeholder", wvStr("weavero-bm-search-placeholder"));
                 // Clear ("x") button inside the field (issue #19) -- same grey
                 // circle + white x as the native search (searchfield-cancel.svg),
                 // shown only when there is a query.
                 const clearBtn = wvHtmlEl(idoc, "button") as any;
                 clearBtn.className = "wv-bm-search-clear";
                 clearBtn.setAttribute("type", "button");
-                clearBtn.setAttribute("title", "Clear search");
-                clearBtn.setAttribute("aria-label", "Clear search");
+                clearBtn.setAttribute("title", wvStr("weavero-common-clear-search"));
+                clearBtn.setAttribute("aria-label", wvStr("weavero-common-clear-search"));
                 clearBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="#808080"/><line x1="4" y1="4" x2="10" y2="10" stroke-width="1.5" stroke="#fff"/><line x1="10" y1="4" x2="4" y2="10" stroke-width="1.5" stroke="#fff"/></svg>';
                 const syncClear = () => { clearBtn.classList.toggle("wv-bm-visible", !!String(searchInput.value || "")); };
                 blockBmRowDrag(clearBtn);
@@ -18259,7 +19039,7 @@ class _ReaderPanelsMixin {
                 filterBtn.setAttribute("type", "button");
                 filterBtn.setAttribute("tabindex", "-1");
                 blockBmRowDrag(filterBtn);
-                filterBtn.setAttribute("title", "Filter bookmarks");
+                filterBtn.setAttribute("title", wvStr("weavero-bm-filter-tip"));
                 const fimg = wvHtmlEl(idoc, "img", "wv-filter-svg");
                 fimg.setAttribute("src", RP_FUNNEL_DATA_URI);
                 filterBtn.appendChild(fimg);
@@ -18588,7 +19368,7 @@ class _ReaderPanelsMixin {
                 // attachment and expands its annotations so the user
                 // lands in the right place by default.
                 const add = wvHtmlEl(idoc, "button", "wv-bm-reader-newfolder");
-                add.setAttribute("title", "Add bookmark");
+                add.setAttribute("title", wvStr("weavero-bm-add-tip"));
                 add.innerHTML = RP_PLUS_SVG;
                 add.addEventListener("click", (e: any) => {
                     e.stopPropagation();
@@ -18601,11 +19381,11 @@ class _ReaderPanelsMixin {
                 });
                 h.appendChild(add);
                 const nf = wvHtmlEl(idoc, "button", "wv-bm-reader-newfolder");
-                nf.setAttribute("title", "New folder in this section");
+                nf.setAttribute("title", wvStr("weavero-bm-new-folder-section-tip"));
                 nf.innerHTML = RP_FOLDER_PLUS_SVG;
                 nf.addEventListener("click", (e: any) => {
                     e.stopPropagation();
-                    const name = this._bmPromptName(Zotero.getMainWindow(), "New Folder", "New Folder");
+                    const name = this._bmPromptName(Zotero.getMainWindow(), wvStr("weavero-bm-prompt-new-folder"), wvStr("weavero-bm-folder-default-name"));
                     if (name) this._bmReaderAddFolder(att.libraryID, att.itemKey, section, name)
                         .then(() => this._wvReaderRenderBmList(reader, idoc));
                 });
@@ -18619,9 +19399,7 @@ class _ReaderPanelsMixin {
                     // search/chip no-match case returns above). Keep the header +
                     // "+" for discoverability; show a short how-to hint, not a tree.
                     const hint = wvHtmlEl(idoc, "div", "wv-bm-reader-empty-section");
-                    hint.textContent = section === "local"
-                        ? "Right-click in the page, or drag an annotation here."
-                        : "Use + to bookmark an item, collection, or link.";
+                    hint.textContent = wvStr("weavero-bm-empty-section", { section: section === "local" ? "local" : "global" });
                     gc.appendChild(hint);
                 } else {
                     const treeWrap = wvHtmlEl(idoc, "div", "wv-bm-reader-tree");
@@ -18643,8 +19421,8 @@ class _ReaderPanelsMixin {
             // it appears above the global library list. Library tree is
             // rendered via `_wvReaderRenderLibraryTree` and wrapped with
             // a section heading so the three blocks read symmetrically.
-            addSection("This Document", doc.local, "local", fLocal);
-            addSection("Elsewhere", doc.global, "global", fGlobal);
+            addSection(wvStr("weavero-bm-section", { section: "local" }), doc.local, "local", fLocal);
+            addSection(wvStr("weavero-bm-section", { section: "global" }), doc.global, "global", fGlobal);
             if (includeLibrary
                     && this._getShowLibraryBookmarksInReader()
                     && this._bmDoc
@@ -18655,9 +19433,9 @@ class _ReaderPanelsMixin {
                 if (!fLib || fLib.visible.size) {
                     const gc = wvHtmlEl(idoc, "div", "wv-bm-reader-group wv-bm-grp-library");
                     const h = wvHtmlEl(idoc, "div", "wv-bm-reader-grouphead");
-                    const htitle = wvHtmlEl(idoc, "span", "wv-bm-gh-title", "Global", h);
+                    const htitle = wvHtmlEl(idoc, "span", "wv-bm-gh-title", wvStr("weavero-bm-section", { section: "library" }), h);
                     const addLib = wvHtmlEl(idoc, "button", "wv-bm-reader-newfolder");
-                    addLib.setAttribute("title", "Add bookmark to Library");
+                    addLib.setAttribute("title", wvStr("weavero-bm-add-library-tip"));
                     addLib.innerHTML = RP_PLUS_SVG;
                     addLib.addEventListener("click", (e: any) => {
                         e.stopPropagation();
@@ -18665,11 +19443,11 @@ class _ReaderPanelsMixin {
                     });
                     h.appendChild(addLib);
                     const nfLib = wvHtmlEl(idoc, "button", "wv-bm-reader-newfolder");
-                    nfLib.setAttribute("title", "New folder in Library");
+                    nfLib.setAttribute("title", wvStr("weavero-bm-new-folder-library-tip"));
                     nfLib.innerHTML = RP_FOLDER_PLUS_SVG;
                     nfLib.addEventListener("click", (e: any) => {
                         e.stopPropagation();
-                        const name = this._bmPromptName(Zotero.getMainWindow(), "New Folder", "New Folder");
+                        const name = this._bmPromptName(Zotero.getMainWindow(), wvStr("weavero-bm-prompt-new-folder"), wvStr("weavero-bm-folder-default-name"));
                         if (name) this._bmAddFolder(name)
                             .then(() => this._wvReaderRenderBmList(reader, idoc));
                     });
@@ -18691,7 +19469,7 @@ class _ReaderPanelsMixin {
             if (useFilter && (!fLocal || !fLocal.visible.size) && (!fGlobal || !fGlobal.visible.size)) {
                 const empty = wvHtmlEl(idoc, "div");
                 empty.className = "wv-bm-reader-empty";
-                empty.textContent = q ? ("No bookmarks match \"" + q + "\".") : "No bookmarks match the current filter.";
+                empty.textContent = q ? wvStr("weavero-bm-search-no-match", { query: q }) : wvStr("weavero-bm-filter-no-match");
                 list.appendChild(empty);
             }
             try { this._wvReaderRenderBmChipBar(reader, idoc); } catch (_) {}
@@ -18908,13 +19686,6 @@ class _ReaderPanelsMixin {
     _wvReaderBmSortMode(section: WvBmSortSection, reader?: any): string {
         return this._wvReaderBmSort(section, reader).field;
     }
-    /** Human label for a sort field (menu rows + button tooltip). */
-    _wvReaderBmSortFieldLabel(field: string): string {
-        return field === "location" ? "location"
-            : field === "alpha" ? "name"
-            : field === "date" ? "date added"
-            : "manual order";
-    }
     _wvReaderBmSortDir(section: WvBmSortSection, reader?: any): "asc" | "desc" {
         return this._wvReaderBmSort(section, reader).dir;
     }
@@ -18966,22 +19737,18 @@ class _ReaderPanelsMixin {
         const sortBtn = wvHtmlEl(idoc, "button");
         sortBtn.className = "wv-bm-reader-newfolder wv-bm-reader-sortbtn"
             + (sortMode !== "manual" ? " wv-bm-sort-active" : "");
-        const fieldLabel = this._wvReaderBmSortFieldLabel(sortMode);
-        sortBtn.setAttribute("title", sortMode === "manual"
-            ? "Sort bookmarks"
-            : ("Sorted by " + fieldLabel + " (" + (sortDir === "asc" ? "ascending" : "descending")
-                + ") — click to change (manual order is preserved)"));
+        sortBtn.setAttribute("title", wvStr("weavero-bm-sort-tip", { field: sortMode, dir: sortDir }));
         if (sortMode === "manual") {
             sortBtn.innerHTML = RP_SORT_SVG;
         } else {
-            const shortField = sortMode === "location" ? "Location"
-                : sortMode === "date" ? "Date" : "Name";
+            const shortField = wvStr("weavero-bm-sort-short", { field: sortMode });
             // Filled triangles read far more clearly than thin ↑/↓ arrows
             // at this size (2026-07-21: user couldn't see the arrow).
             const arr = sortDir === "asc" ? "▲" : "▼";
-            sortBtn.innerHTML = RP_SORT_SVG
-                + '<span class="wv-bm-sort-label">' + shortField
-                + '<span class="wv-bm-sort-dir">' + arr + "</span></span>";
+            // The field's name as text, never markup (it is translated).
+            sortBtn.innerHTML = RP_SORT_SVG;
+            const sortLab = wvHtmlEl(idoc, "span", "wv-bm-sort-label", shortField, sortBtn);
+            wvHtmlEl(idoc, "span", "wv-bm-sort-dir", arr, sortLab);
             // The triangle is a DIRECT direction toggle -- reversing the order
             // shouldn't require a trip through the menu (user request,
             // 2026-08-04). stopPropagation keeps the button's own click (menu
@@ -18989,7 +19756,7 @@ class _ReaderPanelsMixin {
             // the listener never goes stale.
             const dirEl = sortBtn.querySelector(".wv-bm-sort-dir");
             if (dirEl) {
-                dirEl.setAttribute("title", "Reverse sort order");
+                dirEl.setAttribute("title", wvStr("weavero-bm-sort-reverse"));
                 dirEl.addEventListener("click", (e: any) => {
                     e.stopPropagation();
                     this._wvReaderBmApplySort(reader, idoc, section,
@@ -19937,16 +20704,12 @@ class _ReaderPanelsMixin {
             while (bar.firstChild) bar.firstChild.remove();
             const st = this._wvReaderBmChipState(reader);
             const facets = this._wvReaderBmChipFacets(reader);
-            const TYPE_NAME: { [k: string]: string } = {
-                highlight: "Highlights", underline: "Underlines", note: "Notes",
-                text: "Text annotations", image: "Image annotations", ink: "Ink annotations",
-            };
             const anyFacets = facets.colors.size || facets.tags.size || facets.authors.size || facets.types.size
                 || (facets.bmTypes && facets.bmTypes.size);
             if (!anyFacets) {
                 const empty = wvHtmlEl(idoc, "div");
                 empty.className = "wv-bm-chip-popup-empty";
-                empty.textContent = "No filters available for the current bookmark list.";
+                empty.textContent = wvStr("weavero-bm-filter-none");
                 bar.appendChild(empty);
                 return;
             }
@@ -19977,7 +20740,7 @@ class _ReaderPanelsMixin {
             {
                 const head = wvHtmlEl(idoc, "div");
                 head.setAttribute("style", "display:flex;align-items:center;gap:8px;margin:0 0 4px;");
-                const title = wvHtmlEl(idoc, "div", undefined, "Filter Bookmarks");
+                const title = wvHtmlEl(idoc, "div", undefined, wvStr("weavero-bm-filter-title"));
                 title.setAttribute("style", "font-weight:600;flex:1;opacity:.85;");
                 head.appendChild(title);
                 const active = this._wvReaderBmChipsActive(reader);
@@ -19990,13 +20753,13 @@ class _ReaderPanelsMixin {
                     } catch (_) {}
                 };
                 const clearBtn: any = wvHtmlEl(idoc, "button");
-                clearBtn.type = "button"; clearBtn.textContent = "Clear";
-                clearBtn.setAttribute("title", "Clear all filters (keep this window open)");
+                clearBtn.type = "button"; clearBtn.textContent = wvStr("weavero-rpanel-filter-clear");
+                clearBtn.setAttribute("title", wvStr("weavero-rpanel-filter-clear", null, "title"));
                 clearBtn.setAttribute("style", "font:inherit;font-size:11px;line-height:1;padding:2px 8px;border-radius:4px;border:none;background:rgba(127,127,127,.18);color:inherit;cursor:pointer;" + (active ? "" : "visibility:hidden;"));
                 clearBtn.addEventListener("click", (e: any) => { e.stopPropagation(); clearBmFilter(); rerender(); });
                 const clearCloseBtn: any = wvHtmlEl(idoc, "button");
                 clearCloseBtn.type = "button"; clearCloseBtn.textContent = "×";
-                clearCloseBtn.setAttribute("title", "Clear and Close");
+                clearCloseBtn.setAttribute("title", wvStr("weavero-rpanel-filter-clear-close"));
                 clearCloseBtn.setAttribute("style", "font:inherit;font-size:15px;line-height:1;padding:0 7px;border-radius:50%;border:none;background:rgba(220,72,72,.16);color:rgb(220,72,72);cursor:pointer;" + (active ? "" : "visibility:hidden;"));
                 clearCloseBtn.addEventListener("click", (e: any) => { e.stopPropagation(); clearBmFilter(); rerender(); this._wvReaderCloseBmChipPopup(idoc); });
                 head.appendChild(clearBtn); head.appendChild(clearCloseBtn);
@@ -20012,25 +20775,26 @@ class _ReaderPanelsMixin {
             // which only touch annotation-referencing items). Present-only: a
             // category chip appears only when that kind exists in the list.
             if (facets.bmTypes && facets.bmTypes.size) {
-                const BM_TYPE_META: Array<[string, string, string]> = [
-                    ["pin", "Pins", WV_PIN_ICON_SVG],
-                    ["page", "Page bookmarks", RP_BM_RIBBON],
-                    ["text", "Text selections", RP_TEXT_SVG],
-                    ["annotation", "Annotations", RP_ANNOTATION_GENERIC_SVG],
-                    ["item", "Items", RP_BM_TYPE_ITEM_SVG],
+                // The kind's name: weavero-bm-filter-kind-tip, by `cat`.
+                const BM_TYPE_META: Array<[string, string]> = [
+                    ["pin", WV_PIN_ICON_SVG],
+                    ["page", RP_BM_RIBBON],
+                    ["text", RP_TEXT_SVG],
+                    ["annotation", RP_ANNOTATION_GENERIC_SVG],
+                    ["item", RP_BM_TYPE_ITEM_SVG],
                     // The links glyph, as Has Link in the filter popups: the
                     // kind holds web, app AND zotero:// links, so the web
                     // globe (Zotero's Has URL tile) was one kind of link
                     // standing for all three (2026-10-23).
-                    ["link", "Links", wvLinkGlyphMarkup("currentColor", 16)],
+                    ["link", wvLinkGlyphMarkup("currentColor", 16)],
                 ];
                 const row = mkRow("line");
-                for (const [cat, label, svg] of BM_TYPE_META) {
+                for (const [cat, svg] of BM_TYPE_META) {
                     if (!facets.bmTypes.has(cat)) continue;
                     const chip = wvHtmlEl(idoc, "button");
                     (chip as any).type = "button";
                     chip.className = "wv-filter-opt wv-filter-opt-icon";
-                    chip.setAttribute("title", label + " — " + facets.bmTypes.get(cat) + " — Alt+click to exclude");
+                    chip.setAttribute("title", wvStr("weavero-bm-filter-kind-tip", { kind: cat, count: facets.bmTypes.get(cat) }));
                     if (this._wvIsSet(st.bmTypes) && st.bmTypes.has(cat)) (chip as any).dataset.selected = "true";
                     if (this._wvBmChipExcl(st, "bmTypes").has(cat)) (chip as any).dataset.excluded = "true";
                     chip.innerHTML = svg;
@@ -20086,7 +20850,7 @@ class _ReaderPanelsMixin {
                     const btn = wvHtmlEl(idoc, "button");
                     (btn as any).type = "button";
                     btn.className = "wv-filter-opt wv-filter-opt-icon";
-                    btn.setAttribute("title", c + " — " + facets.colors.get(c) + " annotation(s) — Alt+click to exclude");
+                    btn.setAttribute("title", wvStr("weavero-bm-filter-chip-ann-tip", { name: c, count: facets.colors.get(c) }));
                     if (st.colors.has(c)) (btn as any).dataset.selected = "true";
                     if (this._wvBmChipExcl(st, "colors").has(c)) (btn as any).dataset.excluded = "true";
                     btn.appendChild((this as any)._wvNativeColorSwatch(idoc, c));
@@ -20110,7 +20874,7 @@ class _ReaderPanelsMixin {
                     const chip = wvHtmlEl(idoc, "button");
                     (chip as any).type = "button";
                     chip.className = "wv-filter-opt wv-filter-opt-icon";
-                    chip.setAttribute("title", (TYPE_NAME[tp] || tp) + " — " + facets.types.get(tp) + " — Alt+click to exclude");
+                    chip.setAttribute("title", wvStr("weavero-bm-filter-type-tip", { type: tp, count: facets.types.get(tp) }));
                     if (st.types.has(tp)) (chip as any).dataset.selected = "true";
                     if (this._wvBmChipExcl(st, "types").has(tp)) (chip as any).dataset.excluded = "true";
                     chip.innerHTML = RP_ANN_TYPE_SVG[tp] || "";
@@ -20141,7 +20905,7 @@ class _ReaderPanelsMixin {
                         const chip = wvHtmlEl(idoc, "span");
                         chip.className = "wv-bm-chip" + (st.tags.has(t) ? " selected" : "")
                             + (this._wvBmChipExcl(st, "tags").has(t) ? " excluded" : "");
-                        chip.setAttribute("title", t + " — " + info.count + " bookmark(s) — Alt+click to exclude");
+                        chip.setAttribute("title", wvStr("weavero-bm-filter-chip-tag-tip", { tag: t, count: info.count }));
                         const tagColor = wvDataColor(info.color);
                         if (tagColor) {
                             const dot = wvHtmlEl(idoc, "span");
@@ -20166,7 +20930,7 @@ class _ReaderPanelsMixin {
                     const chip = wvHtmlEl(idoc, "span");
                     chip.className = "wv-bm-chip" + (st.authors.has(a) ? " selected" : "")
                         + (this._wvBmChipExcl(st, "authors").has(a) ? " excluded" : "");
-                    chip.setAttribute("title", a + " — " + facets.authors.get(a) + " annotation(s) — Alt+click to exclude");
+                    chip.setAttribute("title", wvStr("weavero-bm-filter-chip-ann-tip", { name: a, count: facets.authors.get(a) }));
                     chip.textContent = a;
                     chip.addEventListener("click", (e: any) => { this._wvBmChipToggle(st, "authors", a, !!e.altKey); rerender(); });
                     row.appendChild(chip);
@@ -20242,9 +21006,9 @@ class _ReaderPanelsMixin {
         // the merged-scope layout so single-Library scope has the same
         // affordances as when it appears alongside the doc sections).
         const h = wvHtmlEl(idoc, "div", "wv-bm-reader-grouphead");
-        const htitle = wvHtmlEl(idoc, "span", "wv-bm-gh-title", "Global", h);
+        const htitle = wvHtmlEl(idoc, "span", "wv-bm-gh-title", wvStr("weavero-bm-section", { section: "library" }), h);
         const addBtn = wvHtmlEl(idoc, "button", "wv-bm-reader-newfolder");
-        addBtn.setAttribute("title", "Add bookmark to Library");
+        addBtn.setAttribute("title", wvStr("weavero-bm-add-library-tip"));
         addBtn.innerHTML = RP_PLUS_SVG;
         addBtn.addEventListener("click", (e: any) => {
             e.stopPropagation();
@@ -20252,11 +21016,11 @@ class _ReaderPanelsMixin {
         });
         h.appendChild(addBtn);
         const nfBtn = wvHtmlEl(idoc, "button", "wv-bm-reader-newfolder");
-        nfBtn.setAttribute("title", "New folder in Library");
+        nfBtn.setAttribute("title", wvStr("weavero-bm-new-folder-library-tip"));
         nfBtn.innerHTML = RP_FOLDER_PLUS_SVG;
         nfBtn.addEventListener("click", (e: any) => {
             e.stopPropagation();
-            const name = this._bmPromptName(Zotero.getMainWindow(), "New Folder", "New Folder");
+            const name = this._bmPromptName(Zotero.getMainWindow(), wvStr("weavero-bm-prompt-new-folder"), wvStr("weavero-bm-folder-default-name"));
             if (name) this._bmAddFolder(name)
                 .then(() => this._wvReaderRenderBmList(reader, idoc));
         });
@@ -20264,9 +21028,9 @@ class _ReaderPanelsMixin {
         h.appendChild(this._wvReaderBmMkSortBtn(reader, idoc, "library"));
         gc.appendChild(h);
         if (!nodes.length) {
-            const hint = wvHtmlEl(idoc, "div", "wv-bm-reader-empty-section", "Use + to bookmark an item, collection, library, or saved search — they appear here in every document.", gc);
+            const hint = wvHtmlEl(idoc, "div", "wv-bm-reader-empty-section", wvStr("weavero-bm-empty-section", { section: "library" }), gc);
         } else if (f && !f.visible.size) {
-            const hint = wvHtmlEl(idoc, "div", "wv-bm-reader-empty-section", q ? ("No bookmarks match \"" + q + "\".") : "No bookmarks match the current filter.", gc);
+            const hint = wvHtmlEl(idoc, "div", "wv-bm-reader-empty-section", q ? wvStr("weavero-bm-search-no-match", { query: q }) : wvStr("weavero-bm-filter-no-match"), gc);
         } else {
             const treeWrap = wvHtmlEl(idoc, "div", "wv-bm-reader-tree");
             // Non-destructive display sort (shared "library" sort pref; alpha/
@@ -20311,7 +21075,7 @@ class _ReaderPanelsMixin {
         ic.innerHTML = RP_FOLDER_SVG;
         const label = wvHtmlEl(idoc, "span");
         label.className = "wv-bm-reader-label";
-        label.textContent = folder.name || "Folder";
+        label.textContent = folder.name || wvStr("weavero-bm-folder-unnamed");
         label.setAttribute("title", folder.name || "");
         row.appendChild(chev); row.appendChild(ic); row.appendChild(label);
         row.addEventListener("click", (e: any) => {
@@ -20341,7 +21105,7 @@ class _ReaderPanelsMixin {
             const cls = this._urlLinkClass(String(bm.url || ""));
             if (cls) label.classList.add(cls);
         }
-        const labelText = bm.label || "Bookmark";
+        const labelText = bm.label || wvStr("weavero-bm-unnamed");
         label.textContent = labelText;
         // Inline "— in <attachment>" suffix for in-doc location
         // bookmarks living in the library store: they point at a spot
@@ -20349,7 +21113,7 @@ class _ReaderPanelsMixin {
         // attachment. Kept single-line so row rhythm stays uniform.
         const parentTitle = this._bmParentAttachmentTitle(bm);
         if (parentTitle) {
-            const sub = wvHtmlEl(idoc, "span", "wv-bm-reader-sublabel", " — in " + parentTitle, label);
+            const sub = wvHtmlEl(idoc, "span", "wv-bm-reader-sublabel", wvStr("weavero-bm-sublabel-in", { title: parentTitle }), label);
         }
         // Drop the plain HTML tooltip in favour of the rich hover card wired
         // below — the two would otherwise both fire on hover.
@@ -20361,7 +21125,7 @@ class _ReaderPanelsMixin {
         if (missing) {
             row.classList.add("wv-bm-missing");
             const warn = wvHtmlEl(idoc, "span", "wv-bm-reader-missing-badge", "⚠");
-            warn.setAttribute("title", "This bookmark's target no longer exists. Right-click → Delete to remove it.");
+            warn.setAttribute("title", wvStr("weavero-bm-missing-tip-reader"));
             row.appendChild(warn);
         }
         row.addEventListener("click", (e: any) => {
@@ -20564,7 +21328,7 @@ class _ReaderPanelsMixin {
                 // duplicate check here.
                 let label = en.label;
                 if (!label) { try { const it: any = Zotero.Items.getByLibraryAndKey(en.libraryID, en.itemKey); label = it ? String(it.annotationText || it.annotationComment || "").trim() : ""; } catch (_) {} }
-                label = (label || "Annotation").slice(0, 100);
+                label = (label || wvStr("weavero-rpanel-ann-kind", { type: "other" })).slice(0, 100);
                 const node = { id: "wv-" + Zotero.Utilities.randomString(8), type: "item", libraryID: en.libraryID, itemKey: en.itemKey, label, created: new Date().toISOString() };
                 this._bmDoc.bookmarks.push(node);
                 addedIds.push(node.id);
@@ -20597,7 +21361,7 @@ class _ReaderPanelsMixin {
         ic.innerHTML = RP_FOLDER_SVG;
         const label = wvHtmlEl(idoc, "span");
         label.className = "wv-bm-reader-label";
-        label.textContent = folder.name || "Folder";
+        label.textContent = folder.name || wvStr("weavero-bm-folder-unnamed");
         label.setAttribute("title", folder.name || "");
         // No inline rename/delete buttons on hover (user preference) —
         // both actions live in the folder's right-click context menu.
@@ -20817,7 +21581,7 @@ class _ReaderPanelsMixin {
         if (!info) return;
         const reRender = () => { try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {} };
         if (info.isFolder) {
-            const n = this._bmPromptName(Zotero.getMainWindow(), "Rename Folder", info.entry.name || "");
+            const n = this._bmPromptName(Zotero.getMainWindow(), wvStr("weavero-bm-prompt-rename-folder"),info.entry.name || "");
             if (n) this._bmReaderRename(info.att.libraryID, info.att.itemKey, info.entry.id, n).then(reRender);
         }
         else {
@@ -20964,7 +21728,7 @@ class _ReaderPanelsMixin {
         if (hasFolder) {
             try {
                 const ok = Services.prompt.confirm(Zotero.getMainWindow(), "Weavero",
-                    "Delete " + ids.length + " selected bookmark" + (ids.length === 1 ? "" : "s") + "? Folders are removed with their contents.");
+                    wvStr("weavero-bm-delete-selected-confirm", { count: ids.length }));
                 if (!ok) return;
             } catch (_) {}
         }
@@ -21066,7 +21830,7 @@ class _ReaderPanelsMixin {
                     if (!pos || !Array.isArray(pos.rects) || !pos.rects.length) continue;
                     const d = this._wvOutlineDoc(att.libraryID, att.itemKey);
                     const entries: any[] = (d && d.entries) || [];
-                    const title = String(bm.label || "").replace(/\s+/g, " ").trim().slice(0, 160) || "Bookmark";
+                    const title = String(bm.label || "").replace(/\s+/g, " ").trim().slice(0, 160) || wvStr("weavero-bm-unnamed");
                     const { gap, indent } = this._wvOutlineDocOrderGap(entries, pos);
                     const stored = await this._wvOutlineInsertEntry(att.libraryID, att.itemKey, {
                         title, indentLevel: indent,
@@ -21077,7 +21841,7 @@ class _ReaderPanelsMixin {
                     if (stored && stored.id) newIds.push(String(stored.id));
                 }
             });
-            if (!newIds.length) { this._wvReaderPanelNote(idoc, "Nothing to copy — no selection region on the bookmark."); return; }
+            if (!newIds.length) { this._wvReaderPanelNote(idoc, wvStr("weavero-bm-note-copy-nothing")); return; }
             // SHOW the result (user request 2026-07-22): switch to the Outline
             // tab with the new entries selected and the first one focused --
             // same landing the add-from-selection path gives.
@@ -21126,7 +21890,7 @@ class _ReaderPanelsMixin {
                     }
                 } catch (_) {}
             }
-            this._wvReaderPanelNote(idoc, "Copied " + newIds.length + " bookmark" + (newIds.length === 1 ? "" : "s") + " to the outline.");
+            this._wvReaderPanelNote(idoc, wvStr("weavero-bm-note-copied-outline", { count: newIds.length }));
         } catch (err) { Zotero.debug("[Weavero] _wvBmCopyTextToOutline err: " + err); }
     }
 
@@ -21574,7 +22338,8 @@ class _ReaderPanelsMixin {
                         // A pinned location drops its 📌 marker in the new window
                         // too — but only once that window's view has rendered.
                         if (bm.type === "position" && bm.position) {
-                            Promise.resolve(opened).then((nr: any) => {
+                            Promise.resolve(opened).then((r0: any) => {
+                                const nr = wvOpenedInstance(r0);
                                 if (nr) this._wvShowPinWhenReady(nr, bm.position, bm.id);
                             }).catch(() => {});
                         }
@@ -21716,7 +22481,7 @@ class _ReaderPanelsMixin {
             const cls = this._urlLinkClass(String(bm.url || ""));
             if (cls) label.classList.add(cls);
         }
-        label.textContent = bm.label || "Bookmark";
+        label.textContent = bm.label || wvStr("weavero-bm-unnamed");
         // No native `title` tooltip here — the rich hover card supersedes it
         // (a title would show as a SECOND popup over the card).
         const page = wvHtmlEl(idoc, "span");
@@ -21728,7 +22493,7 @@ class _ReaderPanelsMixin {
         // tab -- the hover card still carries the page, since it is the
         // on-demand detail view (MJT, 2026-09-18).
         const pageLbl = this._wvBmPagesShown(att) ? this._bmReaderPageLabel(bm) : "";
-        page.textContent = pageLbl ? ("p. " + pageLbl) : "";
+        page.textContent = pageLbl ? wvStr("weavero-rpanel-page-short", { page: String(pageLbl) }) : "";
         // No inline rename/delete buttons on hover (user preference) —
         // both actions live in the right-click context menu instead.
         row.appendChild(ic); row.appendChild(label);
@@ -21742,7 +22507,7 @@ class _ReaderPanelsMixin {
         if (missing) {
             row.classList.add("wv-bm-missing");
             const warn = wvHtmlEl(idoc, "span", "wv-bm-reader-missing-badge", "⚠");
-            warn.setAttribute("title", "This bookmark's target no longer exists. Right-click → Delete to remove it.");
+            warn.setAttribute("title", wvStr("weavero-bm-missing-tip-reader"));
             row.appendChild(warn);
         }
         row.addEventListener("click", (e: any) => {
@@ -21889,13 +22654,10 @@ class _ReaderPanelsMixin {
             info.page = this._bmReaderPageLabel(bm);
             if (bm.created) { try { info.created = new Date(bm.created).toLocaleDateString(); } catch (_) {} }
             if (this._bmReaderIsRenamed(bm)) info.original = this._bmReaderOriginalLabel(bm) || "";
-            const ANN: { [k: string]: string } = {
-                highlight: "Highlight", underline: "Underline", note: "Note",
-                text: "Text annotation", image: "Image annotation", ink: "Ink annotation",
-            };
-            if (bm.type === "position") { info.kind = "Location"; info.comment = String(bm.comment || "").trim(); }
+            const kind = (k: string) => wvStr("weavero-bm-hover-kind", { kind: k });
+            if (bm.type === "position") { info.kind = kind("location"); info.comment = String(bm.comment || "").trim(); }
             else if (bm.type === "text") {
-                info.kind = "Selected text";
+                info.kind = kind("text");
                 // The body quote is the SELECTED TEXT, mirroring the annotation
                 // card (whose body is the annotation text, not the name). Using
                 // `bm.label` put the RENAMED name in the quote block, which read
@@ -21909,20 +22671,20 @@ class _ReaderPanelsMixin {
                 info.comment = String(bm.comment || "").trim();
             }
             else if (bm.type === "collection") {
-                info.kind = "Collection";
+                info.kind = kind("collection");
                 try { const c: any = bm.collectionKey && Zotero.Collections.getByLibraryAndKey(bm.libraryID, bm.collectionKey); if (c) info.text = c.name; } catch (_) {}
             }
             else if (bm.type === "library") {
-                info.kind = "Library";
+                info.kind = kind("library");
                 try { const l: any = Zotero.Libraries.get(bm.libraryID); if (l) info.text = l.name; } catch (_) {}
             }
-            else if (bm.type === "treerow") { info.kind = "Saved search"; info.text = bm.label || ""; }
+            else if (bm.type === "treerow") { info.kind = kind("search"); info.text = bm.label || ""; }
             else if (bm.type === "item") {
                 const it: any = Zotero.Items.getByLibraryAndKey(bm.libraryID, bm.itemKey);
                 // The item's OWN creation time (distinct from when it was bookmarked).
                 try { if (it && it.dateAdded) { const d = Zotero.Date.sqlToDate(it.dateAdded, true); if (d) info.itemCreated = d.toLocaleDateString(); } } catch (_) {}
                 if (it && it.isAnnotation && it.isAnnotation()) {
-                    info.kind = ANN[it.annotationType] || "Annotation";
+                    info.kind = wvStr("weavero-rpanel-ann-kind", { type: String(it.annotationType || "other") });
                     try { info.color = it.annotationColor || null; } catch (_) {}
                     try { info.text = String(it.annotationText || "").trim(); } catch (_) {}
                     try { info.comment = String(it.annotationComment || "").trim(); } catch (_) {}
@@ -21971,14 +22733,14 @@ class _ReaderPanelsMixin {
                             const top: any = a && (a.parentItem || a);
                             const title = (top && top.getDisplayTitle) ? top.getDisplayTitle()
                                 : (a && a.getDisplayTitle ? a.getDisplayTitle() : "");
-                            if (title) info.source = "in: " + title;
+                            if (title) info.source = wvStr("weavero-bm-hover-source", { title });
                         }
                     } catch (_) {}
                 } else if (it) {
-                    try { info.kind = Zotero.ItemTypes.getLocalizedString(it.itemTypeID); } catch (_) { info.kind = "Item"; }
+                    try { info.kind = Zotero.ItemTypes.getLocalizedString(it.itemTypeID); } catch (_) { info.kind = kind("item"); }
                     try { info.text = it.getDisplayTitle ? it.getDisplayTitle() : (it.getField ? it.getField("title") : ""); } catch (_) {}
                     try { const d = it.getField && it.getField("date"); if (d) info.source = String(Zotero.Date.strToDate ? (Zotero.Date.strToDate(d).year || "") : String(d).slice(0, 4)); } catch (_) {}
-                } else { info.kind = "Item (not found)"; }
+                } else { info.kind = kind("missing"); }
             }
         } catch (_) {}
         return info;
@@ -22011,13 +22773,13 @@ class _ReaderPanelsMixin {
             const isLocLike = isAnn || bm.type === "text" || bm.type === "position";
             const nm = wvHtmlEl(idoc, "span", "wv-hc-name");
             nm.textContent = isLocLike
-                ? (info.page ? "Page " + info.page : "")
-                : (bm.label || info.kind || "Bookmark");
+                ? (info.page ? wvStr("weavero-bm-hover-page", { page: String(info.page) }) : "")
+                : (bm.label || info.kind || wvStr("weavero-bm-unnamed"));
             head.appendChild(nm);
             if (isLocLike) {
                 if (info.author) { const au = wvHtmlEl(idoc, "span"); au.className = "wv-hc-author"; au.textContent = info.author; head.appendChild(au); }
             } else if (info.page) {
-                const pg = wvHtmlEl(idoc, "span", "wv-hc-page", "p. " + info.page, head);
+                const pg = wvHtmlEl(idoc, "span", "wv-hc-page", wvStr("weavero-rpanel-page-short", { page: String(info.page) }), head);
             }
             card.appendChild(head);
             // Body: the variable-length content — capped by default, scrolls when expanded.
@@ -22081,7 +22843,9 @@ class _ReaderPanelsMixin {
             //    floats BESIDE the flyout instead of on top of its rows.
             //  • Main library list / reader iframe → inline, positioned in the
             //    same scroll container (existing behaviour).
-            const flyoutInner: any = (rowEl && rowEl.closest) ? rowEl.closest(".wv-bm-flyout-inner") : null;
+            // The collections column's Bookmarks pane (bookmarks-pane.ts) is as narrow:
+            // its card floats beside it the same way.
+            const flyoutInner: any = (rowEl && rowEl.closest) ? rowEl.closest(".wv-bm-flyout-inner, .wv-bmp-list") : null;
             let hostPanel: any = null;
             if (flyoutInner && idoc.createXULElement) {
                 try {
@@ -22109,11 +22873,11 @@ class _ReaderPanelsMixin {
             }
             if (body.scrollHeight > body.clientHeight + 2) {
                 body.appendChild(mk("wv-hc-fade"));
-                const btn: any = wvHtmlEl(idoc, "button", "wv-hc-expand"); btn.type = "button"; btn.textContent = "Expand ▾";
+                const btn: any = wvHtmlEl(idoc, "button", "wv-hc-expand"); btn.type = "button"; btn.textContent = wvStr("weavero-bm-hover-expand", { state: "collapsed" });
                 btn.addEventListener("click", (e: any) => {
                     try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
                     const exp = card.classList.toggle("wv-hc-expanded");
-                    btn.textContent = exp ? "Collapse ▴" : "Expand ▾";
+                    btn.textContent = wvStr("weavero-bm-hover-expand", { state: exp ? "expanded" : "collapsed" });
                     this._wvReaderPositionBmHoverCard(card, rowEl, idoc);
                 });
                 card.appendChild(btn);
@@ -22132,14 +22896,16 @@ class _ReaderPanelsMixin {
                 const nOrig = norm(info.original);
                 const nText = norm(info.text);
                 const nComment = norm(info.comment);
+                // The placeholder: "Bookmark" as older builds stored it, or in
+                // the UI language (weavero-bm-unnamed).
                 const redundant = !nOrig
-                    || nOrig === "bookmark"
+                    || nOrig === "bookmark" || nOrig === norm(wvStr("weavero-bm-unnamed"))
                     || (nText && (nText === nOrig || nText.startsWith(nOrig) || nOrig.startsWith(nText)))
                     || (nComment && nComment === nOrig);
-                if (!redundant) meta.push("Default: " + info.original);
+                if (!redundant) meta.push(wvStr("weavero-bm-hover-meta", { what: "default", value: info.original }));
             }
-            if (info.itemCreated) meta.push("Created: " + info.itemCreated);
-            if (info.created) meta.push("Bookmarked: " + info.created);
+            if (info.itemCreated) meta.push(wvStr("weavero-bm-hover-meta", { what: "created", value: info.itemCreated }));
+            if (info.created) meta.push(wvStr("weavero-bm-hover-meta", { what: "bookmarked", value: info.created }));
             for (const m of meta) card.appendChild(mk("wv-hc-meta", m));   // one per line
             // Keep the card alive while the cursor is over it (it's interactive).
             const win = idoc.defaultView;
@@ -22646,7 +23412,7 @@ class _ReaderPanelsMixin {
                     if (!label) {
                         try { const it: any = Zotero.Items.getByLibraryAndKey(recLib, en.key); label = it ? String(it.annotationText || it.annotationComment || "").trim() : ""; } catch (_) {}
                     }
-                    label = (label || "Annotation").slice(0, 100);
+                    label = (label || wvStr("weavero-rpanel-ann-kind", { type: "other" })).slice(0, 100);
                     // allowDuplicate: dragging the same annotation again files a
                     // second copy (e.g. into a different folder) instead of no-op.
                     const e2 = await this._bmReaderAdd(att.libraryID, att.itemKey, { type: "item", libraryID: recLib, itemKey: en.key, label }, { allowDuplicate: true });
@@ -22817,7 +23583,7 @@ class _ReaderPanelsMixin {
                     await add({ type: "collection", libraryID: pickedCollection.libraryID, collectionKey: pickedCollection.key, label: pickedCollection.name || pickedCollection.key });
                 } else if (typeof pickedLibraryID === "number") {
                     let label = ""; try { const lib: any = Zotero.Libraries.get(pickedLibraryID); label = lib && lib.name; } catch (_) {}
-                    await add({ type: "library", libraryID: pickedLibraryID, label: label || ("Library " + pickedLibraryID) });
+                    await add({ type: "library", libraryID: pickedLibraryID, label: label || wvStr("weavero-bm-library-fallback", { id: String(pickedLibraryID) }) });
                 } else if (pickedTreeRow) {
                     await add({ type: "treerow", rowID: pickedTreeRow.rowID, libraryID: pickedTreeRow.libraryID, label: pickedTreeRow.label || pickedTreeRow.rowID });
                 }
@@ -22865,7 +23631,7 @@ class _ReaderPanelsMixin {
                             location: { pageIndex: pageIdx },
                             position: { pageIndex: pageIdx },
                             pageLabel: pageLabelC,
-                            label: "Page " + pageLabelC + (a === "bottom" ? " (bottom)" : ""),
+                            label: wvStr("weavero-bm-page-name", { page: String(pageLabelC), anchor: a }),
                         };
                         if (a === "bottom") rec.anchor = "bottom";
                         Promise.resolve(this._bmReaderAdd(attL.libraryID, attL.itemKey, rec, { allowDuplicate: true }))
@@ -22990,7 +23756,7 @@ class _ReaderPanelsMixin {
                 this._wvCtxItem(idoc, menu, { label, icon: active ? RP_CHECK_SVG : "", disabled, onClick: disabled ? undefined : onClick });
             const sep = () => this._wvCtxSep(idoc, menu);
 
-            heading("Sort by");
+            heading(wvStr("weavero-rpanel-sort-by"));
             mkItem(wvStr("weavero-menu-bm-sort-manual"), curField === "manual", () => apply("manual"));
             if (section === "local") mkItem(wvStr("weavero-menu-bm-sort-location"), curField === "location", () => apply("location"));
             mkItem(wvStr("weavero-menu-bm-sort-name"), curField === "alpha", () => apply("alpha"));
@@ -23203,7 +23969,7 @@ class _ReaderPanelsMixin {
                     return { row, input };
                 };
 
-                const textRow = mkRow("Text", (initial && initial.text) || "");
+                const textRow = mkRow(wvStr("weavero-bm-link-dialog-text"), (initial && initial.text) || "");
                 const urlRow = mkRow("URL", (initial && initial.url) || "");
 
                 let lastDerived = "";
@@ -23217,9 +23983,9 @@ class _ReaderPanelsMixin {
                 });
 
                 const btnRow = wvHtmlEl(idoc, "div", "wv-bm-url-dialog-btns");
-                const cancelBtn: any = wvHtmlEl(idoc, "button", undefined, "Cancel");
+                const cancelBtn: any = wvHtmlEl(idoc, "button", undefined, wvStr("weavero-common-cancel"));
                 cancelBtn.className = "wv-bm-url-dialog-btn";
-                const applyBtn: any = wvHtmlEl(idoc, "button", undefined, "Apply");
+                const applyBtn: any = wvHtmlEl(idoc, "button", undefined, wvStr("weavero-bm-link-dialog-apply"));
                 applyBtn.className = "wv-bm-url-dialog-btn wv-bm-url-dialog-btn-primary";
                 btnRow.appendChild(cancelBtn); btnRow.appendChild(applyBtn);
 
@@ -23420,17 +24186,17 @@ class _ReaderPanelsMixin {
             if (entry) {
                 if (entry.type === "folder") {
                     item(wvStr("weavero-menu-bm-rename-folder"), RP_RENAME_SVG, () => {
-                        const n = this._bmPromptName(Zotero.getMainWindow(), "Rename Folder", entry.name || "");
+                        const n = this._bmPromptName(Zotero.getMainWindow(), wvStr("weavero-bm-prompt-rename-folder"),entry.name || "");
                         if (n) this._bmReaderRename(att.libraryID, att.itemKey, entry.id, n).then(reRender);
                     });
                     item(wvStr("weavero-menu-bm-new-subfolder"), RP_FOLDER_PLUS_SVG, () => {
-                        const n = this._bmPromptName(Zotero.getMainWindow(), "New Folder", "New Folder");
+                        const n = this._bmPromptName(Zotero.getMainWindow(), wvStr("weavero-bm-prompt-new-folder"), wvStr("weavero-bm-folder-default-name"));
                         if (n) this._bmReaderAddFolder(att.libraryID, att.itemKey, section, n, entry.id).then(reRender);
                     });
                     sep();
                     item(wvStr("weavero-menu-bm-delete-folder"), RP_DELETE_SVG, () => {
                         const c = (entry.children && entry.children.length) || 0;
-                        if (c > 0) { const ok = Services.prompt.confirm(Zotero.getMainWindow(), "Delete Folder", 'Delete "' + (entry.name || "") + '" and its ' + c + " item" + (c === 1 ? "" : "s") + "?"); if (!ok) return; }
+                        if (c > 0) { const ok = Services.prompt.confirm(Zotero.getMainWindow(), wvStr("weavero-bm-delete-folder-title"), wvStr("weavero-bm-delete-folder-confirm", { name: entry.name || "", count: c })); if (!ok) return; }
                         this._bmReaderRemove(att.libraryID, att.itemKey, entry.id).then(reRender);
                     });
                 } else if (section === "local") {
@@ -23464,7 +24230,7 @@ class _ReaderPanelsMixin {
                                     pageCount = (app && app.pdfViewer && app.pdfViewer.pagesCount) || 0;
                                 } catch (_) {}
                                 const res = await this._wvOutlineEditPositionDialog(idoc, curIdx + 1, cur === "bottom", pageCount,
-                                    { title: "Edit Bookmark", withName: true, name: entry.label || "",
+                                    { title: wvStr("weavero-bm-edit-title"), withName: true, name: entry.label || "",
                                       autoNameFromPosition: true,
                                       // Default-name preview shows the PRINTED
                                       // label for the typed page (the page
@@ -23494,8 +24260,8 @@ class _ReaderPanelsMixin {
                                 // a rename -- unless it was emptied or set back
                                 // to the automatic one (the Reset button), which
                                 // means "go automatic again".
-                                const auto = "Page " + this._wvBmPageLabelFor(att, res.page - 1)
-                                    + (res.bottom ? " (bottom)" : "");
+                                const auto = wvStr("weavero-bm-page-name", { page: String(this._wvBmPageLabelFor(att, res.page - 1)),
+                                    anchor: res.bottom ? "bottom" : "top" });
                                 const touched = name !== prevLabel;
                                 const wantsAuto = touched && (!name || name === auto);
                                 // One dialog, one undo step.
@@ -23670,7 +24436,7 @@ class _ReaderPanelsMixin {
                 }
                 sep();
             }
-            itemSub("Add Bookmark…", RP_PLUS_SVG, [
+            itemSub(wvStr("weavero-menu-bm-add-bookmark-more"), RP_PLUS_SVG, [
                 { label: wvStr("weavero-menu-bm-pick-item"), icon: RP_BM_RIBBON_TAB, fn: () => this._wvReaderAddViaDialog(reader, idoc, section) },
                 { label: wvStr("weavero-menu-bm-add-link"), icon: URL_GLOBE_SVG, fn: () => {
                     Promise.resolve(this._wvAddUrlBookmark(reader, idoc, "document", section))
@@ -23685,7 +24451,7 @@ class _ReaderPanelsMixin {
             {
                 const onFolder = !!(entry && entry.type === "folder");
                 item(wvStr(onFolder ? "weavero-menu-bm-new-subfolder" : "weavero-menu-bm-new-folder"), RP_FOLDER_PLUS_SVG, () => {
-                    const n = this._bmPromptName(Zotero.getMainWindow(), onFolder ? "New Subfolder" : "New Folder", "New Folder");
+                    const n = this._bmPromptName(Zotero.getMainWindow(), onFolder ? wvStr("weavero-bm-prompt-new-subfolder") : wvStr("weavero-bm-prompt-new-folder"), wvStr("weavero-bm-folder-default-name"));
                     if (n) this._bmReaderAddFolder(att.libraryID, att.itemKey, section, n, onFolder ? entry.id : undefined).then(reRender);
                 });
             }
@@ -23726,17 +24492,17 @@ class _ReaderPanelsMixin {
         if (entry) {
             if (entry.type === "folder") {
                 item(wvStr("weavero-menu-bm-rename-folder"), RP_RENAME_SVG, () => {
-                    const n = this._bmPromptName(win, "Rename Folder", entry.name || "");
+                    const n = this._bmPromptName(win, wvStr("weavero-bm-prompt-rename-folder"),entry.name || "");
                     if (n) this._bmRenameFolder(entry.id, n).then(reRender);
                 });
                 item(wvStr("weavero-menu-bm-new-subfolder"), RP_FOLDER_PLUS_SVG, () => {
-                    const n = this._bmPromptName(win, "New Folder", "New Folder");
+                    const n = this._bmPromptName(win, wvStr("weavero-bm-prompt-new-folder"), wvStr("weavero-bm-folder-default-name"));
                     if (n) this._bmAddFolder(n, entry.id).then(reRender);
                 });
                 sep();
                 item(wvStr("weavero-menu-bm-delete-folder"), RP_DELETE_SVG, () => {
                     const c = this._bmCountDescendants(entry);
-                    if (c > 0) { const ok = Services.prompt.confirm(win, "Delete Folder", 'Delete "' + (entry.name || "") + '" and its ' + c + " item" + (c === 1 ? "" : "s") + "?"); if (!ok) return; }
+                    if (c > 0) { const ok = Services.prompt.confirm(win, wvStr("weavero-bm-delete-folder-title"), wvStr("weavero-bm-delete-folder-confirm", { name: entry.name || "", count: c })); if (!ok) return; }
                     this._bmRemove(entry.id).then(reRender);
                 });
             } else {
@@ -23786,7 +24552,7 @@ class _ReaderPanelsMixin {
             }
             sep();
         }
-        itemSub("Add Library Bookmark…", RP_PLUS_SVG, [
+        itemSub(wvStr("weavero-menu-bm-add-library-bookmark"), RP_PLUS_SVG, [
             { label: wvStr("weavero-menu-bm-pick-item"), icon: RP_BM_RIBBON_TAB, fn: () => {
                 Promise.resolve(this._bmAddBookmarksDialog()).then(reRender).catch(() => {});
             } },
@@ -23796,7 +24562,7 @@ class _ReaderPanelsMixin {
             } },
         ]);
         item(wvStr("weavero-menu-bm-new-folder"), RP_FOLDER_PLUS_SVG, () => {
-            const n = this._bmPromptName(win, "New Folder", "New Folder");
+            const n = this._bmPromptName(win, wvStr("weavero-bm-prompt-new-folder"), wvStr("weavero-bm-folder-default-name"));
             if (n) this._bmAddFolder(n).then(reRender);
         });
     }
@@ -23859,7 +24625,7 @@ class _ReaderPanelsMixin {
         }
         if (spec.def) {
             // Dimmed, as in the Outline / Bookmarks tab menus (MJT 2026-09-29).
-            const df = wvHtmlEl(idoc, "span", "wv-ctx-def", "(default)", it);
+            const df = wvHtmlEl(idoc, "span", "wv-ctx-def", wvStr("weavero-menu-default-hint"), it);
         }
         if (spec.onClick) {
             const fn = spec.onClick, close = spec.close;
@@ -23940,12 +24706,9 @@ class _ReaderPanelsMixin {
         try {
             const t = String(ann.annotationText || ann.annotationComment || "").trim();
             if (t) return t;
-            const m: { [k: string]: string } = {
-                image: "Image annotation", ink: "Ink annotation", note: "Note",
-                highlight: "Highlight", underline: "Underline", text: "Text annotation",
-            };
-            return m[ann.annotationType] || "Annotation";
-        } catch (_) { return "Annotation"; }
+            // Stored as the bookmark's name: _wvBmNodeWas reads it back.
+            return wvStr("weavero-rpanel-ann-kind", { type: String(ann.annotationType || "other") });
+        } catch (_) { return wvStr("weavero-rpanel-ann-kind", { type: "other" }); }
     }
 
     /** Bookmark the current text selection (label = the selected text). Stores
@@ -23972,7 +24735,7 @@ class _ReaderPanelsMixin {
                         const it: any = Zotero.Items.getByLibraryAndKey(lib, key);
                         label = it ? String(it.annotationText || it.annotationComment || "").trim() : "";
                     } catch (_) {}
-                    label = (label || "Annotation").slice(0, 100);
+                    label = (label || wvStr("weavero-rpanel-ann-kind", { type: "other" })).slice(0, 100);
                     const e2 = await this._bmReaderAdd(att.libraryID, att.itemKey,
                         { type: "item", libraryID: lib, itemKey: key, label }, { allowDuplicate: true });
                     if (e2 && e2.id) added.push(e2.id);
@@ -24181,7 +24944,7 @@ class _ReaderPanelsMixin {
                                             location: { pageIndex: piCaptured },
                                             position: { pageIndex: piCaptured },
                                             pageLabel,
-                                            label: "Page " + pageLabel + (a === "bottom" ? " (bottom)" : ""),
+                                            label: wvStr("weavero-bm-page-name", { page: String(pageLabel), anchor: a === "bottom" ? "bottom" : "top" }),
                                         };
                                         if (a === "bottom") rec.anchor = "bottom";
                                         if (isLib) {
@@ -24247,14 +25010,14 @@ class _ReaderPanelsMixin {
                             const pt = isDom ? null : live._wvClickPointToPdf(reader, { params: clickO ? {
                                 x: clickO.x, y: clickO.y, position: clickO.position } : {} });
                             if (isDom ? !(dom && dom.selector) : !pt) {
-                                if (isDom) live._wvReaderPanelNote(idoc, "No text at that point.");
+                                if (isDom) live._wvReaderPanelNote(idoc, wvStr("weavero-rpanel-note-no-text"));
                                 return;
                             }
                             // Derived title + inline rename, no modal (same
                             // change as the + pin flow, 2026-08-26).
                             const title = isDom
-                                ? "Pinned spot"   // plain default by request (2026-08-26)
-                                : "Page " + (() => { try { const a0 = live._wvReaderAtt(reader); return a0 ? live._wvBmPageLabelFor(a0, pt.pageIndex) : String(pt.pageIndex + 1); } catch (_) { return String(pt.pageIndex + 1); } })() + " pin";
+                                ? wvStr("weavero-rpanel-pinned-spot")   // plain default by request (2026-08-26)
+                                : wvStr("weavero-outline-pin-title", { page: String((() => { try { const a0 = live._wvReaderAtt(reader); return a0 ? live._wvBmPageLabelFor(a0, pt.pageIndex) : String(pt.pageIndex + 1); } catch (_) { return String(pt.pageIndex + 1); } })()) });
                             // `anchor:"point"` marks a hand-placed spot on BOTH
                             // families. On PDF it also selects the exact-rect
                             // navigation; on a DOM view it is what tells
@@ -24291,10 +25054,10 @@ class _ReaderPanelsMixin {
                                         // dismissed on content clicks and outlived every panel interaction
                                         // (2026-08-26).
                                         try { live._wvOutlineShowDomEntryPin(reader, res.stored, pos); } catch (_) {}
-                                        live._wvReaderPanelNote(idoc, "Pinned. Type its title (Enter to keep); drag the pin to adjust.");
+                                        live._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-pinned"));
                                     } else {
                                     try { live._wvOutlineShowEntryPin(reader, idoc, res.att.libraryID, res.att.itemKey, res.stored.id, pos); } catch (_) {}
-                                    live._wvReaderPanelNote(idoc, "Pinned. Type its title (Enter to keep); drag the pin to adjust.");
+                                    live._wvReaderPanelNote(idoc, wvStr("weavero-outline-note-pinned"));
                                     }
                                     try {
                                         const dd = live._wvOutlineDoc(res.att.libraryID, res.att.itemKey);
@@ -25100,6 +25863,12 @@ class _ReaderPanelsMixin {
      *  the wire-tag rule. */
     _wvWireDomSelTracker(reader: any, tries?: number) {
         try {
+            // A destroyed instance's retry stops here: the chain is on the
+            // sandbox clock, which destroy() does not cancel, and it went on
+            // calling into the old instance for up to 10 s after a reload --
+            // under zotero#6080 into a nuked scope (2026-11-22). Guard:
+            // test/zz-stale-instance-calls.spec.js.
+            if ((this as any)._wvDestroyed) return;
             const n = tries || 0;
             const ir = reader && reader._internalReader;
             const pv = ir && (ir._primaryView || ir._lastView);
@@ -25118,9 +25887,10 @@ class _ReaderPanelsMixin {
             }
             if (typeof pv.toSelector !== "function") return;   // DOM views only
             const tag = this._wvWireTag();
-            if (pv._wvSelTrackWired === tag) return;
+            // An older build's plain listener (it had no teardown).
             if (pv._wvSelTrackFn) {
                 try { doc.removeEventListener("selectionchange", pv._wvSelTrackFn); } catch (_) {}
+                try { delete pv._wvSelTrackFn; delete pv._wvSelTrackWired; } catch (_) {}
             }
             let timer: any = null;
             const fn = () => {
@@ -25138,9 +25908,10 @@ class _ReaderPanelsMixin {
                     }, 300);
                 } catch (_) {}
             };
-            doc.addEventListener("selectionchange", fn);
-            pv._wvSelTrackFn = fn;
-            pv._wvSelTrackWired = tag;
+            // Keyed (lib/listen.ts): destroy() takes it off the view's
+            // document, the next instance replaces it. A plain listener with
+            // a tag stamp on the view stayed after every disable.
+            wvListen(doc, "domSelTrack:selectionchange", "selectionchange", fn, false, tag);
         } catch (e) { Zotero.debug("[Weavero] _wvWireDomSelTracker err: " + e); }
     }
 
@@ -25471,7 +26242,7 @@ class _ReaderPanelsMixin {
             } else {
                 pin.innerHTML = RP_PIN_TIP_SVG;
             }
-            pin.setAttribute("title", draggable ? "Drag to move" : "");
+            pin.setAttribute("title", draggable ? wvStr("weavero-rpanel-pin-drag-tip") : "");
             pin.style.cssText = "position:absolute;z-index:2147483646;"
                 + (draggable ? "pointer-events:auto;cursor:grab;" : "pointer-events:none;")
                 // transform-origin at the TIP, so the grow/shrink animations pivot
@@ -25517,7 +26288,7 @@ class _ReaderPanelsMixin {
             // must be confirmed. Its own pointer handlers keep a click from
             // starting a pin drag. 2026-07-23.
             if (opts && opts.approve && typeof opts.approve.onClick === "function") {
-                const ab: any = wvHtmlEl(doc, "button", undefined, opts.approve.label || "Done");
+                const ab: any = wvHtmlEl(doc, "button", undefined, opts.approve.label || wvStr("weavero-common-done"));
                 ab.className = "wv-reader-pin-approve";
                 ab.setAttribute("style", "position:absolute;left:100%;top:0;transform:translate(8px,-4px);"
                     + "white-space:nowrap;padding:3px 12px;border-radius:5px;border:1px solid rgba(0,0,0,.35);"
@@ -25768,7 +26539,7 @@ class _ReaderPanelsMixin {
                                         const loc = bdoc && (this._bmLocate(bmId, bdoc.local) || this._bmLocate(bmId, bdoc.global));
                                         renamed = !!(loc && this._bmReaderIsRenamed(loc.entry));
                                     } catch (_) {}
-                                    if (!renamed) upd.label = "Page " + pageLabel;
+                                    if (!renamed) upd.label = wvStr("weavero-bm-page-name", { page: String(pageLabel), anchor: "top" });
                                     return this._bmReaderUpdatePosition(att.libraryID, att.itemKey, bmId, upd);
                                 }).then(() => { try { if (ridoc) this._wvReaderRenderBmList(reader, ridoc); } catch (_) {} }).catch(() => {});
                             }
@@ -25824,7 +26595,7 @@ class _ReaderPanelsMixin {
                 try { pageLabel = (ir._state.primaryViewStats || {}).pageLabel || ""; } catch (_) {}
             }
             if (!pageLabel) pageLabel = String((pageIndex || 0) + 1);
-            return { viewType: "pdf", location: { pageIndex }, pageLabel, label: "Page " + pageLabel };
+            return { viewType: "pdf", location: { pageIndex }, pageLabel, label: wvStr("weavero-bm-page-name", { page: String(pageLabel), anchor: "top" }) };
         }
         // EPUB / snapshot (DOM views): capture a live, full CFI.
         let cfi: any = null, offset: any = undefined;
@@ -25842,7 +26613,7 @@ class _ReaderPanelsMixin {
             viewType: type,
             location: { cfi, cfiElementOffset: offset, scrollYPercent },
             pageLabel: "",
-            label: "Bookmark",
+            label: wvStr("weavero-bm-unnamed"),
         };
     }
 
@@ -26404,7 +27175,7 @@ class _ReaderPanelsMixin {
                     arm();
                     try {
                         const rdoc = reader._iframeWindow && reader._iframeWindow.document;
-                        if (rdoc) this._wvReaderPanelNote(rdoc, "No text there — the bookmark stayed put.");
+                        if (rdoc) this._wvReaderPanelNote(rdoc, wvStr("weavero-bm-note-no-text-stayed"));
                     } catch (_) {}
                     return;
                 }
@@ -27319,7 +28090,7 @@ class _ReaderPanelsMixin {
                     const pv = reader._internalReader._primaryView || reader._internalReader._lastView;
                     if (pv && Array.isArray(pv._pageLabels) && pv._pageLabels[pos.pageIndex]) {
                         rec.pageLabel = pv._pageLabels[pos.pageIndex];
-                        rec.label = "Page " + rec.pageLabel;
+                        rec.label = wvStr("weavero-bm-page-name", { page: String(rec.pageLabel), anchor: "top" });
                     }
                 } catch (_) {}
             }
@@ -27373,7 +28144,7 @@ class _ReaderPanelsMixin {
                     // 2026-08-24).
                     if (cfi) this._wvReaderShowEpubPinWhenReady(reader, cfi, entry, false);
                     else if (entry.position) this._wvReaderShowSnapshotPin(reader, entry.position, entry, false);
-                    this._wvReaderPanelNote(idoc, "Bookmark added. Drag the pin to adjust.");
+                    this._wvReaderPanelNote(idoc, wvStr("weavero-bm-note-added-pin"));
                 } catch (_) {}
             }
         } catch (e) {
@@ -27676,14 +28447,11 @@ class _ReaderPanelsMixin {
                     // that convention were dropped 2026-08-04 when a pin on
                     // printed page 573 came out as "Page 17".)
                     const labelFor = (pi: number) => plugin._wvBmPageLabelFor(att, pi);
-                    const single = pageIndexes.length === 1;
                     const items: any[] = [];
 
                     let addBmLabel: string | null = null;
                     if (plugin._getEnableReaderBookmarks()) {
-                        addBmLabel = single
-                            ? "Add This Page to Bookmarks"
-                            : "Add These " + pageIndexes.length + " Pages to Bookmarks";
+                        addBmLabel = wvStr("weavero-menu-bm-thumb-add-pages", { count: pageIndexes.length });
                         items.push({
                             label: addBmLabel,
                             onCommand: async () => {
@@ -27708,7 +28476,7 @@ class _ReaderPanelsMixin {
                                                 // position branch.
                                                 position: { pageIndex: pi },
                                                 pageLabel,
-                                                label: "Page " + pageLabel,
+                                                label: wvStr("weavero-bm-page-name", { page: String(pageLabel), anchor: "top" }),
                                             }, { allowDuplicate: true });
                                         }
                                     });
@@ -27728,9 +28496,7 @@ class _ReaderPanelsMixin {
                     let copyLinkLabel: string | null = null;
                     if (plugin._getEnableUriUtilities && plugin._getEnableCopyItemLink
                         && plugin._getEnableUriUtilities() && plugin._getEnableCopyItemLink()) {
-                        copyLinkLabel = single
-                            ? "Copy Link to This Page"
-                            : "Copy Links to " + pageIndexes.length + " Pages";
+                        copyLinkLabel = wvStr("weavero-rpanel-thumb-copy-links", { count: pageIndexes.length });
                         items.push({
                             label: copyLinkLabel,
                             onCommand: async () => {

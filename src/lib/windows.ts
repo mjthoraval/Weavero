@@ -203,6 +203,12 @@ export function wvPlanWindowTransfer(doc: any, open: Map<number, number>, kindOf
     const own = (ms: any) => {
         const st: any = {};
         if (ms && ms.hiddenColl) st.hiddenColl = ms.hiddenColl;
+        // The window's closed saved-search folders, its Bookmarks pane and its collections
+        // funnel, beside its hidden collections (window-state.ts _wvWinStateApply reads them
+        // back): until the funnel's branch only `hiddenColl` went to Zotero's own windows.
+        if (ms && Array.isArray(ms.sfOpen) && ms.sfOpen.length) st.sfOpen = ms.sfOpen;
+        if (ms && ms.bmPane && typeof ms.bmPane === "object") st.bmPane = ms.bmPane;
+        if (ms && ms.collFunnel && typeof ms.collFunnel === "object") st.collFunnel = ms.collFunnel;
         if (ms && ms.title) st.title = ms.title;
         if (ms && typeof ms.tagsAuto === "boolean") st.tagsAuto = ms.tagsAuto;
         // Its colour (tabs.ts _wvGlyphRestore), into the window state that keeps it there.
@@ -241,7 +247,13 @@ export function wvPlanWindowTransfer(doc: any, open: Map<number, number>, kindOf
         selectID: (anchorSel && anchorSel.data && anchorSel.data.itemID) ?? null,
         // Its entry's, else the store's own field (no entry: it held only its library tab).
         geom: (anchor && anchor.geom) || d.anchorGeom || null,
-        state: own({ hiddenColl: d.anchorHidden, title: d.anchorTitle, tagsAuto: d.anchorTagsAuto, paneSizes: d.anchorPaneSizes }),
+        // Its closed saved-search folders and its Bookmarks pane too: the store's own fields, else
+        // -- a store written before them -- its entry's (second review 2026-11-28, L: only the
+        // other windows' went to Zotero's own windows).
+        state: own({ hiddenColl: d.anchorHidden,
+            sfOpen: d.anchorSfOpen || (anchor && anchor.wvMainState && anchor.wvMainState.sfOpen),
+            bmPane: d.anchorBmPane || (anchor && anchor.wvMainState && anchor.wvMainState.bmPane),
+            collFunnel: d.anchorCollFunnel, title: d.anchorTitle, tagsAuto: d.anchorTagsAuto, paneSizes: d.anchorPaneSizes }),
         // The first window's collection too: only the others carried theirs, and the
         // first came back on My Library (transition test 2026-11-07, "C3" saved).
         collection: (anchor && anchor.wvMainState && anchor.wvMainState.collection) || null,
@@ -334,10 +346,14 @@ export function wvPlanWindowTransfer(doc: any, open: Map<number, number>, kindOf
     return { first, fills, windows: windows.map((w: any) => w.state), focusFirst: !f || f.kind === "anchor", pins };
 }
 
-/** A tab id is a library tab's. "zotero-pane" is only the FIRST library tab's
- *  on a Zotero with its own windows (zotero#6035): a window can hold several,
- *  and its others have random ids, so a plain comparison took them for document
- *  tabs. Tab ids are unique across windows, so no window is needed. */
+/** A tab id is a library tab's. On a Zotero with its own windows (zotero#6035)
+ *  "zotero-pane" is the id of the library tab a window opened with
+ *  (zoteroPane.js openInitialLibraryTab), or of the first one restored into a
+ *  window without one (tabs.js restoreState.library) -- several windows can
+ *  each have one, and a window may have none. A window can hold several library
+ *  tabs; the others have random ids, so a plain comparison took them for
+ *  document tabs. "zotero-pane" is a library tab wherever it is, and the random
+ *  ids are unique across windows, so no window is needed. */
 export function wvIsLibraryTabID(id: any): boolean {
     if (id === "zotero-pane") return true;
     if (id == null || !wvNativeWindows()) return false;
@@ -565,52 +581,11 @@ export function wvWinType(winOrDoc: any): string {
     }
 }
 
-/** Windows only: a window's native style (GWL_STYLE) through user32, read,
- *  or with `next` rewritten and the frame refreshed (SWP_FRAMECHANGED --
- *  without it the title bar keeps its old buttons until the next resize).
- *  Returns the style now in force, null when it cannot be read (not
- *  Windows, no native handle, ctypes unavailable). The same js-ctypes path
- *  as the window icons (modules/tabs.ts _wvSetWindowIconFromFile).
- *  `open` replaces the user32 handle (the specs' stand-in for a 32-bit one). */
-export function wvWin32Style(win: any, next?: (style: number) => number, open?: (ctypes: any) => any): number | null {
-    let lib: any = null;
-    try {
-        const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs") as any;
-        const bw = win.docShell.treeOwner.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIBaseWindow);
-        const handle = bw.nativeHandle;
-        if (!handle) return null;
-        lib = open ? open(ctypes) : ctypes.open("user32.dll");
-        const HWND = ctypes.voidptr_t;
-        const GWL_STYLE = -16;
-        // A 32-bit user32.dll exports no *WindowLongPtrW (macros for the plain
-        // names there) and declaring a missing symbol throws, which left a
-        // 32-bit Zotero with no style at all (2026-11-05). intptr_t is the
-        // right width either way.
-        const declareLong = (verb: "Get" | "Set", ...args: any[]) => {
-            try { return lib.declare(verb + "WindowLongPtrW", ctypes.winapi_abi, ctypes.intptr_t, ...args); }
-            catch (e) { return lib.declare(verb + "WindowLongW", ctypes.winapi_abi, ctypes.intptr_t, ...args); }
-        };
-        const GetWindowLong = declareLong("Get", HWND, ctypes.int);
-        const hwnd = HWND(ctypes.UInt64(handle));
-        // The style is 32 bits, sign-extended into LONG_PTR: `| 0` keeps it
-        // an int32 so the bit operations and the write-back agree.
-        const style = Number(GetWindowLong(hwnd, GWL_STYLE).toString()) | 0;
-        if (!next) return style;
-        const want = next(style) | 0;
-        if (want === style) return style;
-        const SetWindowLong = declareLong("Set", HWND, ctypes.int, ctypes.intptr_t);
-        const SetWindowPos = lib.declare("SetWindowPos", ctypes.winapi_abi, ctypes.bool, HWND, HWND,
-            ctypes.int, ctypes.int, ctypes.int, ctypes.int, ctypes.unsigned_int);
-        SetWindowLong(hwnd, GWL_STYLE, ctypes.Int64(want));
-        // NOSIZE | NOMOVE | NOZORDER | NOACTIVATE | FRAMECHANGED
-        SetWindowPos(hwnd, HWND(0), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020);
-        return Number(GetWindowLong(hwnd, GWL_STYLE).toString()) | 0;
-    }
-    catch (e) {
-        try { Zotero.debug("[Weavero] wvWin32Style err: " + e); } catch (e2) {}
-        return null;
-    }
-    finally {
-        try { if (lib) lib.close(); } catch (e) {}
-    }
-}
+// No call here rewrites a window's native style bits any more (MJT
+// 2026-11-27, "1a" for the Settings window, "same as Settings" for the
+// Plugins Manager): their minimize / maximize buttons come from how they are
+// opened (index.ts). Gecko has no scriptable call for those bits
+// (nsIBaseWindow / nsIAppWindow, checked on Firefox 128-153, 2026-11-27), so
+// the helper that set them was native code; the startup restore's z-order
+// (modules/tabs.ts _wvBgRestoreStart) is the one native use left, listed by
+// test/native-calls.spec.js.

@@ -8,6 +8,11 @@ name: Switch on
 # for a release, update.json) for the XPI that is on the release -- its own
 # sha512, not a rebuild's -- and replaces them on the rolling `release` tag.
 # To stop a bad release spreading, run it on the previous good tag.
+#
+# Two jobs (2026-11-22): `manifests` runs the repository's script with a
+# read-only token and hands the two files on; `replace` holds the write
+# token and runs only GitHub's `gh` on them. Its environment, `release`, is
+# where a required reviewer goes (repository settings).
 
 on:
   workflow_dispatch:
@@ -20,34 +25,31 @@ on:
         required: false
         default: ""
 
-permissions:
-  contents: write     # upload the manifests to the `release` tag
+# Nothing unless a job asks for it.
+permissions: {}
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  flip:
-    name: Switch the update manifests to the tag
+  manifests:
+    name: Write the update manifests for the tag (read-only)
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: lts/*
-
-      - name: Download the published XPI
+      # The input reaches a shell only through the environment, checked.
+      - name: Check the tag's form
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag }}
         run: |
-          mkdir -p "$RUNNER_TEMP/flip"
-          gh release download "${{ github.event.inputs.tag }}" --repo "$GITHUB_REPOSITORY" --pattern weavero.xpi --dir "$RUNNER_TEMP/flip"
-          unzip -p "$RUNNER_TEMP/flip/weavero.xpi" manifest.json > "$RUNNER_TEMP/flip/manifest.json"
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::Not a version tag: $TAG"
+            exit 1
+          fi
 
-      # max_version reaches the shell only through the environment, checked.
       - name: Check the max version's form
         shell: bash
         env:
@@ -58,15 +60,60 @@ jobs:
             exit 1
           fi
 
-      - name: Write the manifests for it
-        env:
-          MAX_VERSION: ${{ github.event.inputs.max_version }}
-        run: node ci/flip-manifest.mjs "$RUNNER_TEMP/flip/weavero.xpi" "$RUNNER_TEMP/flip/manifest.json" "${{ github.event.inputs.tag }}" "$RUNNER_TEMP/flip/out"
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+
+      - name: Download the published XPI
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/flip"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern weavero.xpi --dir "$RUNNER_TEMP/flip"
+          unzip -p "$RUNNER_TEMP/flip/weavero.xpi" manifest.json > "$RUNNER_TEMP/flip/manifest.json"
+
+      - name: Write the manifests for it
+        shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag }}
+          MAX_VERSION: ${{ github.event.inputs.max_version }}
+        run: node ci/flip-manifest.mjs "$RUNNER_TEMP/flip/weavero.xpi" "$RUNNER_TEMP/flip/manifest.json" "$TAG" "$RUNNER_TEMP/flip/out"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: flip-out
+          path: ${{ runner.temp }}/flip/out
+          if-no-files-found: error
+          retention-days: 7
+
+  replace:
+    name: Replace them on the release tag
+    needs: manifests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # A required reviewer goes on this environment (repository settings).
+    environment: release
+    permissions:
+      contents: write     # upload the manifests to the `release` tag
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: flip-out
+          path: ${{ runner.temp }}/flip-out
+
+      # No checkout, no npm: only gh, with the files the first job wrote.
       - name: Replace them on the release tag
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          OUT: ${{ runner.temp }}/flip-out
         run: |
-          gh release upload release "$RUNNER_TEMP"/flip/out/update*.json --repo "$GITHUB_REPOSITORY" --clobber
-          for f in "$RUNNER_TEMP"/flip/out/update*.json; do echo "== $(basename "$f")"; cat "$f"; done
+          ls "$OUT"/update*.json >/dev/null
+          gh release upload release "$OUT"/update*.json --repo "$GITHUB_REPOSITORY" --clobber
+          for f in "$OUT"/update*.json; do echo "== $(basename "$f")"; cat "$f"; done

@@ -107,7 +107,8 @@ class _LinksMixin {
     _wvLkHookItemChange({ body, doc, item, setEnabled, setL10nArgs }: any) {
         const self: any = this;
         try {
-            const ok = !!(item && (
+            // Not for a feed item (backlinks.ts _wvBlHookItemChange, 2026-11-22).
+            const ok = !!(item && !item.isFeedItem && (
                 (item.isRegularItem && item.isRegularItem())
                 || (item.isAttachment && item.isAttachment())
                 || isNote(item) || isAnn(item)));
@@ -318,12 +319,12 @@ class _LinksMixin {
      *  attachment is its own), or why the reference is broken. */
     _wvLkRowHead(r: WvLkRow): string {
         const self: any = this;
-        if (!r.target) return r.broken === "library" ? "Library not in this profile" : "Item not found";
+        if (!r.target) return wvStr("weavero-bl-broken", { why: r.broken === "library" ? "library" : "item" });
         try {
             const owner = self._wvBlOwnerOf(r.target) || r.target;
             const t = isNote(owner) ? owner.getNoteTitle() : owner.getDisplayTitle();
-            return t || "(untitled)";
-        } catch (e) { return "(untitled)"; }
+            return t || wvStr("weavero-common-untitled");
+        } catch (e) { return wvStr("weavero-common-untitled"); }
     }
 
     /** What the reference is, as the Backlinks rows say it
@@ -434,7 +435,7 @@ class _LinksMixin {
                 head.appendChild(self._wvBlIcon(doc, src));
                 let title = "";
                 try { title = self._wvCountSourceLabel(src, item) || ""; } catch (e) { title = ""; }
-                title = title || "(untitled)";
+                title = title || wvStr("weavero-common-untitled");
                 wvHtmlEl(doc, "span", "wv-bl-title", title, head);
                 const chip = self._wvCountHeadChip(doc, head, src, item);
                 head.title = title + (chip ? " · " + chip : "");

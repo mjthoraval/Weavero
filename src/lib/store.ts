@@ -39,6 +39,12 @@ export interface WvStoreWriteOptions {
      *  overwriting it -- a rotation that happens only when the caller
      *  says the new document loses something (tab-groups). */
     rotateBak?: (prevDoc: any) => boolean;
+    /** Write the file compressed, as Firefox's session store writes its
+     *  `.jsonlz4` (IOUtils `compress: true`, the mozlz4 format; checked on
+     *  Zotero 10.0.8 / Firefox 140 and 11.0-beta.4 / Firefox 153, plan
+     *  work/citations-plan-2026-11-21.md M1). Read it back with
+     *  `decompress: true`. */
+    compress?: boolean;
 }
 
 export interface WvStoreReadOptions {
@@ -48,6 +54,34 @@ export interface WvStoreReadOptions {
     /** What to do with a file that reads but does not parse: move it aside
      *  (default) or keep it in place. */
     onParseError?: "move-aside" | "keep";
+    /** The file was written with `compress: true`. A file that is not mozlz4
+     *  (cut short, another program's) answers "parse-error", as a document
+     *  that does not parse: the read of its bytes works, the decompression
+     *  does not. */
+    decompress?: boolean;
+}
+
+// The STARTUP GATE (modules/backups.ts _wvBkBoot): while Weavero copies its data
+// before an update, or writes a staged restore back, every read, write and
+// removal of THIS instance waits for it. A store must never read a file a
+// restore is about to replace (its in-memory copy would later be written over
+// the restored one), and the update backup must copy a file before the new
+// version's first write or migration of it. Module scope, not the Zotero
+// global: each loaded bundle has its own gate, and a previous instance's
+// writes never wait for the next one's (the gate awaits THEM).
+let wvGate: Promise<void> | null = null;
+
+/** Resolves once the startup gate is open (at once when there is none). */
+export function wvStoreGate(): Promise<void> {
+    return wvGate || Promise.resolve();
+}
+
+/** Hold every store operation of this bundle until `p` settles (null: open). */
+export function wvStoreSetGate(p: Promise<any> | null): void {
+    if (!p) { wvGate = null; return; }
+    const g: Promise<void> = p.then(() => {}, () => {});
+    wvGate = g;
+    g.then(() => { if (wvGate === g) wvGate = null; });
 }
 
 /** `<data dir>/weavero`. */
@@ -55,7 +89,11 @@ export function wvStoreDir(): string {
     return PathUtils.join((Zotero as any).DataDirectory.dir, "weavero");
 }
 
-/** `<data dir>/weavero/<name>`. */
+/** `<data dir>/weavero/<name>`. `name` is ONE file name: a file in a
+ *  sub-folder goes through `PathUtils.join(wvStoreDir(), dir, file)`, as
+ *  feeds.ts and cited-by.ts build theirs -- on Windows PathUtils.join refuses
+ *  a component holding a slash (NS_ERROR_FILE_UNRECOGNIZED_PATH; People's
+ *  cache, 2026-11-22). */
 export function wvStorePath(name: string): string {
     return PathUtils.join(wvStoreDir(), name);
 }
@@ -82,6 +120,22 @@ export function wvStoreChain(path: string): Promise<void> {
     return c ? c.catch(() => {}) : Promise.resolve();
 }
 
+/** Every pending write of a file in folder `dir` (its whole tree) done, those
+ *  issued meanwhile too: what a removal of the folder waits for. A write not
+ *  awaited by its caller (cited-by.ts's entries files) would otherwise land
+ *  after the removal and bring the folder back (Remove Built Data,
+ *  sdt-build.ts _wvSbCleanRun). Bounded: a writer that never stops does not
+ *  hold the caller for good. */
+export async function wvStoreSettled(dir: string): Promise<void> {
+    const sep = (s: string) => s === "/" || s === "\\";
+    for (let round = 0; round < 50; round++) {
+        const t = wvStoreChainsIf();
+        const pending = t ? Object.keys(t).filter((p) => p === dir || (p.startsWith(dir) && sep(p.charAt(dir.length)))) : [];
+        if (!pending.length) return;
+        await Promise.all(pending.map((p) => (t as Record<string, Promise<void>>)[p].catch(() => {})));
+    }
+}
+
 /** Waits before each new attempt of a refused write (ms). On Windows the
  *  atomic replace -- the tmp file renamed over the store -- needs delete
  *  access to the target, and a process holding the file open without
@@ -91,8 +145,32 @@ export function wvStoreChain(path: string): Promise<void> {
  *  (bookmark-page-numbers.spec.js read outlines.json back without the
  *  settings just written, Zotero 10 full run, 2026-11-20; a 250 ms hold
  *  reproduced it). Guard: test/lib-store.spec.js "a write refused while
- *  another process holds the file". */
+ *  another process holds the file". The backups module's own writes, its
+ *  removals of a store and its folder rename take the same delays
+ *  (wvStoreRetry; 2026-11-28). */
 const WV_STORE_WRITE_RETRY_MS = [100, 300, 1000];
+
+/** Run `op`, and again after each refusal, WV_STORE_WRITE_RETRY_MS apart; the
+ *  last refusal is thrown. Each retry is logged ("[Weavero] <what> refused,
+ *  retrying (<path>)"). `settle`, when given, runs after every refusal: it
+ *  looks at what the refused attempt left and answers "done" (it landed after
+ *  all) or "retry", or throws to refuse a retry into a state the operation
+ *  must not run on. ONE copy of the retry: the stores' writes (wvStoreWrite)
+ *  and the backups' (modules/backups.ts), whose store replace, store removal
+ *  and folder rename had none -- one of them was refused once during a
+ *  staged restore, and the restore was undone and used up (backups.spec.js,
+ *  Zotero 11 full run, 2026-11-28). */
+export async function wvStoreRetry(what: string, path: string, op: () => Promise<any>, settle?: (e: any) => Promise<"done" | "retry">): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+        try { await op(); return; }
+        catch (e) {
+            if (settle && (await settle(e)) === "done") return;
+            if (attempt >= WV_STORE_WRITE_RETRY_MS.length) throw e;
+            try { Zotero.debug("[Weavero] " + what + " refused, retrying (" + path + "): " + e); } catch (_) {}
+            await new Promise((r) => setTimeout(r, WV_STORE_WRITE_RETRY_MS[attempt]));
+        }
+    }
+}
 
 /** Issue an atomic, serialised write of `doc` to `path`. The snapshot is
  *  taken NOW; the I/O runs on the path's chain. Returns the chain so a
@@ -101,24 +179,20 @@ export function wvStoreWrite(path: string, doc: any, opts?: WvStoreWriteOptions)
     const pretty = (opts && opts.pretty !== undefined) ? opts.pretty : 2;
     const snapshot = JSON.stringify(doc, null, pretty === null ? undefined : pretty);
     const rotate = opts && opts.rotateBak;
+    const wopts: any = { tmpPath: path + ".tmp" };
+    if (opts && opts.compress) wopts.compress = true;
     const chains = wvStoreChains();
     const next = (chains[path] || Promise.resolve())
         .catch(() => {})
         .then(async () => {
+            await wvStoreGate();
             await IOUtils.makeDirectory(PathUtils.parent(path) as string, { ignoreExisting: true });
             if (rotate) {
                 let prev: any = null;
                 try { prev = JSON.parse(await IOUtils.readUTF8(path)); } catch (e) {}   // none / unreadable: nothing to rotate
                 try { if (rotate(prev)) await IOUtils.copy(path, path + ".bak"); } catch (e) {}
             }
-            for (let attempt = 0; ; attempt++) {
-                try { await IOUtils.writeUTF8(path, snapshot, { tmpPath: path + ".tmp" }); return; }
-                catch (e) {
-                    if (attempt >= WV_STORE_WRITE_RETRY_MS.length) throw e;
-                    try { Zotero.debug("[Weavero] store write refused, retrying (" + path + "): " + e); } catch (_) {}
-                    await new Promise((r) => setTimeout(r, WV_STORE_WRITE_RETRY_MS[attempt]));
-                }
-            }
+            await wvStoreRetry("store write", path, () => IOUtils.writeUTF8(path, snapshot, wopts));
         })
         .catch((e: any) => { try { Zotero.debug("[Weavero] store write failed (" + path + "): " + e); } catch (_) {} })
         .then(() => {
@@ -140,26 +214,36 @@ export async function wvStoreRead(path: string, opts?: WvStoreReadOptions): Prom
     const retries = (opts && opts.retries != null) ? opts.retries : 1;
     const retryDelay = (opts && opts.retryDelay != null) ? opts.retryDelay : 300;
     const onParseError = (opts && opts.onParseError) || "move-aside";
+    const lz4 = !!(opts && opts.decompress);
+    try { await wvStoreGate(); } catch (e) {}
     try { await wvStoreChain(path); } catch (e) {}
     let exists = false;
     try { exists = await IOUtils.exists(path); } catch (e) {}
     if (!exists) return { status: "missing", doc: null };
     // Zotero's own reader (not IOUtils.readUTF8): what every store used, and
-    // what the suite can stub to simulate a transient read failure.
-    let text: string | null = null, readErr: any = null;
-    for (let attempt = 0; attempt <= retries && text == null; attempt++) {
-        try { text = String(await (Zotero as any).File.getContentsAsync(path)); readErr = null; }
+    // what the suite can stub to simulate a transient read failure. A
+    // compressed file goes through IOUtils, the only reader of mozlz4.
+    let text: string | null = null, readErr: any = null, undecodable = false;
+    for (let attempt = 0; attempt <= retries && text == null && !undecodable; attempt++) {
+        try {
+            text = lz4 ? String(await IOUtils.readUTF8(path, { decompress: true } as any)) : String(await (Zotero as any).File.getContentsAsync(path));
+            readErr = null;
+        }
         catch (e) {
             readErr = e;
+            // Its bytes read, its content does not decompress: a corrupt file,
+            // never a lock (a lock refuses the plain read as well).
+            if (lz4) { try { await IOUtils.read(path, { maxBytes: 16 } as any); undecodable = true; break; } catch (e2) {} }
             if (attempt < retries) await new Promise((r) => setTimeout(r, retryDelay));
         }
     }
-    if (text == null) {
+    if (text == null && !undecodable) {
         try { Zotero.debug("[Weavero] store unreadable, kept (" + path + "): " + readErr); } catch (_) {}
         return { status: "io-error", doc: null, error: readErr };
     }
     try {
-        return { status: "ok", doc: JSON.parse(text) };
+        if (undecodable) throw readErr;
+        return { status: "ok", doc: JSON.parse(text as string) };
     }
     catch (e) {
         let movedTo: string | undefined;
@@ -174,6 +258,7 @@ export async function wvStoreRead(path: string, opts?: WvStoreReadOptions): Prom
 
 /** Remove `path` (absent is fine), after its pending writes. */
 export async function wvStoreRemove(path: string): Promise<void> {
+    try { await wvStoreGate(); } catch (e) {}
     try { await wvStoreChain(path); } catch (e) {}
     try { await IOUtils.remove(path, { ignoreAbsent: true }); } catch (e) {}
 }

@@ -80,21 +80,22 @@ describe("Weavero — File / Edit menubar entries for the window commands", () =
 		try { close(filePopup); close(editPopup); } catch (e) {}
 	});
 
-	it("File: New Tab / New Reader Window / New Main Window lead the menu, hamburger order, then a separator", () => {
+	it("File: New Tab / New Reader Window / New Main Window lead the menu, hamburger order, then People (people2), then a separator", () => {
 		open(filePopup);
 		try {
 			const kids = Array.from(filePopup.children);
-			assert.deepEqual(kids.slice(0, 4).map(el => el.dataset.wvMenubar),
-				["newtab", "newreaderwin", "newmainwin", "sep"], "first four children");
+			assert.deepEqual(kids.slice(0, 5).map(el => el.dataset.wvMenubar),
+				["newtab", "newreaderwin", "newmainwin", "people", "sep"], "first five children");
 			assert.strictEqual(shown(kids[0]), "New Tab…");
 			assert.strictEqual(kids[0].getAttribute("acceltext"), accel + "T");
 			assert.strictEqual(shown(kids[1]), "New Reader Window…");
 			assert.strictEqual(kids[1].getAttribute("acceltext"), null, "no shortcut for the picker");
 			assert.strictEqual(shown(kids[2]), "New Main Window");
 			assert.strictEqual(kids[2].getAttribute("acceltext"), accel + "N");
-			assert.strictEqual(kids[3].localName, "menuseparator");
-			assert.strictEqual(kids[4].id, "menu_newItem", "Zotero's own New Item follows");
-			assert.deepEqual(visible(filePopup), ["newtab", "newreaderwin", "newmainwin", "sep"]);
+			assert.strictEqual(shown(kids[3]), "Researchers");
+			assert.strictEqual(kids[4].localName, "menuseparator");
+			assert.strictEqual(kids[5].id, "menu_newItem", "Zotero's own New Item follows");
+			assert.deepEqual(visible(filePopup), ["newtab", "newreaderwin", "newmainwin", "people", "sep"]);
 		}
 		finally { close(filePopup); }
 	});
@@ -124,9 +125,9 @@ describe("Weavero — File / Edit menubar entries for the window commands", () =
 		for (let i = 0; i < 3; i++) { open(filePopup); close(filePopup); open(editPopup); close(editPopup); }
 		open(filePopup); open(editPopup);
 		try {
-			assert.strictEqual(mine(filePopup).length, 4, "File: three entries + separator, once");
-			assert.deepEqual(Array.from(filePopup.children).slice(0, 4).map(el => el.dataset.wvMenubar),
-				["newtab", "newreaderwin", "newmainwin", "sep"]);
+			assert.strictEqual(mine(filePopup).length, 5, "File: four entries + separator, once");
+			assert.deepEqual(Array.from(filePopup.children).slice(0, 5).map(el => el.dataset.wvMenubar),
+				["newtab", "newreaderwin", "newmainwin", "people", "sep"]);
 			assert.strictEqual(mine(editPopup).length, 1, "Edit: one entry, once");
 		}
 		finally { close(filePopup); close(editPopup); }
@@ -136,7 +137,7 @@ describe("Weavero — File / Edit menubar entries for the window commands", () =
 		Zotero.Prefs.set("weavero.newMainWindow", false);
 		try {
 			open(filePopup); open(editPopup);
-			assert.deepEqual(visible(filePopup), ["newtab", "newreaderwin", "sep"]);
+			assert.deepEqual(visible(filePopup), ["newtab", "newreaderwin", "people", "sep"]);
 			assert.ok(byKey(editPopup, "advsearchwin").hidden, "Advanced Search in New Window hidden");
 			close(filePopup); close(editPopup);
 			// The one switch for a second main window (v0.20.2): the openers
@@ -159,20 +160,20 @@ describe("Weavero — File / Edit menubar entries for the window commands", () =
 		finally { Zotero.Prefs.set("weavero.newMainWindow", true); }
 		open(filePopup); open(editPopup);
 		try {
-			assert.deepEqual(visible(filePopup), ["newtab", "newreaderwin", "newmainwin", "sep"]);
+			assert.deepEqual(visible(filePopup), ["newtab", "newreaderwin", "newmainwin", "people", "sep"]);
 			assert.strictEqual(byKey(editPopup, "advsearchwin").hidden, !z10());
 		}
 		finally { close(filePopup); close(editPopup); }
 	});
 
-	it("the Tabs and Windows master off hides all of them, separator included", () => {
+	it("the Tabs and Windows master off hides all of them, separator included -- People (its own setting) stays, first", () => {
 		Zotero.Prefs.set("weavero.enableTabsAndWindows", false);
 		try {
 			open(filePopup); open(editPopup);
-			assert.deepEqual(visible(filePopup), []);
+			assert.deepEqual(visible(filePopup), ["people"]);
 			assert.ok(byKey(editPopup, "advsearchwin").hidden);
-			assert.strictEqual(Array.from(filePopup.children).filter(el => !el.hidden)[0].id, "menu_newItem",
-				"nothing of Weavero's shows above New Item");
+			assert.deepEqual(Array.from(filePopup.children).filter(el => !el.hidden).slice(0, 2).map(el => el.dataset.wvMenubar || el.id), ["people", "menu_newItem"],
+				"nothing else of Weavero's shows above New Item");
 		}
 		finally {
 			close(filePopup); close(editPopup);
@@ -222,8 +223,8 @@ describe("Weavero — File / Edit menubar entries for the window commands", () =
 			filePopup.openPopup(anchor, "after_start", 0, 0, false, false);
 			const ok = await Promise.race([shown.then(() => true), new Promise(r => win.setTimeout(() => r(false), 3000))]);
 			if (!ok) this.skip();   // popups do not open in this runner window
-			assert.deepEqual(visible(filePopup), [], "nothing of Weavero's in the mirrored File");
-			assert.strictEqual(mine(filePopup).length, 4, "entries exist, hidden -- not removed");
+			assert.deepEqual(visible(filePopup), ["people"], "nothing of Weavero's window entries in the mirrored File (People has no twin there)");
+			assert.strictEqual(mine(filePopup).length, 5, "entries exist, hidden -- not removed");
 		}
 		finally {
 			try { filePopup.hidePopup(); } catch (e) {}
@@ -233,7 +234,7 @@ describe("Weavero — File / Edit menubar entries for the window commands", () =
 		// From the menubar (a synthetic showing has no anchor, like the real one
 		// on macOS has #fileMenu): all back.
 		open(filePopup);
-		try { assert.deepEqual(visible(filePopup), ["newtab", "newreaderwin", "newmainwin", "sep"]); }
+		try { assert.deepEqual(visible(filePopup), ["newtab", "newreaderwin", "newmainwin", "people", "sep"]); }
 		finally { close(filePopup); }
 	});
 
@@ -515,7 +516,7 @@ describe("Weavero — File / Edit menubar entries for the window commands", () =
 		open(filePopup); open(editPopup);
 		try {
 			assert.strictEqual(wv._wvMenubarMenuIDs.length, 3);
-			assert.strictEqual(mine(filePopup).length, 4);
+			assert.strictEqual(mine(filePopup).length, 5);
 			assert.strictEqual(mine(editPopup).length, 1);
 		}
 		finally { close(filePopup); close(editPopup); }

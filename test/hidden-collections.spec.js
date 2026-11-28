@@ -1356,14 +1356,27 @@ describe("Weavero — hidden collections (per window)", () => {
             // feb95875 and 9432ee07) while this machine, Zotero 10.0.6 and one
             // xvfb run repainted it -- the repaint is asked for here, and the
             // message carries what the row holds if it still disagrees.
-            const mgrArrow = () => { const el = rowEl(mw, "left", iLA); return el ? (el.querySelector(".twisty") ? "arrow" : (el.querySelector(".spacer-twisty") ? "spacer" : "none")) : "no row"; };
-            const mgrDiag = () => { try { const el = rowEl(mw, "left", iLA); const t = L.tree; return JSON.stringify({ row: el ? (el.querySelector(".cell-text") || {}).textContent : null, cls: el ? el.className : null, rows: L.rowCount, mounted: !!t, jsWindow: !!(t && t._jsWindow), rendered: t && t._jsWindow && t._jsWindow._renderedRows ? t._jsWindow._renderedRows.size : null, hidden: mw.document.hidden, w: mw.outerWidth, h: mw.outerHeight }); } catch (e) { return "diag err " + e; } };
+            const arrowOf = (el) => el ? (el.querySelector(".twisty") ? "arrow" : (el.querySelector(".spacer-twisty") ? "spacer" : "none")) : "no row";
+            const mgrDiag = () => { try { const el = rowEl(mw, "left", iLA); const t = L.tree; return JSON.stringify({ row: el ? (el.querySelector(".cell-text") || {}).textContent : null, cls: el ? el.className : null, rows: L.rowCount, mounted: !!t, jsWindow: !!(t && t._jsWindow), rendered: t && t._jsWindow && t._jsWindow._renderedRows ? t._jsWindow._renderedRows.size : null, hidden: mw.document.hidden, w: mw.outerWidth, h: mw.outerHeight, emptyNow: L.isContainerEmpty(iLA), wrapped: !!(L.isContainerEmpty && L.isContainerEmpty._wvTag), at: idxOf(L, A) }); } catch (e) { return "diag err " + e; } };
             try { if (L.tree) L.tree.invalidate(); } catch (e) {}
-            // On CI the live row stays stale even after that request (the
-            // Ubuntu beta job again on 2026-11-03, window visible, 8 rows
-            // rendered): there the rule above is the check, here also the row.
+            // The live row is read where the TABLE keeps it, right after that
+            // request -- the rebuild is synchronous, and a DOM read never waits
+            // for a paint, so a poll adds nothing. The 5-s poll of the row found
+            // by its id read the arrow on both CI runners (2026-10-22, 11-03) and
+            // twice here, the window visible (a companions run 2026-11-07, a
+            // Zotero 10 full run 2026-11-20): not a late paint, since
+            // the DOM would have shown the rebuilt row at once. So two checks,
+            // each telling a different defect: the table's own row draws an
+            // arrow (renderItem disagrees with the rule above), or the row the
+            // manager shows under A's id is not the table's (a stale row).
+            // CI keeps only the rule above until one of the two is seen there.
             if (!Services.env.exists("CI")) {
-                assert.isTrue(await wvT.waitFor(() => mgrArrow() === "spacer", 5000), "no arrow there: " + mgrArrow() + " " + mgrDiag());
+                const jw = L.tree && L.tree._jsWindow;
+                const own = jw && typeof jw.getElementByIndex === "function" ? jw.getElementByIndex(iLA) : null;
+                assert.strictEqual(arrowOf(own), "spacer", "the table's own row for A, rebuilt, draws no arrow: " + mgrDiag());
+                const shownUnderId = [...mw.document.querySelectorAll(".wv-hid-mgr-left #collection-tree-row-" + iLA)]
+                    .map(el => el === own ? "the table's" : "another (" + arrowOf(el) + ", " + el.className + ", " + ((el.querySelector(".cell-text") || {}).textContent) + ")");
+                assert.deepEqual(shownUnderId, ["the table's"], "the row the manager shows under A's id is the table's own: " + mgrDiag());
             }
             assert.isFalse(R.isContainerEmpty(idxOf(R, A)), "on the Hidden side A is the context row holding A1: an arrow");
             await wv._wvHidShow(win, LIB(), [wv._wvHidKey(A1)]);

@@ -185,6 +185,28 @@ describe("Weavero — any tab pinned by Zotero's own Pin Tab", function () {
         assert.strictEqual(s.refused, 0, "no refused move: " + JSON.stringify(s));
     });
 
+    // MJT 2026-11-25: "Pinning the Researchers tab shows the wrong icon" -- the pinned
+    // mirror took its icon from the tab's item, and the Researchers tab has none: it
+    // kept Zotero's blank document. FAILS on 1.3.0-peoplenet.7.
+    it("a pinned tab without an item (Researchers) shows its own icon, the person, not a blank page", async function () {
+        if (typeof wv._wvPeopleTabOpen !== "function") this.skip();
+        const pt = wv._wvPeopleTabOpen(win, { select: false });
+        if (!pt) this.skip();
+        try {
+            ZT.setPinned(pt.id, true); apply(); await settle("pin Researchers");
+            const m = mirror(pt.id);
+            assert.ok(m, "drawn as a pinned icon");
+            const ic = m.querySelector(".tab-icon");
+            assert.equal(ic.getAttribute("data-item-type"), "wvpeople", "its own tab's icon");
+            assert.include(win.getComputedStyle(ic).backgroundImage, "data:image/svg+xml", "the person, not Zotero's document.svg");
+        }
+        finally {
+            try { ZT.setPinned(pt.id, false); } catch (er) {}
+            try { wv._wvPeopleTabClose(win); } catch (er) {}
+            apply(); await settle("Researchers closed");
+        }
+    });
+
     it("a Weavero pin of an item is handed to Zotero, once", async function () {
         wv._pinnedTabsAdd(b.libraryID, b.key);   // what 1.0.4, a session, a stored window or a transfer leaves
         apply(); await settle("hand over");

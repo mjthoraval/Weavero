@@ -20,12 +20,17 @@ import { makeInvisibleRe, TRAILING_RE as TRAILING_RE_LIB } from "./lib/text";
 import { wvLivePlugin } from "./lib/live";
 import { wvTimeout, wvClearTimeout, wvSleep } from "./lib/timers";
 import { wvInjectStyle, wvRemoveStyle, wvFilterTileRules, wvViewIdsCss, wvDataColor, wvSetIconFill } from "./lib/style";
-import { wvWrap, wvUnwrap, wvWrapLayers } from "./lib/wrap";
-import { wvWhenWindowLoaded, wvBoolAttrOn, wvReaderMenuEvent, wvWithin, wvIsTextEntry, wvHtmlEl, WV_XHTML_NS } from "./lib/dom";
+import { wvWrap, wvUnwrap, wvWrapLayers, wvWrapSettle } from "./lib/wrap";
+import { wvWhenWindowLoaded, wvBoolAttrOn, wvReaderMenuEvent, wvWithin, wvPlaceOnPages, wvIsTextEntry, wvHtmlEl, WV_XHTML_NS } from "./lib/dom";
 import { wvListen, wvUnlisten, wvUnlistenAll, wvListenKeys, wvUnlistenAllOn, wvSweepTagOnChrome, wvListenRegistry } from "./lib/listen";
 import { wvUIRootsPrune, wvReleaseClosedMainWindow, wvClaimMainWindowObservers, wvForgetMainWindowObservers, wvWatchWindowObservers, wvUIRootsRehook } from "./lib/ui-roots";
-import { wvStoreDir, wvStorePath, wvStoreChain, wvStoreWrite, wvStoreRead, wvStoreRemove } from "./lib/store";
-import { wvLibraryTabPinned, wvZoteroPinsLibraryTabs, wvZoteroPinsTabs, wvViewEl, wvViewEls, wvItemsTreeEl, wvItemsTreeEls, wvLibraryViews, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvWindowArgs, wvAdvSearchWindowArgs, wvAdvSearchGeometry, wvOpenLibraryView, wvPaneSizesRead, wvPaneSizesWrite, wvPlanWindowTransfer, wvSelectLibraryTab, wvGeomToPane, wvTransferItemIDs, wvWinType, wvWin32Style } from "./lib/windows";
+import { wvStoreDir, wvStorePath, wvStoreChain, wvStoreWrite, wvStoreRead, wvStoreRemove, wvStoreGate, wvStoreSetGate } from "./lib/store";
+import { wvTraceFilePush, wvTraceFilePath, wvTraceFileRecords } from "./lib/trace-file";
+import { wvBkClassify, wvBkBackedUp, wvBkValidRel, wvBkValidReason, wvBkFolderName, wvBkParseName, wvBkLocalDay, wvBkRetention, wvBkPrefExcluded,
+    wvBkRecords, wvBkDiffRecords, wvBkSettingsRecords, wvBkSha256, wvBkSha256Sync, wvBkUtf8, wvBkFromUtf8,
+    WV_BK_SCHEMA, WV_BK_FILE_CAP, WV_BK_TOTAL_CAP, WV_BK_KEEP_OTHER } from "./lib/backup";
+import { backupsMethods, wvBkPrefsSnapshot, wvBkPrefsApply } from "./modules/backups";
+import { wvLibraryTabPinned, wvZoteroPinsLibraryTabs, wvZoteroPinsTabs, wvViewEl, wvViewEls, wvItemsTreeEl, wvItemsTreeEls, wvLibraryViews, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvWindowArgs, wvAdvSearchWindowArgs, wvAdvSearchGeometry, wvOpenLibraryView, wvPaneSizesRead, wvPaneSizesWrite, wvPlanWindowTransfer, wvSelectLibraryTab, wvGeomToPane, wvTransferItemIDs, wvWinType } from "./lib/windows";
 import { wvAccel, wvAccelAny, wvOpenWhere } from "./lib/keys";
 import { wvCloneFor } from "./lib/xray";
 import { wvMenuItem, wvMenuSeparator, wvMenuItemByLabel } from "./lib/menu";
@@ -37,20 +42,58 @@ import { wvAltReveal, wvMenubarSafeBefore } from "./lib/menubar";
 
 /** The shared helpers, published as `Zotero.Weavero.lib` so the suite can
  *  exercise them directly (they are bundled, not otherwise reachable). */
-const WV_LIB = { wvLivePlugin, wvLibraryTabPinned, wvZoteroPinsLibraryTabs, wvZoteroPinsTabs, wvViewEl, wvViewEls, wvItemsTreeEl, wvItemsTreeEls, wvLibraryViews, wvViewIdsCss, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvWindowArgs, wvAdvSearchWindowArgs, wvAdvSearchGeometry, wvOpenLibraryView, wvPaneSizesRead, wvPaneSizesWrite, wvSelectLibraryTab, wvPlanWindowTransfer, wvGeomToPane, wvTransferItemIDs, wvWinType, wvIsTextEntry, wvAccel, wvAccelAny, wvOpenWhere, wvCloneFor, wvMenuItem, wvMenuSeparator, wvMenuItemByLabel, wvStr, wvAttr, wvL10n, wvL10nStub, wvFtlEnsure, wvDataLabel, wvZoteroLabel, wvZoteroText, wvSvgEl, WV_SVG_NS,
-    WV_LINK_CHAIN_PATHS, WV_BACKLINK_ARROW_PATH, WV_OUTLINK_ARROW_PATH, WV_LOOPLINK_ARROW_PATH, WV_BROKENLINK_MARK_PATH, WV_ZLINK_KIND_PATH, WV_CITE_KIND_PATH, WV_REF_MARK_TIGHT_VIEWBOX, WV_EXTLINK_PATHS, WV_LINK_MENU_ICON, wvLinkGlyphEl, wvLinkGlyphMarkup, wvLinkGlyphUri, wvHtmlEl, WV_XHTML_NS, WV_LINK_PALETTE, wvLinkVars, wvLinkColor, wvLinkClassRules, wvOutsideClick, wvReachableDocs, wvDismissOff, wvAltReveal, wvMenubarSafeBefore, wvTimeout, wvClearTimeout, wvSleep, wvInjectStyle, wvRemoveStyle, wvFilterTileRules, wvWrap, wvUnwrap, wvWrapLayers,
-    wvWhenWindowLoaded, wvBoolAttrOn, wvReaderMenuEvent, wvWithin,
+const WV_LIB = { wvCiteZonesPlan, wvLivePlugin, wvLibraryTabPinned, wvZoteroPinsLibraryTabs, wvZoteroPinsTabs, wvViewEl, wvViewEls, wvItemsTreeEl, wvItemsTreeEls, wvLibraryViews, wvViewIdsCss, wvStoredFromSaved, wvFirstDocTab, wvIsLibraryTabID, wvMainWins, wvNativeWindows, wvWindowArgs, wvAdvSearchWindowArgs, wvAdvSearchGeometry, wvOpenLibraryView, wvPaneSizesRead, wvPaneSizesWrite, wvSelectLibraryTab, wvPlanWindowTransfer, wvGeomToPane, wvTransferItemIDs, wvWinType, wvIsTextEntry, wvAccel, wvAccelAny, wvOpenWhere, wvCloneFor, wvMenuItem, wvMenuSeparator, wvMenuItemByLabel, wvStr, wvAttr, wvL10n, wvL10nStub, wvFtlEnsure, wvDataLabel, wvZoteroLabel, wvZoteroText, wvSvgEl, WV_SVG_NS,
+    WV_LINK_CHAIN_PATHS, WV_BACKLINK_ARROW_PATH, WV_OUTLINK_ARROW_PATH, WV_LOOPLINK_ARROW_PATH, WV_BROKENLINK_MARK_PATH, WV_ZLINK_KIND_PATH, WV_CITE_KIND_PATH, WV_REF_MARK_TIGHT_VIEWBOX, WV_EXTLINK_PATHS, WV_LINK_MENU_ICON, wvLinkGlyphEl, wvLinkGlyphMarkup, wvLinkGlyphUri, wvHtmlEl, WV_XHTML_NS, WV_LINK_PALETTE, wvLinkVars, wvLinkColor, wvLinkClassRules, wvOutsideClick, wvReachableDocs, wvDismissOff, wvAltReveal, wvMenubarSafeBefore, wvTimeout, wvClearTimeout, wvSleep, wvInjectStyle, wvRemoveStyle, wvFilterTileRules, wvWrap, wvUnwrap, wvWrapLayers, wvWrapSettle,
+    wvWhenWindowLoaded, wvBoolAttrOn, wvReaderMenuEvent, wvWithin, wvPlaceOnPages,
     wvListen, wvUnlisten, wvUnlistenAll, wvListenKeys, wvListenRegistry,
     wvStoreDir, wvStorePath, wvStoreChain, wvStoreWrite, wvStoreRead, wvStoreRemove,
+    wvTraceFilePush, wvTraceFilePath, wvTraceFileRecords,
     wvScreenLayout, wvScreenNames, wvSpanCombos, wvSpanByRect,
+    wvRefCompact, wvRefCleanDOI, wvRefDOIs, wvRefYears, wvRefVolPages, wvRefIndexNew, wvRefIndexPut, wvRefIndexDrop, wvRefIndexGet, wvRefSelfOf, wvRefMatch, wvRefApproxDistance, wvRefFirstAuthorIs,
+    wvRefList, wvRefListFlagged, wvRefListDetect, wvRefListLabel, wvRefListIsTitle, wvRefListIsFrontMatter,
+    wvRefWebOwnLink, wvRefWebPick, wvRefWebTitle, wvRefWebFirstAuthor, wvRefWebScholarUrl, wvRefWebCrossrefUrl, wvRefWebBare, wvRefDoiUrl, WV_REF_WEB_MIN_SCORE,
+    wvCbIndexNew, wvCbPut, wvCbDrop, wvCbCiters, wvCbEntryOf, wvCbShardOf, wvCbShardDoc, wvCbShardLoad, wvCbSection, wvCbSections, wvCbChunks, wvCbTextEntries,
+    wvCbEntryTokens, wvCbFilterOf, wvCbFilterOfEntries, wvCbFilterEncode, wvCbFilterDecode, wvCbFilterHas, wvCbItemKeys, wvCbMayCite,
+    wvCbRun, wvCbSectionsSteps, wvCbChunksSteps, wvCbFilterOfSteps, wvCbFilterEncodeSteps, WvCbTokenSink,
+    wvCbEntryKeys, wvCbEntryKeysSteps, wvCbEntriesUsable, wvCbWorks, WV_CB_FIRST_ROWS, WV_CB_PAGE_ROWS,
+    wvLfFold, wvLfParse, wvLfPass, wvLfChips, wvLfChipsNone, wvLfOrder, wvLfOrderSteps, wvLfMarks, wvLfSortParse, wvLfSortStr,
+    WV_REFS_PAINT_TEXT_MS,
+    wvSbOrder, wvSbQueue, wvSbMemoKey, wvSbMemoPrune, wvSbPages, wvSbEstimate, wvSbEta, wvSbDurationRange, wvSbBytesRange, WV_SB_MODEL,
+    WV_FD_WEIGHTS, wvFdParseRadar, wvFdAlertParse, wvFdAlertMatches, wvFdNameParse, wvFdNameMatches, wvFdTokenize, wvFdRelevance, wvFdScore, wvFdImportAlerts, wvFdExportDoc,
+    wvFdPlainText, wvFdIsNotice, wvFdNearLevel,
+    wvGaParse, wvGaPictureURL, wvGaSniff, wvGaFit, wvGaDataURI, wvGaAttr, WV_GA_LB_MARGIN, WV_GA_MAX_PICS,
     wvFileExt, wvIsRunnableFile, wvIsImageFileName, wvIsWebURL,
-    wvDataColor, wvSetIconFill, wvIsRemoteFileURL, wvRemoteFileHost, wvRemoteFileTarget };
+    wvDataColor, wvSetIconFill, wvIsRemoteFileURL, wvRemoteFileHost, wvRemoteFileTarget, wvRefsUrlsIn,
+    wvSdtModule, wvSdtOpen, wvSdtReader, wvSdtVersionOk, wvOutlineFromSdt, wvOlSameTree, wvOlLostSpaces,
+    WV_DL_FORMAT, WV_DL_V, WV_DL_RULES, WV_DL_DEPS, wvDlChainFps, wvDlMetaSig, wvDlStale, wvDlFlatten, wvDlUnflatten, wvDlOutlineSdt, wvDlComputeParts, wvDlAssemble,
+    wvDlPageLabels, wvDlLabelRepairs, wvDlLabelsOf, wvOpenedInstance, wvZoteroAccelShiftCommand, wvScopeNukedAtUnload, wvIsPlainData,
+    WV_PP_FACTS, wvPpMerge, wvPpAct, wvPpEdit, wvPpShown, wvPpGroups, wvPpNameMatch, wvPpSame, wvPpIds, wvPpToday, wvPpSplitName,
+    wvPpNewRecord, wvPpContactNorm, wvPpContactCheck, wvPpCustomNorm, wvPpCustomLabels, wvPpContactSorted, wvPpEventNorm, wvPpEventsSorted, wvPpEventSuggest, wvPpEventDate, wvPpEventLink, wvPpEvidenceFromLink, wvPpEvidenceLink, wvPpNormalizeRecord, wvPpRecordIs, wvPpNameAs, wvPpNameTextAs, wvPpCountryName, wvPpCountryCode, wvPpCountryOf,
+    WV_PP_SORTS, WV_PP_TOGGLES, WV_PP_MENUS, wvPpInfos, wvPpListFilter, wvPpListSort, wvPpTableSort, wvPpLinkQueue, wvPpDateChecks, wvPpDuplicates, wvPpMergeInto, wvPpInitials, wvPpMenuValues, wvPpFiltersParse, wvPpFilterKeeps, wvPpDecade,
+    wvPpLibIndexBuild, wvPpLibStatOf,
+    wvPpTagFilter, wvPpTagList, wvPpTagToggle, wvPpTagColorSet, wvPpTagSpelling, wvPpTagSuggest,
+    wvLtLayout, wvLtBranches, wvLtSiblings, wvLtDedupe, wvLtHistNew, wvLtHistGo, wvLtHistMove, wvLtCsv, wvLtRelType, wvLtWhen, wvLtDate, wvLtPlaceLabels, wvAftSource, wvAftUnitKey, wvAftWords, wvAftFirstAgrees,
+    wvPsFold, wvPsQueryWords, wvPsMatch,
+    WV_PP_API, WV_PP_WEB, wvPpCandidates, wvPpAuthorOfWork, wvPpFromOpenAlexAuthor, wvPpFromOrcid, wvPpFromThesesPerson,
+    wvPpThesesCandidates, wvPpIdrefIds, wvPpWorks, wvPpWorksHidden, wvPpWorkIsDoiOnly, wvPpWorkItemType, wvPpMetrics, wvPpS2AuthorOf, wvPpS2Figures, wvPpScholarId, wvPpScholarFigures, wvPpWikidataQuery, wvPpFromWikidata, wvPpFollowEntries, WV_PP_TAB_TYPE,
+    wvStoreGate, wvStoreSetGate,
+    wvBkClassify, wvBkBackedUp, wvBkValidRel, wvBkValidReason, wvBkFolderName, wvBkParseName, wvBkLocalDay, wvBkRetention, wvBkPrefExcluded,
+    wvBkRecords, wvBkDiffRecords, wvBkSettingsRecords, wvBkSha256, wvBkSha256Sync, wvBkUtf8, wvBkFromUtf8, wvBkPrefsSnapshot, wvBkPrefsApply,
+    WV_BK_SCHEMA, WV_BK_FILE_CAP, WV_BK_TOTAL_CAP, WV_BK_KEEP_OTHER };
+import { WV_PP_FACTS, wvPpMerge, wvPpAct, wvPpEdit, wvPpShown, wvPpGroups, wvPpNameMatch, wvPpSame, wvPpIds, wvPpToday, wvPpSplitName,
+    wvPpNewRecord, wvPpContactNorm, wvPpContactCheck, wvPpCustomNorm, wvPpCustomLabels, wvPpContactSorted, wvPpEventNorm, wvPpEventsSorted, wvPpEventSuggest, wvPpEventDate, wvPpEventLink, wvPpEvidenceFromLink, wvPpEvidenceLink, wvPpNormalizeRecord, wvPpRecordIs, wvPpNameAs, wvPpNameTextAs, wvPpCountryName, wvPpCountryCode } from "./lib/people-record";
+import { WV_PP_API, WV_PP_WEB, wvPpCandidates, wvPpAuthorOfWork, wvPpFromOpenAlexAuthor, wvPpFromOrcid, wvPpFromThesesPerson,
+    wvPpThesesCandidates, wvPpIdrefIds, wvPpWorks, wvPpWorksHidden, wvPpWorkIsDoiOnly, wvPpWorkItemType, wvPpMetrics, wvPpS2AuthorOf, wvPpS2Figures, wvPpScholarId, wvPpScholarFigures, wvPpWikidataQuery, wvPpFromWikidata, wvPpFollowEntries, wvPpCountryOf } from "./lib/people-sources";
+import { WV_PP_SORTS, WV_PP_TOGGLES, WV_PP_MENUS, wvPpInfos, wvPpListFilter, wvPpListSort, wvPpTableSort, wvPpLinkQueue, wvPpDateChecks, wvPpDuplicates, wvPpMergeInto, wvPpInitials, wvPpMenuValues, wvPpFiltersParse, wvPpFilterKeeps, wvPpDecade,
+    wvPpLibIndexBuild, wvPpLibStatOf } from "./lib/people-list";
+import { peopleMethods, WV_PP_TAB_TYPE } from "./modules/people";
 import { wvFileExt, wvIsRunnableFile, wvIsImageFileName } from "./lib/open-guard";
 import { URL_SCHEMES, urlMethods } from "./modules/url";
 import { annotationMethods } from "./modules/annotation";
 import { tabsMethods } from "./modules/tabs";
 import { noteEditorMethods } from "./modules/note-editor";
 import { noteNavMethods } from "./modules/note-nav";
+import { noteCiteMethods } from "./modules/note-cite";
 import { readerMethods } from "./modules/reader";
 import { paneMethods } from "./modules/pane";
 import { filterMethods } from "./modules/filter";
@@ -64,6 +107,9 @@ import { attachmentsMethods } from "./modules/attachments";
 import { backlinksMethods } from "./modules/backlinks";
 import { linksMethods } from "./modules/links";
 import { titleLinesMethods } from "./modules/title-lines";
+import { expandScrollMethods } from "./modules/expand-scroll";
+import { citeZonesMethods } from "./modules/cite-zones";
+import { wvCiteZonesPlan } from "./lib/cite-zones";
 import { countPopupsMethods } from "./modules/count-popups";
 import { tabSplitMethods } from "./modules/tab-split";
 import { tabSplitFollowMethods } from "./modules/tab-split-follow";
@@ -76,8 +122,52 @@ import { windowWiringMethods } from "./modules/window-wiring";
 import { windowStateMethods } from "./modules/window-state";
 import { maxSpanMethods } from "./modules/max-span";
 import { previewHighlightMethods } from "./modules/preview-highlight";
+import { refsMethods, WV_REFS_PAINT_TEXT_MS, refsUrlsIn as wvRefsUrlsIn } from "./modules/refs";
+import { citedByMethods } from "./modules/cited-by";
+import { listFilterMethods } from "./modules/list-filter";
+import { sdtBuildMethods } from "./modules/sdt-build";
+import { docLayerMethods } from "./modules/doc-layer";
+import { wvSbOrder, wvSbQueue, wvSbMemoKey, wvSbMemoPrune, wvSbPages, wvSbEstimate, wvSbEta, wvSbDurationRange, wvSbBytesRange, WV_SB_MODEL } from "./lib/sdt-build";
+import { wvLfFold, wvLfParse, wvLfPass, wvLfChips, wvLfChipsNone, wvLfOrder, wvLfOrderSteps, wvLfMarks, wvLfSortParse, wvLfSortStr } from "./lib/list-filter";
+import { feedsMethods } from "./modules/feeds";
+import { feedsBadgeMethods } from "./modules/feeds-badge";
+import { paneLockMethods } from "./modules/pane-lock";
+import { groupFoldMethods } from "./modules/group-fold";
+import { searchFoldersMethods } from "./modules/search-folders";
+import { bookmarksPaneMethods } from "./modules/bookmarks-pane";
+import { collFunnelMethods } from "./modules/coll-funnel";
+import { feedsGraphicalMethods } from "./modules/feeds-graphical";
+import { advsearchFeedMethods } from "./modules/advsearch-feed";
+import { progressWindowMethods } from "./modules/progress-window";
+import { wvGaParse, wvGaPictureURL, wvGaSniff, wvGaFit, wvGaDataURI, wvGaAttr, WV_GA_LB_MARGIN, WV_GA_MAX_PICS } from "./lib/graphical-abstract";
+import { WV_FD_WEIGHTS, wvFdParseRadar, wvFdAlertParse, wvFdAlertMatches, wvFdNameParse, wvFdNameMatches, wvFdTokenize, wvFdRelevance, wvFdScore, wvFdImportAlerts, wvFdExportDoc, wvFdPlainText, wvFdIsNotice, wvFdNearLevel } from "./lib/feed-score";
+import { wvCbIndexNew, wvCbPut, wvCbDrop, wvCbCiters, wvCbEntryOf, wvCbShardOf, wvCbShardDoc, wvCbShardLoad, wvCbSection, wvCbSections, wvCbChunks, wvCbTextEntries,
+    wvCbEntryTokens, wvCbFilterOf, wvCbFilterOfEntries, wvCbFilterEncode, wvCbFilterDecode, wvCbFilterHas, wvCbItemKeys, wvCbMayCite,
+    wvCbRun, wvCbSectionsSteps, wvCbChunksSteps, wvCbFilterOfSteps, wvCbFilterEncodeSteps, WvCbTokenSink,
+    wvCbEntryKeys, wvCbEntryKeysSteps, wvCbEntriesUsable, wvCbWorks, WV_CB_FIRST_ROWS, WV_CB_PAGE_ROWS } from "./lib/ref-citedby";
+import { wvRefCompact, wvRefCleanDOI, wvRefDOIs, wvRefYears, wvRefVolPages, wvRefIndexNew, wvRefIndexPut, wvRefIndexDrop, wvRefIndexGet, wvRefSelfOf, wvRefMatch, wvRefApproxDistance, wvRefFirstAuthorIs } from "./lib/ref-match";
+import { wvRefList, wvRefListFlagged, wvRefListDetect, wvRefListLabel, wvRefListIsTitle, wvRefListIsFrontMatter } from "./lib/ref-list";
+import { wvRefWebOwnLink, wvRefWebPick, wvRefWebTitle, wvRefWebFirstAuthor, wvRefWebScholarUrl, wvRefWebCrossrefUrl, wvRefWebBare, wvRefDoiUrl, WV_REF_WEB_MIN_SCORE } from "./lib/ref-web";
 import { wvScreenLayout, wvScreenNames, wvSpanCombos, wvSpanByRect } from "./lib/screens";
+import { wvSdtModule, wvSdtOpen, wvSdtReader, wvSdtVersionOk } from "./lib/sdt";
+import { wvOutlineFromSdt } from "./lib/outline-sdt";
+import { wvOlSameTree, wvOlLostSpaces } from "./lib/outline-build";
+import { WV_DL_FORMAT, WV_DL_V, WV_DL_RULES, WV_DL_DEPS, wvDlChainFps, wvDlMetaSig, wvDlStale, wvDlFlatten, wvDlUnflatten, wvDlOutlineSdt, wvDlComputeParts, wvDlAssemble } from "./lib/doc-layer";
+import { wvDlPageLabels, wvDlLabelRepairs, wvDlLabelsOf } from "./lib/doc-layer-pl";
+import { wvOpenedInstance, wvZoteroAccelShiftCommand, wvScopeNukedAtUnload, wvIsPlainData } from "./lib/compat";
 import { prefsTableMethods } from "./modules/prefs-table";
+import { peopleLineageMethods } from "./modules/people-lineage";
+import { peopleCardsMethods } from "./modules/people-cards";
+import { peopleTableMethods } from "./modules/people-table";
+import { peoplePaneMethods } from "./modules/people-pane";
+import { peopleTagsMethods } from "./modules/people-tags";
+import { wvPpTagFilter, wvPpTagList, wvPpTagToggle, wvPpTagColorSet, wvPpTagSpelling, wvPpTagSuggest } from "./lib/people-tags";
+import { peopleStripMethods } from "./modules/people-strip";
+import { peopleCmarkMethods } from "./modules/people-cmark";
+import { peopleToolbarMethods } from "./modules/people-toolbar";
+import { wvPsFold, wvPsQueryWords, wvPsMatch } from "./lib/people-strip";
+import { wvLtLayout, wvLtBranches, wvLtSiblings, wvLtDedupe, wvLtHistNew, wvLtHistGo, wvLtHistMove, wvLtCsv, wvLtRelType, wvLtWhen, wvLtDate, wvLtPlaceLabels } from "./lib/people-tree";
+import { wvAftSource, wvAftUnitKey, wvAftWords, wvAftFirstAgrees } from "./lib/people-aft";
 import { pluginApiMethods } from "./modules/plugin-api";
 import { WV_PREF_OBSERVERS } from "./modules/prefs-observers";
 import { WV_LINK_PALETTE, wvLinkVars, wvLinkColor, wvLinkClassRules, wvIsWebURL, wvIsRemoteFileURL, wvRemoteFileHost, wvRemoteFileTarget } from "./lib/links";
@@ -246,7 +336,7 @@ class WeaveroPlugin {
             .map((m) => (m == null ? "" : String(m).trim())).filter(Boolean);
         if (!arr.length) return;
         Zotero.debug("[Weavero] link warning — " + arr.join(" | "));
-        this._wvToast("Weavero — broken link", arr, {
+        this._wvToast(wvStr("weavero-misc-link-toast-title"), arr, {
             id: "wv-link-toast",
             accent: "amber",
             autoCloseMs: 11000,
@@ -358,7 +448,7 @@ class WeaveroPlugin {
                 box.style.cursor = "default";
             }
             else {
-                box.title = "Click to dismiss";
+                box.title = wvStr("weavero-misc-toast-dismiss");
                 box.addEventListener("click", () => {
                     try { box.remove(); } catch (e) {}
                     try { if (typeof o.onDismiss === "function") o.onDismiss(); }
@@ -465,8 +555,8 @@ class WeaveroPlugin {
                 const groupLib = Zotero.Groups.getLibraryIDFromGroupID(gid);
                 if (!groupLib) {
                     this._showLinkWarning(Number.isFinite(gid)
-                        ? "This link points to a group library you don't have access to (group #" + gid + ")."
-                        : "This link points to a group library that couldn't be resolved.");
+                        ? wvStr("weavero-misc-link-group-no-access", { group: String(gid) })
+                        : wvStr("weavero-misc-link-group-unresolved"));
                     return;
                 }
             }
@@ -529,7 +619,7 @@ class WeaveroPlugin {
                 } else if (kind === "collections" && rest[1]) {
                     const col = this._wvResolveCollectionByKey(lib, rest[1]);
                     if (!col) {
-                        this._showLinkWarning("The linked collection no longer exists (key " + rest[1] + ").");
+                        this._showLinkWarning(wvStr("weavero-misc-link-collection-missing", { key: rest[1] }));
                     } else {
                         let trashed = false;
                         try { trashed = !!(col as any).deleted; } catch (e) {}
@@ -542,7 +632,7 @@ class WeaveroPlugin {
                         } catch (e) { Zotero.debug("[Weavero] select collection err: " + e); }
                         win.focus();
                         if (trashed) {
-                            this._showLinkWarning("The linked collection is in the Trash (key " + rest[1] + ").");
+                            this._showLinkWarning(wvStr("weavero-misc-link-collection-trashed", { key: rest[1] }));
                         }
                     }
                     return;
@@ -555,7 +645,7 @@ class WeaveroPlugin {
                             win.focus();
                         }
                     } else {
-                        this._showLinkWarning("The linked saved search no longer exists (key " + rest[1] + ").");
+                        this._showLinkWarning(wvStr("weavero-misc-link-search-missing", { key: rest[1] }));
                     }
                     return;
                 } else {
@@ -582,11 +672,9 @@ class WeaveroPlugin {
                             && typeof pane.collectionsView.selectCollection === "function") {
                             await pane.collectionsView.selectCollection(col.id);
                         } else if (!col) {
-                            warnings.push("The collection in this link no longer exists (key "
-                                + scopeKey + ") — selecting the item(s) without it.");
+                            warnings.push(wvStr("weavero-misc-link-scope-collection-missing", { key: scopeKey }));
                         } else if (colTrashed) {
-                            warnings.push("The collection in this link is in the Trash (key "
-                                + scopeKey + ") — selecting the item(s) without it.");
+                            warnings.push(wvStr("weavero-misc-link-scope-collection-trashed", { key: scopeKey }));
                         }
                     } catch (e) { Zotero.debug("[Weavero] select scope-collection err: " + e); }
                 } else if (scopeKind === "searches" && scopeKey) {
@@ -596,8 +684,7 @@ class WeaveroPlugin {
                             && typeof pane.collectionsView.selectSearch === "function") {
                             await pane.collectionsView.selectSearch(search.id);
                         } else if (!search) {
-                            warnings.push("The saved search in this link no longer exists (key "
-                                + scopeKey + ") — selecting the item(s) without it.");
+                            warnings.push(wvStr("weavero-misc-link-scope-search-missing", { key: scopeKey }));
                         }
                     } catch (e) { Zotero.debug("[Weavero] select scope-search err: " + e); }
                 }
@@ -620,18 +707,17 @@ class WeaveroPlugin {
                     const list = missingKeys.join(", ");
                     if (!ids.length) {
                         warnings.push(missingKeys.length > 1
-                            ? "None of the " + missingKeys.length + " linked items exist anymore (" + list + ")."
-                            : "The linked item no longer exists (key " + list + ").");
+                            ? wvStr("weavero-misc-link-items-missing-all", { count: missingKeys.length, keys: list })
+                            : wvStr("weavero-misc-link-item-missing", { key: list }));
                     } else {
-                        warnings.push(missingKeys.length + " of " + itemKeys.length
-                            + " linked items no longer exist (" + list + ") — selected the rest.");
+                        warnings.push(wvStr("weavero-misc-link-items-missing-some", { count: missingKeys.length, total: itemKeys.length, keys: list }));
                     }
                 }
                 if (trashedKeys.length) {
                     const list = trashedKeys.join(", ");
                     warnings.push(trashedKeys.length > 1
-                        ? trashedKeys.length + " of the linked items are in the Trash (" + list + ")."
-                        : "The linked item is in the Trash (key " + list + ").");
+                        ? wvStr("weavero-misc-link-items-trashed", { count: trashedKeys.length, keys: list })
+                        : wvStr("weavero-misc-link-item-trashed", { key: list }));
                 }
                 // If a scope was navigated to, leave the view there; the
                 // (possibly trashed) item still gets selected within it
@@ -682,8 +768,8 @@ class WeaveroPlugin {
                 }
                 let item = openItem || this._wvResolveItemByKey(getLib(), lastKey, true);
                 if (!item) {
-                    this._showLinkWarning("The file this link points to no longer exists (key "
-                        + (openItem === null && zotfilePage === null ? lastKey : parts[0]) + ").");
+                    this._showLinkWarning(wvStr("weavero-misc-link-file-missing",
+                        { key: openItem === null && zotfilePage === null ? lastKey : parts[0] }));
                     return;
                 }
                 // A PAPER's key (the form Copy Open Link writes since
@@ -804,8 +890,7 @@ class WeaveroPlugin {
                     }
                 }
                 if (openTrashed) {
-                    this._showLinkWarning("The linked file's attachment is in the Trash (key "
-                        + lastKey + ") — opened anyway.");
+                    this._showLinkWarning(wvStr("weavero-misc-link-file-trashed", { key: lastKey }));
                 }
                 return;
             }
@@ -865,7 +950,7 @@ class WeaveroPlugin {
                 if (!key) return;
                 const note = this._wvResolveItemByKey(lib, key, true);
                 if (!note) {
-                    this._showLinkWarning("The note this link points to no longer exists (key " + key + ").");
+                    this._showLinkWarning(wvStr("weavero-misc-link-note-missing", { key }));
                     return;
                 }
                 let noteTrashed = false;
@@ -878,7 +963,7 @@ class WeaveroPlugin {
                         if (noteHeading && where === "beside") {
                             try { (this as any)._wvNoteRevealHeading(host, note.id, noteHeading, "tab"); } catch (e) {}
                         }
-                        if (noteTrashed) this._showLinkWarning("The linked note is in the Trash (key " + key + ") — opened anyway.");
+                        if (noteTrashed) this._showLinkWarning(wvStr("weavero-misc-link-note-trashed", { key }));
                         return;
                     }
                 }
@@ -894,7 +979,7 @@ class WeaveroPlugin {
                     try { (this as any)._wvNoteRevealHeading(win, note.id, noteHeading, "tab"); } catch (e) {}
                 }
                 if (noteTrashed) {
-                    this._showLinkWarning("The linked note is in the Trash (key " + key + ") — opened anyway.");
+                    this._showLinkWarning(wvStr("weavero-misc-link-note-trashed", { key }));
                 }
                 return;
             }
@@ -1005,8 +1090,14 @@ class WeaveroPlugin {
     _getEnableOutlineTextHighlight() {
         return this._wvPref("enableOutlineTextHighlight");
     }
+    /** The funnel above the reader (the toolbar's "Filter annotations").
+     *  Default ON; its box sits beside the pane funnel's, under Extras
+     *  (`_wvReaderFunnelShown`). Until 2026-11-24 it had no switch at all. */
+    _getEnableReaderAnnFilter() {
+        return this._wvPref("enableReaderAnnFilter");
+    }
     /** The annotations-pane funnel itself (issue #43). Default ON; gated by
-     *  the Filters master like the reader funnel. */
+     *  Extras, like the reader funnel (`_wvAnnPaneFunnelShown`). */
     _getEnableAnnPaneFilter() {
         return this._wvPref("enableAnnPaneFilter");
     }
@@ -1375,48 +1466,19 @@ class WeaveroPlugin {
         } catch (e) {}
     }
 
-    /** The Settings window's minimize / maximize buttons follow Weavero (MJT
-     *  2026-10-26, "Option 3"): Weavero's opener creates the window with
-     *  them (minimizable=yes, dialog=no, below); Zotero's makes a close-only
-     *  dialog; and a window keeps the buttons it was created with -- Gecko's
-     *  chromeFlags never reach the native frame (tried) -- so a live enable
-     *  or disable left the wrong ones (two screenshots). Windows only: the
-     *  native style bits through user32, then a frame refresh. A maximized
-     *  window is restored before it loses its maximize button. True when the
-     *  window has the requested buttons. Guard: test/prefs-window-buttons.spec.js. */
-    _wvWindowButtons(win: any, on: boolean, tries = 0): boolean {
-        if (!Zotero.isWin || !win || win.closed) return false;
-        const BOXES = 0x20000 | 0x10000;   // WS_MINIMIZEBOX | WS_MAXIMIZEBOX
-        // Before Gecko shows a new window (no WS_VISIBLE yet, ~0.5 s after
-        // its load on the dev instance), a style written to it does not
-        // stick: the watcher's write at load was lost live while the runner
-        // passed (2026-10-26). Try again until it is shown -- never once
-        // this instance has stopped.
-        const cur = wvWin32Style(win);
-        if (on && cur !== null && !(cur & 0x10000000)) {
-            if (tries < 40) {
-                try {
-                    win.setTimeout(() => {
-                        try { if (!(this as any)._wvDestroyed) this._wvWindowButtons(win, on, tries + 1); } catch (e) {}
-                    }, 100);
-                } catch (e) {}
-            }
-            return false;
-        }
-        return wvWin32Style(win, (style) => {
-            const want = on ? (style | BOXES) : (style & ~BOXES);
-            if (want !== style && !on) {
-                try { if (win.windowState === win.STATE_MAXIMIZED) win.restore(); } catch (e) {}
-            }
-            return want;
-        }) !== null;
-    }
-
-    /** The native style (GWL_STYLE) of a window; null off Windows. */
-    _wvWindowStyle(win: any, next?: (style: number) => number, open?: (ctypes: any) => any): number | null {
-        if (!Zotero.isWin) return null;
-        return wvWin32Style(win, next, open);
-    }
+    // No window's minimize / maximize buttons are set or taken off while it is
+    // open (MJT 2026-11-27, "1a, drop the live change"; for the Plugins
+    // Manager: "Yes, same as Settings"). A window keeps the buttons it was
+    // created with -- Gecko's chromeFlags never reach the native frame -- so
+    // since 2026-10-26 Weavero had rewritten the native style bits of an open
+    // Settings window or Plugins Manager on every enable and disable, through
+    // user32 calls: native code, which the Zotero Plugins Atlas grades "Use
+    // with care". Now the buttons come only from how the window is opened:
+    // Weavero's openers (the openPreferences patch below; pane.ts
+    // _wvPMOpenViewerNonDialog) say dialog=no while Weavero runs, Zotero's own
+    // make a close-only dialog once it has stopped. A window open across an
+    // enable or a disable keeps its buttons until it is closed.
+    // Guard: test/prefs-window-buttons.spec.js; test/native-calls.spec.js.
 
     /** Every open Settings window (windowtype "zotero:pref"). */
     _wvPrefsWindows(fn: (w: any) => void) {
@@ -1440,11 +1502,17 @@ class WeaveroPlugin {
     _setupPrefsWindowWatcher() {
         try {
             if (this._wvPrefsWindowObserver) return;
+            // No minimize / maximize buttons set here (MJT 2026-11-27, "1a,
+            // drop the live change"): a Settings window gets them from
+            // Weavero's opener when it opens (the openPreferences patch in
+            // init), and one opened before Weavero started keeps Zotero's
+            // close-only title bar until it is closed. Setting them on an open
+            // window took native code (user32 calls), behind the Zotero
+            // Plugins Atlas's "Use with care" with the startup restore's
+            // z-order. Guard: test/prefs-window-buttons.spec.js (which also
+            // reads this function's text for any native path).
             const tryApply = (win: any) => {
                 try { if (this._getEnableVisualExtras()) this._wvPrefsAlignSearch(win); } catch (e) {}
-                // Whatever opened it (Zotero's own opener too), a Settings
-                // window has both buttons while Weavero runs.
-                try { if (win && win.document && wvWinType(win.document) === "zotero:pref") this._wvWindowButtons(win, true); } catch (e) {}
             };
             const obs = {
                 observe: (subject: any, topic: string) => {
@@ -1472,8 +1540,11 @@ class WeaveroPlugin {
                 try { Services.obs.removeObserver(this._wvPrefsWindowObserver, "chrome-document-global-created"); } catch (e) {}
                 this._wvPrefsWindowObserver = null;
             }
-            // Weavero stopping: back to Zotero's close-only dialog.
-            this._wvPrefsWindows((w: any) => { this._wvPrefsUnalignSearch(w); this._wvWindowButtons(w, false); });
+            // Weavero stopping: the search box's cap goes. The window's
+            // minimize / maximize buttons stay until it is closed; Settings
+            // opens as Zotero's close-only dialog after that (MJT 2026-11-27,
+            // "1a": no live change, no native code; test/prefs-window-buttons.spec.js).
+            this._wvPrefsWindows((w: any) => { this._wvPrefsUnalignSearch(w); });
         } catch (e) {
             Zotero.debug("[Weavero] _teardownPrefsWindowWatcher err: " + e);
         }
@@ -1901,7 +1972,7 @@ class WeaveroPlugin {
                 relBtn.className = BTN_CLASS + " " + BTN_SIDEBAR_CLASS
                     + " wv-btn-relations";
                 const count = this._getAnnotationRelatedItems(ann).length;
-                relBtn.title = count + " Related";
+                relBtn.title = wvStr("weavero-count-related", { count });
                 relBtn.appendChild(this._makeRelationsSvg(outerDoc));
                 relBtn.addEventListener("click", e => {
                     e.stopPropagation(); e.preventDefault();
@@ -2446,9 +2517,10 @@ class WeaveroPlugin {
         // open) until the focused window's tab has painted. Must be installed
         // before Zotero.Reader.init's uiReady reopen loop fires.
         try { (this as any)._wvHoldReaderWindowOpens(); } catch (e) {}
-        // Restore takeover, save side: at quit Zotero's session records a
-        // library-only anchor and no reader windows (Weavero's store carries
-        // the real workspace and restores it itself next boot).
+        // Restore takeover, save side: at quit Zotero's session records no
+        // reader windows (Weavero's store carries them and restores them
+        // itself next boot). The main window's tabs stay in Zotero's own
+        // session, in full (tabs.ts _wvPatchTabsGetState).
         try { (this as any)._wvPatchReaderGetWindowStates(); } catch (e) {}
         // Register pref defaults FIRST so native settings-pane binding (and our
         // own getters) see the right initial values.
@@ -2474,6 +2546,11 @@ class WeaveroPlugin {
         //     minimizable=yes and dialog=no, which on Windows greys
         //     out the maximize button and hides the minimize button.
         //     We save the original and restore it in destroy().
+        //     Since 2026-11-27 (MJT, "1a, drop the live change") this opener
+        //     is the only thing that gives Settings its buttons: a window
+        //     open across an enable or a disable keeps the ones it has until
+        //     it is closed, and no native code restyles it (it took native
+        //     user32 calls). Guard: test/prefs-window-buttons.spec.js.
         try {
             const Internal: any = Zotero.Utilities.Internal;
             if (typeof Internal.openPreferences === "function"
@@ -2744,7 +2821,7 @@ class WeaveroPlugin {
                     const opened = Reader._wvOrigOpen.call(Reader, itemID, location, opts);
                     // Its focus call comes once it has loaded: the restore
                     // guard's to fight, never the user's choice.
-                    if ((self as any)._wvBgRestoreOn) Promise.resolve(opened).then((r: any) => (self as any)._wvBgMarkReaderLoad(r), () => {});
+                    if ((self as any)._wvBgRestoreOn) Promise.resolve(opened).then((r: any) => (self as any)._wvBgMarkReaderLoad(wvOpenedInstance(r)), () => {});
                     return opened;
                 };
                 Reader.open = function (itemID: any, location: any, opts: any = {}) {
@@ -3452,10 +3529,10 @@ class WeaveroPlugin {
                         }
                     } catch (e) {}
                 })
-                // Restore takeover, boot side: Zotero only restored the library
-                // tab — rebuild the anchor's real tab set first (it's the window
-                // the user is looking at). Needs the boot store doc, which the
-                // restore-map loader stashes.
+                // Restore takeover, boot side: fill in the anchor's tab set from
+                // Weavero's store first (it's the window the user is looking at);
+                // tabs Zotero already restored are skipped (_wvRestoreAnchorTabs).
+                // Needs the boot store doc, which the restore-map loader stashes.
                 .then(() => (async () => {
                     try {
                         await (this as any)._wvWTLoadRestoreMap();
@@ -3735,6 +3812,22 @@ class WeaveroPlugin {
         // Backlinks (issue #60): the item notifier and the item-pane section;
         // after the windows' wiring, which links weavero.ftl into each.
         try { (this as any)._wvBlInit(); } catch (e) { Zotero.debug("[Weavero] backlinks init err: " + e); }
+        // References in your library (modules/refs.ts): the reader's References
+        // section, after Item Links and Backlinks; the watch on its settings.
+        try { (this as any)._wvRefsInit(); } catch (e) { Zotero.debug("[Weavero] references init err: " + e); }
+        // Cited by (modules/cited-by.ts): its section after References, the
+        // watch on its setting, the index's first pass a little later.
+        try { (this as any)._wvCbInit(); } catch (e) { Zotero.debug("[Weavero] cited by init err: " + e); }
+        // Build Zotero's structure data for all PDFs (modules/sdt-build.ts, OFF by
+        // default): the watch on its settings; a run a little later when it is on.
+        try { (this as any)._wvSbInit(); } catch (e) { Zotero.debug("[Weavero] structure data init err: " + e); }
+        // Feeds (modules/feeds.ts): the Relevance column and the feed views'
+        // sort, the Why relevant section, the scores' first pass a little later.
+        try { (this as any)._wvFdInit(); } catch (e) { Zotero.debug("[Weavero] feeds init err: " + e); }
+        // People (modules/people.ts): the author rows' right-click entries, the
+        // tab observer, the People tabs recorded before the restart, the watch
+        // on its setting.
+        try { (this as any)._wvPeopleInit(); } catch (e) { Zotero.debug("[Weavero] people init err: " + e); }
         // The scope buttons on Zotero's Tags and Related sections (Links and
         // Backlinks carry theirs from their registration).
         try { (this as any)._wvScopeInit(); } catch (e) { Zotero.debug("[Weavero] pane scope init err: " + e); }
@@ -4021,11 +4114,11 @@ class WeaveroPlugin {
             const other: any = (Zotero.getMainWindows() || []).find((w: any) => w !== _window && !w.closed);
             if (other) other.setTimeout(() => { try { const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; if (p && !p._wvDestroyed) p._wvHidMgrRefreshTitles(); } catch (e) {} }, 300);
         } catch (e) {}
-        try { (this as any)._wvUnwireLoadURIHook(_window); } catch (e) {}
+        // The window's wiring, undone by its table (ADR-0001, window-wiring.ts
+        // _wvUnwireMainWindow): the entries that declare their undo. The lines
+        // below undo the entries not migrated yet.
+        try { (this as any)._wvUnwireMainWindow(_window, { shutdown: !!Services.startup.shuttingDown }); } catch (e) {}
         try { (this as any)._wvUnwireItemCountBreakdown(_window); } catch (e) {}
-        try { (this as any)._wvUnwireLastViewCloseGuard(_window); } catch (e) {}
-        try { (this as any)._wvUnpatchTabsGetState(_window); } catch (e) {}
-        try { (this as any)._wvUnwireQuickCopyMultiTab(_window); } catch (e) {}
         // The background-restore guard's pick, if it is this window.
         try { (this as any)._wvBgForgetWindow(_window); } catch (e) {}
         // The split follow's previews: their readers' pref observers are Zotero's,
@@ -4190,6 +4283,12 @@ class WeaveroPlugin {
         // and twisties into the tabs-menu list on every reload (thirteen
         // chevrons in the search field, MJT 2026-10-07). Native elements we
         // merely decorated keep the element and lose just the wv- classes.
+        // An item-pane section (`[data-pane]`: Zotero's boxes, a plugin's
+        // `item-pane-custom-section`, its `collapsible-section`) is never
+        // Weavero's shell, whatever its classes -- Weavero sets no data-pane:
+        // a locked custom section (id-less, `wv-panelock-locked` its only
+        // class) was unwrapped here, its header left loose in the item pane
+        // and its wrapper gone (2026-11-22, fdcrash agent).
         // Guard: test/strip-chrome-text.spec.js.
         try {
             const wrapsNative = (el: any) => {
@@ -4207,7 +4306,7 @@ class WeaveroPlugin {
                     const classes = [...el.classList];
                     const wv = classes.filter((c) => c.startsWith("wv-"));
                     if (!wv.length) continue;
-                    if (wv.length === classes.length && !el.id) {
+                    if (wv.length === classes.length && !el.id && !el.hasAttribute("data-pane")) {
                         if (wrapsNative(el)) {
                             const p = el.parentNode;
                             if (p) { while (el.firstChild) p.insertBefore(el.firstChild, el); }
@@ -4353,9 +4452,25 @@ class WeaveroPlugin {
         try { (this as any)._wvUnwireFilterCacheInvalidator(); } catch (e) {}
         try { (this as any)._wvUnwireDefaultChildPrefWatch(); } catch (e) {}
         try { (this as any)._wvUnwireDefaultAttachment(); } catch (e) {}
+        // The ▷ marker on the items list's renderer, whatever the unwire above
+        // returned early for (attachments.ts _wvUnwireDefattMarker).
+        try { (this as any)._wvUnwireDefattMarker(); } catch (e) {}
         try {
             for (const w of Zotero.getMainWindows()) {
-                (this as any)._wvUnwireDefaultChildMenu(w);
+                try { (this as any)._wvUnwireDefaultChildMenu(w); } catch (e) {}
+                // The item pane's part: the Attachments class layer, the
+                // right-click, the marks (attachments.ts _wvDefPaneUnwire).
+                try { (this as any)._wvDefPaneUnwire(w); } catch (e) {}
+            }
+        } catch (e) {}
+        // Each main window's wiring, undone by its table (ADR-0001,
+        // window-wiring.ts _wvUnwireMainWindow): the entries that declare their
+        // undo, in reverse table order. The hand-written lines below undo the
+        // entries not migrated yet.
+        try {
+            const shutdown = !!Services.startup.shuttingDown;
+            for (const w of wvMainWins()) {
+                try { (this as any)._wvUnwireMainWindow(w, { shutdown }); } catch (e) {}
             }
         } catch (e) {}
         // The item-pane message wrap also lives on a window-owned element
@@ -4364,22 +4479,22 @@ class WeaveroPlugin {
         try {
             for (const w of Zotero.getMainWindows()) {
                 // Each unwire guarded on its own: one throwing must not leave
-                // the next one's wrap (e.g. the macOS openPopupAtScreen
-                // prototype wrap) in place (pre-release review 2026-10-05).
+                // the next one's wrap in place (pre-release review 2026-10-05,
+                // the macOS openPopupAtScreen prototype wrap -- the table's
+                // "column-picker-native-fix" now, whose pass guards each entry
+                // the same way).
                 try { (this as any)._wvUnwireItemCountBreakdown(w); } catch (e) {}
-                try { (this as any)._wvUnwireLastViewCloseGuard(w); } catch (e) {}
-                try { (this as any)._wvUnpatchTabsGetState(w); } catch (e) {}
-                try { (this as any)._wvUnwireQuickCopyMultiTab(w); } catch (e) {}
-                try { (this as any)._wvUnwireColumnPickerNativeFix(w); } catch (e) {}
                 try { (this as any)._wvUnwireEditUndoMenu(w); } catch (e) {}
-                try { (this as any)._wvUnwireMainNewTabShortcut(w); } catch (e) {}
-                // Unwired only on a window's unload until 1.0.5-dev.7: both stayed
-                // wrapped after a disable (zzz-disable-leftovers.spec.js).
-                try { (this as any)._wvUnwireLoadURIHook(w); } catch (e) {}
+                // Unwired only on a window's unload until 1.0.5-dev.7: it stayed
+                // wrapped after a disable, as the loadURI hook did (zzz-disable-
+                // leftovers.spec.js; that one is the table's now, "loaduri-hook").
                 try { (this as any)._wvUnwireMultiOpenConsolidation(w); } catch (e) {}
                 try { (this as any)._wvUnguardCollectionSelectCrossWindow(w); } catch (e) {}
                 try { (this as any)._wvUnguardContextPaneCrossWindow(w); } catch (e) {}
                 try { (this as any)._wvUnwrapMoveToNewWindowHook(w); } catch (e) {}
+                // The Advanced Search new-window listeners on the document
+                // (pane.ts): only a rewire took them off before.
+                try { (this as any)._wvUnwireAdvSearchNewWindow(w); } catch (e) {}
             }
         } catch (e) {}
         // 0. FINAL store capture, then freeze — teardown below dismantles
@@ -4570,6 +4685,14 @@ class WeaveroPlugin {
                         (this as any)._wvDisableCloseExtraWindows();
                     }
                 } catch (e) { Zotero.debug("[Weavero] disable-close err: " + e); }
+                // The sections locked at the bottom first (pane-lock.ts; again
+                // below, idempotent): the chrome strip's class sweep took a
+                // locked plugin section's wrapper -- an id-less
+                // `item-pane-custom-section` whose only class was
+                // `wv-panelock-locked` -- for a Weavero shell and unwrapped it,
+                // leaving its header loose in the item pane (citations.22 ->
+                // .23 upgrade, 2026-11-22; the sweep now spares `[data-pane]`).
+                try { (this as any)._wvPaneLockDestroy(); } catch (e) {}
                 const wins = wvMainWins();
                 for (const w of wins) {
                     try { this._revertCompactTitleBar(w); } catch(e) {}
@@ -4594,6 +4717,7 @@ class WeaveroPlugin {
                     // later call covers only the focused window.
                     try { this._teardownLibrariesBoxHighlight(w); } catch (e) {}
                     try { (this as any)._wvRemoveTitleLines(w); } catch (e) {}
+                    try { (this as any)._wvRemoveExpandScroll(w); } catch (e) {}
                     try { this._wvStripWindowChrome(w); } catch (e) {}
                 }
                 // Every reader window, deck windows included
@@ -4609,34 +4733,70 @@ class WeaveroPlugin {
                 // strip (right pane + splitter, tooltips, context menus,
                 // injected styles) — sweep them like the main windows, else a
                 // disable leaves a dead right-pane skeleton in each one.
-                // DEFERRED with a liveness check (same pattern as the window
-                // close): the sweep's wv-id removal rips the deck's realized
-                // reader browsers out of the DOM, and running it on every HOT
-                // RELOAD left the reader window full of blank zombie tabs. On
-                // a reload the plugin is back within milliseconds → skip; on a
-                // real disable it runs 1.5s later (the deferred window-close
-                // usually removes the windows first anyway).
-                try {
-                    const setT = wvTimeout;
-                    setT(() => {
-                        try {
-                            if ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) return;   // reload — keep the decks
-                            const ren = Services.wm.getEnumerator("zotero:reader");
-                            while (ren.hasMoreElements()) {
-                                const rw: any = ren.getNext();
-                                try { this._wvStripWindowChrome(rw); } catch (e) {}
-                            }
-                        } catch (e) {}
-                    }, 1500);
-                } catch (e) {}
+                // DEFERRED (same pattern as the window close): the sweep's
+                // wv-id removal rips the deck's realized reader browsers out of
+                // the DOM, and running it on every HOT RELOAD left the reader
+                // window full of blank zombie tabs. On a real disable it runs
+                // 1.5s later (the deferred window-close usually removes the
+                // windows first anyway), unless the plugin is enabled again by
+                // then.
+                // ONLY for a real disable or uninstall (reason 4/6). A reload
+                // and an update pass ADDON_UPGRADE/DOWNGRADE (7/8: Zotero's
+                // plugins.js onInstalling, getVersionChangeReason, 10 and 11;
+                // AddonManager reload() of the runner's temporary add-on
+                // reinstalls it). Until 2026-11-27 they armed it too, and the
+                // liveness check alone told a reload from a disable: a Zotero
+                // 10 reload slower than 1.5 s let it strip every reader window
+                // -- the item pane's sections and a deck window's note editor
+                // gone until a restart (dev.99 triage). Guard:
+                // test/zz-reload-reader-strip.spec.js.
+                if (reason === 4 /* ADDON_DISABLE */ || reason === 6 /* ADDON_UNINSTALL */) {
+                    try {
+                        const setT = wvTimeout;
+                        setT(() => {
+                            try {
+                                if ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) return;   // enabled again — keep the decks
+                                const ren = Services.wm.getEnumerator("zotero:reader");
+                                while (ren.hasMoreElements()) {
+                                    const rw: any = ren.getNext();
+                                    try { this._wvStripWindowChrome(rw); } catch (e) {}
+                                }
+                            } catch (e) {}
+                        }, 1500);
+                    } catch (e) {}
+                }
             } else {
                 Zotero.debug("[Weavero] destroy: app shutting down, skipping compact-title-bar revert");
             }
         } catch (e) {}
         this._unregisterItemTreeColumns();
         try { (this as any)._wvBgRestoreStop(); } catch (e) {}
+        // The reader-window restore map's 30 s expiry (reader.ts
+        // _wvWTLoadRestoreMap), on the sandbox clock.
+        try { wvClearTimeout((this as any)._wvWTRestoreExpiryT); (this as any)._wvWTRestoreExpiryT = null; } catch (e) {}
         try { (this as any)._wvScopeDestroy(); } catch (e) {}
         try { (this as any)._wvBlDestroy(); } catch (e) {}
+        // References in your library (modules/refs.ts): the item observer and
+        // the index; each reader page's part goes in _wvReaderPageTeardown.
+        try { (this as any)._wvRefsDestroy(); } catch (e) {}
+        // Cited by (modules/cited-by.ts): the section, the background pass, the
+        // item observer, the index in memory.
+        try { (this as any)._wvCbDestroy(); } catch (e) {}
+        // The structure-data run (modules/sdt-build.ts): its timers, observers, memo.
+        try { (this as any)._wvSbDestroy(); } catch (e) {}
+        // The document layer (modules/doc-layer.ts): its worker terminated.
+        try { (this as any)._wvDlDestroy(); } catch (e) {}
+        // The long lists' filter line (modules/list-filter.ts): its sheet, menu, state.
+        try { (this as any)._wvLfDestroy(); } catch (e) {}
+        // Feeds (modules/feeds.ts): Zotero's own feed order back, the column,
+        // the section, the observers.
+        try { (this as any)._wvFdDestroy(); } catch (e) {}
+        // People (modules/people.ts): the right-click entries, the observers,
+        // the build; every People tab recorded and closed (a tab type Zotero
+        // does not know must not stay in its list), the setting's watch.
+        try { (this as any)._wvPeopleDestroy(); } catch (e) {}
+        // Backups (modules/backups.ts): the daily check's timer.
+        try { (this as any)._wvBkDestroy(); } catch (e) {}
         try { wvL10nRelease(); } catch (e) {}
         // The public API's AddonManager listener and comment-renderer
         // declarations (modules/plugin-api.ts).
@@ -4653,6 +4813,19 @@ class WeaveroPlugin {
         this._teardownTreeClickDelegate();
         this._teardownItemsListContextMenu();
         this._teardownCollectionsContextMenu();
+        // The Group Libraries fold BEFORE the hidden collections: its folded
+        // rows go back first (group-fold.ts), else their plain refresh reads
+        // the selection at the folded tree's indices.
+        // The collections funnel (coll-funnel.ts): its windows were unwired by the table above;
+        // here its watches go too.
+        try { (this as any)._wvCfTeardown(); } catch (e) {}
+        // The saved-search folders first: their layers off and each tree redrawn flat
+        // (search-folders.ts), before the fold puts its rows back.
+        try { (this as any)._wvSfTeardown(); } catch (e) {}
+        // The Bookmarks pane above the tree (bookmarks-pane.ts): its panes, splitters,
+        // the column's mode (a tree it hid shown again), its sheet and watches.
+        try { (this as any)._wvBmpTeardown(); } catch (e) {}
+        try { (this as any)._wvGfTeardown(); } catch (e) {}
         try { (this as any)._wvHidTeardown(); } catch (e) {}
         this._teardownTabContextMenu();
         try { (this as any)._wvTeardownMenubarWindowEntries(); } catch (e) {}
@@ -4667,29 +4840,29 @@ class WeaveroPlugin {
         try { (this as any)._wvTeardownPinAnchorFix(); } catch (e) {}   // WV-TEMP-134569
         try { (this as any)._wvTeardownPreviewFitFix(); } catch (e) {}   // WV-TEMP-134490
         try { (this as any)._wvTeardownItemPaneStickyHeads(); } catch (e) {}   // pinned section headers
+        try { (this as any)._wvPaneLockDestroy(); } catch (e) {}   // the section locked at the bottom (pane-lock.ts)
         try { (this as any)._wvTeardownWindowPanePrefs(); } catch (e) {}
         try { (this as any)._wvTeardownCollectionDropFix(); } catch (e) {}   // WV-TEMP-134361
-        try { (this as any)._wvTeardownNoteWindowFix(); } catch (e) {}   // WV-TEMP-134831 (upstream-fixes.ts)
-        try { (this as any)._wvTeardownCtxHeaderFix(); } catch (e) {}   // WV-TEMP-134823 (upstream-fixes.ts)
-        try { (this as any)._wvTeardownNarrowPaneFix(); } catch (e) {}   // WV-TEMP-134826 (upstream-fixes.ts)
         try { (this as any)._wvTeardownPaneJumpFix(); } catch (e) {}   // WV-TEMP-133075 (upstream-fixes.ts)
         try { (this as any)._wvTeardownExtAnnDeleteFix(); } catch (e) {}   // WV-TEMP-124063 (upstream-fixes.ts)
         try { (this as any)._wvTeardownPageCountFix(); } catch (e) {}   // WV-TEMP-99239 (upstream-fixes.ts)
-        try { (this as any)._wvTeardownReaderMenuFix(); } catch (e) {}   // WV-TEMP-134772 (upstream-fixes.ts)
-        try { (this as any)._wvTeardownAddSelectFix(); } catch (e) {}   // WV-TEMP-134824 (upstream-fixes.ts)
         try { (this as any)._wvTeardownRowCountFix(); } catch (e) {}   // WV-TEMP-132551 (upstream-fixes.ts)
         try { (this as any)._wvTeardownRestoreFocusFix(); } catch (e) {}   // WV-TEMP-134825 (upstream-fixes.ts)
         try { (this as any)._wvTeardownTagReshowFix(); } catch (e) {}   // WV-TEMP-134317 (upstream-fixes.ts)
-        try { (this as any)._wvTeardownFeedAbstractFix(); } catch (e) {}   // WV-TEMP-feedabstract (upstream-fixes.ts)
+        try { (this as any)._wvTeardownFeedAbstractFix(); } catch (e) {}   // WV-TEMP-134893 (upstream-fixes.ts)
+        try { (this as any)._wvTeardownFeedLoadFix(); } catch (e) {}   // WV-TEMP-134893b (upstream-fixes.ts)
+        try { (this as any)._wvTeardownFeedHeadFix(); } catch (e) {}   // WV-TEMP-FEEDHEAD (upstream-fixes.ts)
         try { (this as any)._wvTeardownIntroCrashFix(); } catch (e) {}   // WV-TEMP-INTROCRASH (upstream-fixes.ts)
         try { (this as any)._wvTeardownAdvSearchSeedFix(); } catch (e) {}   // WV-TEMP-advsrchcollapse (upstream-fixes.ts)
-        try { (this as any)._wvTeardownFeedHeadFix(); } catch (e) {}   // WV-TEMP-FEEDHEAD (upstream-fixes.ts)
+        try { (this as any)._wvTeardownSidenavFeedFix(); } catch (e) {}   // WV-TEMP-114534 (upstream-fixes.ts)
+        try { (this as any)._wvAdvFeedTeardown(); } catch (e) {}   // the Advanced Search's feed conditions (advsearch-feed.ts)
         try { (this as any)._wvTeardownLayoutMenus(); } catch (e) {}
         try { (this as any)._wvTeardownPaneDragNoCollapse(); } catch (e) {}
         try { (this as any)._wvTeardownCollectionsTreeAids(); } catch (e) {}
         try { (this as any)._wvUnwireCollectionsSearchToggle(); } catch (e) {}
         try { (this as any)._wvUnwireCollectionTreeGestures(); } catch (e) {}
         try { (this as any)._wvUnwireMenuGhostWorkaround(); } catch (e) {}
+        try { (this as any)._wvProgressWindowTeardown(); } catch (e) {}   // the progress window's buttons (progress-window.ts)
         try { (this as any)._wvUnwireReaderFindKey(); } catch (e) {}
         try { (this as any)._wvTeardownCollectionMenuEntries(); } catch (e) {}
         this._unregisterPinTabMenu();
@@ -4862,6 +5035,9 @@ class WeaveroPlugin {
         // 4. Last: Weavero's objects on the Zotero global (after the writes the
         //    steps above queued on the store chains).
         try { this._wvReleaseGlobalState(reason); } catch (e) {}
+        // ...and, where the scope is nuked at unload (zotero#6080), on every
+        // window and document: every reason, an update included.
+        try { if (wvScopeNukedAtUnload()) this._wvReleaseWindowState(); } catch (e) {}
 
         Zotero.debug("[Weavero] destroyed");
     }
@@ -4876,7 +5052,22 @@ class WeaveroPlugin {
     _wvReleaseGlobalState(reason: any) {
         const g: any = Zotero;
         const update = reason === 7 || reason === 8;   // ADDON_UPGRADE, ADDON_DOWNGRADE
-        const keep = update ? new Set(["_wvUndoState", "_wvStoreChains"]) : new Set<string>();
+        const nuked = wvScopeNukedAtUnload();
+        // Under zotero#6080 the Map dies with this scope 10 s from now (canary
+        // 2026-11-22: the outline step gone after a reload): an update hands the
+        // stacks over as a JSON string, which the next instance's _wvUndoStacks
+        // reads back (undo.ts). Step data is plain by contract (WvUndoStep.data).
+        if (update && nuked) {
+            try {
+                const m = g._wvUndoState;
+                if (m && typeof m.entries === "function") {
+                    const rows: any[] = [];
+                    for (const [scope, st] of m.entries()) rows.push([scope, { undo: st.undo || [], redo: st.redo || [] }]);
+                    g._wvUndoStateJSON = JSON.stringify(rows);
+                }
+            } catch (e) { Zotero.debug("[Weavero] undo hand-over err: " + e); }
+        }
+        const keep = update && !nuked ? new Set(["_wvUndoState", "_wvStoreChains"]) : new Set<string>();
         for (const k of Object.getOwnPropertyNames(g)) {
             if (!/^_wv/.test(k) || keep.has(k)) continue;
             let v: any;
@@ -4885,6 +5076,59 @@ class WeaveroPlugin {
                 try { delete g[k]; } catch (e) {}
             }
         }
+    }
+
+    /** Weavero's `_wv*` DATA on every chrome window and its document, made in
+     *  THIS scope, which zotero#6080 nukes 10 s after unload: plain data (a
+     *  window's split list, its filter and pane state when plain) is copied into
+     *  the window's own compartment, where it survives for the next instance
+     *  (canary 2026-11-22: `_wvTSplits`, `_wvHid`, `_wvFilterState`,
+     *  `_wvScopeFilters` dead after a reload, "can't access dead object" from
+     *  every reader). Everything else stays as it is: a function or a table of
+     *  them is a HANDLE the next instance peels within those 10 s (the old
+     *  listener behind `win._wvRedoKeyH`, a `_wvListen` table); deleted here, the
+     *  old listeners stayed for good (zz-reload-listeners.spec.js on the canary,
+     *  2026-11-22: nine kinds). `_wvListen` / `_wvWraps` tables are made in their
+     *  host's compartment and survive anyway (lib/listen.ts, lib/wrap.ts).
+     *  Returns what it did, for the guard (test/zotero-api-shapes.spec.js). */
+    _wvReleaseWindowState(names: RegExp = /^_wv/): { copied: string[]; kept: string[] } {
+        const out = { copied: [] as string[], kept: [] as string[] };
+        const Cu: any = Components.utils;
+        let mine: any = null;
+        try { mine = Cu.getGlobalForObject(this); } catch (e) { return out; }
+        const sweep = (host: any, w: any, label: string) => {
+            if (!host) return;
+            let keys: string[] = [];
+            try { keys = Object.getOwnPropertyNames(host).filter((k) => /^_wv/.test(k) && names.test(k)); } catch (e) { return; }
+            for (const k of keys) {
+                let v: any;
+                try { v = host[k]; } catch (e) { continue; }
+                if (v === null || (typeof v !== "object" && typeof v !== "function")) continue;
+                let ours = false;
+                try { ours = Cu.getGlobalForObject(v) === mine; } catch (e) { ours = false; }
+                if (!ours) continue;
+                try {
+                    if (typeof v === "object" && wvIsPlainData(v) && w && w.JSON) {
+                        host[k] = w.JSON.parse(JSON.stringify(v));
+                        out.copied.push(label + "." + k);
+                    }
+                    else out.kept.push(label + "." + k);
+                } catch (e) {}
+            }
+        };
+        try {
+            const en = Services.wm.getEnumerator(null);
+            while (en.hasMoreElements()) {
+                const w: any = en.getNext();
+                try {
+                    if (!w || w.closed) continue;
+                    sweep(w, w, "win");
+                    sweep(w.document, w, "doc");
+                } catch (e) {}
+            }
+        } catch (e) {}
+        if (out.copied.length) Zotero.debug("[Weavero] window state handed over as data: " + out.copied.length + " (" + out.kept.length + " handles left for the next instance)");
+        return out;
     }
 
     /** Remove everything Weavero wired into one reader's page: panels,
@@ -4937,6 +5181,9 @@ class WeaveroPlugin {
             // outside its selectors (rows that are not .annotation-row /
             // .annotation, popup spans).
             try { this._stripReaderSidebar(idoc); } catch(e) {}
+            // The citation popup's marks and buttons, their sheet and observer
+            // (modules/refs.ts).
+            try { (this as any)._wvRefsReaderTeardown(reader); } catch (e) {}
             try {
                 for (const span of idoc.querySelectorAll(".wv-url-span") as any) {
                     span.replaceWith(idoc.createTextNode(span.textContent || ""));
@@ -4952,6 +5199,16 @@ class WeaveroPlugin {
 
             // Disconnect observer + drop the iframe-doc listeners.
             const data = this._readerObservers.get(reader);
+            // The badge overlay's reposition observers, per view page
+            // (reader.ts _wvBadgeRepositionOff): they outlived every reload.
+            try {
+                const ir = reader._internalReader;
+                const docs: any[] = [data && data.innerDoc];
+                for (const v of [ir && ir._primaryView, ir && ir._secondaryView]) {
+                    try { if (v && v._iframeWindow) docs.push(v._iframeWindow.document); } catch (e) {}
+                }
+                for (const d of docs) { if (d) (this as any)._wvBadgeRepositionOff(d); }
+            } catch (e) {}
             if (data) {
                 try { data.observer && data.observer.disconnect(); } catch(e) {}
                 try { data.innerObserver && data.innerObserver.disconnect(); } catch(e) {}
@@ -5095,6 +5352,14 @@ Object.defineProperties(
 );
 Object.defineProperties(
     WeaveroPlugin.prototype,
+    expandScrollMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    citeZonesMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
     annotationMethods,
 );
 Object.defineProperties(
@@ -5108,6 +5373,10 @@ Object.defineProperties(
 Object.defineProperties(
     WeaveroPlugin.prototype,
     noteNavMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    noteCiteMethods,
 );
 Object.defineProperties(
     WeaveroPlugin.prototype,
@@ -5207,11 +5476,118 @@ Object.defineProperties(
 );
 Object.defineProperties(
     WeaveroPlugin.prototype,
+    refsMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    citedByMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    listFilterMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    sdtBuildMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    docLayerMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    feedsMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    feedsBadgeMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    paneLockMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    groupFoldMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    searchFoldersMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    bookmarksPaneMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    collFunnelMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    feedsGraphicalMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    advsearchFeedMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    progressWindowMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    peopleMethods,
+);
+// After peopleMethods: its family tree (_wvPeopleRenderTree) lives here now.
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    peopleLineageMethods,
+);
+// The Contact card and the custom fields.
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    peopleCardsMethods,
+);
+// The left pane and the table of researchers (Zotero's VirtualizedTable).
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    peopleTableMethods,
+);
+// The right pane: the selected researcher, the page's view mode at a narrow width.
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    peoplePaneMethods,
+);
+// Tags on researchers: the selector, the colours, the page's tags.
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    peopleTagsMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    peopleStripMethods,
+);
+// Researchers' authors marked in the item pane's Info section.
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    peopleCmarkMethods,
+);
+// The Researchers button in the collections pane's toolbar.
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    peopleToolbarMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
     prefsTableMethods,
 );
 Object.defineProperties(
     WeaveroPlugin.prototype,
     pluginApiMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    backupsMethods,
 );
 
 // === Lifecycle hooks (called by bootstrap.js shim) ==========================
@@ -5237,6 +5613,11 @@ Zotero.Weavero = {
                 _Weavero._version = version;
                 // Boot-only machinery (session verify-and-repair) keys off this.
                 _Weavero._wvStartupReason = reason;
+                // Backups (modules/backups.ts) BEFORE anything reads or writes a
+                // pref or a store: the prefs as they were (init migrates some),
+                // a staged restore's settings put in, and the store gate set
+                // until the update backup / the restore is written.
+                try { (_Weavero as any)._wvBkBoot(version, reason); } catch (e) { Zotero.debug("[Weavero] backups boot err: " + e); }
                 Zotero.Weavero.plugin = _Weavero;
                 // WV-TEMP-134825 (upstream-fixes.ts): at application start only
                 // (APP_STARTUP = 1), the window Zotero restored last keeps the focus.

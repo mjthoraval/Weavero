@@ -14,6 +14,7 @@ The complete rule set, in plain English, with worked screenshots. Read top to bo
 - [The quick search box](#the-quick-search-box)
 - [Selection Target — what Ctrl+A picks](#selection-target--what-ctrla-picks)
 - [State-level filters and small rules](#state-level-filters-and-small-rules)
+- [Diagnostics: the filter trace](#diagnostics-the-filter-trace)
 
 ---
 
@@ -322,5 +323,24 @@ Two extra rules on top of the kind check:
 - **Containers auto-expand** when a deep descendant is a real match, so the match is always reachable.
 - **Item-tree shape is preserved** — ancestors of any real match stay visible (dimmed), so the tree path down to the match is intact.
 - **Filtering deselects what no longer matches.** When you change the filter, a selected row that's no longer a **real match** is deselected; if nothing in the new result is a real match, the selection clears entirely — the same way the quick search drops the selection when its target disappears. A dimmed ancestor-keep counts as "not a real match" here, so selecting one and then filtering deselects it.
+- **Attachment File Type** follows the icon Zotero draws for the attachment: a stored or linked file whose content type starts with `image/` (JPEG, PNG, GIF, TIFF, SVG, DjVu, …) is an Image, and the same for Video; a file Zotero draws as a plain file (for example a JPEG saved with the content type `application/octet-stream`) is an Other File. **Linked File** narrows whichever types are picked to linked files. One difference from Zotero's own "Attachment File Type is Image" search: Zotero's search also counts OpenDocument drawings, which Zotero's icon (and so the filter) shows as files.
+
+</details>
+
+---
+
+<details>
+<summary>
+
+## Diagnostics: the filter trace
+
+</summary>
+
+If Zotero ever stops responding while you use the filter, Weavero has kept a short record of what the filter was doing, in your Zotero data directory (*Settings → Advanced → Files and Folders → Show Data Directory*):
+
+- `weavero/filter-trace.json` — this session: each filter change you made (written *before* it runs, so it survives a freeze that ends with Zotero being closed by force), how long each recalculation took, how many rows it showed, and the filter settings in short form. Tags, authors, publications and collection names are recorded only as counts, never by name.
+- `weavero/filter-trace.prev.json` — the same for the previous session: after a freeze and a restart, this is the file to send with a bug report.
+
+The record is small (at most 300 entries) and written at most every two seconds outside your own clicks. To turn it off, set `extensions.zotero.weavero.filterTrace` to `false` in *Settings → Advanced → Config Editor*.
 
 </details>

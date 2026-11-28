@@ -75,6 +75,14 @@ for (const w of mains) {
 		const iv = w.ZoteroPane && w.ZoteroPane.itemsView;
 		if (iv && iv._wvWraps) F(label + ": itemsView still carries a wrap table (" + Object.keys(iv._wvWraps).join(",") + ")");
 	} catch (e) {}
+	// The collections tree and the window's CollectionTree class (the Group
+	// Libraries fold, group-fold.ts; the collection select guard).
+	try {
+		const cv = w.ZoteroPane && w.ZoteroPane.collectionsView;
+		if (cv && Object.prototype.hasOwnProperty.call(cv, "_wvWraps")) F(label + ": collectionsView still carries a wrap table (" + Object.keys(cv._wvWraps).join(",") + ")");
+		const CT = typeof w.require === "function" ? w.require("zotero/collectionTree") : null;
+		if (CT && CT.prototype && Object.prototype.hasOwnProperty.call(CT.prototype, "_wvWraps")) F(label + ": CollectionTree.prototype still carries a wrap table (" + Object.keys(CT.prototype._wvWraps).join(",") + ")");
+	} catch (e) {}
 	if (w._wvTabBarDecoMo) F(label + ": tab-bar decoration MutationObserver still connected");
 	// Orphan UI glyphs: a wv- element unwrapped instead of removed leaves its
 	// text (the scope button's "▾", the tabs-menu twisties) in native containers
@@ -188,6 +196,30 @@ try {
 		if (w.document.getElementById("wv-itemmenu-open-by-default")) F("default-child menu item still in DOM");
 	}
 } catch (e) { W("items-menu default-child check error: " + e); }
+// The item pane's part (attachments.ts _wvDefPane*): the notes hoist on
+// Zotero.Item.prototype, each window's Attachments class layer, its
+// right-click listener, the row marks and the menu.
+try {
+	const proto = Zotero.Item.prototype;
+	if (proto._wvDefattGetNotesFn || proto._wvDefattOrigGetNotes) F("getNotes hoist still stored on Zotero.Item.prototype");
+	for (const w of Zotero.getMainWindows()) {
+		const C = w.customElements && w.customElements.get("attachments-box");
+		if (C && Object.prototype.hasOwnProperty.call(C.prototype, "_wvWraps")) F("attachments-box class still wrapped");
+		const d = w.document;
+		if (d._wvListen && d._wvListen["defpane:contextmenu"]) F("item-pane default-child right-click still listening");
+		if (d.querySelector(".wv-defpane-mark")) F("default-child mark still on an item-pane row");
+		if (d.getElementById("wv-defpane-menu")) F("item-pane default-child menu still in DOM");
+	}
+} catch (e) { W("item-pane default-child check error: " + e); }
+// The Advanced Search's feed conditions (advsearch-feed.ts): each window's condition-row
+// class and the menu entries it hid.
+try {
+	for (const w of Zotero.getMainWindows()) {
+		const C = w.customElements && w.customElements.get("zoterosearchcondition");
+		if (C && Object.prototype.hasOwnProperty.call(C.prototype, "_wvWraps")) F("zoterosearchcondition class still wrapped");
+		if (w.document.querySelector("[data-wv-feed-hidden]")) F("an Advanced Search field still hidden by the feed trim");
+	}
+} catch (e) { W("advanced-search feed check error: " + e); }
 
 // 5. Pref pane unregistered.
 try {

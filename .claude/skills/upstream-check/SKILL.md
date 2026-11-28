@@ -65,6 +65,22 @@ Walk the high-risk surfaces (each has bitten before):
 - The upstream-bugs register — for each entry, evaluate its "Retire when"
   line against the new version; retire workarounds upstream has fixed (a
   stale workaround FIGHTS the native fix).
+- A fix counts only once it is RELEASED: in a Zotero version users can
+  download, not a commit on Zotero's main or a local source build. Users run
+  released builds; a stand-in removed on a commit leaves them with the bug
+  until Zotero ships. A fix seen on main gets the removal PREPARED (a branch,
+  the condition written down: the first released version that contains the
+  commit), and merged when that version is out (maintainer, 2026-11-20: five
+  fixes on main, none in a beta yet).
+- The reference-identification register (the maintainer's tracking notes):
+  Weavero's own reading of reference lists and citations where Zotero finds
+  none. Each rule names TEST FILES from the maintainer's library; rerun its
+  check on them with the new version (read-only: the reader's overlays by
+  type, references Zotero flags), log the date, version and result, and
+  retire or narrow every rule Zotero now covers natively (maintainer,
+  2026-11-20: "check regularly if Zotero has fixed those identifications
+  natively ... If fixed, consider if the rule is still useful or if it can
+  be retired").
 - The itemTree column-sort patch is a SOURCE patch — re-apply after every
   source pull; check whether upstream finally fixed it.
 - Watched threads (zotero-dev posts, unanswered reports) — check for replies.

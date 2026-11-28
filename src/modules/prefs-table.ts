@@ -26,6 +26,13 @@
 //            choice; the code using it checks these first). Settings
 //            greys a box under exactly masters + gate, closed
 //            transitively: test/prefs-gates.spec.js holds them together.
+//   devOnly  a feature still in testing: its default is ON on a build whose
+//            version has a pre-release suffix ("1.3.0-dev.91",
+//            "1.3.0-peoplenet.1") and OFF on a release ("1.3.0"); `def`
+//            is not read. The user's own setting wins either way.
+//   betaOff  with devOnly: OFF on a public beta too ("1.3.0-beta.1"), ON on
+//            the other pre-releases (MJT 2026-11-28, the 1.3.0-beta.1 showcase:
+//            the saved-search folders trial stays off in it).
 //
 // Getters keep their names (call sites unchanged); each body is now
 // `return this._wvPref("<key>")`. Enum / string prefs (ctrlClickSplit,
@@ -45,6 +52,19 @@ export interface WvPrefRow {
     strings?: boolean;
     win?: boolean;
     gate?: string[];
+    devOnly?: boolean;
+    betaOff?: boolean;
+}
+
+/** A pre-release build: its version carries a suffix after a "-"
+ *  ("1.3.0-dev.91", "1.3.0-peoplenet.1"). An unknown version is a release. */
+export function wvIsPrerelease(version: any): boolean {
+    return typeof version === "string" && version.trim().includes("-");
+}
+
+/** A public beta ("1.3.0-beta.1"): the pre-release testers install. */
+export function wvIsBeta(version: any): boolean {
+    return typeof version === "string" && /-beta\.\d+$/.test(version.trim());
 }
 
 const LR = "_getEnableLinksAndRelations";
@@ -117,6 +137,24 @@ export const WV_PREFS: Record<string, WvPrefRow> = {
     // "users who don't like it can disable it"). Item Links and Backlinks
     // keep theirs: their sections' own switches.
     enableTagsRelatedScope: { def: true, masters: [REL] },
+    // References in your library (refs.ts, branch refs, 2026-11-18): Zotero's
+    // citation popup marks the references you have and opens them; on by
+    // default on the branch (the release default is MJT's call). Its two
+    // parts under it: marks beside the reference list's entries, and a
+    // References section in the reader's item pane.
+    enableReferences: { def: true, masters: [REL] },
+    referencesBibliographyMarks: { def: true, masters: [REL], gate: ["enableReferences"] },
+    referencesSection: { def: true, masters: [REL], gate: ["enableReferences"] },
+    // Cited by (cited-by.ts, branch citedby, 2026-11-20): the item pane's
+    // "Cited by" section -- the papers of your libraries whose reference lists
+    // cite the item -- and the background index behind it. Part of References
+    // (the same matcher and library index).
+    referencesCitedBy: { def: true, masters: [REL], gate: ["enableReferences"] },
+    // Build Zotero's structure data for all PDFs (sdt-build.ts, citations M5; MJT
+    // 2026-11-21: "The option should be off by default"). Settings turns it on only
+    // after its warning (no native binding); Pause / Resume is the second pref.
+    referencesBuildStructure: { def: false, masters: [REL], gate: ["enableReferences"] },
+    referencesBuildStructurePaused: { def: false, masters: [REL], gate: ["enableReferences"] },
     // What the item pane's Tags, Related, Links and Backlinks sections show
     // in a new window and after a restart (pane-scope.ts _wvScopeFilterFor):
     // per level -- the item itself, its attachments, notes, annotations, and
@@ -166,6 +204,27 @@ export const WV_PREFS: Record<string, WvPrefRow> = {
     selectedTabRing: { def: true, masters: [VE] },
     enableGroupLibraryGlyph: { def: true, masters: [VE] },
     collectionsStickyParents: { def: true, masters: [VE] },
+    // Folders for saved searches, kept by Weavero (search-folders.ts, 2026-11-27): a
+    // trial (MJT, "As a test to see if I will keep this solution later"), on in
+    // pre-release builds only -- not in a public beta (betaOff, MJT 2026-11-28).
+    collectionsSearchFolders: { def: true, devOnly: true, betaOff: true, masters: [VE] },
+    collectionsSearchFoldersNames: { def: true, devOnly: true, masters: [VE], gate: ["collectionsSearchFolders"] },
+    // The Bookmarks pane above the collections tree (bookmarks-pane.ts, MJT 2026-11-27): a
+    // trial beside the saved-search folders, on in pre-release builds only. It shows the
+    // library bookmarks, so their switch gates it too.
+    collectionsBookmarksPane: { def: true, devOnly: true, masters: [VE], gate: ["enableLibraryBookmarks"] },
+    // The funnel above the collections pane (coll-funnel.ts, MJT 2026-11-27): a trial beside
+    // the folders and the Bookmarks pane, on in pre-release builds only.
+    collectionsFunnel: { def: true, devOnly: true, masters: [VE] },
+    // Its default's Settings boxes, "Shown by default" (kept in step with the JSON
+    // `collFunnelDefault` both ways, coll-funnel.ts _wvCfSetDefault / _wvCfSyncDefaultFromPrefs):
+    // a section's box is greyed with its own trial too.
+    collFunnelShowCollections: { def: true, gate: ["collectionsFunnel"] },
+    collFunnelShowSearches: { def: true, gate: ["collectionsFunnel"] },
+    collFunnelShowFeeds: { def: true, gate: ["collectionsFunnel"] },
+    collFunnelShowSpecial: { def: true, gate: ["collectionsFunnel"] },
+    collFunnelShowBookmarks: { def: true, gate: ["collectionsFunnel", "collectionsBookmarksPane"] },
+    collFunnelShowFolders: { def: true, gate: ["collectionsFunnel", "collectionsSearchFolders"] },
     collectionsPathTooltip: { def: true, masters: [VE] },
     collectionsIndentGuides: { def: true, masters: [VE] },
     collectionsPaneToggle: { def: true, masters: [VE] },
@@ -175,6 +234,12 @@ export const WV_PREFS: Record<string, WvPrefRow> = {
     enableTagsCountAuto: { def: true, masters: [VE] },
     // Pinned section headers in the item pane (pane.ts, 2026-11-03).
     itemPaneStickyHeaders: { def: true, masters: [VE] },
+    // The Group Libraries line folded in the collections pane (group-fold.ts,
+    // MJT 2026-11-22): what a tree takes when it is built -- a new window, a
+    // new library tab, a restart --, as Zotero's own open rows
+    // (`sourceList.persist`, one pref for every window). Not a setting: the
+    // twisty writes it; Extras switches the fold off.
+    groupLibrariesCollapsed: { def: false, gate: ["enableVisualExtras"] },
 
     // ---- Bookmarks
     enableLibraryBookmarks: { def: true, masters: [BM] },
@@ -193,6 +258,9 @@ export const WV_PREFS: Record<string, WvPrefRow> = {
     enableTabsFileTypeFilter: { def: true, masters: [FI] },
     // The reader annotations pane: one switch for all of it,
     // _wvAnnPaneEnabled -> Extras (prefs.4; Sort & Filters before).
+    // The funnel above the reader has its own box beside the pane's
+    // (MJT 2026-11-24, "separate settings options for each funnel").
+    enableReaderAnnFilter: { def: true, gate: ["enableVisualExtras"] },
     enableAnnPaneFilter: { def: true, gate: ["enableVisualExtras"] },
     hideNativeAnnSelector: { def: false },
     annSelectorHidden: { def: false },
@@ -224,6 +292,8 @@ export const WV_PREFS: Record<string, WvPrefRow> = {
     // Editor, so that switch gates them too.
     noteOutline: { def: true, masters: [VE], gate: ["enableNotes"] },
     noteFolding: { def: true, masters: [VE], gate: ["enableNotes"] },
+    // The citation entries of a note's menu (note-cite.ts, 2026-11-09).
+    noteLinkCitations: { def: true, masters: [VE], gate: ["enableNotes"] },
 
     // ---- Tabs & Windows
     compactTitleBar: { def: true, masters: [TW], strings: true },
@@ -241,6 +311,32 @@ export const WV_PREFS: Record<string, WvPrefRow> = {
     windowTitleGlyphs: { def: false, masters: [TW] },
     windowIcons: { def: true, masters: [TW], win: true },
     separateTaskbarButtons: { def: false, masters: [TW], win: true },
+    // Zotero's progress window (Find Full Text, Retrieve Metadata) as a normal window with
+    // minimize and maximize, its Minimize button minimizing (progress-window.ts; MJT
+    // 2026-11-26). Read at each open and each click: no observer.
+    progressWindowButtons: { def: true, masters: [TW] },
+
+    // ---- Feeds (feeds.ts, branch feeds, MJT 2026-11-22): relevance in Zotero's
+    // Feeds -- the Relevance column and its sort, Why relevant, the in-library
+    // mark and chip; the journals signal under it.
+    enableFeeds: { def: true },
+    feedsJournals: { def: true, gate: ["enableFeeds"] },
+
+    // ---- People (people.ts, branch people, MJT 2026-11-22: "Start, cards
+    // first"): the person button on the item pane's author rows, their
+    // right-click entries, the card, Add as Person, Refresh. In testing (MJT
+    // 2026-11-25: "keep that people part in testing for a while before
+    // releasing"): on by default in pre-release builds only.
+    // Guard: test/people-gate.spec.js.
+    enablePeople: { def: true, devOnly: true },
+    // The Researchers button in the collections pane's toolbar (people-toolbar.ts;
+    // MJT 2026-11-27). Off from the button's own right-click (Hide Researchers
+    // Button); Settings brings it back. Guard: test/people-toolbar-button.spec.js.
+    peopleToolbarButton: { def: true, gate: ["enablePeople"] },
+    // ---- Backups (backups.ts, branch backups, MJT 2026-11-22): the daily backup
+    // and the one before each Weavero update. Back Up Now, Restore, Export and
+    // Import work whatever it says.
+    "backup.auto": { def: true },
 
     // ---- hidden
     debug: { def: false },
@@ -258,6 +354,10 @@ export const WV_PREFS: Record<string, WvPrefRow> = {
     sessionAutoReopen: { def: true, gate: ["newMainWindow"] },
     sessionSortReverse: { def: false },
     readerItemPane: { def: true, gate: ["enableTabsAndWindows"] },
+    // A pinned library tab shows its name beside its icon, as wide as the
+    // name needs (tabs.ts `_wvSyncPinnedMirrors`; MJT 2026-11-21: Zotero 11's
+    // icon-only pinned My Library tab was harder to find). Off: icon only.
+    pinnedLibraryTabName: { def: true, gate: ["enableTabsAndWindows"] },
     // The split view's corner label on a side whose item pane is closed
     // (tab-split.ts; MJT 2026-11-12).
     splitViewFooter: { def: true, gate: ["enableSplitView"] },
@@ -296,6 +396,9 @@ export const WV_PREF_VALUES: Record<string, string | number> = {
     ctrlClickSplit: "horizontal",
     // Annotations-pane default filter (issue #43), JSON; "" = show everything.
     annPaneDefault: "",
+    // The collections funnel's default (coll-funnel.ts), JSON as the panel's chips stood
+    // ({kinds, libs, secs}: {inc, exc}); "" = the Settings boxes alone (everything shown).
+    collFunnelDefault: "",
     // Window name in the title: "off" | "prefix" | "replace".
     windowTitleNameMode: "off",
     // Where a library bookmark leaves its collections-tree row (issue #45).
@@ -315,6 +418,26 @@ export const WV_PREF_VALUES: Record<string, string | number> = {
     titleLinesMode: "off",
     // Lines of a title: 2 to 10 (title-lines.ts clamps a stored value).
     titleLinesCount: 2,
+    // The long item-pane lists' sort, the one chosen last per section (list-filter.ts,
+    // citations M4): "paper" or "<field>:<dir>" -- year, cited, title, author, added;
+    // asc / desc -- as written since 1.2.1-lfsort.1; an older one-word value
+    // ("newest", "oldest", "cited", "title", "author", "added") is read as what it
+    // meant (lib/list-filter.ts wvLfSortParse). The defaults stay in that form.
+    "listSort.references": "paper",
+    "listSort.citedBy": "newest",
+    // The item-pane sections locked at the bottom, per view (pane-lock.ts; MJT
+    // 2026-11-22, several since 1.2.1-panelock.2): a JSON list of pane ids --
+    // Weavero's own sections by their bare id. The feeds start with Why
+    // relevant (feeds.ts SEC_PANE_ID), the library and the readers with none.
+    "paneLock.library": "[]",
+    "paneLock.feed": "[\"weavero-feeds\"]",
+    "paneLock.reader": "[]",
+    // The locked sections' heights, by pane id (px), JSON; a section without
+    // one takes pane-lock.ts PL_DEF_H.
+    "paneLock.heights": "{}",
+    // The daily backups kept, 1 to 60 (lib/backup.ts wvBkKeepDaily clamps a
+    // stored value).
+    "backup.keepDaily": 7,
     // The file:// links to another computer the user opened (remoteFileLinks
     // on), a JSON list of their keys, oldest first; "" = none.
     remoteFileLinksOpened: "",
@@ -322,6 +445,25 @@ export const WV_PREF_VALUES: Record<string, string | number> = {
     // Weavero's question (no system handler for file links, url.ts
     // _wvOpenLocalFileLink; 1.2.3), a JSON list of their paths; "" = none.
     localFileLinksOpened: "",
+    // The Researchers tab (people.ts, branch people3, MJT 2026-11-24): the list's
+    // sort (lib/people-list.ts WV_PP_SORTS; unused since the table, people-table.ts,
+    // sorts by its column titles), its view ("all" | "check" | "followed"), its
+    // filters that are on (JSON, wvPpFiltersParse) -- the ones chosen last, a new
+    // view starts from them --, the table's columns (JSON per column: width,
+    // ordinal, sortDirection, and shown once the user showed or hid it;
+    // people-table.ts wvPpColsParse; "{}" = the automatic rule, Name A to Z), and
+    // how each place writes a name: "last" ("Last, First") or "first" ("First Last").
+    "people.sort": "last",
+    "people.show": "all",
+    "people.filters": "{}",
+    "people.columns": "{}",
+    // The right pane's width and whether it is collapsed (JSON {w, c};
+    // people-pane.ts wvPpPaneParse; "{}" = 320 px, open).
+    "people.pane": "{}",
+    "people.names.list": "last",
+    "people.names.title": "last",
+    "people.names.links": "last",
+    "people.names.tree": "last",
 };
 
 class _PrefsTableMixin {
@@ -356,12 +498,14 @@ class _PrefsTableMixin {
      *  branch. Per-pref guards: setBoolPref can throw NS_ERROR_UNEXPECTED (a
      *  name cleared earlier in the same session cannot be re-created until
      *  the pref service reloads), and one throw must not skip the rest
-     *  (2026-08-24: one bad name left the string defaults unregistered). */
-    _wvRegisterTableDefaults() {
+     *  (2026-08-24: one bad name left the string defaults unregistered).
+     *  `version`: the defaults another build would register (the specs; see
+     *  _wvPrefDefault). */
+    _wvRegisterTableDefaults(version?: any) {
         const branch = Services.prefs.getDefaultBranch("extensions.zotero.weavero.");
         const note = (k: string, e: any) => Zotero.debug("[Weavero] default pref " + k + ": " + e);
         for (const k of Object.keys(WV_PREFS)) {
-            try { branch.setBoolPref(k, WV_PREFS[k].def); } catch (e) { note(k, e); }
+            try { branch.setBoolPref(k, this._wvPrefDefault(k, version)); } catch (e) { note(k, e); }
         }
         for (const k of Object.keys(WV_PREF_VALUES)) {
             const v = WV_PREF_VALUES[k];
@@ -384,13 +528,31 @@ class _PrefsTableMixin {
         }
         try {
             const v = Zotero.Prefs.get("weavero." + key);
-            if (v === undefined) return row.def;
+            if (v === undefined) return this._wvPrefDefault(key);
             if (row.strings && typeof v === "string") return v.toLowerCase() !== "false";
             return !!v;
         } catch (e) {
-            return row.def;
+            return this._wvPrefDefault(key);
         }
     }
+
+    /** A boolean pref's default: the row's, or -- a `devOnly` row -- whether
+     *  this build is a pre-release (the version onStartup gave). `version`
+     *  stands in for another build's (test/people-gate.spec.js): the specs
+     *  must not change `_version` itself, which is part of the wire tag
+     *  (_wvWireTag). A spec that did, for a moment, let a collections-tree
+     *  refresh in that moment re-wrap under another tag, and the search
+     *  folders' twisty layer was dropped for good (dev.99 triage, 2026-11-27). */
+    _wvPrefDefault(key: string, version?: any): boolean {
+        const row = WV_PREFS[key];
+        if (!row) return false;
+        if (!row.devOnly) return row.def;
+        const v = version !== undefined ? version : (this as any)._version;
+        return wvIsPrerelease(v) && !(row.betaOff && wvIsBeta(v));
+    }
+
+    /** wvIsPrerelease, for the specs. */
+    _wvIsPrerelease(version: any): boolean { return wvIsPrerelease(version); }
 }
 
 const _prefsTableDescriptors = Object.getOwnPropertyDescriptors(_PrefsTableMixin.prototype);

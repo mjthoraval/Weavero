@@ -342,7 +342,7 @@ describe("Weavero — outline undo: every edit is a step", () => {
     // MJT 2026-10-19: the copy of the document's own outline that a first edit
     // makes belongs to that edit -- one step, named after the edit, and one
     // Ctrl+Z goes back to the document's own outline (until dev.57 the copy was
-    // a "Create Weavero Outline" step of its own, under the edit).
+    // a "Create Edited Outline" step of its own, under the edit).
     it("the copy a first edit makes folds into that edit: one step, one undo back to no outline", async () => {
         const att = mkAtt();
         const scope = wv._wvOutlineUndoScope(att);
@@ -386,12 +386,12 @@ describe("Weavero — outline undo: every edit is a step", () => {
         const att = mkAtt();
         const scope = wv._wvOutlineUndoScope(att);
         await wv._wvOutlineEnsureCurated(att.libraryID, att.itemKey, "extracted", [], { ownStep: true });
-        assert.deepEqual(wv._wvUndoStacks().get(scope).undo.map(s => s.label), ["Create Weavero Outline"]);
+        assert.deepEqual(wv._wvUndoStacks().get(scope).undo.map(s => s.label), ["Create Edited Outline"]);
         await wv._wvOutlineInsertEntry(att.libraryID, att.itemKey, entry("A", 0), 0);
-        assert.deepEqual(wv._wvUndoStacks().get(scope).undo.map(s => s.label), ["Create Weavero Outline", "Add Outline Entry"]);
+        assert.deepEqual(wv._wvUndoStacks().get(scope).undo.map(s => s.label), ["Create Edited Outline", "Add Outline Entry"]);
         assert.strictEqual(await wv._wvUndo(scope), "Add Outline Entry");
         assert.isTrue(wv._wvOutlineHasCurated(att.libraryID, att.itemKey), "the outline the user created stays");
-        assert.strictEqual(await wv._wvUndo(scope), "Create Weavero Outline");
+        assert.strictEqual(await wv._wvUndo(scope), "Create Edited Outline");
         assert.isFalse(wv._wvOutlineHasCurated(att.libraryID, att.itemKey));
     });
 
@@ -402,10 +402,10 @@ describe("Weavero — outline undo: every edit is a step", () => {
         const before = JSON.stringify(doc(att));
         await wv._wvOutlineRevert(att.libraryID, att.itemKey);
         assert.isFalse(wv._wvOutlineHasCurated(att.libraryID, att.itemKey));
-        assert.strictEqual(wv._wvUndoPeek(scope).undo, "Delete Weavero Outline");
-        assert.strictEqual(await wv._wvUndo(scope), "Delete Weavero Outline");
+        assert.strictEqual(wv._wvUndoPeek(scope).undo, "Delete Edited Outline");
+        assert.strictEqual(await wv._wvUndo(scope), "Delete Edited Outline");
         assert.strictEqual(JSON.stringify(doc(att)), before, "the whole document, as it was");
-        assert.strictEqual(await wv._wvRedo(scope), "Delete Weavero Outline");
+        assert.strictEqual(await wv._wvRedo(scope), "Delete Edited Outline");
         assert.isFalse(wv._wvOutlineHasCurated(att.libraryID, att.itemKey));
         await wv._wvUndo(scope);
     });

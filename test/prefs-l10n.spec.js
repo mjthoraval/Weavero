@@ -34,7 +34,7 @@ describe("Weavero — Settings pane strings come from weavero.ftl", () => {
     const fmt = (id, args) => l10n.formatMessagesSync([{ id, args: args || null }])[0];
 
     before(async () => {
-        const rootURI = await Zotero.Plugins.getRootURI("weavero@mjthoraval");
+        const rootURI = await wvT.rootURI();
         html = await (await fetch(rootURI + "prefs.html")).text();
         ftl = await (await fetch(rootURI + "locale/en-US/weavero.ftl")).text();
         js = await (await fetch(rootURI + "prefs.js")).text();

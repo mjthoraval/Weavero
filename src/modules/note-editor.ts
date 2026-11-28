@@ -1377,14 +1377,14 @@ class _NoteEditorMixin {
             return { row, input };
         };
 
-        const textRow = makeRow("Text", initText);
-        const urlRow  = makeRow("URL",  initUrl);
+        const textRow = makeRow(wvStr("weavero-note-link-edit-text"), initText);
+        const urlRow  = makeRow(wvStr("weavero-note-link-edit-url"),  initUrl);
         overlay.appendChild(textRow.row);
         overlay.appendChild(urlRow.row);
 
         const btns = wvHtmlEl(idoc, "div", "buttons");
-        const cancelBtn = wvHtmlEl(idoc, "button", undefined, "Cancel");
-        const applyBtn = wvHtmlEl(idoc, "button", undefined, "Apply");
+        const cancelBtn = wvHtmlEl(idoc, "button", undefined, wvStr("weavero-common-cancel"));
+        const applyBtn = wvHtmlEl(idoc, "button", undefined, wvStr("weavero-note-link-edit-apply"));
         applyBtn.className = "apply";
         btns.appendChild(cancelBtn);
         btns.appendChild(applyBtn);

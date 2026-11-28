@@ -10,13 +10,15 @@
 //   and moved the card. Now the page changes go when the list is let go of.
 // - "When I disable Weavero, the controls do not get back to the native
 //   state" -- Weavero opens the manager with minimize / maximize, Zotero as a
-//   close-only dialog; an open window keeps its buttons (Windows).
+//   close-only dialog; an open window keeps its buttons (Windows). Answered
+//   then by setting them on the open window through native code; since
+//   2026-11-27 (MJT, "same as Settings") they change only when the manager is
+//   next opened: test/prefs-window-buttons.spec.js, "the Plugins Manager".
 // Written before the code.
 
 describe("Weavero — disabling Weavero from the Plugins Manager", function () {
     this.timeout(60000);
     const URI = "chrome://mozapps/content/extensions/aboutaddons.html";
-    const BOXES = 0x20000 | 0x10000;
     let wv, win;
     const pageDoc = (w) => {
         try {
@@ -34,7 +36,7 @@ describe("Weavero — disabling Weavero from the Plugins Manager", function () {
 
     before(async function () {
         wv = wvT.plugin();
-        for (const m of ["_teardownPluginsSearch", "_registerPluginsSearch", "_wvPMWhenListLetGo", "_wvWindowButtons", "_wvWindowStyle"]) wvT.method(m);
+        for (const m of ["_teardownPluginsSearch", "_registerPluginsSearch", "_wvPMWhenListLetGo"]) wvT.method(m);
         if (!wv._getEnablePluginsSearch()) wvT.absent("Plugins Manager extras switched off in this profile");
         await closeManagers();
     });
@@ -74,18 +76,6 @@ describe("Weavero — disabling Weavero from the Plugins Manager", function () {
         assert.isOk(cd.getElementById("wv-pm-searchbox"), "Weavero back: its box again");
     });
 
-    it("a manager Zotero opened gets minimize and maximize while Weavero runs and loses them when it stops (Windows)", async function () {
-        if (!Zotero.isWin) this.skip();
-        await closeManagers();
-        const Z = /** @type {any} */ (Zotero);
-        win = (Z._wvOrigOpenInViewer || Z.openInViewer).call(Z, URI);   // Zotero's close-only dialog
-        await wvT.waitFor(() => pageDoc(win), 15000);
-        await wvT.waitFor(() => (wv._wvWindowStyle(win) & BOXES) === BOXES, 6000);
-        assert.strictEqual(wv._wvWindowStyle(win) & BOXES, BOXES, "Weavero running: minimize and maximize");
-        wv._teardownPluginsSearch();
-        assert.strictEqual(wv._wvWindowStyle(win) & BOXES, 0, "Weavero stopped: close only, as Zotero opens it");
-        wv._registerPluginsSearch();
-        await wvT.waitFor(() => (wv._wvWindowStyle(win) & BOXES) === BOXES, 6000);
-        assert.strictEqual(wv._wvWindowStyle(win) & BOXES, BOXES, "Weavero started again: back on the open window");
-    });
+    // The manager's minimize / maximize on an enable or a disable:
+    // test/prefs-window-buttons.spec.js, "the Plugins Manager" (2026-11-27).
 });

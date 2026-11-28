@@ -16,6 +16,8 @@
 
 (function () {
     const tempFiles = [];
+    // The root `before` turned the saved-search folders on for a public beta.
+    let betaFoldersSet = false;
 
     const wvT = {
         /** The live plugin, or null. */
@@ -23,10 +25,12 @@
         /** On CI only, up to `n` more attempts for a test known to flake
          *  there (call with the test's or the suite's `this`), as Zotero's
          *  runner retries (`runtests.sh -r 3`; the 2026-11-03 study,
-         *  recommendation 3). Every retry is logged ("[wv-test] retry", the
-         *  root afterEach below) and counted in the run's closing line. Keep
-         *  the list short: a retry can hide a real intermittent bug unless
-         *  the log is read. A hook's failure is never retried. */
+         *  recommendation 3). Since 2026-11-20 every test gets CI_RETRIES on
+         *  CI (below); this sets another count for one test or suite. Every
+         *  retry is logged ("[wv-test] retry", the root hooks below) and
+         *  counted in the run's closing line. A retry can hide a real
+         *  intermittent bug unless the log is read. A hook's failure is never
+         *  retried. */
         ciRetries(ctx, n = 2) {
             try { if (Services.env.exists("CI") && ctx && typeof ctx.retries === "function") ctx.retries(n); } catch (e) {}
         },
@@ -35,20 +39,30 @@
         /** A Zotero with its own windows (zotero#6035, lib/windows.ts). */
         nativeWindows() { return typeof /** @type {any} */ (Zotero).Prefs.setForWindow === "function"; },
         /** A further main window, ready for use: Zotero's own where it has
-         *  them, else Weavero's spawn. Null on timeout. */
+         *  them, else Weavero's spawn. Null on timeout. Ready = BOTH pane
+         *  views: ZoteroPane.init awaits the items tree, THEN the collections
+         *  tree (zoteroPane.js), and `collectionsView` is `false` until then --
+         *  a fixture that called `collectionsView.selectLibrary` on a window
+         *  handed back with only the items tree failed "selectLibrary is not a
+         *  function" (per-window-apply-state.spec.js, Zotero 10 full run,
+         *  2026-11-19; never alone). */
         async openMainWindow(timeoutMs) {
-            const win = Zotero.getMainWindow(), ms = timeoutMs || 25000;
+            const win = Zotero.getMainWindow(), ms = timeoutMs || 25000, t0 = Date.now();
+            const views = (w) => !!(w && w.ZoteroPane && w.ZoteroPane.itemsView && w.ZoteroPane.collectionsView
+                && typeof w.ZoteroPane.collectionsView.selectLibrary === "function");
             if (wvT.nativeWindows()) {
                 const before = Zotero.getMainWindows();
                 win.ZoteroPane.newWindow();
                 return wvT.waitFor(() => {
                     const w = Zotero.getMainWindows().find(x => !before.includes(x));
-                    return (w && w.ZoteroPane && w.ZoteroPane.itemsView) ? w : null;
+                    return views(w) ? w : null;
                 }, ms);
             }
             const wv = wvT.plugin();
             const s = wv._wvSpawnMainWindowStart();
-            return wv._wvSpawnMainWindowWait(s, { wait: "init", timeoutMs: ms, timerWin: win, dropOnTimeout: true });
+            const w = await wv._wvSpawnMainWindowWait(s, { wait: "init", timeoutMs: ms, timerWin: win, dropOnTimeout: true });
+            if (!w) return null;
+            return wvT.waitFor(() => (views(w) ? w : null), Math.max(1000, ms - (Date.now() - t0)));
         },
         /** What stands down on a Zotero with its own windows (zotero#6035):
          *  the specs of Weavero's extra windows, reader windows and window
@@ -68,6 +82,7 @@
             /^Weavero — per-main-window wiring, characterized/,
             /^Weavero — cross-window drop records its effect/,
             /^Weavero — reader and note window wiring, characterized/,
+            /^Weavero — a plugin reload keeps the reader windows' chrome/,
             /^Weavero — a reader window's tab groups survive the Hide title bar toggle/,
             /^Weavero — item drags onto notes in reader and note windows/,
             /^Weavero — the Tag Selector survives a second main window closing/,
@@ -85,10 +100,29 @@
             /^Weavero — menus take their words from weavero\.ftl a reader window and a note window link weavero\.ftl/,
             /^Weavero — a disable leaves no Weavero code in Zotero Zotero 9\/10: /,
             /^Weavero — a closed reader or window is not kept alive three reader windows/,
+            // A document opened in a window is a main window's reader tab there
+            // (reader.js _openInNewWindow): its pane is the context pane, whose
+            // lock the reader-tab case covers.
+            /^Weavero — lock item-pane sections at the bottom a standalone reader window's item pane/,
         ],
         /** The shared helpers the plugin publishes (src/lib), or null. */
         lib() { return (Zotero.Weavero && Zotero.Weavero.lib) || null; },
         win() { return Zotero.getMainWindow(); },
+
+        /** The installed add-on's root URI (".../", where manifest.json and
+         *  index.js sit): `Zotero.Plugins.getRootURI` where Zotero has it (7 to 11
+         *  beta.5); zotero#6080 removes it (plugins/plugins.js: getBaseURI, a
+         *  moz-extension:// base, instead; canary 40b5f3a1, 14 specs threw "not a
+         *  function"), so the AddonManager's own resource URI of the add-on. */
+        async rootURI(id = "weavero@mjthoraval") {
+            const P = /** @type {any} */ (Zotero.Plugins);
+            if (P && typeof P.getRootURI === "function") return P.getRootURI(id);
+            const { AddonManager } = ChromeUtils.importESModule("resource://gre/modules/AddonManager.sys.mjs");
+            const addon = /** @type {any} */ (await AddonManager.getAddonByID(id));
+            if (!addon || typeof addon.getResourceURI !== "function") throw new Error("wvT.rootURI: no add-on " + id);
+            const spec = String(addon.getResourceURI("").spec);
+            return spec.endsWith("/") ? spec : spec + "/";
+        },
 
         /** Fail loudly: a plugin surface a spec needs is not there. */
         absent(what) {
@@ -411,6 +445,10 @@
             // Taskbar-overlay residency (one window per monitor issues
             // the badge; which one depends on focus history).
             "_wvOvFirstSetDone", "_wvOvFocusSeq", "_wvOvResidMon", "_wvOverlayName", "_wvOvPoison",
+            // The window's Gecko taskbar preview, anchored once a badge, a
+            // taskbar id or a button refresh first needed it (tabs.ts
+            // _wvTaskbarPreview): there after the first badge, as the above.
+            "_wvOvTaskbar",
             // The overlay's settling check: a timer until the window's place
             // is stable, then a flag. Which one a snapshot sees is timing: a
             // slow runner was still on the timer (Windows, Zotero release).
@@ -421,6 +459,18 @@
             // A collection context-menu action's highlight (set, then null):
             // gesture state, there only after an earlier spec used the menu.
             "_wvCollAfterglow",
+            // The References module's 300-ms re-check timers on a reader
+            // (refs.ts _wvRefsOnMutations): set when the reader made its
+            // views again or Reading Mode flipped while the page observer
+            // listened -- a reader whose views came up before the observer
+            // (a reload, the title-bar toggle) never gets one. Timing: the
+            // dev.68 Zotero 10 rerun had it on reader2 at open and not after
+            // the reload, then 9/9 on the next run (2026-11-21).
+            "_wvRefsViewT", "_wvRefsRmT",
+            // The Bookmarks pane's state on a window (bookmarks-pane.ts): folded,
+            // height, Bookmarks only, open folders -- the user's, set off the
+            // defaults only; the suite folds the first window's (root hook below).
+            "_wvBmp",
         ]),
         /** A wiring recording made platform- and theme-neutral, for the
          *  characterizations recorded on Windows in dark mode: the 0.22.0
@@ -439,8 +489,22 @@
             // "Reset Filters to Default" and its separator, and the window's
             // header filter. Wired on the 1.0.0-beta.1 CI's Windows runner,
             // not yet on the machine that recorded (2026-11-03); pane-scope.
-            // spec.js holds both.
-            const lazyPane = /^(wv-scope-menu-(reset|sep)( x\d+)?|_wvScopeFilters:object|_wvOvSettled:boolean)$/;
+            // spec.js holds both. The Cited by section's row class and sheet
+            // (`wv-cb-sec`, `wv-cb-sec-style`): rendered in a reader or deck
+            // window's pane on Zotero 10's full run, not on 11's (2026-11-20
+            // night, dev.56; cited-by.spec.js holds the section).
+            // The Feeds section's body and sheet (`wv-fd-sec`, `wv-fd-sec-style`)
+            // and the long lists' filter buttons and sheet in References / Cited
+            // by (`wv-lf-*`): there in a reader or deck window's pane after a full
+            // run's earlier specs, not after a short targeted one (Zotero 10,
+            // 2026-11-22, panelock.2: the only difference between two runs of the
+            // same build). The Graphical Abstract section's (`wv-ga-sec`,
+            // `wv-ga-sec-style`, feeds-graphical.ts) the same way (citations.23's
+            // Zotero 10 run, 2026-11-22: the gabs merge after panelock.2's recording).
+            // The items list's Open-entry icons' sheet (`wv-itemmenu-open-style`,
+            // tab-split.ts _wvItemsMenuOpenIcons): there once a spec has opened
+            // the item context menu (citations.27, 2026-11-22).
+            const lazyPane = /^(wv-itemmenu-open-style|wv-scope-menu-(reset|sep)( x\d+)?|_wvScopeFilters:object|_wvOvSettled:boolean|wv-cb-sec(-style)?( x\d+)?|wv-fd-sec(-style)?( x\d+)?|wv-ga-sec(-style)?( x\d+)?|wv-lf-(style|filter|toggle)( x\d+)?)$/;
             // What macOS never wires, the menu bar being the system's (macOS
             // CI, 2026-11-09): the main window's compact title bar
             // (_applyCompactTitleBar returns there) -- no hamburger nor its
@@ -458,7 +522,12 @@
             // missing on Ubuntu (Zotero 10.0.8, GNOME Wayland, 2026-11-24).
             // maximize-span.spec.js checks them where they are wired.
             const spanOffWin = /^listen maxSpan:(contextmenu|rbup)( x\d+)?$/;
-            const fixStr = (s) => typeof s === "string" ? s.replace(/menu_fileQuitItem(Win|Unix)/g, "menu_fileQuitItem") : s;
+            // The section padlocks and header-menu entries (pane-lock.ts,
+            // 1.2.1-panelock.2, citations.23): one per item-pane section, so their
+            // count is the sections registered -- a companion plugin's add more --
+            // not wiring: the mark is kept, its count is not. Lock at Top's entry
+            // (`hmi-lock-top`, branch locktop) the same.
+            const fixStr = (s) => typeof s === "string" ? s.replace(/menu_fileQuitItem(Win|Unix)/g, "menu_fileQuitItem").replace(/^(wv-panelock-(btn|hmi-lock|hmi-lock-top|hmi-sep|hmi-unlock)) x\d+$/, "$1") : s;
             const keep = (s) => typeof s !== "string"
                 || !(/^wv-ui-dark( x\d+)?$/.test(s) || lazyPane.test(s) || (!Zotero.isWin && (winOnly.test(s) || spanOffWin.test(s))) || (Zotero.isMac && noMacMain.test(s)));
             const walk = (v) => {
@@ -492,9 +561,12 @@
         /** Pending tests this run may legitimately have, by full title. */
         PENDING_ALLOWLIST: [
             { re: /^Weavero — plugin compat: /, why: "companion plugin not installed in this run (npm run test:compat installs it)" },
+            { re: /^Weavero — nothing calls a previous instance after a reload or a disable .* (after a reload|after a second reload|after a disable)/, why: "runner: no jsdebugger.sys.mjs in this Zotero, so no Debugger to watch the previous instance (zz-stale-instance-calls.spec.js says so in the log)" },
             { re: /^Weavero — split view: inside each side 4\. a note side at the floor keeps its toolbar's context-pane toggle/, why: "companion run only: Better Notes adds buttons to the note toolbar, which pushes the toggle past a 142px side (known limit, tracking registers)" },
             { re: /^Weavero — public API: a plugin that draws comments itself \(declareCommentRenderer\) /, why: "companion run only: Annotation Markdown is installed and draws the sidebar comment itself, so the suite's baseline (Weavero's own preview) is absent" },
             { re: /^Weavero — native windows \(zotero#6035\) on a real native build/, why: "version: needs a Zotero with its own windows" },
+            { re: /^Weavero — one area per in-text citation \(WV-TEMP-CITEZONES\) in a reader/, why: "version: Zotero 10 has no structure-data citations (no PDFDocumentData), the fix installs nothing there" },
+            { re: /^Weavero — upstream fixes WV-TEMP-134893b: .* torn down, B stays blank/, why: "version: Zotero 10's feed-abstract browser is in process, and taking it out mid-load ends its load -- nothing jams there (10.0.8, no add-on, 2026-11-24), so the stand-in installs nothing and there is nothing to trip" },
             { re: /^Weavero — upstream fixes WV-TEMP-INTROCRASH: /, why: "version: a Zotero 10 crash (Zotero 11's windows are its own, the stand-in installs nothing there); or precondition: the intro shows only for an empty My Library with no groups" },
             { re: /^Weavero — Advanced Search in New Window on a Zotero with its own windows real windows/, why: "version: needs a Zotero with its own windows" },
             { re: /^Weavero — a window keeps its colour \(zotero#6035\) on a real native build/, why: "version: needs a Zotero with its own windows" },
@@ -508,9 +580,13 @@
             { re: /^Weavero — a tab moved between main windows leaves no item pane behind /, why: "version: Zotero 9/10's no-reload move (on a Zotero with its own windows the move is Zotero's moveToWindow)" },
             { re: /^Weavero — a closed reader or window is not kept alive reader windows closed the way Weavero closes them/, why: "version: Zotero 9/10 reader windows (on a Zotero with its own windows a reader window is a main window)" },
             { re: /^Weavero — the filter's apply state per window and per view two library tabs in one window /, why: "version: needs a Zotero with its own windows (library tabs)" },
+            { re: /^Weavero — the Group Libraries line folds Zotero 11: a further library tab/, why: "version: needs a Zotero with its own windows (library tabs)" },
             { re: /^Weavero — a library tab is a tab like any other on a Zotero with its own windows /, why: "version: needs a Zotero with its own windows (an older Zotero's library tab is fixed first), without Zotero's own Pin Tab (there: library-tab-zotero-pin.spec.js)" },
             { re: /^Weavero — My Library pinned by Zotero's own Pin Tab /, why: "version: needs Zotero's own Pin Tab for library tabs (Zotero_Tabs.setPinned, zotero 49b48f5d08, the beta after 11.0-beta.4)" },
             { re: /^Weavero — any tab pinned by Zotero's own Pin Tab /, why: "version: needs Zotero to pin any tab (zotero b08cc35a50, the beta after 11.0-beta.4)" },
+            { re: /^Weavero — Show Tab Name acts on one library tab \(zotero#6035\) /, why: "version: needs a Zotero with its own windows (an older Zotero's one library tab is fixed, never pinned: the next entry's suite runs there)" },
+            { re: /^Weavero — Show Tab Name on an older Zotero's fixed library tab /, why: "version: Zotero 9/10 only (on a Zotero with its own windows a library tab pins like any tab: the previous entry's suite)" },
+            { re: /^Weavero — People tab: one per window, split view, kept by Weavero pinned by Zotero: a reload brings it back pinned/, why: "version: needs Zotero to pin tabs itself (Zotero_Tabs.setPinned, zotero b08cc35a50, the beta after 11.0-beta.4)" },
             { re: /^Weavero — tab-order stabilizer backs off from a reorder storm /, why: "version: its scenario is a Weavero pin among unpinned tabs; where Zotero pins any tab (b08cc35a50) Zotero orders the pins (runs on beta.4 and Zotero 10)" },
             { re: /^Weavero — pinned tabs reorder by drag and every drag settles (a stale group stamp|a drag that ends without a drop|a collapsed group hides its pinned first member|a pin dropped right after a group's chip)/, why: "version: a pin inside a tab group is Weavero's own; where Zotero pins any tab (b08cc35a50) joining a group unpins (zotero-pin-any-tab.spec.js)" },
             { re: /^Weavero — a pin dragged past the only normal tab takes a tab's width /, why: "version: its pin is Weavero's mirror; where Zotero pins any tab (b08cc35a50) the pin is Zotero's own tab (runs on beta.4 and Zotero 10)" },
@@ -523,20 +599,17 @@
             { re: /^Weavero — a tab moved between main windows leaves no item pane behind a reader moved to another window holds the focus there/, why: "CI only, macOS and Ubuntu with Zotero 10: needs a target window that comes to the front (the next entries' reason)" },
             { re: /^Weavero — a tab moved between main windows leaves no item pane behind several readers moved together/, why: "CI only, macOS and Ubuntu with Zotero 10: needs a target window that comes to the front (the next entry's reason)" },
             { re: /^Weavero — a tab moved between main windows leaves no item pane behind a reader tab moved to a second window and back/, why: "CI only, macOS and Ubuntu with Zotero 10: the case needs a target window that comes to the front, and GitHub's runners never brought one forward (the move never landed within 20 s, 1.2.0 gate, two runs each -- reproduced locally by a target whose focus() does nothing); the next case of the spec, a target that never comes to the front, runs everywhere" },
-            { re: /^Weavero — upstream fixes WV-TEMP-feedabstract: a feed abstract shows after the item pane's sections moved the sections move, the next feed item's abstract still shows/, why: "CI only, macOS and Linux with Zotero 11: the stand-in did not draw B's abstract after the move on GitHub's macOS beta runner (1.2.1 release CI run 45200266733, both attempts) and on its Ubuntu beta runner (1.2.2 release CI run 45384510446, both attempts) while the tripwire passes there; no regression (Zotero alone blanks it too); Windows CI and local runs pass; to investigate on a Mac and on Linux (work/TODO.md)" },
-            { re: /^Weavero — a link preview tints the whole reference entry /, why: "CI only, Ubuntu with the Zotero beta: the whole spec is skipped there (its before() hook) -- the preview popup never opened on GitHub's Linux runner (1.2.0 gate, CI run 44537151777, both attempts); Windows and macOS CI and local runs pass; to fix (work/TODO.md)" },
-            { re: /^Weavero — a link preview tints the whole reference entry the link zones land on the DOI in Weavero's picture as in Zotero's/, why: "CI only, every platform with the Zotero beta: one of the two pictures had no zone over the DOI (Ubuntu twice, Windows twice; Weavero's in one run, Zotero's in another; 1.2.0 gate); local runs pass; a timing flake to fix (work/TODO.md)" },
             { re: /^Weavero — split view: a tab locked on one side the note beside a locked PDF that is selected/, why: "screen: needs each side at least Zotero's 930px wide (the spec asks a 1920px window); a smaller screen (CI's runners, a monitor at 125%) stacks the sides, and a stacked side's sidenav draws no toggle-pane button (measured 2026-11-19: 1500px window, 735px stacked cards, the button 0px wide)" },
-            { re: /^Weavero — upstream fixes WV-TEMP-134823/, why: "version: Zotero 11's collapsed-attribute mismatch (Zotero 10 re-renders; a Zotero without it needs no fix)" },
-            { re: /^Weavero — upstream fixes WV-TEMP-134824/, why: "version: Zotero 11's windows each with their own views (Zotero 10 has one view; Weavero's own windows there have their guard)" },
-            { re: /^Weavero — upstream fixes WV-TEMP-134772/, why: "version: Zotero 11 without zotero 3e32faa0a (Zotero 10 writes disabled=\"undefined\", read as enabled; a later beta has the fix)" },
-            { re: /^Weavero — upstream fixes WV-TEMP-134826/, why: "version: Zotero 11's windows without a library (Zotero 10's one main window always has one)" },
-            { re: /^Weavero — upstream fixes WV-TEMP-134831/, why: "version: Zotero 11's note tab standing in for a note window (Zotero 10 opens a note window; a Zotero whose Notes.open lost the rule needs no fix)" },
             { re: /^Weavero — a link preview tints the whole reference entry a destination that holds the link itself: the PDF's own link on that spot previewed \(WV-TEMP-134821\)/, why: "version: Zotero 11's text matcher sends a link to its own paragraph (#65); Zotero 10 previewed it right and the stand-in finds no PDF link there" },
-            { re: /^Weavero — upstream fixes WV-TEMP-advsrchcollapse: /, why: "version: Zotero 9 has no Advanced Search in the items pane (10.0.8 and 11 run it)" },            // Nested suites: a full title starts with the OUTER describe's.
+            { re: /^Weavero — References from the full text \(a PDF never opened\) the PDF opened: Zotero writes its structure cache/, why: "version: needs Zotero's structure data (Zotero.SDT, 10.0.8 and 11); an older Zotero writes no structure cache" },
+            { re: /^Weavero — upstream fixes WV-TEMP-advsrchcollapse: /, why: "version: Zotero 9 has no Advanced Search in the items pane (10.0.8 and 11 run it)" },
+            { re: /^Weavero — the Advanced Search in a feed view offers the conditions a feed item can match /, why: "version: Zotero 9 has no Advanced Search in the items pane (10.0.8 and 11 run it)" },
+            { re: /^Weavero — l10n fit audit: /, why: "an audit run on purpose: test/l10n-fit.spec.js runs when WV_TEST_ENTRIES names it or WV_L10N_FIT is set (it records findings per UI language, it does not judge them)" },
+            // Nested suites: a full title starts with the OUTER describe's.
             { re: /^Weavero — context-menu handlers ignore bubbled submenu events /, why: "popups do not open in this runner window, or no bookmarkable row is selected" },
             { re: /^Weavero — items-list header contributes no intrinsic width its max-content width/, why: "the desktop keeps the runner's window hidden (measured on CI)" },
             { re: /^Weavero — column picker on macOS .* is not installed off macOS$/, why: "platform: the case is for non-macOS and the run is on macOS" },
+            { re: /^Weavero — WV-TEMP-134569 \/ 113626: .* no pin: a closed popup of a section \(Zotero's author menu, right-clicked once\) /, why: "platform: macOS shows Zotero's author menu, a context menu, as a native NSMenu (#48), which Gecko does not lay out (a guess: no nsXULPopupManager in the local Firefox mirror), so it keeps no closed box to take -- skipped only on macOS when the menu does not open or keeps no box (pin-anchor.spec.js, 2026-11-28)" },
             { re: /^Weavero -- Plugins Manager title bar is one row on every platform /, why: "platform: macOS, or a display that refuses to maximize" },
             { re: / \(Windows\)$/, why: "platform: Windows only" },
             // Unlisted until macOS CI got past its crash (2026-11-09).
@@ -553,6 +626,7 @@
             { re: /^Weavero — maximize across monitors a Zotero with its own windows: the span rides/, why: "version: needs a Zotero with its own windows (zotero#6035)" },
             { re: /^Weavero — maximize across monitors Zotero 9\/10: the window store keeps/, why: "version: Weavero's own restart, an older Zotero (Zotero restores each of its own windows; the span rides the window's state there)" },
             { re: /^Weavero — View → Layout follows the tab .*note tab/, why: "version: note tabs (note-in-tab) need a Zotero that loads 'note' tabs" },
+            { re: /^Weavero — the tab tooltip shows the item type's icon in front of the title a note tab/, why: "version: note tabs (note-in-tab) need a Zotero that loads 'note' tabs" },
             // Unlisted until the 1.0.0-beta.1 CI, the first Ubuntu run of
             // these specs (2026-11-03).
             { re: /^Weavero — the background-restore focus guard ends /, why: "platform: the guard is WINNT-gated (bg-restore-guard.spec.js before)" },
@@ -615,6 +689,115 @@
      *  reader-window wiring spec's reloads, 2026-11-03 to 11-09). */
     wvT.trace = (line) => traceWrite(String(line));
 
+    // The runner's own events. The page calls `mocha.run()` after the last spec
+    // file; this file is staged first, so it wraps `run` here and hands the
+    // Runner it returns to `runnerHooks`. And a top-level suite's FILE: the
+    // scaffold loads each spec as a <script>, so Mocha's `suite.file` stays
+    // null -- each suite added to the root is stamped `_wvFile` with the
+    // script running it (its spec's bundle, units/<name>.spec.js): the last
+    // <script src> the parser has inserted so far. document.currentScript is
+    // null in this XHTML page (2026-11-20, a shard run: every suite unnamed).
+    const runnerHooks = [];
+    const M = /** @type {any} */ (globalThis).mocha;
+    try {
+        if (M && M.suite && typeof M.suite.on === "function") {
+            M.suite.on("suite", (s) => {
+                try {
+                    let src = /** @type {any} */ (document.currentScript)?.src || "";
+                    if (!src) {
+                        const all = document.querySelectorAll("script[src]");
+                        src = all.length ? /** @type {any} */ (all[all.length - 1]).src : "";
+                    }
+                    if (src && !s._wvFile) s._wvFile = String(src).replace(/[?#].*$/, "").split("/").pop();
+                } catch (e) {}
+            });
+        }
+        if (M && typeof M.run === "function" && !M._wvRunWrapped) {
+            const run = M.run;
+            M._wvRunWrapped = true;
+            M.run = function (...args) {
+                const runner = run.apply(this, args);
+                for (const h of runnerHooks) { try { h(runner); } catch (e) {} }
+                return runner;
+            };
+        }
+    } catch (e) {}
+
+    // Per-file run times (WV_TEST_TIMES=<path>; scripts/spec-times.mjs merges
+    // the file into test/spec-times.json, by which WV_TEST_SHARD balances its
+    // parts): each top-level suite's WALL time, its hooks included, and its
+    // tests' summed durations, written by a root `after` hook -- all top-level
+    // suites have ended by then, and the reporter has not yet quit Zotero.
+    let timesPath = "";
+    try { if (Services.env.exists("WV_TEST_TIMES")) timesPath = Services.env.get("WV_TEST_TIMES"); } catch (e) {}
+    const suiteTimes = [];
+    if (timesPath) {
+        runnerHooks.push((runner) => {
+            const open = new Map();
+            const topOf = (t) => { let s = t && t.parent; while (s && s.parent && !s.parent.root) s = s.parent; return s; };
+            runner.on("suite", (s) => {
+                if (s.parent && s.parent.root) open.set(s, { title: s.title, file: s._wvFile || null, t0: Date.now(), testMs: 0 });
+            });
+            runner.on("test end", (t) => {
+                const r = open.get(topOf(t));
+                if (r && typeof t.duration === "number") r.testMs += t.duration;
+            });
+            runner.on("suite end", (s) => {
+                const r = open.get(s);
+                if (!r) return;
+                open.delete(s);
+                suiteTimes.push({ title: r.title, file: r.file, ms: Date.now() - r.t0, testMs: r.testMs });
+            });
+        });
+        after(async function () {
+            // A forward-slash path writes nothing on Windows (rules/tests.md).
+            const p = Services.appinfo.OS === "WINNT" ? timesPath.replace(/\//g, "\\") : timesPath;
+            const rec = { zotero: Zotero.version, platform: Services.appinfo.OS, at: new Date().toISOString(), suites: suiteTimes };
+            let line = "[wv-test] spec times: " + suiteTimes.length + " suites -> " + p;
+            try { await IOUtils.writeUTF8(p, JSON.stringify(rec, null, 1)); }
+            catch (e) { line = "[wv-test] spec times NOT written to " + p + ": " + e; }
+            try { Zotero.debug(line); } catch (e) {}
+            try { if (typeof globalThis.debug === "function") globalThis.debug(line); } catch (e) {}
+        });
+    }
+
+    // Retries on CI (MJT 2026-11-20, after Zotero's own CI: `runtests.sh -r 3`,
+    // zotero d3509ae25, and every retry logged, dfd745c5d). On CI every test
+    // gets up to CI_RETRIES more attempts: set on the root suite here, before
+    // any spec file defines its suites, so each inherits it (Mocha copies a
+    // parent's retries into a child as it is added). Locally none: a flake must
+    // show. A hook's failure is never retried. Every retry is logged with the
+    // failed attempt's first error line -- the scaffold's log, Zotero's debug
+    // output, the quit trace -- and test.yml copies those lines into the job's
+    // summary; the closing line counts them. A budget caps a run's retried
+    // attempts: a broken build retrying each failure up to its timeout would
+    // outlast the job's 30 min.
+    const CI_RETRIES = 2, RETRY_BUDGET = 10;
+    let onCI = false;
+    try { onCI = Services.env.exists("CI"); } catch (e) {}
+    if (onCI && M && typeof M.retries === "function") { try { M.retries(CI_RETRIES); } catch (e) {} }
+    const say = (line) => {
+        try { Zotero.debug(line); } catch (e) {}
+        try { if (typeof globalThis.debug === "function") globalThis.debug(line); } catch (e) {}
+        traceWrite(line);
+    };
+    let retryAttempts = 0, budgetSaid = false;
+    runnerHooks.push((runner) => {
+        runner.on("retry", (test, err) => {
+            retryAttempts++;
+            const title = test.fullTitle();
+            if (wvT.retried.indexOf(title) < 0) wvT.retried.push(title);
+            const first = String((err && (err.message || err)) || "?").split("\n")[0].slice(0, 300);
+            say("[wv-test] retry " + (test.currentRetry() + 1) + "/" + test.retries() + " after a failure: " + title + " :: " + first);
+        });
+    });
+    beforeEach(function () {
+        if (retryAttempts < RETRY_BUDGET) return;
+        const t = /** @type {any} */ (this.currentTest);
+        if (t && typeof t.retries === "function" && t.retries() > 0) t.retries(0);
+        if (!budgetSaid) { budgetSaid = true; say("[wv-test] retry budget spent (" + RETRY_BUDGET + " retried attempts): no more retries in this run"); }
+    });
+
     before(async function () {
         // Zotero's OWN readiness, beyond the plugin's: on a fresh profile the
         // bundled files (translators, styles) install right after startup
@@ -649,9 +832,31 @@
         try { await Zotero.DB.executeTransaction(async () => {}); } catch (e) {}
         // The main window as wired, before any spec uses it.
         try { wvT.mainAtStart = wvT.wiringSnapshot(Zotero.getMainWindow()); } catch (e) {}
+        // The Bookmarks pane (bookmarks-pane.ts, on in pre-release builds) folded to its
+        // header in the first window: open, it takes 180 px from the collections tree, and
+        // the specs that read the tree's rows at its bottom (the Group Libraries line, the
+        // Feeds row) found them out of the virtualized list in the runner's window
+        // (1.3.0-bmpane, Zotero 11: group-libraries-fold, hidden-collections). Its own spec
+        // unfolds it and folds it back.
+        try {
+            const p = wvT.plugin();
+            if (p && typeof p._wvBmpRestore === "function") p._wvBmpRestore(Zotero.getMainWindow(), { folded: true });
+        } catch (e) {}
+        // A public beta defaults the saved-search folders trial off (prefs-table.ts
+        // betaOff, MJT 2026-11-28); the specs run it on, as on every other pre-release
+        // build, and the ones about "off" turn it off themselves.
+        try {
+            const p = wvT.plugin();
+            if (p && /-beta\.\d+$/.test(String(p._version || "")) && Zotero.Prefs.get("weavero.collectionsSearchFolders") === false) {
+                Zotero.Prefs.set("weavero.collectionsSearchFolders", true);
+                betaFoldersSet = true;
+                await new Promise((r) => setTimeout(r, 300));
+            }
+        } catch (e) {}
     });
 
     after(async function () {
+        if (betaFoldersSet) { try { Zotero.Prefs.clear("weavero.collectionsSearchFolders"); } catch (e) {} }
         // Temp files the helpers created.
         for (const p of tempFiles.splice(0)) { try { await IOUtils.remove(p); } catch (e) {} }
     });
@@ -705,7 +910,7 @@
         if (!k) return;
         const title = t.fullTitle();
         if (wvT.retried.indexOf(title) < 0) wvT.retried.push(title);
-        const line = "[wv-test] retry " + k + " (" + (t.state || "?") + "): " + title;
+        const line = "[wv-test] retry " + k + " ended (" + (t.state || "?") + "): " + title;
         try { Zotero.debug(line); } catch (e) {}
         try { if (typeof globalThis.debug === "function") globalThis.debug(line); } catch (e) {}
     });
@@ -730,7 +935,7 @@
         // Into the scaffold's log (its `debug` channel), so a run's pending
         // tally is visible next to the pass/fail count.
         const line = "[wv-test] pending: " + pending.length + ", allowlisted: " + (pending.length - unlisted.length) + ", unlisted: " + unlisted.length
-            + ", retried: " + wvT.retried.length;
+            + ", retried: " + wvT.retried.length + (retryAttempts ? " (" + retryAttempts + " retried attempts)" : "");
         try { Zotero.debug(line); } catch (e) {}
         try { if (typeof globalThis.debug === "function") globalThis.debug(line); } catch (e) {}
         if (unlisted.length) {

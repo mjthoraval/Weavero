@@ -1,6 +1,6 @@
 ---
 name: verify
-description: The Weavero build-install-verify cycle. Use after any src/ change to get the new code running and proven in the live Zotero. Also the reference for version bumping and test-suite etiquette.
+description: The Weavero build-install-verify cycle. Use whenever a Weavero build is to be made or installed ("install the latest work", "make a build", "put it in my Zotero", a branch build to try, a reinstall), and after any src/ change, to get the new code running and proven in the live Zotero. Also the reference for version bumping (which -dev.N or branch suffix) and for which specs to run on which Zotero versions.
 ---
 
 # Build → install → verify cycle
@@ -55,6 +55,13 @@ manifest changed, their rules files carry the extra checks.
   `Services.prefs.setIntPref("ui.systemUsesDarkTheme", 0|1)` switches light
   and dark live for a shot of each (split-view cards, 2026-11-11). Move the
   probe out before `npm run build`: the typecheck covers test/.
+  An open XUL menu (menupopup, panel) is a window of its own: drawSnapshot
+  never paints it. The probe writes the menu's `getOuterScreenRect()` times
+  `devicePixelRatio` to a request file and a helper script outside Zotero
+  grabs exactly that rectangle off the screen (PIL `ImageGrab`, per-monitor
+  DPI aware, the virtual desktop's origin subtracted), nothing around it
+  (refs.9 reference card, 2026-11-20). And a scroll of a PDF view closes
+  Zotero's overlay popups: scroll first, wait, then open the popup.
 - Timing measurements: beware sampling inside a CSS transition or debounce
   window — a wrong first read cost a false "dimming is broken" alarm once.
 - **A hidden or occluded window suspends `requestAnimationFrame`**, and
@@ -92,8 +99,12 @@ manifest changed, their rules files carry the extra checks.
   `npm run test:pick -- --list` (scripts/pick-specs.mjs) lists the specs that
   name what the diff changed, plus a base set (popups, compat, reader-leak,
   prefs-defaults, option-gates), and prints the `WV_TEST_ENTRIES` value. Run
-  them on Zotero 11 beta and on Zotero 10. It says "run the full suite" when
-  `src/lib/` changed or more than half of the suite is picked; then do.
+  them on Zotero 11 beta and on Zotero 10. Since 2026-11-20 it follows the
+  IMPORT GRAPH -- a `src/lib/` change picks the specs of the methods that use
+  it, each pick printed with the changed file that led to it. It says "run
+  the full suite", with the reason, when `src/index.ts` or the scaffold config
+  changed, when a changed file cannot be followed, or when more than half of
+  the suite is picked; then do. `--base A --head B` tries it on any range.
 - **One full run per tree that lands.** The full suite runs once on the tree
   that lands on main (a branch merge, see the branch skill) and at a release,
   on every Zotero version of the gate; never again on the same tree (a merge
@@ -101,6 +112,16 @@ manifest changed, their rules files carry the extra checks.
   10 gets full runs only then; in between, its picked specs. 2026-11-14/15:
   three branches ran their own full suites on two versions and the merge would
   have run them again -- about six machine-hours for one night's work.
+  A release candidate that differs from the last tree whose full runs passed
+  on both versions ONLY by the version files reuses those runs (release skill
+  §3, MJT 2026-11-20): `git diff --stat <tested> <candidate>` lists nothing but
+  `src/manifest.json`, `package.json`, `package-lock.json`.
+- **Full runs record their times.** Run them with
+  `WV_TEST_TIMES=D:/tmp/<tag>-times.json` (each spec file's wall time,
+  test/000-helpers.spec.js); after a green full run on each Zotero major,
+  `node scripts/spec-times.mjs --json <file>` refreshes `test/spec-times.json`
+  -- the table CI's shards are balanced by (`--predict 2,3` shows the parts)
+  -- committed as `test:`.
 - Full runs go to an idle machine (overnight when possible): they take ~25 min
   per Zotero version, and a runner in use competes with the user's instance.
 - A symptom seen ONLY in the runner is the runner's until a normal Zotero
@@ -111,13 +132,18 @@ manifest changed, their rules files carry the extra checks.
   hands-on check disproved it. `server.devtools` is now false in
   zotero-plugin.config.ts; the full suite peaks near 2 GB. The quit
   trace's MEM/MEMGROW lines (000-helpers) name the heavy specs.
-- SEQUENCE: hand the build over for the user's own validation FIRST, and
-  run the suite after they confirm the feature works — not between the
-  install and the handover. The runner launches its OWN Zotero, which
-  competes for CPU and focus with the instance the user is testing in,
-  and a suite result on a feature they have not seen yet answers a
-  question nobody asked (MJT, 2026-08-24, after four full runs in one
-  session on small changes).
+- SEQUENCE: install first, then run the suite at once, in parallel with the
+  user's own testing -- never hold the install behind a run, and never
+  hold a run waiting for the user to confirm the feature (MJT, 2026-11-25:
+  "You can start the test suite directly. I just want to be able to test
+  it directly also, without having to wait for the result of the suite. So
+  you can install while the test suite runs."; same since 2026-11-12). Per
+  code state: build, install into the running instance, short live check,
+  tell the user it is in, THEN start the runs in the background and report
+  them when they finish; a problem the user's hands find means fix,
+  reinstall, rerun. The runner launches its OWN Zotero (CPU, a window that
+  can take focus): say when a long run starts. Superseded: "suite only
+  after the user validates" (2026-08-24).
 - Perf-relevant changes (filter apply path, per-row rendering, reader
   load): run the matching `bench/` suite (TESTING.md Level 5) —
   `bench-filter-search.js` times filter/search per dimension, mode and
@@ -127,9 +153,21 @@ manifest changed, their rules files carry the extra checks.
   go", re-run with `Zotero._wvBenchProfile = true` and read the WV
   markers in the saved Gecko profile.
 - Touched filter/search/reader-filter machinery: run the live suites via
-  `test/live/run-all.js` (core profile) after the user has validated the
-  change — same sequencing as the full npm suite above. Pre-release:
+  `test/live/run-all.js` (core profile) -- same sequencing as the full npm
+  suite above (install first, runs at once in parallel). Pre-release:
   `full` (adds the matrix).
+- **Speed and accuracy, per feature (MJT 2026-11-27).** A change to a feature
+  that has a speed check (a bench, a timing spec) or an accuracy check (a
+  gold set measuring how often a heuristic is right: reference
+  identification, outline headings, Cited by matching...) runs that check
+  too, and compares with its last value; a heuristic change is kept only if
+  no set gains a wrong answer. The maintainer's coverage table of features x
+  review dimensions (when present) says which checks exist; a feature that
+  has none gets a line there, so the periodic review can add one.
+- **One machine, one queue.** Every Zotero runner (suite, bench, probe) goes
+  through the suite lock, full suites alone; several runs are chained in one
+  queued script, never started by several agents at once (2026-11-26/27: a
+  release gate waited three hours behind agents' own runs).
 
 ## 6. Report
 

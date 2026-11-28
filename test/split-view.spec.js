@@ -81,10 +81,15 @@ describe("Weavero — split view: two tabs side by side", function () {
         try { Zotero.Prefs.clear("weavero.tabSplits"); } catch (er) {}
     });
 
-    it("Open PDF in Split View, after Zotero's Open PDF in New Window: the library and the PDF side by side, the PDF selected", async function () {
+    // MJT 2026-11-20: "Open in split view should be before the open in new window".
+    it("Open PDF in Split View, between Zotero's Open PDF and Open PDF in New Window: the library and the PDF side by side, the PDF selected", async function () {
         const L = libTab();
         ZT.select(L.id); await sleep(300);
         const popup = doc.createXULElement("menupopup");
+        const zt = doc.createXULElement("menuitem");
+        zt.setAttribute("data-l10n-id", "item-menu-viewAttachment");
+        zt.setAttribute("data-l10n-args", JSON.stringify({ attachmentType: "pdf", numAttachments: 1 }));
+        popup.appendChild(zt);
         const z = doc.createXULElement("menuitem");
         z.setAttribute("data-l10n-id", "item-menu-viewAttachment");
         z.setAttribute("data-l10n-args", JSON.stringify({ attachmentType: "pdf", numAttachments: 1, openIn: "window" }));
@@ -97,7 +102,8 @@ describe("Weavero — split view: two tabs side by side", function () {
             const mi = doc.getElementById("wv-itemmenu-split");
             assert.ok(mi, "the entry");
             assert.strictEqual(mi.getAttribute("label"), "Open PDF in Split View");
-            assert.strictEqual(z.nextSibling, mi, "right after Zotero's Open PDF in New Window");
+            assert.strictEqual(zt.nextSibling, mi, "right after Zotero's Open PDF");
+            assert.strictEqual(mi.nextSibling, z, "before Zotero's Open PDF in New Window");
             mi.dispatchEvent(new win.Event("command"));
         }
         finally { popup.remove(); }
@@ -877,7 +883,7 @@ describe("Weavero — split view: two tabs side by side", function () {
     // Menu icons come from --menuitem-icon on Zotero 11, list-style-image before.
     const iconOf = (el) => {
         // The split's own menu sets its glyphs through the `image` attribute, which Zotero
-        // 11's menu.js maps onto the icon (src-ts rules, "Menu icons on Zotero 11").
+        // 11's menu.js maps onto the icon (src-ts-dom.md, "Menu icons on Zotero 11").
         const img = el.getAttribute("image");
         if (img && el.classList.contains("menuitem-iconic")) return img;
         const cs = win.getComputedStyle(el);
@@ -886,7 +892,7 @@ describe("Weavero — split view: two tabs side by side", function () {
         const l = cs.listStyleImage;
         return l && l !== "none" ? l : "";
     };
-    it("17. every split entry has an icon: the items list's Zotero's own for the type, the tab menu's and the split's menu's Weavero's split glyphs (light and dark)", async function () {
+    it("17. every split entry has an icon: the items list's Open entries the References menu's where-drawings with the file at the line's end, the tab menu's and the split's menu's Weavero's split glyphs (light and dark)", async function () {
         // macOS menus carry no icons: Zotero's own Open PDF entry has none there (macOS CI 2026-11-13).
         if (Zotero.isMac) this.skip();
         separateAll();
@@ -909,9 +915,30 @@ describe("Weavero — split view: two tabs side by side", function () {
                     const mi = await waitFor(() => doc.getElementById("wv-itemmenu-split"), 5000, "the split entry");
                     await sleep(300);
                     const nb = mi.previousElementSibling;
-                    assert.ok(nb && nb.getAttribute("data-l10n-id") === "item-menu-viewAttachment", theme + ": right after Zotero's Open entries: " + Array.from(menu.children).filter(x => !x.hidden).slice(0, 6).map(x => x.id || x.getAttribute("data-l10n-id") || x.localName).join(" | "));
+                    assert.ok(nb && nb.getAttribute("data-l10n-id") === "item-menu-viewAttachment", theme + ": right after Zotero's Open entry: " + Array.from(menu.children).filter(x => !x.hidden).slice(0, 6).map(x => x.id || x.getAttribute("data-l10n-id") || x.localName).join(" | "));
+                    // Before Zotero's Open … in New Window when the menu has one (MJT 2026-11-20).
+                    const winEntry = Array.from(menu.querySelectorAll(":scope > menuitem")).find(x => !x.hidden && x.getAttribute("data-l10n-id") === "item-menu-viewAttachment" && /"openIn"\s*:\s*"window"/.test(x.getAttribute("data-l10n-args") || ""));
+                    if (winEntry) assert.strictEqual(mi.nextElementSibling, winEntry, theme + ": before Zotero's Open in New Window");
                     assert.ok(iconOf(nb), theme + ": fixture: Zotero's Open PDF entry has its icon");
-                    assert.strictEqual(iconOf(mi), iconOf(nb), theme + ": the split entry has the same icon");
+                    // MJT 2026-11-22, "Make the right click open options in the items list
+                    // with consistent icons as in Refs" (tab-split.ts _wvItemsMenuOpenIcons):
+                    // where it opens on the left -- the References menu's tab / split view /
+                    // window drawings, one per place -- and the PDF at the line's end.
+                    const opens = [nb, mi].concat(winEntry ? [winEntry] : []);
+                    const icons = opens.map(iconOf);
+                    for (const [k, el] of opens.entries()) {
+                        const what = theme + ": " + (el.id || el.getAttribute("data-l10n-args"));
+                        assert.include(icons[k], "data:image/svg+xml", what + ": the References menu's drawing");
+                        const f = el.querySelector(":scope > .wv-itemmenu-file");
+                        assert.ok(f && f.getAttribute("data-type") === "pdf", what + ": the PDF at its line's end");
+                        assert.include(win.getComputedStyle(f).backgroundImage, "/" + theme + "/attachment-pdf.svg", what + ": Zotero's PDF icon, " + theme);
+                        // At the line's end: the entry's last child, in its right half (the
+                        // label box stretches across the line, so its edge says nothing).
+                        assert.strictEqual(el.lastElementChild, f, what + ": the entry's last part");
+                        const er = el.getBoundingClientRect(), fr = f.getBoundingClientRect();
+                        assert.isAbove(fr.left, er.left + er.width / 2, what + ": in the line's right half");
+                    }
+                    assert.strictEqual(new Set(icons).size, icons.length, theme + ": a different drawing per place (tab, split view, window)");
                     const lx = (el) => { const lab = el.querySelector(".menu-iconic-text, .menu-text, label"); return lab ? lab.getBoundingClientRect().left : NaN; };
                     assert.approximately(lx(mi), lx(nb), 0.5, theme + ": its label aligned with its neighbour's");
                 }

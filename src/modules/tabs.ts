@@ -16,21 +16,27 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via
 // defineProperties (see modules/annotation.ts for the pattern).
 
-import { winOf, wvSetBoolAttr, wvWithin, wvHtmlEl } from "../lib/dom";
+import { winOf, wvSetBoolAttr, wvWithin, wvHtmlEl, wvIsHiddenOrCollapsed } from "../lib/dom";
 import { wvLivePlugin } from "../lib/live";
+import { wvOpenedInstance } from "../lib/compat";
 import { wvInjectStyle, wvRemoveStyle } from "../lib/style";
 import { wvOutsideClick, wvReachableDocs, wvDismissOff } from "../lib/dismiss";
 import { wvWrap, wvUnwrap } from "../lib/wrap";
 import { wvListen, wvListener, wvUnlisten } from "../lib/listen";
-import { wvStoreWrite, wvStoreRead, wvStoreRemove } from "../lib/store";
+import { wvStoreWrite, wvStoreRead, wvStoreRemove, wvStoreGate } from "../lib/store";
 import { wvTimeout, wvSleep } from "../lib/timers";
 import { wvMenuItem, wvMMRegister } from "../lib/menu";
 import { wvFirstDocTab, wvFirstMovableIndex, wvIsFixedLibraryTab, wvIsLibraryTabID, wvLibraryTabPinned, wvMainWins, wvNativeWindows, wvSelectLibraryTab, wvStoredFromSaved, wvWinType, wvZoteroPinsLibraryTabs, wvZoteroPinsTabs } from "../lib/windows";
 import { wvAccel } from "../lib/keys";
 import { wvSvgEl } from "../lib/svg";
 import { wvIsWebURL } from "../lib/links";
+import { WV_GROUPLIB_BADGE_SVG } from "../lib/library-badge";
 import { WV_FUNNEL_DATA_URI } from "./constants";
 import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
+
+/** When each window's place last changed (ms), for the taskbar badge's drag
+ *  test (_wvOvDragLive). Keyed by window, so a closed one is not kept. */
+const wvOvMoveSeen = new WeakMap<any, number>();
 
 /** The three entries both tab menus add for the clicked tab's item -- "View
  *  Online", "Show File" / "Show in Finder", "Open in External Viewer" --
@@ -150,20 +156,87 @@ const WV_WIN_BADGE_COLORS = [
     "#2EA8E5", "#5FB236", "#A28AE5", "#F19837", "#E56EEE", "#FF6666",
 ];
 
-// Group-library badge glyph — a symmetric, bold 3-column temple centred on x8.
-// Zotero's stock library-group icon has 1px columns that blur when scaled down to
-// badge size, so we draw a chunkier version that stays sharp. #59ADC4 is the same
-// teal Zotero uses for group libraries throughout the UI. Shared by the
-// List-all-tabs dropdown badge (`_wvGroupLibBadgeSvg`) AND the tab-strip overlay
-// (`_decorateTabBar`), so the two stay identical — edit here only.
-const WV_GROUPLIB_BADGE_SVG = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='#59adc4'>"
-    + "<path d='M8 1.5L13.5 6.5H2.5Z'/>"
-    + "<rect x='3.5' y='7' width='2' height='6'/>"
-    + "<rect x='7' y='7' width='2' height='6'/>"
-    + "<rect x='10.5' y='7' width='2' height='6'/>"
-    + "<rect x='2' y='13' width='12' height='2'/></svg>";
+// Group-library badge glyph (`WV_GROUPLIB_BADGE_SVG`) — a symmetric, bold
+// 3-column temple in Zotero's group teal, lib/library-badge.ts. Shared by the
+// List-all-tabs dropdown badge (`_wvGroupLibBadgeSvg`), the tab-strip overlay
+// (`_decorateTabBar`) and the references' marks (refs.ts), so they stay
+// identical — edit there only.
+
+/** A tab Zotero's List all tabs cannot draw: not a library tab, and no item
+ *  Zotero can read the type icon of (tabsMenuPanel.js refreshList calls
+ *  Zotero.Items.get(tab.data.itemID).getItemTypeIconName). Weavero's
+ *  Researchers tab is one (it has no item); so is a tab whose item went away. */
+function wvTabsMenuItemless(ZT: any, t: any): boolean {
+    try {
+        if (!t) return false;
+        const lib = ZT && typeof ZT._isLibraryTab === "function" ? ZT._isLibraryTab(t) : wvIsLibraryTabID(t.id);
+        if (lib) return false;
+        const it: any = t.data && t.data.itemID != null ? Zotero.Items.get(t.data.itemID) : null;
+        return !(it && typeof it.getItemTypeIconName === "function");
+    } catch (e) { return false; }
+}
 
 class _TabsMixin {
+    /** The rows of the tabs Zotero's list left out (wvTabsMenuItemless), in
+     *  Zotero's row shape (tabsMenuPanel.js refreshList), each at its place in
+     *  the bar's order, the title filter applied as Zotero applies it: the icon
+     *  the tab bar shows (`data.icon`, the Researchers' person; else a
+     *  document), the title, the close button where the tab can be closed;
+     *  Zotero's own handlers (they read the row's data-tab-id). */
+    _wvTabsMenuItemlessRows(panel: any, tabs: any[]) {
+        try {
+            if (!panel || !tabs || !tabs.length || !panel.visible) return;
+            const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list");
+            const win = winOf(panel);
+            const ZT: any = win && win.Zotero_Tabs;
+            const doc = panel.ownerDocument;
+            if (!list || !ZT) return;
+            const filter = String(panel._filterText || "");
+            for (const t of tabs) {
+                const title = String(t.title || "");
+                if (filter && !title.toLowerCase().includes(filter)) continue;
+                if (list.querySelector('.row[data-tab-id="' + t.id + '"]')) continue;
+                const row = doc.createElement("div");
+                row.className = "row";
+                row.id = "zotero-tabs-menu-row-" + t.id;
+                row.dataset.tabId = t.id;
+                row.setAttribute("role", "option");
+                row.setAttribute("data-wv-itemless", "true");
+                if (t.id === ZT.selectedID) row.classList.add("selected");
+                const name = doc.createElement("div");
+                name.setAttribute("flex", "1");
+                name.setAttribute("class", "zotero-tabs-menu-entry title");
+                name.setAttribute("tabindex", "-1");
+                name.setAttribute("aria-label", title);
+                name.setAttribute("title", title);
+                const ic = doc.createElement("span");
+                ic.className = "icon icon-css tab-icon icon-item-type";
+                ic.setAttribute("data-item-type", String((t.data && t.data.icon) || "document"));
+                name.appendChild(ic);
+                let lab: any = null;
+                try { if (typeof panel.createLabel === "function") lab = panel.createLabel(title, filter); } catch (e) {}
+                name.appendChild(lab || doc.createTextNode(title));
+                if (typeof panel._handleTitleClick === "function") name.addEventListener("click", panel._handleTitleClick);
+                const close = doc.createElement("div");
+                close.className = "zotero-tabs-menu-entry close";
+                const x = doc.createElement("span");
+                x.setAttribute("class", "icon icon-css icon-x-8 icon-16");
+                close.setAttribute("role", "button");
+                close.setAttribute("tabindex", "-1");
+                close.appendChild(x);
+                if (typeof panel._handleCloseClick === "function") close.addEventListener("click", panel._handleCloseClick);
+                if (t.closable === false || t.pinned) close.hidden = true;
+                row.appendChild(name);
+                row.appendChild(close);
+                // Before the row of the next tab of the bar that has one.
+                let before: any = null;
+                const i0 = ZT._tabs.indexOf(t);
+                for (let i = i0 + 1; i0 >= 0 && i < ZT._tabs.length && !before; i++) before = list.querySelector('.row[data-tab-id="' + ZT._tabs[i].id + '"]');
+                list.insertBefore(row, before);
+            }
+        } catch (e) { Zotero.debug("[Weavero] tabs menu itemless rows err: " + e); }
+    }
+
     [k: string]: any;
     /** Patch the "List all tabs" panel (the dropdown reachable from
      *  the chevron at the right of the tab bar) so its rows are
@@ -255,7 +328,26 @@ class _TabsMixin {
         panel._wvOrigRefreshList = orig;
         const self = this;
         panel.refreshList = function (opts) {
-            orig(opts);
+            // Tabs Zotero's list cannot draw -- a non-library tab whose item it
+            // cannot read; Weavero's Researchers tab has none -- are left out of
+            // Zotero's pass and drawn after it (_wvTabsMenuItemlessRows).
+            // tabsMenuPanel.js refreshList reads every such tab's
+            // Zotero.Items.get(tab.data.itemID).getItemTypeIconName(): it threw
+            // there and the list ended at that tab (MJT 2026-11-25, "The list all
+            // tabs is broken": the Researchers tab pinned right after My Library
+            // left My Library alone). The swap lasts the synchronous call only;
+            // the rows' `index` counts Zotero's filtered list, as its own title
+            // filter does.
+            const ZT: any = win.Zotero_Tabs;
+            const all: any[] = ZT && Array.isArray(ZT._tabs) ? ZT._tabs : [];
+            const itemless = all.filter((t: any) => wvTabsMenuItemless(ZT, t));
+            if (itemless.length) ZT._tabs = all.filter((t: any) => itemless.indexOf(t) < 0);
+            try { orig(opts); }
+            finally { if (itemless.length) ZT._tabs = all; }
+            try {
+                const lp0 = Zotero.Weavero && Zotero.Weavero.plugin;
+                if (itemless.length && lp0 && lp0._wvTabsMenuItemlessRows) lp0._wvTabsMenuItemlessRows(panel, itemless);
+            } catch (e) {}
             try { if (self._getEnableTabsLibraryFilter()) self._groupTabsMenuByLibrary(panel); }
             catch (e) {
                 Zotero.debug("[Weavero] tabs-menu library sort err: " + e);
@@ -334,6 +426,22 @@ class _TabsMixin {
                     "#wv-tabs-menu-settings-popup");
                 if (gearPopup) gearPopup.remove();
                 delete p._wvFileTypeFilterInstalled;
+                // The filter field's clear button, and its `input` listener on
+                // Zotero's own field: only the next instance's setup took that
+                // off, so after a disable every keystroke in the tabs menu's
+                // filter called the old instance -- under zotero#6080 a dead
+                // object (2026-11-22). Guard: test/zzz-disable-leftovers.spec.js.
+                const clearBtn = p.querySelector("#wv-tabs-menu-clear-btn");
+                if (clearBtn) clearBtn.remove();
+                p.classList.remove("wv-tabs-filter-hastext");
+                const input: any = p.querySelector("#zotero-tabs-menu-filter");
+                if (input) {
+                    const h = input._wvClearInputListener;
+                    try { delete input._wvClearInputListener; } catch (_) {}
+                    if (h) { try { input.removeEventListener("input", h); } catch (_) {} }
+                }
+                // The list's re-fit observer (the same story).
+                this._wvTabsMenuFitObsOff(p._tabsList || p.querySelector("#zotero-tabs-menu-list"));
             }
             wvDismissOff(this, "_wvFileTypeOutsideClose");
             wvDismissOff(this, "_wvSettingsOutsideClose");
@@ -377,9 +485,12 @@ class _TabsMixin {
 
     /** Reorder the rendered rows under #zotero-tabs-menu-list into
      *  per-library groups, inserting a header before each group.
-     *  The Library tab (`zotero-pane`) stays at the top, ungrouped
-     *  — it can navigate between libraries on its own, so binding
-     *  it to one section would be misleading. Headers carry the
+     *  The library tab stays at the top, ungrouped — it can navigate
+     *  between libraries on its own, so binding it to one section
+     *  would be misleading. (Zotero 9/10: the window's one fixed
+     *  library tab. Zotero 11: a window can have none or several, and
+     *  only the last one's row is kept -- a known gap, work/TODO.md
+     *  2026-11-25.) Headers carry the
      *  same colour-themed library icon used by Zotero's collection
      *  tree (`icon-library` / `icon-library-group` / `icon-feed`). */
     _groupTabsMenuByLibrary(panel) {
@@ -524,14 +635,14 @@ class _TabsMixin {
         const libInfo = (id) => {
             if (id === "__unknown__") {
                 return {
-                    name: "Other",
+                    name: wvStr("weavero-tabs-library-other"),
                     iconClass: "icon-library",
                     sortKey: "z9_other",
                 };
             }
             try {
                 const lib = Zotero.Libraries.get(id);
-                const name = (lib && lib.name) || ("Library " + id);
+                const name = (lib && lib.name) || wvStr("weavero-tabs-library-fallback", { id: String(id) });
                 let iconClass = "icon-library";
                 if (lib && lib.libraryType === "group") {
                     iconClass = "icon-library-group";
@@ -548,7 +659,7 @@ class _TabsMixin {
                 };
             } catch (e) {
                 return {
-                    name: "Library " + id,
+                    name: wvStr("weavero-tabs-library-fallback", { id: String(id) }),
                     iconClass: "icon-library",
                     sortKey: "9_" + id,
                 };
@@ -593,6 +704,7 @@ class _TabsMixin {
         // Wipe and re-attach in the desired order.
         tabsList.replaceChildren();
         if (libraryPaneRow) tabsList.appendChild(libraryPaneRow);
+        const tickTip = wvStr("weavero-tabs-library-tick");
         for (const grp of ordered) {
             const header = doc.createElement("div");
             header.className = "wv-tabs-menu-library-header";
@@ -631,8 +743,7 @@ class _TabsMixin {
             const cur = filterState.get(grp.id);
             if (cur === "include") tick.dataset.selected = "true";
             else if (cur === "exclude") tick.dataset.excluded = "true";
-            tick.title = "Click to filter to this library, "
-                + "Alt+click to exclude. Click again to clear.";
+            tick.title = tickTip;
             tick.addEventListener("click", (e) => {
                 e.stopPropagation();
                 e.preventDefault();
@@ -1540,7 +1651,7 @@ class _TabsMixin {
                     if (lt) {
                         const tw = w, tZ = Z;
                         libraryTab = {
-                            title: lt.title || "My Library",
+                            title: lt.title || Zotero.getString("pane.collections.library"),
                             iconFullClass: ((this._wvAnchorLibIconClass(w) || "icon icon-css icon-library") + " tab-icon").replace(/\s+/g, " ").trim(),
                             onClick: () => { try { tw.focus(); wvSelectLibraryTab(tw); } catch (e) {} },
                         };
@@ -1596,7 +1707,7 @@ class _TabsMixin {
                         tabs.push(r);
                     }
                 }
-                if (tabs.length) { const base = rn > 1 ? "Reader window " + rn : "Reader window"; sections.push({ label: this._wvWindowCustomTitle(w) || base, win: w, tabs, kind: "reader" }); }
+                if (tabs.length) { const base = rn > 1 ? wvStr("weavero-window-reader-default-name-numbered", { number: rn }) : wvStr("weavero-window-reader-default-name"); sections.push({ label: this._wvWindowCustomTitle(w) || base, win: w, tabs, kind: "reader" }); }
             }
         } catch (e) { Zotero.debug("[Weavero] _wvTabsMenuOtherWindowSections err: " + e); }
         // The window you're viewing from leads the list. For a MAIN window the
@@ -1679,9 +1790,16 @@ class _TabsMixin {
             // change (debounced to one per frame). Skipped mid-drag: the ghost
             // preview inserts/removes rows every dragover and a refit there
             // would re-introduce the height-jump flicker.
-            if ((list as any)._wvFitObsBy !== this) {
-                (list as any)._wvFitObsBy = this;
-                try { if ((list as any)._wvFitObs) (list as any)._wvFitObs.disconnect(); } catch (e) {}
+            // The instance's wire tag, never the instance itself: Zotero's list
+            // element held the plugin object and kept every reloaded-away
+            // instance alive. The observer is disconnected by destroy
+            // (_wvTabsMenuFitObsOff): left on Zotero's list it re-ran the old
+            // instance on every row change after a disable -- under zotero#6080
+            // a dead object (2026-11-22).
+            const fitTag = (this as any)._wvWireTag();
+            if ((list as any)._wvFitObsBy !== fitTag) {
+                this._wvTabsMenuFitObsOff(list);
+                (list as any)._wvFitObsBy = fitTag;
                 const obs = new win.MutationObserver(() => {
                     try {
                         const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
@@ -1698,6 +1816,16 @@ class _TabsMixin {
                 (list as any)._wvFitObs = obs;
             }
         } catch (e) { Zotero.debug("[Weavero] _wvTabsMenuFitListHeight err: " + e); }
+    }
+
+    /** The tabs list's re-fit observer off (_wvTabsMenuFitListHeight). */
+    _wvTabsMenuFitObsOff(list: any) {
+        if (!list) return;
+        try {
+            const o = list._wvFitObs;
+            try { delete list._wvFitObs; delete list._wvFitObsBy; delete list._wvFitPending; } catch (e) {}
+            if (o) o.disconnect();
+        } catch (e) {}
     }
 
     /** Overlay a small group-library badge on a tab row's item icon when the tab's
@@ -1831,7 +1959,7 @@ class _TabsMixin {
         const custom = this._wvWindowCustomTitle(win);
         if (custom) return custom;
         const idx = this._wvWindowIndex(win);
-        return "Window " + (idx >= 0 ? idx + 1 : "?");
+        return wvStr("weavero-window-default-name", { number: idx >= 0 ? idx + 1 : "?" });
     }
     /** The anchor is the single OLDEST main window (creation order — index 0 of
      *  `Zotero.getMainWindows()`). Defining it by position rather than by the
@@ -1975,11 +2103,11 @@ class _TabsMixin {
                 let rn = 0, i = 0;
                 const en = Services.wm.getEnumerator("zotero:reader");
                 while (en.hasMoreElements()) { i++; if (en.getNext() === win) rn = i; }
-                return rn > 1 ? "Reader window " + rn : "Reader window";
+                return rn > 1 ? wvStr("weavero-window-reader-default-name-numbered", { number: rn }) : wvStr("weavero-window-reader-default-name");
             }
             const idx = this._wvWindowIndex(win);
-            return "Window " + (idx >= 0 ? idx + 1 : "?");
-        } catch (e) { return "Window ?"; }
+            return wvStr("weavero-window-default-name", { number: idx >= 0 ? idx + 1 : "?" });
+        } catch (e) { return wvStr("weavero-window-default-name", { number: "?" }); }
     }
 
     // (_wvWindowRenamePrompt was removed 2026-07-16: the "Manage
@@ -2028,7 +2156,7 @@ class _TabsMixin {
 
             const title = wvHtmlEl(doc, "div");
             title.className = "wv-tg-title";
-            title.textContent = "Manage Window";
+            title.textContent = wvStr("weavero-window-editor-title");
             body.appendChild(title);
 
             // Context line: kind, status, tab count, owning session (user
@@ -2052,15 +2180,17 @@ class _TabsMixin {
                     : null;
                 const info = wvHtmlEl(doc, "div");
                 info.className = "wv-tg-info";
-                info.textContent = (isReader ? "Reader window" : (this._wvAnchorLook(targetWin) === "anchor" ? "Main window (anchor)" : "Main window"))
-                    + " · Active · " + count + " tab" + (count === 1 ? "" : "s")
-                    + (sess ? " · " + (sess.name || "Session") : "");
+                const kind = isReader ? "reader" : (this._wvAnchorLook(targetWin) === "anchor" ? "anchor" : "main");
+                info.textContent = wvStr("weavero-window-editor-kind", { kind })
+                    + " · " + wvStr("weavero-window-editor-active")
+                    + " · " + wvStr("weavero-tabs-tab-count", { count })
+                    + (sess ? " · " + (sess.name || wvStr("weavero-session-unnamed")) : "");
                 body.appendChild(info);
             } catch (er) {}
 
             // Name — current effective name, never empty; ↺ = default.
             const defName = this._wvWindowDefaultName(targetWin);
-            const nameLabel = wvHtmlEl(doc, "div", "wv-tg-label", "Name", body);
+            const nameLabel = wvHtmlEl(doc, "div", "wv-tg-label", wvStr("weavero-window-editor-name"), body);
             const nameRow = wvHtmlEl(doc, "div", "wv-tg-row");
             const input: any = wvHtmlEl(doc, "input");
             input.className = "wv-tg-name-input";
@@ -2085,7 +2215,7 @@ class _TabsMixin {
             });
             nameRow.appendChild(input);
             const reset: any = wvHtmlEl(doc, "button", "wv-tg-btn", "↺");
-            reset.setAttribute("title", "Use the default name (" + defName + ")");
+            reset.setAttribute("title", wvStr("weavero-window-editor-reset", { name: defName }));
             reset.addEventListener("click", () => {
                 try {
                     const p: any = live();
@@ -2259,7 +2389,7 @@ class _TabsMixin {
             while (body.firstChild) body.removeChild(body.firstChild);
             const title = wvHtmlEl(doc, "div");
             title.className = "wv-tg-title";
-            title.textContent = opts.title || "Rename";
+            title.textContent = opts.title || wvStr("weavero-window-rename-default-title");
             body.appendChild(title);
             const input: any = wvHtmlEl(doc, "input");
             input.className = "wv-tg-name-input";
@@ -2296,8 +2426,8 @@ class _TabsMixin {
                 try { panel.hidePopup(); } catch (e) {}
                 try { opts.onAccept && opts.onAccept({ name: String(input.value || "").trim(), swatchIndex: chosen }); } catch (e) {}
             };
-            mkBtn("OK", submit);
-            mkBtn("Cancel", () => { try { panel.hidePopup(); } catch (e) {} });
+            mkBtn(wvStr("weavero-window-rename-ok"), submit);
+            mkBtn(wvStr("weavero-common-cancel"), () => { try { panel.hidePopup(); } catch (e) {} });
             body.appendChild(btnRow);
             input.addEventListener("keydown", (ev: any) => {
                 if (ev.key === "Enter") { ev.preventDefault(); submit(); }
@@ -2330,7 +2460,7 @@ class _TabsMixin {
                 ? ((targetWin as any)._wvTitleGlyphIdx % WV_WIN_BADGE_COLORS.length) : -1;
             const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
             this._wvShowRenameDialog(parentWin, {
-                title: "Rename Window",
+                title: wvStr("weavero-window-rename-title"),
                 name: this._wvWindowCustomTitle(targetWin) || defName,
                 placeholder: defName,
                 // No swatches for the anchor — its mark is the ⚓.
@@ -2769,33 +2899,95 @@ class _TabsMixin {
         return (this as any)._wvPref("windowIcons");
     }
 
-    /** Extract one of the bundled per-window .ico files (icons/win/ in
-     *  the XPI) to <data dir>/weavero/win-icons/ — LoadImageW needs a
-     *  real file path. Re-extracted per plugin version, stamped PER ICON:
-     *  one shared VERSION file, refreshed by whichever icon was extracted
-     *  first after an upgrade, left every other icon on its old artwork
-     *  (survey 2026-10-06). */
-    async _wvWinIconFile(name: string): Promise<string | null> {
+    /** Gecko's Windows taskbar service (nsIWinTaskbar, widget/nsIWinTaskbar.idl):
+     *  per-window AppUserModelIDs, taskbar buttons and their overlay badges,
+     *  with no native code of Weavero's own -- loading native code made the
+     *  Zotero Plugins Atlas grade Weavero "Use with care" (2026-11-27). Present on
+     *  Zotero 9-11 (Firefox 128, 140, 153: the same members). Null off
+     *  Windows, or when the shell's taskbar list cannot be created
+     *  (`available` false: a replacement shell). A method, so a spec can
+     *  stand in for the service where the runner shows no taskbar. */
+    _wvWinTaskbar(): any {
         try {
-            const dir = PathUtils.join(Zotero.DataDirectory.dir, "weavero", "win-icons");
-            const path = PathUtils.join(dir, name + ".ico");
-            const stampPath = PathUtils.join(dir, name + ".version");
-            const ver = String((this as any)._version || "");
-            let fresh = false;
-            try {
-                fresh = (await IOUtils.exists(path))
-                    && (await IOUtils.readUTF8(stampPath)) === ver;
-            } catch (e) {}
-            if (!fresh) {
-                await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
-                const resp = await fetch((this as any)._rootURI + "icons/win/" + name + ".ico");
-                const buf = new Uint8Array(await resp.arrayBuffer());
-                await IOUtils.write(path, buf);
-                try { await IOUtils.writeUTF8(stampPath, ver); } catch (e) {}
-            }
-            return path;
+            if (!Zotero.isWin) return null;
+            const svc: any = Cc["@mozilla.org/windows-taskbar;1"].getService((Ci as any).nsIWinTaskbar);
+            return svc && svc.available ? svc : null;
+        } catch (e) { return null; }
+    }
+
+    /** Gecko's nsIWindowsUIUtils (widget/nsIWindowsUIUtils.idl): a window's
+     *  own small and large icons. Null off Windows. A method for the specs. */
+    _wvWinUIUtils(): any {
+        try {
+            if (!Zotero.isWin) return null;
+            const svc: any = Cc["@mozilla.org/windows-ui-utils;1"].getService((Ci as any).nsIWindowsUIUtils);
+            return svc && typeof svc.setWindowIcon === "function" ? svc : null;
+        } catch (e) { return null; }
+    }
+
+    /** A window's taskbar preview (nsITaskbarWindowPreview), which also is its
+     *  overlay-icon controller. Gecko makes ONE per window and keeps it only
+     *  WEAKLY (nsWindow::mTaskbarPreview), and the preview's destructor removes
+     *  the window's taskbar button when the window is still open
+     *  (TaskbarWindowPreview: SetVisible(false) -> Disable() -> DeleteTab). So
+     *  it lives as long as its window: anchored ON the window (`_wvOvTaskbar`),
+     *  which XPConnect gives its own reflector -- never in a plugin field or a
+     *  module map, which a reload or a disable would drop -- and never removed
+     *  by Weavero, destroy() included. The first one made for a window clears
+     *  that window's overlay and re-adds its button (Gecko's own setup).
+     *  `make` false: only the one this window already has (no first one made
+     *  for a clear). */
+    _wvTaskbarPreview(win: any, make = true): any {
+        try {
+            if (!Zotero.isWin || !win || win.closed) return null;
+            if (!make && !(win as any)._wvOvTaskbar) return null;
+            const tb = this._wvWinTaskbar();
+            if (!tb || typeof tb.getTaskbarWindowPreview !== "function") return null;
+            const p = tb.getTaskbarWindowPreview(win.docShell);
+            if (p) (win as any)._wvOvTaskbar = p;
+            return p || null;
         } catch (e) {
-            Zotero.debug("[Weavero] _wvWinIconFile err: " + e);
+            Zotero.debug("[Weavero] _wvTaskbarPreview err: " + e);
+            return null;
+        }
+    }
+
+    /** One of the bundled per-window icons (icons/win/<name>.ico in the XPI)
+     *  as an image Gecko can hand to Windows (imgIContainer), decoded once per
+     *  instance. Gecko makes each HICON from it at the system's small / large
+     *  icon size (nsWindowGfx::CreateIcon), so no extracted file is needed:
+     *  the copies older versions extracted to <data dir>/weavero/win-icons/
+     *  for LoadImageW are no longer read.
+     *  The image is decoded in full before it is handed out: the overlay
+     *  controller first asks it whether it is animated
+     *  (TaskbarWindowPreview::SetOverlayIcon), and an image answers that only
+     *  once a full decode has completed (RasterImage::GetAnimated:
+     *  NS_ERROR_NOT_AVAILABLE before; that completion is posted to the main
+     *  thread, FLAG_ASYNC_NOTIFY). Every overlay set failed that way on Zotero
+     *  10 and 11 (win-taskbar.spec.js, 2026-11-27). imgITools.encodeImage
+     *  takes a frame with a synchronous decode; the wait lets its completion
+     *  land (bounded). */
+    async _wvWinIconImage(name: string): Promise<any> {
+        try {
+            const cache: Map<string, any> = (this as any)._wvWinIconImages
+                || ((this as any)._wvWinIconImages = new Map());
+            const had = cache.get(name);
+            if (had) return had;
+            const resp = await fetch((this as any)._rootURI + "icons/win/" + name + ".ico");
+            const buf = await resp.arrayBuffer();
+            const tools: any = Cc["@mozilla.org/image/tools;1"].getService((Ci as any).imgITools);
+            const img = tools.decodeImageFromArrayBuffer(buf, "image/vnd.microsoft.icon");
+            if (!img) return null;
+            const decoded = () => { try { return typeof img.animated === "boolean"; } catch (e) { return false; } };
+            if (!decoded()) {
+                try { tools.encodeImage(img, "image/png", ""); } catch (e) {}
+                for (let i = 0; i < 25 && !decoded(); i++) await wvSleep(i < 5 ? 0 : 20);
+                if (!decoded()) Zotero.debug("[Weavero] _wvWinIconImage: " + name + " not decoded yet");
+            }
+            cache.set(name, img);
+            return img;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvWinIconImage err: " + e);
             return null;
         }
     }
@@ -2803,7 +2995,8 @@ class _TabsMixin {
     /** Chrome-profile-style per-window taskbar icon: composite badges on
      *  Zotero's real icon artwork (square badge = main window, round
      *  badge = reader window, colour = which window; the anchor main
-     *  keeps the native unbadged icon). Set via Win32 WM_SETICON — the
+     *  keeps the native unbadged icon). Set as the window's own icons
+     *  (WM_SETICON, through Gecko's nsIWindowsUIUtils.setWindowIcon) — the
      *  same mechanism Chrome uses for profile windows — so the taskbar
      *  preview captions, Task View and Alt-Tab distinguish windows
      *  without touching the title text. Runtime-only state: re-applied
@@ -2833,92 +3026,51 @@ class _TabsMixin {
                 : (isReader ? "reader-" : "main-")
                     + ((this._wvTitleGlyphIdx(win, isReader) % 6) + 1);
             if (win._wvWinIconName === name) return;   // already applied
-            const path = await this._wvWinIconFile(name);
-            if (!path || win.closed) return;
-            const set = this._wvSetWindowIconFromFile(win, path);
+            const img = await this._wvWinIconImage(name);
+            if (!img || win.closed) return;
+            const set = this._wvSetWindowIconImage(win, img);
             if (set) win._wvWinIconName = name;
         } catch (e) { Zotero.debug("[Weavero] _wvApplyWindowIcon err: " + e); }
     }
 
-    /** Low-level Win32: load 16px + 32px frames from the .ico and set
-     *  them as the window's small/big icons. Keeps the window's ORIGINAL
-     *  HICONs for restore; the ones we loaded earlier are destroyed when
-     *  replaced -- every recolour leaked two before (survey 2026-10-06). */
-    _wvSetWindowIconFromFile(win: any, path: string): boolean {
+    /** Set `img` (an imgIContainer, _wvWinIconImage) as the window's small
+     *  and large icons. Gecko makes both at the system's icon sizes and
+     *  frees the icons they replace (nsWindow::SetSmallIcon / SetBigIcon):
+     *  a recolour leaks nothing (each leaked two HICONs before 2026-10-06). */
+    _wvSetWindowIconImage(win: any, img: any): boolean {
         try {
-            const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
-            const bw = win.docShell.treeOwner
-                .QueryInterface(Ci.nsIInterfaceRequestor)
-                .getInterface(Ci.nsIBaseWindow);
-            const hwndStr = bw.nativeHandle;
-            if (!hwndStr) return false;
-            const user32 = ctypes.open("user32.dll");
-            try {
-                const HWND = ctypes.voidptr_t, HICON = ctypes.voidptr_t;
-                const SendMessageW = user32.declare("SendMessageW", ctypes.winapi_abi,
-                    ctypes.intptr_t, HWND, ctypes.uint32_t, ctypes.uintptr_t, ctypes.intptr_t);
-                const LoadImageW = user32.declare("LoadImageW", ctypes.winapi_abi,
-                    HICON, ctypes.voidptr_t, ctypes.char16_t.ptr, ctypes.unsigned_int,
-                    ctypes.int, ctypes.int, ctypes.unsigned_int);
-                const DestroyIcon = user32.declare("DestroyIcon", ctypes.winapi_abi, ctypes.int, HICON);
-                const IMAGE_ICON = 1, LR_LOADFROMFILE = 0x10;
-                const small = LoadImageW(null, path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE);
-                const big = LoadImageW(null, path, IMAGE_ICON, 32, 32, LR_LOADFROMFILE);
-                if (small.isNull() && big.isNull()) return false;
-                const hwnd = HWND(ctypes.UInt64(hwndStr));
-                const WM_SETICON = 0x0080;
-                const prevSmall = SendMessageW(hwnd, WM_SETICON, 0,
-                    ctypes.cast(small, ctypes.intptr_t));
-                const prevBig = SendMessageW(hwnd, WM_SETICON, 1,
-                    ctypes.cast(big, ctypes.intptr_t));
-                // First replacement: remember the ORIGINAL icons for restore.
-                // Later ones replaced icons WE loaded (LR_LOADFROMFILE, not
-                // shared): free them.
-                if (!win._wvPrevWinIcons) {
-                    win._wvPrevWinIcons = { small: String(prevSmall), big: String(prevBig) };
-                } else {
-                    for (const h of [prevSmall, prevBig]) {
-                        const hs = String(h);
-                        if (hs !== "0") { try { DestroyIcon(HICON(ctypes.UInt64(hs))); } catch (e) {} }
-                    }
-                }
-                return true;
-            } finally { user32.close(); }
+            if (!win || win.closed || !img) return false;
+            const ui = this._wvWinUIUtils();
+            if (!ui) return false;
+            ui.setWindowIcon(win, img, img);
+            return true;
         } catch (e) {
-            Zotero.debug("[Weavero] _wvSetWindowIconFromFile err: " + e);
+            Zotero.debug("[Weavero] _wvSetWindowIconImage err: " + e);
             return false;
         }
     }
 
-    /** Put the window's original icons back (teardown / anchor promotion). */
+    /** Give the window Zotero's own icon back (teardown / anchor promotion):
+     *  the executable's IDI_APPICON (resource 1), which Gecko sets on every
+     *  window it creates on Firefox 140 and later (nsWindow::Create); on 128
+     *  the window showed its class icon, the executable's resource 32512 --
+     *  the same picture in Zotero's zotero.exe (both groups compared,
+     *  10.0.6 and 11.0 beta, 2026-11-27). Gecko frees Weavero's icons as it
+     *  replaces them. `_wvPrevWinIcons` is the mark a build before 2026-11-27
+     *  left (the original handles, for its own restore): a window updated
+     *  from one gets Zotero's icon back the same way. */
     _wvRestoreWindowIcon(win: any) {
         try {
-            const prev = win && win._wvPrevWinIcons;
-            if (!prev || win.closed) return;
-            const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
-            const bw = win.docShell.treeOwner
-                .QueryInterface(Ci.nsIInterfaceRequestor)
-                .getInterface(Ci.nsIBaseWindow);
-            const user32 = ctypes.open("user32.dll");
-            try {
-                const HWND = ctypes.voidptr_t, HICON = ctypes.voidptr_t;
-                const SendMessageW = user32.declare("SendMessageW", ctypes.winapi_abi,
-                    ctypes.intptr_t, HWND, ctypes.uint32_t, ctypes.uintptr_t, ctypes.intptr_t);
-                const DestroyIcon = user32.declare("DestroyIcon", ctypes.winapi_abi, ctypes.int, HICON);
-                const hwnd = HWND(ctypes.UInt64(bw.nativeHandle));
-                const ours = [
-                    SendMessageW(hwnd, 0x0080, 0, ctypes.intptr_t(ctypes.UInt64(prev.small))),
-                    SendMessageW(hwnd, 0x0080, 1, ctypes.intptr_t(ctypes.UInt64(prev.big))),
-                ];
-                // The icons the originals replaced are ours: free them.
-                for (const h of ours) {
-                    const hs = String(h);
-                    if (hs !== "0") { try { DestroyIcon(HICON(ctypes.UInt64(hs))); } catch (e) {} }
-                }
-            } finally { user32.close(); }
+            if (!win || win.closed || !(win._wvWinIconName || win._wvPrevWinIcons)) return;
+            const ui = this._wvWinUIUtils();
+            if (!ui) return;
+            let exe = "";
+            try { exe = Services.dirsvc.get("XREExeF", Ci.nsIFile).path; } catch (e) {}
+            if (exe && typeof ui.setWindowIconFromExe === "function") ui.setWindowIconFromExe(win, exe, 1);
+            else ui.setWindowIconNoData(win);   // the executable's resource 32512
             delete win._wvPrevWinIcons;
             delete win._wvWinIconName;
-        } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvRestoreWindowIcon err: " + e); }
     }
 
     /** Toggle: one taskbar button PER WINDOW (its badge icon, on the
@@ -2929,60 +3081,27 @@ class _TabsMixin {
         return (this as any)._wvPref("separateTaskbarButtons");
     }
 
-    /** Set (aumid string) or clear (null) a window's AppUserModelID via
-     *  the shell property store — COM through js-ctypes (vtable calls;
-     *  IPropertyStore: QI/AddRef/Release/GetCount/GetAt/GetValue/
-     *  SetValue/Commit). Windows regroups/splits taskbar buttons by
-     *  this id. Verified live 2026-07-13 (spike on window 2). */
+    /** Set (aumid string) or clear (null) a window's AppUserModelID, the
+     *  id Windows groups taskbar buttons by: Gecko's
+     *  nsIWinTaskbar.setGroupIdForWindow, which writes the window's shell
+     *  property store (WinTaskbar.cpp SetWindowAppUserModelProp). Clearing
+     *  sets the app's own id, `defaultGroupId`: Gecko refuses an empty one,
+     *  and since Firefox 140 every window Gecko creates carries that id
+     *  explicitly (nsWindow::Create); on 128 a window has none and groups
+     *  under the process's id, which Gecko registered as the same
+     *  (RegisterAppUserModelID) -- one group either way. The shell moves a
+     *  live window's button only when the button is added again
+     *  (_wvRefreshTaskbarButton). Verified live 2026-07-13 (spike on
+     *  window 2). */
     _wvSetWindowAUMID(win: any, aumid: string | null): boolean {
         try {
             if (!Zotero.isWin || !win || win.closed) return false;
-            const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
-            const bw = win.docShell.treeOwner
-                .QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIBaseWindow);
-            const shell32 = ctypes.open("shell32.dll");
-            try {
-                const HWND = ctypes.voidptr_t;
-                const GUID = new ctypes.StructType("WVGUID", [
-                    { a: ctypes.uint32_t }, { b: ctypes.uint16_t }, { c: ctypes.uint16_t },
-                    { d: ctypes.uint8_t.array(8) }]);
-                const PROPERTYKEY = new ctypes.StructType("WVPROPERTYKEY", [{ fmtid: GUID }, { pid: ctypes.uint32_t }]);
-                const PROPVARIANT = new ctypes.StructType("WVPROPVARIANT", [
-                    { vt: ctypes.uint16_t }, { r1: ctypes.uint16_t }, { r2: ctypes.uint16_t }, { r3: ctypes.uint16_t },
-                    { pwszVal: ctypes.char16_t.ptr }]);
-                const SHGetPropertyStoreForWindow = shell32.declare("SHGetPropertyStoreForWindow",
-                    ctypes.winapi_abi, ctypes.long, HWND, GUID.ptr, ctypes.voidptr_t.ptr);
-                const iid = new GUID();   // IID_IPropertyStore
-                iid.a = 0x886d8eeb; iid.b = 0x8cf2; iid.c = 0x4446;
-                const dd = [0x8d, 0x02, 0xcd, 0xba, 0x1d, 0xbd, 0xcf, 0x99];
-                for (let i = 0; i < 8; i++) iid.d[i] = dd[i];
-                const key = new PROPERTYKEY();   // PKEY_AppUserModel_ID
-                key.fmtid.a = 0x9F4C2855; key.fmtid.b = 0x9F79; key.fmtid.c = 0x4B39;
-                const kd = [0xA8, 0xD0, 0xE1, 0xD4, 0x2D, 0xE1, 0xD5, 0xF3];
-                for (let i = 0; i < 8; i++) key.fmtid.d[i] = kd[i];
-                key.pid = 5;
-                const hwnd = HWND(ctypes.UInt64(bw.nativeHandle));
-                const storePtr = new ctypes.voidptr_t();
-                if (Number(SHGetPropertyStoreForWindow(hwnd, iid.address(), storePtr.address())) !== 0) return false;
-                const vt = ctypes.cast(storePtr, ctypes.voidptr_t.array(9).ptr.ptr).contents.contents;
-                const SetValueT = ctypes.FunctionType(ctypes.winapi_abi, ctypes.long,
-                    [ctypes.voidptr_t, PROPERTYKEY.ptr, PROPVARIANT.ptr]).ptr;
-                const CommitT = ctypes.FunctionType(ctypes.winapi_abi, ctypes.long, [ctypes.voidptr_t]).ptr;
-                const ReleaseT = ctypes.FunctionType(ctypes.winapi_abi, ctypes.uint32_t, [ctypes.voidptr_t]).ptr;
-                const pv = new PROPVARIANT();
-                let buf: any = null;
-                if (aumid) {
-                    buf = ctypes.char16_t.array()(aumid + "\0");
-                    pv.vt = 31;   // VT_LPWSTR
-                    pv.pwszVal = ctypes.cast(buf.address(), ctypes.char16_t.ptr);
-                } else {
-                    pv.vt = 0;    // VT_EMPTY → back to the app's shared identity
-                }
-                const hr1 = Number(ctypes.cast(vt[6], SetValueT)(storePtr, key.address(), pv.address()));
-                const hr2 = Number(ctypes.cast(vt[7], CommitT)(storePtr));
-                ctypes.cast(vt[2], ReleaseT)(storePtr);
-                return hr1 === 0 && hr2 === 0;
-            } finally { shell32.close(); }
+            const tb = this._wvWinTaskbar();
+            if (!tb || typeof tb.setGroupIdForWindow !== "function") return false;
+            const id = aumid || String(tb.defaultGroupId || "");
+            if (!id) return false;
+            tb.setGroupIdForWindow(win, id);
+            return true;
         } catch (e) {
             Zotero.debug("[Weavero] _wvSetWindowAUMID err: " + e);
             return false;
@@ -3036,43 +3155,22 @@ class _TabsMixin {
      *  AddTab): the shell only re-evaluates a live window's group
      *  (AUMID) when its button is re-added — setting the property alone
      *  left the old button in the old group ("still switches the
-     *  taskbar icon on monitor 2", 2026-07-13). Doesn't touch window
+     *  taskbar icon on monitor 2", 2026-07-13); Gecko's
+     *  setGroupIdForWindow only writes the property too. Gecko's window
+     *  preview does both calls: `visible` false is DeleteTab, true is
+     *  AddTab (TaskbarWindowPreview::Disable / Enable; "when made
+     *  invisible, the window disappears from the list of windows in the
+     *  taskbar", nsITaskbarWindowPreview.idl). Doesn't touch window
      *  visibility. The button comes back fresh, so re-assert the
      *  overlay afterwards. */
     _wvRefreshTaskbarButton(win: any): boolean {
         try {
             if (!Zotero.isWin || !win || win.closed) return false;
-            const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
-            const bw = win.docShell.treeOwner
-                .QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIBaseWindow);
-            const ole32 = ctypes.open("ole32.dll");
-            try {
-                const HWND = ctypes.voidptr_t;
-                const GUID = new ctypes.StructType("WVG6", [
-                    { a: ctypes.uint32_t }, { b: ctypes.uint16_t }, { c: ctypes.uint16_t },
-                    { d: ctypes.uint8_t.array(8) }]);
-                const mk = (a: number, b: number, c: number, d: number[]) => {
-                    const g = new GUID(); g.a = a; g.b = b; g.c = c;
-                    for (let i = 0; i < 8; i++) g.d[i] = d[i];
-                    return g;
-                };
-                const CLSID = mk(0x56FDF344, 0xFD6D, 0x11d0, [0x95, 0x8A, 0x00, 0x60, 0x97, 0xC9, 0xA0, 0x90]);
-                const IID = mk(0xEA1AFB91, 0x9E28, 0x4B86, [0x90, 0xE9, 0x9E, 0x9F, 0x8A, 0x5E, 0xEF, 0xAF]);
-                const CoCreateInstance = ole32.declare("CoCreateInstance", ctypes.winapi_abi, ctypes.long,
-                    GUID.ptr, ctypes.voidptr_t, ctypes.uint32_t, GUID.ptr, ctypes.voidptr_t.ptr);
-                const obj = new ctypes.voidptr_t();
-                if (Number(CoCreateInstance(CLSID.address(), null, 1, IID.address(), obj.address())) !== 0) return false;
-                const vt = ctypes.cast(obj, ctypes.voidptr_t.array(21).ptr.ptr).contents.contents;
-                const HrInitT = ctypes.FunctionType(ctypes.winapi_abi, ctypes.long, [ctypes.voidptr_t]).ptr;
-                const TabT = ctypes.FunctionType(ctypes.winapi_abi, ctypes.long, [ctypes.voidptr_t, HWND]).ptr;
-                const RelT = ctypes.FunctionType(ctypes.winapi_abi, ctypes.uint32_t, [ctypes.voidptr_t]).ptr;
-                ctypes.cast(vt[3], HrInitT)(obj);
-                const hwnd = HWND(ctypes.UInt64(bw.nativeHandle));
-                const hr1 = Number(ctypes.cast(vt[5], TabT)(obj, hwnd));   // DeleteTab
-                const hr2 = Number(ctypes.cast(vt[4], TabT)(obj, hwnd));   // AddTab
-                ctypes.cast(vt[2], RelT)(obj);
-                return hr1 === 0 && hr2 === 0;
-            } finally { ole32.close(); }
+            const p = this._wvTaskbarPreview(win);
+            if (!p) return false;
+            p.visible = false;
+            p.visible = true;
+            return true;
         } catch (e) { return false; }
     }
 
@@ -3081,10 +3179,10 @@ class _TabsMixin {
      *  group button displays the overlay of the last window TO SET one
      *  (not the last active — corrected 2026-07-13), so focus-following
      *  works by re-asserting on every activation. */
-    /** Set (icoPath) or clear (null) a window's TASKBAR OVERLAY badge —
-     *  ITaskbarList3::SetOverlayIcon via COM-through-ctypes. Immediate,
-     *  shell-managed; the group button shows the overlay of the last
-     *  window to SET one. */
+    /** Set (image) or clear (null) a window's TASKBAR OVERLAY badge —
+     *  ITaskbarList3::SetOverlayIcon, through Gecko (_wvSetTaskbarOverlay).
+     *  Immediate, shell-managed; the group button shows the overlay of the
+     *  last window to SET one. */
     /** Re-apply taskbar identity to every open main + reader window. */
     _wvRefreshWindowTaskbarIdentities() {
         try {
@@ -3110,58 +3208,21 @@ class _TabsMixin {
         } catch (e) { return null; }
     }
 
-    _wvSetTaskbarOverlay(win: any, icoPath: string | null, desc?: string): boolean {
+    /** Set (`img`, an imgIContainer from _wvWinIconImage) or clear (null)
+     *  a window's taskbar overlay request: Gecko's overlay-icon controller
+     *  (nsITaskbarOverlayIconController.setOverlayIcon -> ITaskbarList3::
+     *  SetOverlayIcon, made at the system's small-icon size). ONLY through
+     *  _wvOvSetBadge's ledger and its clear paths (AGENTS.md invariant).
+     *  A clear on a window that never had a request is a no-op: it does not
+     *  make the window's first preview (_wvTaskbarPreview). */
+    _wvSetTaskbarOverlay(win: any, img: any, desc?: string): boolean {
         try {
             if (!Zotero.isWin || !win || win.closed) return false;
-            const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
-            const bw = win.docShell.treeOwner
-                .QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIBaseWindow);
-            const user32 = ctypes.open("user32.dll");
-            const ole32 = ctypes.open("ole32.dll");
-            try {
-                const HWND = ctypes.voidptr_t, HICON = ctypes.voidptr_t;
-                const GUID = new ctypes.StructType("WVG7", [
-                    { a: ctypes.uint32_t }, { b: ctypes.uint16_t }, { c: ctypes.uint16_t },
-                    { d: ctypes.uint8_t.array(8) }]);
-                const mk = (a: number, b: number, c: number, d: number[]) => {
-                    const g = new GUID(); g.a = a; g.b = b; g.c = c;
-                    for (let i = 0; i < 8; i++) g.d[i] = d[i];
-                    return g;
-                };
-                const CLSID = mk(0x56FDF344, 0xFD6D, 0x11d0, [0x95, 0x8A, 0x00, 0x60, 0x97, 0xC9, 0xA0, 0x90]);
-                const IID = mk(0xEA1AFB91, 0x9E28, 0x4B86, [0x90, 0xE9, 0x9E, 0x9F, 0x8A, 0x5E, 0xEF, 0xAF]);
-                const CoCreateInstance = ole32.declare("CoCreateInstance", ctypes.winapi_abi, ctypes.long,
-                    GUID.ptr, ctypes.voidptr_t, ctypes.uint32_t, GUID.ptr, ctypes.voidptr_t.ptr);
-                const obj = new ctypes.voidptr_t();
-                if (Number(CoCreateInstance(CLSID.address(), null, 1, IID.address(), obj.address())) !== 0) return false;
-                const vt = ctypes.cast(obj, ctypes.voidptr_t.array(21).ptr.ptr).contents.contents;
-                const HrInitT = ctypes.FunctionType(ctypes.winapi_abi, ctypes.long, [ctypes.voidptr_t]).ptr;
-                const SetOvT = ctypes.FunctionType(ctypes.winapi_abi, ctypes.long,
-                    [ctypes.voidptr_t, HWND, HICON, ctypes.char16_t.ptr]).ptr;
-                const RelT = ctypes.FunctionType(ctypes.winapi_abi, ctypes.uint32_t, [ctypes.voidptr_t]).ptr;
-                ctypes.cast(vt[3], HrInitT)(obj);
-                const hwnd = HWND(ctypes.UInt64(bw.nativeHandle));
-                let icon: any = HICON(0);
-                if (icoPath) {
-                    const LoadImageW = user32.declare("LoadImageW", ctypes.winapi_abi, HICON,
-                        ctypes.voidptr_t, ctypes.char16_t.ptr, ctypes.unsigned_int,
-                        ctypes.int, ctypes.int, ctypes.unsigned_int);
-                    icon = LoadImageW(null, icoPath, 1, 16, 16, 0x10);
-                    if (icon.isNull()) return false;
-                }
-                let descBuf: any = null, descPtr: any = ctypes.char16_t.ptr(0);
-                if (desc) {
-                    descBuf = ctypes.char16_t.array()(desc + "\0");
-                    descPtr = ctypes.cast(descBuf.address(), ctypes.char16_t.ptr);
-                }
-                const hr = Number(ctypes.cast(vt[18], SetOvT)(obj, hwnd, icon, descPtr));
-                ctypes.cast(vt[2], RelT)(obj);
-                if (icoPath && !icon.isNull()) {
-                    const DestroyIcon = user32.declare("DestroyIcon", ctypes.winapi_abi, ctypes.int, HICON);
-                    DestroyIcon(icon);
-                }
-                return hr === 0;
-            } finally { user32.close(); ole32.close(); }
+            const p = this._wvTaskbarPreview(win, !!img);
+            if (!p) return !img;
+            p.QueryInterface((Ci as any).nsITaskbarOverlayIconController)
+                .setOverlayIcon(img || null, desc || "");
+            return true;
         } catch (e) {
             Zotero.debug("[Weavero] _wvSetTaskbarOverlay err: " + e);
             return false;
@@ -3173,28 +3234,36 @@ class _TabsMixin {
     //  gate invites regressions — see "Subsystem invariants" in
     //  ../.claude/project.md. ALL badge writes go through _wvOvSetBadge.)
 
-    /** Is the primary mouse button currently held down? Used to defer
-     *  taskbar-badge repairs until a window drag has actually ended. */
-    _wvMouseButtonDown(): boolean {
+    /** A window drag in progress, as the badge machinery needs to know it:
+     *  the window's place changed within the last `ms` (one sample of the
+     *  move handler, _wvWireOverlayFocusFollow, records each change with
+     *  _wvOvNoteMove). Until 2026-11-27 this asked Windows whether the left
+     *  mouse button was down (user32 GetAsyncKeyState, a native call); a
+     *  window is dragged by its title bar, where the OS takes the press and
+     *  no DOM event fires (src-ts-core.md, WINDOW DRAG AREAS), so the drag's
+     *  own trace is the window moving. A drag held still for longer than
+     *  `ms` reads as ended: its repair lands then, and the next move starts
+     *  the cycle again. */
+    _wvOvDragLive(win: any, ms = 300): boolean {
         try {
-            if (!Zotero.isWin) return false;
-            const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
-            const u = ctypes.open("user32.dll");
-            try {
-                const GetAsyncKeyState = u.declare("GetAsyncKeyState",
-                    ctypes.winapi_abi, ctypes.short, ctypes.int);
-                return (GetAsyncKeyState(0x01) & 0x8000) !== 0; // VK_LBUTTON
-            } finally { u.close(); }
+            const t = wvOvMoveSeen.get(win);
+            return t != null && Date.now() - t < ms;
         } catch (e) { return false; }
+    }
+
+    /** Record that `win`'s place changed just now (see _wvOvDragLive). Kept
+     *  in a module map, not on the window: transient, per instance. */
+    _wvOvNoteMove(win: any) {
+        try { if (win) wvOvMoveSeen.set(win, Date.now()); } catch (e) {}
     }
 
     // NOTE (v0.15.8-dev.57 post-mortem): do NOT detect drag-end with a
     // native WinEventHook (SetWinEventHook EVENT_SYSTEM_MOVESIZEEND +
-    // js-ctypes callback). It CRASHED the process on the first real
+    // a native callback). It CRASHED the process on the first real
     // drag: WINEVENT_OUTOFCONTEXT delivers whenever THIS thread pumps
-    // messages, and this file's badge machinery pumps inside ctypes
-    // FFI calls (COM SetOverlayIcon → SendMessage), so the closure can
-    // re-enter SpiderMonkey mid-FFI. The drag-aware fast poll in
+    // messages, and the badge machinery then pumped inside native
+    // calls (COM SetOverlayIcon → SendMessage), so the closure could
+    // re-enter SpiderMonkey mid-call. The drag-aware fast poll in
     // _wvWireOverlayFocusFollow's moveHandler replaces it.
 
     /** Always-on ring buffer tracing the badge machinery (activations,
@@ -3235,9 +3304,9 @@ class _TabsMixin {
      *  residency-with-badge poisoning, self-inflicted at every boot
      *  (observed 2026-07-14: fresh reboot, two green circles). A
      *  window's first badge of the session waits until its geometry
-     *  has been stable for two consecutive 1s samples with the mouse
-     *  button up; after that the flag sticks and moves are the move-
-     *  repair path's business. Returns true when settled. */
+     *  has been stable for two consecutive 1s samples with no drag
+     *  under way (_wvOvDragLive); after that the flag sticks and moves
+     *  are the move-repair path's business. Returns true when settled. */
     _wvOvEnsureSettled(win: any, reason: string): boolean {
         try {
             if ((win as any)._wvOvSettled) return true;
@@ -3275,7 +3344,7 @@ class _TabsMixin {
                     // early set can register against the wrong
                     // taskbar's transient button — boot log
                     // 2026-07-14 13:49).
-                    stable = (cur === last && !lp._wvMouseButtonDown()) ? stable + 1 : 0;
+                    stable = (cur === last && !lp._wvOvDragLive(win, 1000)) ? stable + 1 : 0;
                     if (stable >= 2 || tries > 20) {
                         stop();
                         (win as any)._wvOvSettled = true;
@@ -3306,9 +3375,9 @@ class _TabsMixin {
     async _wvOvApplyImageAs(setter: any, name: string, desc: string): Promise<boolean> {
         try {
             if (!Zotero.isWin || !this._getEnableWindowIcons() || !setter || setter.closed) return false;
-            const path = await this._wvWinIconFile(name);
-            if (!path || setter.closed) return false;
-            const ok = this._wvSetTaskbarOverlay(setter, path, desc);
+            const img = await this._wvWinIconImage(name);
+            if (!img || setter.closed) return false;
+            const ok = this._wvSetTaskbarOverlay(setter, img, desc);
             if (ok) (setter as any)._wvOverlayName = name;
             this._wvOvLog("set", {
                 via: this._wvBadgeIconNameFor(setter), img: name,
@@ -3448,8 +3517,8 @@ class _TabsMixin {
             // 2026-07-14: 4 sets in 6ms slipped through).
             tops[mon] = name;
             (setter as any)._wvOvResidMon = mon;
-            const desc = base === "anchor" ? this._wvWindowName(top) + " (anchor)"
-                : (base.startsWith("reader") ? "Reader window" : this._wvWindowName(top));
+            const desc = base === "anchor" ? wvStr("weavero-window-anchor-name", { name: this._wvWindowName(top) })
+                : (base.startsWith("reader") ? wvStr("weavero-window-reader-default-name") : this._wvWindowName(top));
             await this._wvOvApplyImageAs(setter, name, desc);
             // First set of the session from a NON-primary monitor: the
             // shell may have registered the request against the primary
@@ -3571,17 +3640,18 @@ class _TabsMixin {
      *  between SAME-RESOLUTION monitors emits nothing. A 1s position
      *  poll is the detector (pure JS compare per tick); any position
      *  change marks the window dirty and the per-monitor repair pass
-     *  (_wvOvMaintainBadges) runs once the mouse button is up. */
+     *  (_wvOvMaintainBadges) runs once the window has stopped moving. */
     _wvWireOverlayFocusFollow(win: any) {
         try {
-            // v14: poison-ledger badge management (_wvOvSetBadge). Move
+            // v16: poison-ledger badge management (_wvOvSetBadge). Move
             // detector samples FULL geometry; on first detection during
             // a DRAG the window's overlay request is cleared (carrying
             // a request across monitors is how sticky associations
             // form); the ledger-driven repair runs on the first tick
-            // with the mouse button up; window close repairs its
-            // monitor. Everything logs to _wvOvLogBuf.
-            const VER = 15;
+            // after the window stopped moving (_wvOvDragLive; v16, was
+            // the mouse button, a native call); window close repairs
+            // its monitor. Everything logs to _wvOvLogBuf.
+            const VER = 16;
             // Poll presence is part of the wired-ness check: a clear
             // pass kills the interval, so version alone would wrongly
             // early-return and leave the window without its move poll.
@@ -3644,6 +3714,7 @@ class _TabsMixin {
                     const key = posKey();
                     if (key !== (win as any)._wvOvPosKey) {
                         (win as any)._wvOvPosKey = key;
+                        lp._wvOvNoteMove(win);
                         if (!(win as any)._wvOvMoveDirty) {
                             (win as any)._wvOvMoveDirty = true;
                             lp._wvOvLog("move-detected", { win: lp._wvBadgeIconNameFor(win), pos: key });
@@ -3652,12 +3723,16 @@ class _TabsMixin {
                             // shell's sticky cross-button associations
                             // form (the migrating button stamps foreign
                             // taskbars). Drop the request for the
-                            // duration of the drag; the mouse-up repair
-                            // re-asserts it. The clear pops that button
-                            // to an unknown previous image — invalidate
-                            // the ledger entry so the repair isn't
-                            // skipped.
-                            if (lp._wvMouseButtonDown() && (win as any)._wvOverlayName) {
+                            // duration of the drag; the repair at the
+                            // drop re-asserts it. The clear pops that
+                            // button to an unknown previous image —
+                            // invalidate the ledger entry so the repair
+                            // isn't skipped. A move with the user at the
+                            // controls (input within the last second) is
+                            // taken for a drag; a restore placing its
+                            // windows is not (the old test, the mouse
+                            // button, read the same for both).
+                            if (lp._wvUserRecentlyActive(1000) && (win as any)._wvOverlayName) {
                                 try {
                                     lp._wvSetTaskbarOverlay(win, null);
                                     delete (win as any)._wvOverlayName;
@@ -3669,16 +3744,17 @@ class _TabsMixin {
                         }
                     }
                     if (!(win as any)._wvOvMoveDirty) return;
-                    if (lp._wvMouseButtonDown()) {
+                    if (lp._wvOvDragLive(win)) {
                         if (!(win as any)._wvOvDeferLogged) {
                             (win as any)._wvOvDeferLogged = true;
-                            lp._wvOvLog("repair-deferred", { win: lp._wvBadgeIconNameFor(win), why: "mouse-down" });
+                            lp._wvOvLog("repair-deferred", { win: lp._wvBadgeIconNameFor(win), why: "moving" });
                         }
                         // Drag-aware fast poll: while the drag is live,
                         // re-check every 120ms so the repair lands right
-                        // after the drop instead of up to a full 1s poll
-                        // tick later. Pure JS on purpose — see the
-                        // WinEventHook post-mortem note above.
+                        // after the drop (the window still for 300 ms)
+                        // instead of up to a full 1s poll tick later.
+                        // Pure JS on purpose — see the WinEventHook
+                        // post-mortem note above.
                         if (!(win as any)._wvOvFastTick) {
                             (win as any)._wvOvFastTick = true;
                             win.setTimeout(() => {
@@ -3688,7 +3764,7 @@ class _TabsMixin {
                                 } catch (e) {}
                             }, 120);
                         }
-                        return; // still dragging — repair on release
+                        return; // still dragging — repair at the drop
                     }
                     (win as any)._wvOvMoveDirty = false;
                     delete (win as any)._wvOvDeferLogged;
@@ -3740,6 +3816,21 @@ class _TabsMixin {
                     if (clear) {
                         try {
                             if ((w as any)._wvOvPollId) { w.clearInterval((w as any)._wvOvPollId); delete (w as any)._wvOvPollId; }
+                        } catch (e) {}
+                        // The move / activate listeners of _wvWireOverlayFocusFollow:
+                        // only the next wiring took them off, so after a disable every
+                        // resize, size-mode change and activation of the window
+                        // called the old instance -- under zotero#6080 a dead object
+                        // (2026-11-22). Guard: test/zzz-disable-leftovers.spec.js.
+                        try {
+                            const mh = (w as any)._wvOvMoveHandler;
+                            delete (w as any)._wvOvMoveHandler;
+                            if (mh) { w.removeEventListener("sizemodechange", mh); w.removeEventListener("resize", mh); }
+                        } catch (e) {}
+                        try {
+                            const ah = (w as any)._wvOvActivateHandler;
+                            delete (w as any)._wvOvActivateHandler;
+                            if (ah) w.removeEventListener("activate", ah);
                         } catch (e) {}
                         delete (w as any)._wvOvFollowWired;
                         this._wvSetTaskbarOverlay(w, null); delete (w as any)._wvOverlayName;
@@ -3931,6 +4022,8 @@ class _TabsMixin {
         // across ALL windows (these Weavero rows have no Zotero_Tabs id to look up).
         try { if (tb.item && tb.item.libraryID != null) row.setAttribute("data-wv-library", String(tb.item.libraryID)); } catch (e) {}
         try { if (tb.item && tb.item.getItemTypeIconName) row.setAttribute("data-wv-itemtype", tb.item.getItemTypeIconName(true)); } catch (e) {}
+        // The row's item, for the tab tooltip's item-type icon (_populateTabTooltip).
+        try { if (tb.item && tb.item.id != null) row.setAttribute("data-wv-itemid", String(tb.item.id)); } catch (e) {}
         // Full title as a tooltip so an ellipsised row reveals its full name on
         // hover — same as the tab header.
         try { if (tb.title) row.setAttribute("title", tb.title); } catch (e) {}
@@ -3979,7 +4072,7 @@ class _TabsMixin {
             const x = doc.createElement("div");
             x.className = "wv-row-close";
             x.textContent = "✕";
-            x.setAttribute("title", "Remove this tab from the saved window");
+            x.setAttribute("title", wvStr("weavero-savedwin-remove-tab"));
             x.addEventListener("click", (ev: any) => {
                 try { ev.stopPropagation(); ev.preventDefault(); tb.onClose(); } catch (er) {}
             });
@@ -4003,7 +4096,7 @@ class _TabsMixin {
             const n = (item.getAnnotations() || []).length;
             if (!n) return null;
             const badge = wvHtmlEl(doc, "span", "wv-tabs-menu-anncount");
-            badge.title = n + " annotation" + (n === 1 ? "" : "s");
+            badge.title = wvStr("weavero-tabs-annotation-count", { count: n });
             const ic = wvHtmlEl(doc, "span", "wv-tabs-menu-anncount-icon", undefined, badge);
             const lbl = wvHtmlEl(doc, "span", "wv-tabs-menu-anncount-label", String(n), badge);
             return badge;
@@ -4051,7 +4144,7 @@ class _TabsMixin {
                     byLib.get(lid)!.push(tb);
                 }
                 for (const [lid, tabs] of byLib) {
-                    let libName = "Library", iconClass = "icon-library";
+                    let libName = wvStr("weavero-tabs-library-unnamed"), iconClass = "icon-library";
                     try {
                         const lib = Zotero.Libraries.get(lid);
                         if (lib && lib.name) libName = lib.name;
@@ -4168,9 +4261,9 @@ class _TabsMixin {
     /** Build (or update) a stylesheet that hides tabs in the main
      *  window's tab bar for libraries that the popup filter has
      *  excluded. Persists across React re-renders since it's CSS,
-     *  not a DOM attribute. The "zotero-pane" Library tab is never
-     *  hidden — it's the meta-tab that switches between libraries
-     *  in the first place. */
+     *  not a DOM attribute. Library tabs (`wvIsLibraryTabID`: Zotero
+     *  9/10's fixed one, any of Zotero 11's) are never hidden — a
+     *  library tab switches between libraries in the first place. */
     _applyTabBarFilter(win, libraryForTab, isLibVisible) {
         if (!win) return;
         const doc = win.document;
@@ -4396,6 +4489,82 @@ class _TabsMixin {
         const arr = this._pinnedTabsGet().filter(
             e => !(e.libraryID === libraryID && e.itemKey === itemKey));
         this._pinnedTabsSet(arr);
+    }
+
+    /** The item tabs whose pin shows their name (MJT 2026-11-21: "Also add a
+     *  show name when pinned to any tab: it does not cost much and can give
+     *  emphasis when the user wants"), item-keyed as the pins are, in
+     *  `weavero.pinnedTabNames` ([{ libraryID, itemKey }]): Zotero saves only
+     *  some of a tab's data with the session (tabs.js getState), and the pin
+     *  itself may be Zotero's. Kept across an unpin, so a re-pin shows the name
+     *  again; the oldest entries go past 200. Library tabs keep their own choice
+     *  on the tab (_wvLibTabPinNameSet). */
+    _wvPinNamesGet(): any[] {
+        try {
+            const raw = Zotero.Prefs.get("weavero.pinnedTabNames");
+            const arr = raw ? JSON.parse(String(raw)) : [];
+            return Array.isArray(arr) ? arr : [];
+        } catch (e) { return []; }
+    }
+
+    _wvPinNameSet(libraryID: number, itemKey: string, on: boolean) {
+        try {
+            const arr = this._wvPinNamesGet().filter(
+                (e: any) => !(e && e.libraryID === libraryID && e.itemKey === itemKey));
+            if (on) arr.push({ libraryID, itemKey });
+            while (arr.length > 200) arr.shift();
+            Zotero.Prefs.set("weavero.pinnedTabNames", JSON.stringify(arr));
+        } catch (e) {}
+    }
+
+    /** A library tab's own "Show Tab Name" choice: true, false, or undefined for
+     *  none, when the `pinnedLibraryTabName` setting decides. MJT 2026-11-27: on
+     *  Zotero 11, with three pinned My Library tabs, the entry on one switched
+     *  the setting and so every one of them ("it should act per tab, same as all
+     *  the other tabs"). A library tab has no item to key it by (item tabs:
+     *  `weavero.pinnedTabNames`) and its id is new at every start but the first
+     *  one's ("zotero-pane", tabs.js restoreState.library), so the choice rides
+     *  in the tab's own `data`, as Zotero's `data.unpinned` and Weavero's
+     *  `data.wvPinned` / `data.wvGroupId` do: Zotero saves a tab's data with the
+     *  window (tabs.js getState) and hands it back to the tab it restores, at a
+     *  restart and for a closed window reopened; Weavero's named sessions record
+     *  it with the window's library tabs (sessions.ts _wvTabSessionLibraryFields).
+     *  A move to another window (tabs.js transfer.library: icon, state, unpinned)
+     *  does not carry it; a pinned tab cannot move. Guard:
+     *  test/pin-name-library-tabs.spec.js. */
+    _wvLibTabPinNameOwn(tab: any): boolean | undefined {
+        const v = tab && tab.data && tab.data.wvPinName;
+        return typeof v === "boolean" ? v : undefined;
+    }
+
+    /** Set (true / false) or clear (undefined) library tab `tab`'s own choice;
+     *  Zotero's session file is saved again soon, as `Zotero_Tabs.setTabData`
+     *  does. */
+    _wvLibTabPinNameSet(tab: any, on: boolean | undefined) {
+        try {
+            if (!tab) return;
+            if (typeof on === "boolean") {
+                if (!tab.data) tab.data = {};
+                if (tab.data.wvPinName === on) return;
+                tab.data.wvPinName = on;
+            }
+            else if (tab.data && "wvPinName" in tab.data) delete tab.data.wvPinName;
+            else return;
+            try { (Zotero as any).Session.debounceSave(); } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvLibTabPinNameSet err: " + e); }
+    }
+
+    /** Does tab `tab`'s pin show its name? A library tab: its own choice, else
+     *  the setting (its default); an item tab: its own choice. */
+    _wvTabShowsPinName(tab: any): boolean {
+        if (!tab) return false;
+        if (wvIsLibraryTabID(tab.id)) {
+            const own = this._wvLibTabPinNameOwn(tab);
+            return own !== undefined ? own : !!this._wvPref("pinnedLibraryTabName");
+        }
+        const k = this._tabPinKey(tab);
+        return !!k && this._wvPinNamesGet().some((e: any) =>
+            e && e.libraryID === k.libraryID && e.itemKey === k.itemKey);
     }
 
     /** Derive a pin key from a Zotero tab record. Returns `{libraryID,
@@ -5010,6 +5179,16 @@ class _TabsMixin {
                             const t = it.getItemTypeIconName(true);
                             if (icon.getAttribute("data-item-type") !== t) icon.setAttribute("data-item-type", t);
                         }
+                        else {
+                            // A tab without an item (Researchers, "wvpeople"): the
+                            // icon its own tab shows (tabBar.jsx CSSItemTypeIcon
+                            // from `data.icon`), else the mirror kept Zotero's
+                            // blank document (MJT 2026-11-25: "Pinning the
+                            // Researchers tab shows the wrong icon").
+                            const real = doc.querySelector('#tab-bar-container .tab[data-id="' + tid + '"] .tab-icon');
+                            const t = (real && real.getAttribute("data-item-type")) || String((tab.data && tab.data.icon) || "");
+                            if (t && icon.getAttribute("data-item-type") !== t) icon.setAttribute("data-item-type", t);
+                        }
                     }
                 } catch (e) {}
                 // A locked tab's line after its title (tab-split-dock.ts _wvTabDockTip,
@@ -5028,6 +5207,16 @@ class _TabsMixin {
                     if (!ttl) { ttl = doc.createElement("span"); ttl.className = "wv-pinned-mirror-title"; m.appendChild(ttl); }
                     if (ttl.textContent !== (tab.title || "")) ttl.textContent = tab.title || "";
                 } catch (e) {}
+                // A pinned LIBRARY tab shows its name too, as wide as the name
+                // needs (the `pinnedLibraryTabName` setting, on by default; MJT
+                // 2026-11-21: an icon alone was harder to find than the wide
+                // library tab of before). An item tab's pin stays an icon, as
+                // Firefox's, unless the user chose its name (_wvTabShowsPinName).
+                const named = this._wvTabShowsPinName(tab);
+                if (named !== m.hasAttribute("data-wv-named")) {
+                    if (named) m.setAttribute("data-wv-named", "1");
+                    else m.removeAttribute("data-wv-named");
+                }
             }
             // Order pass — REPOSITION ONLY WHEN WRONG. An unconditional
             // appendChild here mutated childList on every call, and the
@@ -5173,18 +5362,6 @@ class _TabsMixin {
         } catch (e) {}
     }
 
-    _wvUnwireLastViewCloseGuard(win: any) {
-        try {
-            const Z: any = win && win.Zotero_Tabs;
-            if (!Z) return;
-            if (Z._wvOrigTabsClose) {
-                try { Z.close = Z._wvOrigTabsClose; } catch (e) {}
-                delete Z._wvOrigTabsClose; delete Z._wvLastViewWired;
-            }
-            wvUnwrap(Z, "close", "lastView");
-        } catch (e) {}
-    }
-
     /** Dispatcher for moving a reader/note tab between main windows. A PDF
      *  reader is moved WITHOUT reloading — its live docshell is swapped into the
      *  target window (Firefox-style; see `_wvSwapMoveToMain`). Notes or any
@@ -5218,8 +5395,11 @@ class _TabsMixin {
      *  hangs at "Loading…". Firefox's rule is to reveal an ADJACENT tab when
      *  the dragged tab leaves (tabbrowser on_drop/adoptTab), so pick the
      *  nearest LOADED neighbour (next, then previous — loaded tabs can't
-     *  trigger the stray cross-window load); the always-loaded library tab is
-     *  the fallback, not the default. */
+     *  trigger the stray cross-window load); the library tab is the fallback,
+     *  not the default: Zotero 9/10's fixed, always-loaded 'zotero-pane'. (On
+     *  Zotero 11 a window may have no tab of that id, and select() of a
+     *  missing id throws, swallowed below -- a known gap, work/TODO.md
+     *  2026-11-25.) */
     _wvSafeguardSourceSelectionBeforeClose(srcWin, sourceTabId) {
         try {
             const SZT: any = srcWin && srcWin.Zotero_Tabs;
@@ -5310,7 +5490,7 @@ class _TabsMixin {
                 this._wvMoveUnparkTargetFocus(targetWin, parked);
                 return null;
             }
-            donor = await Reader.open(itemID, null, { openInWindow: false, allowDuplicate: true, openInBackground: background });
+            donor = wvOpenedInstance(await Reader.open(itemID, null, { openInWindow: false, allowDuplicate: true, openInBackground: background }));
             if (await this._wvSwapWaitShell(donor, targetWin)) return donor;
             this._wvSwapDropDonor(donor, targetWin);
             return null;
@@ -5322,8 +5502,10 @@ class _TabsMixin {
     }
 
     /** Before a move brings `targetWin` forward: if the element it would give
-     *  the focus back to is in its LIBRARY tab (the quick search, where a main
-     *  window starts and where its user last searched), forget it, so the
+     *  the focus back to is in its LIBRARY tab (the quick search, where a
+     *  Zotero 9/10 main window starts -- a Zotero 11 window opened for a
+     *  document or a note starts on that tab instead -- and where its user
+     *  last searched), forget it, so the
      *  window comes forward with nothing focused until the moved tab takes the
      *  focus. Gecko hands an activated window's focus back to that element:
      *  the target's quick search took the focus while the move ran, and on
@@ -5667,7 +5849,7 @@ class _TabsMixin {
         });
         let donor: any = null;
         try {
-            donor = await Reader.open(itemID, null, { openInWindow: true, allowDuplicate: true });
+            donor = wvOpenedInstance(await Reader.open(itemID, null, { openInWindow: true, allowDuplicate: true }));
         } catch (e) { Zotero.debug("[Weavero] tear-off donor open err: " + e); return false; }
         if (!donor) return false;
         // Wait for the donor WINDOW shell (its DOMContentLoaded sets these async).
@@ -6055,7 +6237,7 @@ class _TabsMixin {
                     catch (e) { job.donorPromise = Promise.resolve(null); }
                 }
                 for (const job of swapJobs) {
-                    try { job.donor = await job.donorPromise; } catch (e) { job.donor = null; }
+                    try { job.donor = wvOpenedInstance(await job.donorPromise); } catch (e) { job.donor = null; }
                     job.ready = job.donor ? await this._wvSwapWaitShell(job.donor, targetWin) : false;
                     if (job.donor && !job.ready) this._wvSwapDropDonor(job.donor, targetWin);
                 }
@@ -7140,8 +7322,9 @@ class _TabsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvOpenItemsFromTabBarDrop err: " + e); }
     }
 
-    /** Tab index at drop X — never before the pinned library tab (index 0);
-     *  end of the strip if dropped past the last tab. */
+    /** Tab index at drop X — never before the first movable index
+     *  (`wvFirstMovableIndex`: past Zotero 9/10's fixed library tab, past
+     *  Zotero 11's pinned tabs); end of the strip if dropped past the last tab. */
     _wvTabIndexFromX(win: any, clientX: number) {
         try {
             const tabEls = this._wvVisibleTabEls(win);
@@ -7312,6 +7495,20 @@ class _TabsMixin {
                 // otherwise. The nova sheet (tab-groups.ts) widens the same
                 // way with its own paddings.
                 "#tab-bar-container .wv-pinned-mirror .wv-pinned-mirror-title { display: none; }",
+                // A pinned library tab with its name (pinnedLibraryTabName,
+                // _wvSyncPinnedMirrors): icon + title, as wide as the title
+                // needs up to a normal tab's 200px, the icon and title where a
+                // tab has them (6px in, the title 5.5px after the icon, measured
+                // on 11.0-beta.4). Before the unpin rules, which win when both
+                // apply (a named mirror dragged out).
+                "#tab-bar-container .wv-pinned-mirror[data-wv-named] {",
+                "  width: auto; max-width: 200px; flex: none;",
+                "  justify-content: flex-start; gap: 5.5px;",
+                "  padding-inline-start: 6px; padding-inline-end: 12px;",
+                "}",
+                "#tab-bar-container .wv-pinned-mirror[data-wv-named] .wv-pinned-mirror-title {",
+                "  display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0;",
+                "}",
                 // Width = a normal tab's current width (--wv-unpin-w from the
                 // dragover); the tint is !important because the design sheet's
                 // mirror rules (higher specificity) otherwise leave the
@@ -7617,6 +7814,80 @@ class _TabsMixin {
                             Zotero.debug("[Weavero] pin-tab onCommand err: " + e);
                         }
                     },
+                }, {
+                    // "Show Tab Name" (first "Show Name When Pinned"; MJT 2026-11-21: "should just be
+                    // 'Show Tab Name', as the tabs where it is visible are the ones pinned already")
+                    // -- on a PINNED tab only, of any kind
+                    // (MJT 2026-11-21, after the library-tab-only first version:
+                    // "Also add a show name when pinned to any tab ... can give
+                    // emphasis when the user wants"; "Show the option to display
+                    // the name when pinned only on pinned tabs"). That tab's own
+                    // choice, of any kind: an item tab's in `weavero.pinnedTabNames`,
+                    // a library tab's on the tab (_wvLibTabPinNameSet), the Settings
+                    // option `pinnedLibraryTabName` being only its default (MJT
+                    // 2026-11-27: the entry switched that option, so every pinned
+                    // library tab at once; "it should act per tab, same as all the
+                    // other tabs"). Right after the Pin / Unpin
+                    // entry, Zotero's or Weavero's. Runs after the entry above
+                    // (same registration), so that one already sits in its place.
+                    menuType: "menuitem",
+                    l10nID: "weavero-menu-tab-pin-name",
+                    onShowing: (_ev, ctx) => {
+                        try {
+                            const tid = ctx.tabID;
+                            const winN: any = ctx.menuElem && ctx.menuElem.ownerDocument && ctx.menuElem.ownerDocument.defaultView;
+                            const tab = tid && winN && winN.Zotero_Tabs && winN.Zotero_Tabs._tabs.find((x: any) => x && x.id === tid);
+                            if (!tab || wvIsFixedLibraryTab(tid) || !self._wvTabIsPinned(winN, tab)) { ctx.setVisible(false); return; }
+                            ctx.setVisible(true);
+                            const el = ctx.menuElem;
+                            el.setAttribute("type", "checkbox");
+                            el.setAttribute("data-wv-key", "pinName");
+                            wvSetBoolAttr(el, "checked", self._wvTabShowsPinName(tab));
+                            const popup = el.parentNode;
+                            if (!popup) return;
+                            let pin: any = null;
+                            for (const ch of Array.from(popup.children) as any[]) {
+                                if (ch === el || ch.localName !== "menuitem" || wvIsHiddenOrCollapsed(ch)) continue;
+                                if (self._wvTabMenuItemKey(ch) === "pin") { pin = ch; break; }
+                            }
+                            if (pin && pin.nextSibling !== el) popup.insertBefore(el, pin.nextSibling);
+                        } catch (e) {
+                            try { ctx.setVisible(false); } catch (e2) {}
+                        }
+                    },
+                    onCommand: (_ev, ctx) => {
+                        try {
+                            const tid = ctx.tabID;
+                            const winN: any = ctx.menuElem && ctx.menuElem.ownerDocument && ctx.menuElem.ownerDocument.defaultView;
+                            const Z: any = winN && winN.Zotero_Tabs;
+                            const find = (id: any) => Z && Z._tabs.find((x: any) => x && x.id === id);
+                            const tab = find(tid);
+                            if (!tab) return;
+                            // The whole tab selection, as Pin / Unpin acts: every
+                            // selected pinned tab takes the clicked tab's new state.
+                            const on = !self._wvTabShowsPinName(tab);
+                            let ids: any[] = [tid];
+                            try {
+                                const tg = self._wvTabMultiSelTargets && self._wvTabMultiSelTargets(winN, tid);
+                                if (tg && tg.length > 1 && tg.includes(tid)) ids = tg;
+                            } catch (e) {}
+                            let lib = false;
+                            for (const id of ids) {
+                                const t = find(id);
+                                if (!t || wvIsFixedLibraryTab(id) || !self._wvTabIsPinned(winN, t)) continue;
+                                // A library tab: its own choice, never the setting
+                                // (guard: test/pin-name-library-tabs.spec.js).
+                                if (wvIsLibraryTabID(id)) { self._wvLibTabPinNameSet(t, on); lib = true; continue; }
+                                const k = self._tabPinKey(t);
+                                if (k) self._wvPinNameSet(k.libraryID, k.itemKey, on);
+                            }
+                            for (const w of Zotero.getMainWindows()) self._applyPinnedTabs(w);
+                            // The active named session records the window's library
+                            // tabs with their data: capture it again (a choice moves
+                            // nothing in the tab bar, so its observer does not).
+                            if (lib) { try { self._wvTabSessionTrackingUpdate(); } catch (e) {} }
+                        } catch (e) { Zotero.debug("[Weavero] pin-name onCommand err: " + e); }
+                    },
                 }],
             });
             if (id) this._pinTabMenuID = id;
@@ -7755,6 +8026,8 @@ class _TabsMixin {
             "moveTab",
             "duplicate",
             "pin",
+            // A library tab's "Show Tab Name" (_registerPinTabMenu).
+            "pinName",
             "sep1",
             "close",
             "closeOther",
@@ -7908,7 +8181,11 @@ class _TabsMixin {
             if (this._getEnableTabGroups && !this._getEnableTabGroups()) return;
             const doc = popup.ownerDocument;
             for (const el of Array.from(popup.querySelectorAll(".wv-grouptabs")) as any[]) el.remove();
-            const ids = (targets || []).filter((t: any) => t && !wvIsFixedLibraryTab(t));
+            // The People tab (people.ts) joins no tab group: a group keeps its
+            // members by their items, and the People tab has none.
+            const ZG: any = win && win.Zotero_Tabs;
+            const ids = (targets || []).filter((t: any) => t && !wvIsFixedLibraryTab(t)
+                && !(ZG && ZG._tabs && ZG._tabs.some((x: any) => x && x.id === t && /^wvpeople(-|$)/.test(String(x.type || "")))));
             if (!ids.length) return;
             // A tab already in a group has nothing to gain here: this entry
             // only ever makes a NEW group, so offering it for grouped tabs
@@ -7978,7 +8255,8 @@ class _TabsMixin {
             // never leaves its window (moveToWindow returns null for it).
             const tids = ((targets && targets.length) ? targets.slice() : []).filter((id: any) => {
                 const t = Zm && Zm._tabs && Zm._tabs.find((x: any) => x && x.id === id);
-                return !(t && (t.movable === false || t.pinned));
+                // Nor the People tab (people.ts): one per window, not moved in v1.
+                return !(t && (t.movable === false || t.pinned || /^wvpeople(-|$)/.test(String(t.type || ""))));
             });
             if (!tids.length) { try { sep.remove(); } catch (e) {} return; }
             const onPick = (target: any) => {
@@ -8179,9 +8457,10 @@ class _TabsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvDuplicateTabs err: " + e); }
     }
 
-    /** Move every tab in `ids` to the start (just after the library tab) or the
+    /** Move every tab in `ids` to the start (`wvFirstMovableIndex`: after
+     *  Zotero 9/10's fixed library tab, after Zotero 11's pinned tabs) or the
      *  end of the bar, preserving their relative order. Forward order → end and
-     *  reverse order → position 1 each keep the group's internal order intact
+     *  reverse order → the start each keep the group's internal order intact
      *  given Zotero_Tabs.move's splice-and-reinsert semantics. */
     _wvMoveSelectedTabsToEdge(win: any, ids: any[], toEnd: boolean) {
         try {
@@ -8211,8 +8490,9 @@ class _TabsMixin {
      *  spin up a second *native* main window
      *  via `Zotero.openMainWindow()` to experiment with the multi-main-
      *  window approach (a full library window owns its own Zotero_Tabs /
-     *  ZoteroContextPane / ZoteroPane). Zotero itself considers >1 main
-     *  window unsupported-but-possible, hence the hidden gate. Registered
+     *  ZoteroContextPane / ZoteroPane). Zotero 9/10 itself considers >1 main
+     *  window unsupported-but-possible, hence the hidden gate (Zotero 11 has
+     *  its own windows, zotero#6035). Registered
      *  the same way as the Pin/Unpin entry (`target: "main/tab"`); the
      *  pref is re-read on every `onShowing`, so toggling it takes effect
      *  with no reload. */
@@ -8628,6 +8908,8 @@ class _TabsMixin {
      *  `session.json` name (renamed to `windows.json` in v0.14.7). Returns
      *  null when neither exists / is readable. */
     async _wvWindowStoreReadText() {
+        // Not through wvStoreRead: wait for the startup gate by hand (lib/store.ts).
+        try { await wvStoreGate(); } catch (e) {}
         try { return await Zotero.File.getContentsAsync(this._wvWindowStorePath()); }
         catch (e) { /* try legacy name */ }
         try {
@@ -8724,7 +9006,12 @@ class _TabsMixin {
             // re-wraps from the native. The public getState IS the full,
             // normalized capture -- what Weavero's own store records too.
             wvWrap(Z, "getState", "normalize", (this as any)._wvWireTag(), (orig: any) => function () {
-                const state = orig.apply(this, arguments);
+                let state = orig.apply(this, arguments);
+                // The People tab (people.ts) is Weavero's to keep: Zotero has no
+                // hook for its type, and its restoreState destructures what the
+                // no-op hook answers (tabs.js restoreState) -- one such record in
+                // its session aborts the restore of every tab after it.
+                try { if (Array.isArray(state)) state = state.filter((t: any) => !(t && /^wvpeople(-|$)/.test(String(t.type || "")))); } catch (e) {}
                 try {
                     for (const t of (state || [])) {
                         if (t && typeof t.type === "string" && t.type.endsWith("-loading")) {
@@ -8754,18 +9041,6 @@ class _TabsMixin {
             // over (see _wvPatchReaderGetWindowStates) — those are
             // Weavero-only content already.
         } catch (e) { Zotero.debug("[Weavero] _wvPatchTabsGetState err: " + e); }
-    }
-
-    _wvUnpatchTabsGetState(win: any) {
-        try {
-            const Z = win && win.Zotero_Tabs;
-            if (!Z) return;
-            wvUnwrap(Z, "getState", "normalize");
-            if (Z._wvGetStateOrig) {
-                try { Z.getState = Z._wvGetStateOrig; } catch (e) {}
-                delete Z._wvGetStateOrig; delete Z._wvGetStatePatchVer; delete Z._wvGetStateFull;
-            }
-        } catch (e) {}
     }
 
     /** RESTORE TAKEOVER, reader-window half: at quit, Zotero's session save
@@ -8857,7 +9132,7 @@ class _TabsMixin {
                 try {
                     const ms = (this as any)._wvTabSessionCaptureMainState
                         ? (this as any)._wvTabSessionCaptureMainState(w) : null;
-                    if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl || ms.title || typeof ms.tagsAuto === "boolean" || ms.pinnedPane || ms.paneOpen || ms.glyph != null || ms.paneSizes)) wvMainState = ms;
+                    if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl || ms.sfOpen || ms.bmPane || ms.collFunnel || ms.title || typeof ms.tagsAuto === "boolean" || ms.pinnedPane || ms.paneOpen || ms.glyph != null || ms.paneSizes)) wvMainState = ms;
                 } catch (e) {}
                 groups.push({ kind: "main-dev", tabs, wvWinId: (w._wvWindowId != null ? w._wvWindowId : null),
                     geom: (this as any)._wvWindowGeom(w), wvMainState });
@@ -8904,9 +9179,10 @@ class _TabsMixin {
         } catch (e) { return null; }
     }
 
-    /** The ANCHOR window's full tab set — the RESTORE TAKEOVER's other half:
-     *  Zotero's own session keeps only the library tab, so Weavero must carry
-     *  the real list (captured on every save, crash-fresh like the rest). */
+    /** The ANCHOR window's full tab set, in Weavero's store too (captured on
+     *  every save, crash-fresh like the rest): Zotero's own session keeps the
+     *  anchor's tabs as well (the getState wrap keeps it full), and the boot
+     *  restore fills only what is missing (_wvRestoreAnchorTabs). */
     _wvWindowStoreCaptureAnchor() {
         try {
             // POSITIONAL, matching _wvIsAnchorWindow: the anchor is
@@ -8924,7 +9200,7 @@ class _TabsMixin {
             try {
                 const ms = (this as any)._wvTabSessionCaptureMainState
                     ? (this as any)._wvTabSessionCaptureMainState(w) : null;
-                if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl || ms.title || typeof ms.tagsAuto === "boolean" || ms.pinnedPane || ms.paneOpen || ms.glyph != null || ms.paneSizes)) wvMainState = ms;
+                if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl || ms.sfOpen || ms.bmPane || ms.collFunnel || ms.title || typeof ms.tagsAuto === "boolean" || ms.pinnedPane || ms.paneOpen || ms.glyph != null || ms.paneSizes)) wvMainState = ms;
             } catch (e) {}
             return { kind: "main-anchor", tabs, geom: (this as any)._wvWindowGeom(w), wvMainState };
         } catch (e) { return null; }
@@ -8959,7 +9235,18 @@ class _TabsMixin {
         // size back, this the restore glyph and the place before the span.
         let anchorSpan: any;
         try { const a0: any = (Zotero.getMainWindows() || [])[0]; anchorSpan = (a0 && (this as any)._wvMaxSpanCapture(a0)) || undefined; } catch (e) {}
-        return { version: 4, windows, focused: this._wvWindowStoreFocusDescriptor(), anchorHidden, anchorTitle, anchorTagsAuto, anchorPaneSizes, anchorGeom, anchorSpan };
+        // And its collections funnel (coll-funnel.ts), as its hidden collections: the entry
+        // that would carry it is skipped while the anchor holds only its library tab.
+        let anchorCollFunnel: any;
+        try { const a0: any = (Zotero.getMainWindows() || [])[0]; anchorCollFunnel = (a0 && (this as any)._wvCfCapture) ? (this as any)._wvCfCapture(a0) : undefined; } catch (e) {}
+        // And its closed saved-search folders and its Bookmarks pane (search-folders.ts,
+        // bookmarks-pane.ts), the same way: the store held them only inside that entry, so a
+        // restart (Zotero 9 / 10) and the move to Zotero 11's own windows lost them (second
+        // review 2026-11-28, L).
+        let anchorSfOpen: any, anchorBmPane: any;
+        try { const a0: any = (Zotero.getMainWindows() || [])[0]; anchorSfOpen = (a0 && (this as any)._wvSfCapture) ? (this as any)._wvSfCapture(a0) : undefined; } catch (e) {}
+        try { const a0: any = (Zotero.getMainWindows() || [])[0]; anchorBmPane = (a0 && (this as any)._wvBmpCapture) ? (this as any)._wvBmpCapture(a0) : undefined; } catch (e) {}
+        return { version: 4, windows, focused: this._wvWindowStoreFocusDescriptor(), anchorHidden, anchorTitle, anchorTagsAuto, anchorPaneSizes, anchorGeom, anchorSpan, anchorCollFunnel, anchorSfOpen, anchorBmPane };
     }
 
     _wvWindowStoreSaveSync() {
@@ -9052,29 +9339,31 @@ class _TabsMixin {
                     .filter((t: any) => t && t.itemID != null)
                     .map((t: any) => ({ itemID: t.itemID, isNote: t.type === "note", title: t.title || "" }));
                 count = tabs.length;
-                if (!count) { Services.prompt.alert(win, "Weavero", "This window has no tabs to save."); return; }
+                if (!count) { Services.prompt.alert(win, "Weavero", wvStr("weavero-window-save-no-tabs")); return; }
             } else {
                 if ((Zotero.getMainWindows() || []).length < 2) {
                     Services.prompt.alert(win, "Weavero",
-                        "This is the last main window — open another main window first, then save this one.");
+                        wvStr("weavero-window-save-last-main"));
                     return;
                 }
                 const Z: any = win.Zotero_Tabs;
                 tabs = (Z && Z.getState()) || [];
                 count = tabs.filter((t: any) => t && t.type !== "library").length;
-                if (!count) { Services.prompt.alert(win, "Weavero", "This window has no document tabs to save."); return; }
+                if (!count) { Services.prompt.alert(win, "Weavero", wvStr("weavero-window-save-no-documents")); return; }
             }
             // No name prompt (user request 2026-07-15) — the window's
             // existing name carries over; rename beforehand if needed.
+            // A default name is stored in the UI language (`named` unset:
+            // nothing recognises it by its words).
             const defName = isReader
-                ? ((win as any)._wvWindowTitle || "Reader Window")
+                ? ((win as any)._wvWindowTitle || wvStr("weavero-savedwin-default-name", { kind: "reader" }))
                 : this._wvWindowName(win);
             let wvMainState: any;
             if (!isReader) {
                 try {
                     const ms = (this as any)._wvTabSessionCaptureMainState
                         ? (this as any)._wvTabSessionCaptureMainState(win) : null;
-                    if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl || ms.title || typeof ms.tagsAuto === "boolean" || ms.pinnedPane || ms.paneOpen || ms.glyph != null || ms.paneSizes)) wvMainState = ms;
+                    if (ms && (ms.collection || ms.columnPrefs || ms.hiddenColl || ms.sfOpen || ms.bmPane || ms.collFunnel || ms.title || typeof ms.tagsAuto === "boolean" || ms.pinnedPane || ms.paneOpen || ms.glyph != null || ms.paneSizes)) wvMainState = ms;
                 } catch (e) {}
             }
             const entry = {
@@ -9143,7 +9432,7 @@ class _TabsMixin {
                 const w: any = await (this as any)._wvOpenStoredWindow(wvStoredFromSaved(entry));
                 if (!w) {
                     Services.prompt.alert(Zotero.getMainWindow() as any, "Weavero",
-                        "None of the documents of this saved window exist any more.");
+                        wvStr("weavero-savedwin-reopen-gone"));
                     return;
                 }
                 forget();
@@ -9177,7 +9466,7 @@ class _TabsMixin {
             if (!seed) {
                 const mw: any = Zotero.getMainWindow();
                 Services.prompt.alert(mw as any, "Weavero",
-                    "This saved window holds only notes — a reader window needs at least one document tab.");
+                    wvStr("weavero-savedwin-reopen-notes-only"));
                 return;
             }
             const rd: any = await (Zotero.Reader as any).open(seed.itemID, null,
@@ -9243,9 +9532,9 @@ class _TabsMixin {
             const curIdx = entry.glyph != null ? entry.glyph % WV_WIN_BADGE_COLORS.length : -1;
             const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
             this._wvShowRenameDialog(parentWin, {
-                title: "Rename Saved Window",
+                title: wvStr("weavero-savedwin-rename-title"),
                 name: entry.name || "",
-                placeholder: isReader ? "Reader Window" : "Window",
+                placeholder: wvStr("weavero-savedwin-default-name", { kind: isReader ? "reader" : "main" }),
                 swatches: WV_WIN_BADGE_COLORS.map((hex: string, i: number) => ({
                     hex, selected: i === curIdx, radius: isReader ? "50%" : "3px",
                 })),
@@ -9280,13 +9569,13 @@ class _TabsMixin {
             if (isReader) {
                 entry = (this as any)._wvTabSessionCaptureReaderWindow(win);
                 if (!entry || !entry.tabs.length) {
-                    Services.prompt.alert(win, "Weavero", "This window has no tabs to move.");
+                    Services.prompt.alert(win, "Weavero", wvStr("weavero-window-move-no-tabs"));
                     return;
                 }
             } else {
                 if ((Zotero.getMainWindows() || []).length < 2) {
                     Services.prompt.alert(win, "Weavero",
-                        "This is the last main window — it can't be moved to another session.");
+                        wvStr("weavero-window-move-last-main"));
                     return;
                 }
                 const Z: any = win.Zotero_Tabs;
@@ -9298,7 +9587,7 @@ class _TabsMixin {
                     if (rec) tabs.push(rec);
                 }
                 if (!tabs.length) {
-                    Services.prompt.alert(win, "Weavero", "This window has no document tabs to move.");
+                    Services.prompt.alert(win, "Weavero", wvStr("weavero-window-move-no-documents"));
                     return;
                 }
                 let geom: any = null;
@@ -9409,7 +9698,7 @@ class _TabsMixin {
                 let libraryTab: any = null;
                 if (e.kind === "main") {
                     libraryTab = {
-                        title: "My Library",
+                        title: Zotero.getString("pane.collections.library"),
                         iconFullClass: "icon icon-css icon-library tab-icon",
                         onClick: () => {
                             try {
@@ -9483,7 +9772,7 @@ class _TabsMixin {
             // as part of the active-windows list (user request 2026-07-15).
             const sechdr = wvHtmlEl(doc, "div");
             sechdr.className = "wv-savedwin-sechdr";
-            sechdr.textContent = "Saved Windows";
+            sechdr.textContent = wvStr("weavero-savedwin-header");
             container.appendChild(sechdr);
             const already = container.querySelectorAll(".wv-savedwin-scope").length;
             // Collapsed by default (user request 2026-07-15): seed each
@@ -9519,7 +9808,7 @@ class _TabsMixin {
                 const hdr = scope.querySelector(".wv-savedwin-winhdr");
                 if (!hdr) return;
                 const btn = wvHtmlEl(doc, "span", "wv-savedwin-reopen", "↗");
-                btn.setAttribute("title", "Reopen this saved window");
+                btn.setAttribute("title", wvStr("weavero-savedwin-reopen"));
                 btn.addEventListener("click", (ev: any) => {
                     try {
                         ev.stopPropagation(); ev.preventDefault();
@@ -10293,11 +10582,10 @@ class _TabsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvReconcileManagedWindows err: " + e); }
     }
 
-    /** RESTORE TAKEOVER, boot half: Zotero natively restored only the library
-     *  tab (see the getState wrap) — rebuild the anchor's real tab set from
-     *  the store's `main-anchor` entry. Merge-style (skip itemIDs already
-     *  live), so a CRASH boot — where Zotero restored its own full session
-     *  from the last periodic save — just fills gaps. The saved selection
+    /** RESTORE TAKEOVER, boot half: the anchor's tab set from the store's
+     *  `main-anchor` entry. Merge-style (skip itemIDs already live): Zotero
+     *  restores the anchor's tabs from its own session too (the getState wrap
+     *  keeps it full), so this only fills gaps. The saved selection
      *  loads immediately when the anchor is the quit-time focused window,
      *  else it defers to first activate like any background window. */
     async _wvRestoreAnchorTabs() {
@@ -10314,6 +10602,12 @@ class _TabsMixin {
             try {
                 const hw: any = (this as any)._wvAnchorWindow();
                 if (hw && doc && doc.anchorHidden) (this as any)._wvHidRestore(hw, doc.anchorHidden);
+                // Its collections funnel, the same way (coll-funnel.ts).
+                if (hw && doc && doc.anchorCollFunnel && (this as any)._wvCfRestore) (this as any)._wvCfRestore(hw, doc.anchorCollFunnel);
+                // Its closed saved-search folders and its Bookmarks pane, the same way (second
+                // review 2026-11-28, L).
+                if (hw && doc && Array.isArray(doc.anchorSfOpen) && doc.anchorSfOpen.length && (this as any)._wvSfRestore) (this as any)._wvSfRestore(hw, doc.anchorSfOpen);
+                if (hw && doc && doc.anchorBmPane && typeof doc.anchorBmPane === "object" && (this as any)._wvBmpRestore) (this as any)._wvBmpRestore(hw, doc.anchorBmPane);
                 if (hw && doc && doc.anchorTitle && hw._wvWindowTitle == null) this._wvWindowSetCustomTitle(hw, doc.anchorTitle);
                 if (hw && doc && typeof doc.anchorTagsAuto === "boolean" && (this as any)._wvTagsAutoSet) (this as any)._wvTagsAutoSet(hw, doc.anchorTagsAuto, { save: false });
                 if (hw && doc && doc.anchorPaneSizes) (this as any)._wvPaneSizesApply(hw, doc.anchorPaneSizes);
@@ -10459,7 +10753,15 @@ class _TabsMixin {
             // 2, 2026-10-12).
             const isMain = (w: any) => { try { return String(w.location && w.location.href).indexOf("zoteroPane.xhtml") !== -1; } catch (e) { return false; } };
             const tryWire = (w: any) => {
-                try { if (w && w.Zotero_Tabs && isMain(w)) self._wvWireRestoreTracing(w); return !!(w && w.Zotero_Tabs); } catch (e) { return false; }
+                try {
+                    if (w && w.Zotero_Tabs && isMain(w)) {
+                        self._wvWireRestoreTracing(w);
+                        // The Group Libraries fold's class layer, before the
+                        // pane builds its trees (group-fold.ts).
+                        try { (self as any)._wvGfWrapWindowClass(w); } catch (e) {}
+                    }
+                    return !!(w && w.Zotero_Tabs);
+                } catch (e) { return false; }
             };
             // Keyed (lib/listen.ts) and self-removing: on a window that is
             // already loaded and has no Zotero_Tabs (the hidden window, a
@@ -11166,7 +11468,12 @@ class _TabsMixin {
      *  a backstop). The rest of the workspace assembles entirely BEHIND the
      *  window the user is reading ("windows coming back on top several times
      *  during restart", 2026-07-04). No-op off Windows: SetWindowPos is the
-     *  mechanism, and the instant-refocus half still comes from the shepherd. */
+     *  mechanism, and the instant-refocus half still comes from the shepherd.
+     *  Still native calls (user32 SetWindowPos, GetAsyncKeyState, GetCursorPos,
+     *  GetSystemMetrics): Gecko has no scriptable call to place a window
+     *  under another without activating it, nor to read the input state
+     *  outside a Zotero window (checked on Firefox 128-153, 2026-11-27).
+     *  One of the two uses left; test/native-calls.spec.js lists them. */
     _wvBgRestoreStart(opts?: any) {
         try {
             if (wvNativeWindows()) return;
@@ -11867,10 +12174,10 @@ class _TabsMixin {
             this._wvWindowStoreWrite(this._wvWindowStoreBuildDoc(live));
             this._wvPinAnchorLastViewed();
             this._wvWindowStoreFrozen = true;
-            // Namespace copy (stale-closure-proof): with the capture frozen,
-            // the getState / getWindowStates wraps now hand Zotero's own
-            // session save a library-only anchor and no reader windows —
-            // the restore takeover.
+            // Namespace copy (stale-closure-proof) of the frozen flag; nothing
+            // reads it at present. Zotero's own session save gets no reader
+            // windows (_wvPatchReaderGetWindowStates) and the anchor's tabs in
+            // full (the getState wrap).
             try { if ((Zotero as any).Weavero) (Zotero as any).Weavero._storeFrozen = true; } catch (e) {}
             this._wvTrace && this._wvTrace("quit-flush: wrote " + live.length + " window entr(ies), store FROZEN");
             try { this._wvTraceFlush && this._wvTraceFlush("quit"); } catch (e) {}
@@ -12456,22 +12763,26 @@ class _TabsMixin {
      *  focused row first, and in the window that DIDN'T initiate the
      *  add (i.e. lacks OS focus) restore that row afterwards, so only
      *  the acting window follows the new collection. Idempotent per
-     *  window; installs when the view exists. */
+     *  window; installs when the view exists. A LAYER of the tree's notify
+     *  (lib/wrap.ts, "selectGuard"), over the Group Libraries fold's layer
+     *  on the window's CollectionTree class (group-fold.ts), which goes on
+     *  first: a layer captures the notify below it once, and one captured
+     *  before the class layer would skip it for good (1.2.1-grpfold.1). */
     _wvGuardCollectionSelectCrossWindow(win: any) {
         try {
             if (!win || !win.ZoteroPane) return;
             const cv: any = win.ZoteroPane.collectionsView;
             if (!cv || typeof cv.notify !== "function") return;
-            // Peel-before-reinstall (the reload-proof wiring rule — the
-            // collectionsView outlives plugin reloads, so a boolean
-            // guard would pin a stale wrap).
+            // A build before the layer: its hand-written wrap goes first.
             if (cv._wvOrigNotifyForSelectGuard) {
-                cv.notify = cv._wvOrigNotifyForSelectGuard;
+                const old = cv._wvOrigNotifyForSelectGuard;
+                const p = Object.getPrototypeOf(cv);
+                if (p && p.notify === old) delete cv.notify;
+                else cv.notify = old;
                 delete cv._wvOrigNotifyForSelectGuard;
             }
-            cv._wvOrigNotifyForSelectGuard = cv.notify;
-            const orig = cv.notify.bind(cv);
-            cv.notify = async function (action: any, type: any, ids: any, extraData: any) {
+            try { (this as any)._wvGfWrapWindowClass(win); } catch (e) {}
+            wvWrap(cv, "notify", "selectGuard", (this as any)._wvWireTag(), (orig: any) => async function (this: any, action: any, type: any, ids: any, extraData: any) {
                 try {
                     if (action === "add" && type === "collection"
                         && Array.isArray(ids) && ids.length === 1
@@ -12492,11 +12803,12 @@ class _TabsMixin {
                         // window too.
                         const ed: any = Object.assign({}, extraData);
                         ed[ids[0]] = Object.assign({}, ed[ids[0]], { skipSelect: true });
-                        return await orig(action, type, ids, ed);
+                        const rest = Array.prototype.slice.call(arguments, 4);
+                        return await orig.call(this, action, type, ids, ed, ...rest);
                     }
                 } catch (e) {}
-                return orig(action, type, ids, extraData);
-            };
+                return orig.apply(this, arguments);
+            });
         } catch (e) { Zotero.debug("[Weavero] _wvGuardCollectionSelectCrossWindow err: " + e); }
     }
 
@@ -12506,7 +12818,9 @@ class _TabsMixin {
     _wvUnguardCollectionSelectCrossWindow(win: any) {
         try {
             const cv: any = win && win.ZoteroPane && win.ZoteroPane.collectionsView;
-            if (!cv || !cv._wvOrigNotifyForSelectGuard) return;
+            if (!cv) return;
+            wvUnwrap(cv, "notify", "selectGuard");
+            if (!cv._wvOrigNotifyForSelectGuard) return;
             const orig = cv._wvOrigNotifyForSelectGuard;
             const p = Object.getPrototypeOf(cv);
             if (p && p.notify === orig) delete cv.notify;
@@ -12607,8 +12921,9 @@ class _TabsMixin {
             try {
                 const sp = d.querySelector("#zotero-title-bar > .wv-titlebar-spacer");
                 if (sp) {
-                    const nm = this._wvWindowName(win)
-                        + ((multi && isAnchor) ? " (anchor)" : "");
+                    const nm = (multi && isAnchor)
+                        ? wvStr("weavero-window-anchor-name", { name: this._wvWindowName(win) })
+                        : this._wvWindowName(win);
                     sp.setAttribute("title", nm);
                     sp.setAttribute("tooltiptext", nm);
                     this._wvWireWindowNameTooltip(win, sp);
@@ -12741,7 +13056,7 @@ class _TabsMixin {
                             if (w === win) break;
                         }
                         name = this._wvWindowCustomTitle(win)
-                            || (n > 1 ? "Reader window " + n : "Reader window");
+                            || (n > 1 ? wvStr("weavero-window-reader-default-name-numbered", { number: n }) : wvStr("weavero-window-reader-default-name"));
                     } else {
                         name = this._wvWindowName(win);
                     }
@@ -13112,12 +13427,10 @@ class _TabsMixin {
         // attribute does NOT fire when the attribute is set inside
         // popupshowing (the popup paints a 0-px frame instead). Setting
         // both attribute and an explicit child covers every code path.
-        const renderPlainLabel = (text) => {
+        // `iconName`: the item type's icon in front of the title (an item's tab).
+        const renderPlainLabel = (text, iconName?: string) => {
             tooltip.setAttribute("label", text);
-            const desc = doc.createXULElement("description");
-            desc.setAttribute("class", "tooltip-label");
-            desc.textContent = text;
-            tooltip.appendChild(desc);
+            tooltip.appendChild(this._wvTabTooltipTitleEl(doc, text, iconName || "", "tooltip-label"));
         };
 
         // "Show in Library" tab-context menuitem trigger: a menuitem
@@ -13172,31 +13485,40 @@ class _TabsMixin {
         // else fall back to the plain overflow title.
         const popRow = (triggerNode.closest && triggerNode.closest(".row")) || null;
         if (popRow && !popRow.closest(".tab") && (popRow.getAttribute("data-wv-library") != null || popRow.getAttribute("data-tab-id"))) {
-            let pLib: any = null, pTitle: any = null;
+            let pLib: any = null, pTitle: any = null, pItem: any = null;
+            // The row's item: a current-window row's tab (Zotero's rows carry
+            // data-tab-id; the funnel stamps data-wv-library on them too), else
+            // the item Weavero's own rows name (_wvTabsMenuTabRow).
+            const tid = popRow.getAttribute("data-tab-id");
+            if (tid && !wvIsLibraryTabID(tid)) {
+                try {
+                    const zt: any = win.Zotero_Tabs;
+                    const t = zt && zt._tabs.find((x: any) => x.id === tid);
+                    pItem = Zotero.Items.get(t && t.data && t.data.itemID) || null;
+                    if (t && popRow.getAttribute("data-wv-library") == null) pTitle = t.title;
+                } catch (e) {}
+            }
+            if (!pItem) {
+                const iid = popRow.getAttribute("data-wv-itemid");
+                if (iid) { try { pItem = Zotero.Items.get(Number(iid)) || null; } catch (e) {} }
+            }
             const wvLib = popRow.getAttribute("data-wv-library");
             if (wvLib != null) {
                 try { pLib = Zotero.Libraries.get(Number(wvLib)); } catch (e) {}
-            } else {
-                const tid = popRow.getAttribute("data-tab-id");
-                if (tid && !wvIsLibraryTabID(tid)) {
-                    try {
-                        const zt: any = win.Zotero_Tabs;
-                        const t = zt && zt._tabs.find((x: any) => x.id === tid);
-                        const it: any = Zotero.Items.get(t && t.data && t.data.itemID);
-                        if (it) pLib = Zotero.Libraries.get(it.libraryID);
-                        if (t) pTitle = t.title;
-                    } catch (e) {}
-                }
+            }
+            else if (pItem) {
+                try { pLib = Zotero.Libraries.get(pItem.libraryID); } catch (e) {}
             }
             if (!pTitle) pTitle = popRow.getAttribute("title")
                 || (popRow.querySelector("label") && popRow.querySelector("label").textContent)
                 || (popRow.querySelector("[title]") && popRow.querySelector("[title]").getAttribute("title"))
                 || null;
+            const pIcon = this._wvTabTooltipIconName(pItem);
             if (pLib && pLib.libraryType === "group") {
-                (this as any)._wvTabTooltipRichCard(doc, tooltip, pLib, pTitle);
+                (this as any)._wvTabTooltipRichCard(doc, tooltip, pLib, pTitle, pIcon);
                 return true;
             }
-            if (pTitle) { renderPlainLabel(pTitle); return true; }
+            if (pTitle) { renderPlainLabel(pTitle, pIcon); return true; }
             return false;
         }
 
@@ -13225,10 +13547,11 @@ class _TabsMixin {
             t => t.id === tabId);
 
         let libID = null;
+        let tabItem: any = null;
         try {
-            const item = Zotero.Items.get(
-                tabData && tabData.data && tabData.data.itemID);
-            libID = item ? item.libraryID : null;
+            tabItem = Zotero.Items.get(
+                tabData && tabData.data && tabData.data.itemID) || null;
+            libID = tabItem ? tabItem.libraryID : null;
         }
         catch (e) {}
         let lib = null;
@@ -13236,6 +13559,7 @@ class _TabsMixin {
             try { lib = Zotero.Libraries.get(libID); }
             catch (e) {}
         }
+        const iconName = this._wvTabTooltipIconName(tabItem);
 
         // Non-group-library tab: plain-text tooltip = the HOVERED tab's OWN
         // title. tabData.title (Zotero's tab title, which follows Zotero's
@@ -13249,55 +13573,62 @@ class _TabsMixin {
                 || findTitle()
                 || null;
             if (t) {
-                renderPlainLabel(splitLabel(tabId, t));
+                renderPlainLabel(splitLabel(tabId, t), iconName);
                 return true;
             }
             return false;
         }
 
-        // Group library tab — build the rich card. (children are
-        // already cleared from the early reset above.)
-
-        const wrap = doc.createXULElement("vbox");
-        wrap.setAttribute("class", "wv-tab-tooltip-wrap");
-
-        // Library header first: themed library-group icon + library name,
-        // same visual as the popup's section header. The XUL <image>
-        // element renders the SVG via `chrome://` URL with
-        // -moz-context-properties so it picks up the right fill.
-        const headerRow = doc.createXULElement("hbox");
-        headerRow.setAttribute("class", "wv-tab-tooltip-header");
-        headerRow.setAttribute("align", "center");
-        const iconEl = doc.createXULElement("image");
-        iconEl.setAttribute("class", "wv-tab-tooltip-icon");
-        iconEl.setAttribute("src",
-            "chrome://zotero/skin/collection-tree/16/light/library-group.svg");
-        headerRow.appendChild(iconEl);
-        const nameEl = doc.createXULElement("description");
-        nameEl.setAttribute("class", "wv-tab-tooltip-libname");
-        nameEl.textContent = lib.name;
-        headerRow.appendChild(nameEl);
-        wrap.appendChild(headerRow);
-
-        // Thin separator between library header and tab title.
-        const sep = doc.createXULElement("box");
-        sep.setAttribute("class", "wv-tab-tooltip-sep");
-        wrap.appendChild(sep);
-
-        // Tab title row (below the library label).
-        const titleEl = doc.createXULElement("description");
-        titleEl.setAttribute("class", "wv-tab-tooltip-title");
-        titleEl.textContent = tabData.title || "";
-        wrap.appendChild(titleEl);
-
-        tooltip.appendChild(wrap);
+        // Group library tab — the rich card: library header (group icon +
+        // name), separator, then the title with its item-type icon. (Children
+        // are already cleared from the early reset above.)
+        (this as any)._wvTabTooltipRichCard(doc, tooltip, lib, (tabData && tabData.title) || "", iconName);
         return true;
     }
 
+    /** The item-type icon a tab tooltip shows (MJT 2026-11-24, "Just the icon
+     *  of the item type in front"): the icon Zotero's items list draws
+     *  (`getItemTypeIconName()`, link mode kept) for the item the tab stands
+     *  for -- a reader tab's PARENT item (the Journal Article of its PDF),
+     *  else the tab's own item (a standalone attachment; a note, a child note
+     *  too). "" when there is no item (a library tab). */
+    _wvTabTooltipIconName(item: any): string {
+        try {
+            if (!item) return "";
+            let shown: any = item;
+            if (typeof item.isAttachment === "function" && item.isAttachment() && item.parentItemID) {
+                const p = Zotero.Items.get(item.parentItemID);
+                if (p) shown = p;
+            }
+            return typeof shown.getItemTypeIconName === "function" ? String(shown.getItemTypeIconName() || "") : "";
+        }
+        catch (e) { return ""; }
+    }
+
+    /** A tab tooltip's title line with the item-type icon in front: Zotero's own
+     *  `.icon-css.icon-item-type[data-item-type]` rules draw the icon (light /
+     *  dark themed, as the tabs menu's rows), inline at the start of the first
+     *  line (`.icon-css` is `vertical-align: middle`); a wrapped title hangs
+     *  under its text, not under the icon (`wv-tab-tooltip-typed`, the tooltip
+     *  sheets). `cls`: `tooltip-label` (the plain tooltip) or
+     *  `wv-tab-tooltip-title` (the library card). */
+    _wvTabTooltipTitleEl(doc: any, title: string, iconName: string, cls: string): any {
+        const d = doc.createXULElement("description");
+        d.setAttribute("class", cls);
+        if (iconName) {
+            d.classList.add("wv-tab-tooltip-typed");
+            const ic = wvHtmlEl(doc, "span", "icon icon-css icon-item-type wv-tab-tooltip-type", undefined, d);
+            ic.setAttribute("data-item-type", iconName);
+        }
+        d.appendChild(doc.createTextNode(title || ""));
+        return d;
+    }
+
     /** Build the rich library-card tooltip body (themed group-library icon + name,
-     *  and — when given — a separator + the tab title below). Shared by the tab
-     *  header and the List-all-tabs popup rows. */
-    _wvTabTooltipRichCard(doc: any, tooltip: any, lib: any, title: any) {
+     *  and — when given — a separator + the tab title below, its item-type icon
+     *  in front). Shared by the tab header, the List-all-tabs popup rows and the
+     *  reader window's tab. */
+    _wvTabTooltipRichCard(doc: any, tooltip: any, lib: any, title: any, typeIcon?: string) {
         try {
             const wrap = doc.createXULElement("vbox");
             wrap.setAttribute("class", "wv-tab-tooltip-wrap");
@@ -13306,8 +13637,8 @@ class _TabsMixin {
             headerRow.setAttribute("align", "center");
             const iconEl = doc.createXULElement("image");
             iconEl.setAttribute("class", "wv-tab-tooltip-icon");
-            const iconName = lib.libraryType === "feed" ? "feed-library.svg" : "library-group.svg";
-            iconEl.setAttribute("src", "chrome://zotero/skin/collection-tree/16/light/" + iconName);
+            const libIcon = lib.libraryType === "feed" ? "feed-library.svg" : "library-group.svg";
+            iconEl.setAttribute("src", "chrome://zotero/skin/collection-tree/16/light/" + libIcon);
             headerRow.appendChild(iconEl);
             const nameEl = doc.createXULElement("description");
             nameEl.setAttribute("class", "wv-tab-tooltip-libname");
@@ -13318,10 +13649,7 @@ class _TabsMixin {
                 const sep = doc.createXULElement("box");
                 sep.setAttribute("class", "wv-tab-tooltip-sep");
                 wrap.appendChild(sep);
-                const titleEl = doc.createXULElement("description");
-                titleEl.setAttribute("class", "wv-tab-tooltip-title");
-                titleEl.textContent = title;
-                wrap.appendChild(titleEl);
+                wrap.appendChild(this._wvTabTooltipTitleEl(doc, title, typeIcon || "", "wv-tab-tooltip-title"));
             }
             tooltip.appendChild(wrap);
         } catch (e) { Zotero.debug("[Weavero] _wvTabTooltipRichCard err: " + e); }
@@ -13423,8 +13751,7 @@ class _TabsMixin {
         const btn = wvHtmlEl(doc, "button");
         btn.id = "wv-tabs-menu-filetype-btn";
         btn.type = "button";
-        btn.title = "Filter tabs by attachment file type. "
-            + "Click in the popup to filter, Alt+click to exclude.";
+        btn.title = wvStr("weavero-tabs-filetype-button");
         // Weavero-identity funnel (Zotero's filter.svg artwork + amber
         // stem, themed via -moz-context-properties — see constants.ts),
         // plus a small dropmarker chevron so the visual matches the
@@ -13443,14 +13770,16 @@ class _TabsMixin {
         btn.appendChild(dot);
         // Tiny chevron — matches the look of a XUL toolbarbutton
         // dropmarker (8×8 ▾). Inline SVG so it inherits the same
-        // currentColor treatment as the icon.
+        // currentColor treatment as the icon. Built with createElementNS
+        // (wvSvgEl, lib/svg.ts), not innerHTML: the main window is XHTML, where an
+        // innerHTML svg needs its xmlns -- without it the chrome sanitizer
+        // flattens the elements and the icon vanishes -- and with it the
+        // sanitizer logs "Removed unsafe attribute" (CON-1, 2026-11-25;
+        // guard test/tabs-menu-icons.spec.js).
         const chev = wvHtmlEl(doc, "span");
         chev.className = "wv-tabs-menu-filetype-chev";
-        chev.innerHTML = "<svg xmlns=\"http://www.w3.org/2000/svg\" "
-            + "width=\"8\" height=\"8\" viewBox=\"0 0 8 8\" "
-            + "fill=\"currentColor\">"
-            + "<path d=\"M1 2.5h6L4 6z\"/>"
-            + "</svg>";
+        const chevSvg = wvSvgEl(doc, "svg", { width: 8, height: 8, viewBox: "0 0 8 8", fill: "currentColor" }, chev);
+        wvSvgEl(doc, "path", { d: "M1 2.5h6L4 6z" }, chevSvg);
         btn.appendChild(chev);
         btn.addEventListener("click", (e) => {
             e.stopPropagation();
@@ -13468,7 +13797,7 @@ class _TabsMixin {
         const gear = wvHtmlEl(doc, "button");
         gear.id = "wv-tabs-menu-settings-btn";
         gear.type = "button";
-        gear.title = "Tabs menu settings";
+        gear.title = wvStr("weavero-tabs-settings-button");
         gear.style.setProperty("-moz-context-properties",
             "fill, fill-opacity, stroke, stroke-opacity");
         gear.style.fill = "currentColor";
@@ -13495,9 +13824,13 @@ class _TabsMixin {
         const clearBtn = wvHtmlEl(doc, "button") as any;
         clearBtn.id = "wv-tabs-menu-clear-btn";
         clearBtn.type = "button";
-        clearBtn.title = "Clear filter";
-        clearBtn.setAttribute("aria-label", "Clear filter");
-        clearBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="#808080"/><line x1="4" y1="4" x2="10" y2="10" stroke-width="1.5" stroke="#fff"/><line x1="10" y1="4" x2="4" y2="10" stroke-width="1.5" stroke="#fff"/></svg>';
+        clearBtn.title = wvStr("weavero-tabs-filter-clear");
+        clearBtn.setAttribute("aria-label", clearBtn.title);
+        // DOM-built SVG (see the chevron above: CON-1).
+        const clearSvg = wvSvgEl(doc, "svg", { width: 14, height: 14, viewBox: "0 0 14 14" }, clearBtn);
+        wvSvgEl(doc, "circle", { cx: 7, cy: 7, r: 7, fill: "#808080" }, clearSvg);
+        wvSvgEl(doc, "line", { x1: 4, y1: 4, x2: 10, y2: 10, "stroke-width": 1.5, stroke: "#fff" }, clearSvg);
+        wvSvgEl(doc, "line", { x1: 10, y1: 4, x2: 4, y2: 10, "stroke-width": 1.5, stroke: "#fff" }, clearSvg);
         // Visibility + input-room reserved via a panel class (CSS in constants;
         // the row uses absolute-positioned buttons, not flex).
         const syncClear = () => { panel.classList.toggle("wv-tabs-filter-hastext", !!String(input.value || "")); };
@@ -13565,16 +13898,16 @@ class _TabsMixin {
             // Top bar -- same layout as the items-tree filter popup:
             // [hint on the left] [Clear text button] [red x Clear-and-Close].
             const topBar: any = wvHtmlEl(doc, "div", "wv-filter-top-bar wv-tabs-menu-filetype-topbar");
-            wvHtmlEl(doc, "span", "wv-filter-top-hint", "Alt+click to exclude", topBar);
-            const clearTextBtn: any = wvHtmlEl(doc, "button", "wv-filter-clear-btn", "Clear", topBar);
+            wvHtmlEl(doc, "span", "wv-filter-top-hint", wvStr("weavero-tabs-filter-hint"), topBar);
+            const clearTextBtn: any = wvHtmlEl(doc, "button", "wv-filter-clear-btn", wvStr("weavero-tabs-filter-clear-all"), topBar);
             clearTextBtn.type = "button";
-            clearTextBtn.title = "Clear all tab filters (keep this window open)";
-            clearTextBtn.setAttribute("aria-label", "Clear all tab filters");
+            clearTextBtn.title = wvStr("weavero-tabs-filter-clear-all", null, "title");
+            clearTextBtn.setAttribute("aria-label", wvStr("weavero-tabs-filter-clear-all", null, "aria-label"));
             clearTextBtn.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (er) {} clearAll(); });
             const clearBtn: any = wvHtmlEl(doc, "button", "wv-filter-clear-icon", undefined, topBar);
             clearBtn.type = "button";
-            clearBtn.setAttribute("aria-label", "Clear and Close");
-            clearBtn.title = "Clear and Close";
+            clearBtn.title = wvStr("weavero-tabs-filter-clear-close");
+            clearBtn.setAttribute("aria-label", clearBtn.title);
             clearBtn.addEventListener("click", (e: any) => {
                 try { e.stopPropagation(); } catch (er) {}
                 clearAll();
@@ -13608,7 +13941,7 @@ class _TabsMixin {
             const makeOpt = (val: any, label: string, opts: any) => {
                 const b: any = wvHtmlEl(doc, "button", "wv-filter-opt wv-filter-opt-icon");
                 b.type = "button";
-                b.title = label + " \u2014 click to include, Alt+click to exclude.";
+                b.title = wvStr("weavero-tabs-filetype-option", { type: label });
                 if (inc.has(val)) b.dataset.selected = "true";
                 if (exc.has(val)) b.dataset.excluded = "true";
                 let ic: any;
@@ -13656,7 +13989,7 @@ class _TabsMixin {
             // `Zotero.Item.getItemTypeIconName(true)`; --accent-yellow is the
             // item pane's notes colour.
             wvHtmlEl(doc, "div", "wv-tabs-menu-filetype-sep", undefined, ftRow);
-            ftRow.appendChild(makeOpt("note", "Note", { iconSrc: "chrome://zotero/skin/16/universal/note.svg", accentColor: "var(--accent-yellow)" }));
+            ftRow.appendChild(makeOpt("note", wvStr("weavero-tabs-filetype-note"), { iconSrc: "chrome://zotero/skin/16/universal/note.svg", accentColor: "var(--accent-yellow)" }));
 
             // Library chips -- one per library the rows span, shown from two on.
             try {
@@ -13682,7 +14015,7 @@ class _TabsMixin {
                         const chip: any = wvHtmlEl(doc, "button", "wv-filter-opt");
                         chip.type = "button";
                         chip.style.cssText = "display:flex;align-items:center;gap:6px;justify-content:flex-start;width:100%;padding:3px 6px;";
-                        chip.title = lib.name + " \u2014 click to show only this library, Alt+click to exclude.";
+                        chip.title = wvStr("weavero-tabs-library-chip", { name: String(lib.name || "") });
                         const cur = lf.get(lib.libraryID);
                         if (cur === "include") chip.dataset.selected = "true";
                         if (cur === "exclude") chip.dataset.excluded = "true";
@@ -13746,8 +14079,8 @@ class _TabsMixin {
             return row;
         };
 
-        popup.appendChild(makeRow("_tabsMenuGroupByLibrary", "Sort Tabs by Library"));   // "Tabs": the Sessions header has its own sort (MJT 2026-09-29)
-        popup.appendChild(makeRow("_tabsMenuShowAnnotationCount", "Show Annotations Count"));
+        popup.appendChild(makeRow("_tabsMenuGroupByLibrary", wvStr("weavero-tabs-settings-sort-by-library")));   // "Tabs": the Sessions header has its own sort (MJT 2026-09-29)
+        popup.appendChild(makeRow("_tabsMenuShowAnnotationCount", wvStr("weavero-tabs-settings-annotation-count")));
         host.appendChild(popup);
 
         cfg.holder[cfg.key] = wvOutsideClick({ panel: popup, keep: [anchor], owner: this,
@@ -13902,7 +14235,7 @@ class _TabsMixin {
             const n = annots.length;
             if (!n) return;
             const badge = wvHtmlEl(doc, "span", "wv-tabs-menu-anncount");
-            badge.title = n + " annotation" + (n === 1 ? "" : "s");
+            badge.title = wvStr("weavero-tabs-annotation-count", { count: n });
             // Icon: same `annotation-12.svg` the item-pane uses,
             // tinted via context-fill / currentColor.
             const ic = wvHtmlEl(doc, "span", "wv-tabs-menu-anncount-icon", undefined, badge);

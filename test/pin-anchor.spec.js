@@ -53,6 +53,9 @@ describe("Weavero — WV-TEMP-134569: the pinned section stays at the top while 
     });
 
     const top = (id) => det.getEnabledPane(id).getBoundingClientRect().top - pp.getBoundingClientRect().top;
+    /** The anchor's layers on scrollToPane (the section locked at the
+     *  bottom has one of its own there, pane-lock.ts, 1.2.1-panelock.1). */
+    const anchorLayers = (d) => wvT.lib().wvWrapLayers(d, "scrollToPane").map(l => l.layer).filter(l => l !== "paneLock");
     const above = () => det.getEnabledPane("info");
     /** A 300-px block at the end of the Info section's body (the section
      *  element itself is a flex row: a child beside it adds no height): what
@@ -116,7 +119,8 @@ describe("Weavero — WV-TEMP-134569: the pinned section stays at the top while 
     it("the teardown leaves Zotero's single scroll (the section drifts: the bug the spec sees), the wiring takes it again", async function () {
         wv._wvTeardownPinAnchorFix();
         try {
-            assert.deepEqual(wvT.lib().wvWrapLayers(det, "scrollToPane"), [], "no layer left on scrollToPane");
+            // (The section locked at the bottom keeps its own layer there, pane-lock.ts.)
+            assert.deepEqual(anchorLayers(det), [], "no anchor layer left on scrollToPane");
             assert.isNotOk(det._wvPinAnchor, "no observer left");
             await pinTags();
             probeIn(300);
@@ -126,7 +130,7 @@ describe("Weavero — WV-TEMP-134569: the pinned section stays at the top while 
             await settle();
         }
         finally { wv._wvWirePinAnchorFix(win); }
-        assert.deepEqual(wvT.lib().wvWrapLayers(det, "scrollToPane").map(l => l.layer), ["pinAnchor"]);
+        assert.deepEqual(anchorLayers(det), ["pinAnchor"]);
         await pinTags();
         probeIn(300);
         const held = await wvT.waitFor(() => Math.abs(top("tags")) <= 1.5 || null, 3000);
@@ -222,8 +226,8 @@ describe("Weavero — WV-TEMP-134569: the pinned section stays at the top while 
         try {
             const cd = await wvT.waitFor(() => doc.getElementById(reader.tabID + "-context"), 15000);
             assert.isOk(cd, "the tab's item-details");
-            const layers = await wvT.waitFor(() => { const l = wvT.lib().wvWrapLayers(cd, "scrollToPane"); return l.length ? l : null; }, 5000);
-            assert.deepEqual((layers || []).map(l => l.layer), ["pinAnchor"]);
+            const layers = await wvT.waitFor(() => { const l = anchorLayers(cd); return l.length ? l : null; }, 5000);
+            assert.deepEqual(layers || [], ["pinAnchor"]);
         }
         finally { wvT.closeReaderTab(reader); }
     });
@@ -271,14 +275,21 @@ describe("Weavero — WV-TEMP-134569 / 113626: a change of the item pane's width
     };
     const topIn = (d, el) => el.getBoundingClientRect().top - d._paneParent.getBoundingClientRect().top;
     /** The deepest box crossing (or first below) the scroller's top edge:
-     *  what is read there (the test's own copy of the rule). */
+     *  what is read there (the test's own copy of the rule, pane.ts anchorIn:
+     *  no sticky box, no XUL popup or popupset, no box out of the scroller's
+     *  flow -- a closed author menu was taken for it, 2026-11-28). */
+    const POPUP_TAGS = new Set(["popupset", "menupopup", "panel", "tooltip"]);
     const atEdge = (d) => {
         const pp = d._paneParent, edge = pp.getBoundingClientRect().top;
+        const outOfFlow = (c, pos) => pos === "fixed" || (pos === "absolute" && c.offsetParent !== undefined && !(c.offsetParent && pp.contains(c.offsetParent)));
         const walk = (root, depth) => {
             for (const c of Array.from(root.children || [])) {
+                if (POPUP_TAGS.has(c.localName)) continue;
                 const r = c.getBoundingClientRect();
                 if (!r.height) { const a = depth < 12 && c.firstElementChild ? walk(c, depth + 1) : null; if (a) return a; continue; }
-                if (r.bottom <= edge + 0.5 || win.getComputedStyle(c).position === "sticky") continue;
+                if (r.bottom <= edge + 0.5) continue;
+                const pos = win.getComputedStyle(c).position;
+                if (pos === "sticky" || outOfFlow(c, pos)) continue;
                 if (r.top >= edge - 0.5 || depth >= 12 || !c.firstElementChild) return c;
                 return walk(c, depth + 1) || c;
             }
@@ -409,6 +420,88 @@ describe("Weavero — WV-TEMP-134569 / 113626: a change of the item pane's width
         const r = await drag(LIB, det, el, 480);
         assert.isAtMost(Math.abs(r.end), TOL(), el.tagName + " where it was after the drag: " + JSON.stringify(r));
         assert.isAtMost(Math.abs(r.worst), TOL(), "and in every painted frame: " + JSON.stringify(r));
+    });
+
+    // A popup of a section, opened once (2026-11-28). Gecko lays a XUL popup
+    // out only while it shows and keeps that box once it is closed
+    // (nsMenuPopupFrame::CanSkipLayout), where it opened: `position: fixed`
+    // (xul.css), it scrolls with nothing. Zotero's author menu sits in the
+    // Info section's popupset, BEFORE the rows (itemBox.js): after a
+    // right-click on an author -- people.spec.js's -- the walk took the closed
+    // menu for the box at the top edge and held it, while the rows moved by
+    // a wrapped line (-17.3 / +17.3 px at 360 / 600 px). The test above failed
+    // in every full run on Zotero 10 and 11 and passed alone (bisected to
+    // people.spec.js). The browser's own anchoring never picks a box outside
+    // the scroller's flow (Gecko ScrollAnchorContainer::FindAnchorInList).
+    // Written before the fix; the fixture checks keep it from passing on a
+    // runner where the closed menu has no box. Except on macOS, where it is
+    // skipped (PENDING_ALLOWLIST) when the menu does not open or keeps no
+    // box (2026-11-28 review): Zotero opens this menu as a context menu
+    // (openPopupAtScreen's third argument, itemBox.js), which Gecko shows as
+    // a native NSMenu on a Mac (#48, column-picker-mac.spec.js). That Gecko
+    // never lays such a menu out, so its box stays 0, is a guess (the local
+    // Firefox mirror has no nsXULPopupManager): the skip asks the state and
+    // the box themselves, and asserts them everywhere else.
+    it("no pin: a closed popup of a section (Zotero's author menu, right-clicked once) is never the box held at the top edge (library)", async function () {
+        const POP = "popupset, menupopup, panel, tooltip";
+        const pathOf = (el) => { const out = []; for (let e = el; e && out.length < 6 && e !== det._paneParent; e = e.parentElement) out.push(e.localName + (e.id ? "#" + e.id : "")); return out.reverse().join(" > "); };
+        det.pinnedPane = "";
+        await reselect();
+        LIB.set(480);
+        await settle();
+        const pp = det._paneParent, info = det.getEnabledPane("info");
+        assert.isOk(det._wvPinAnchor && typeof det._wvPinAnchor.capture === "function", "the anchor");
+        const pop = info.querySelector("#zotero-creator-transform-menu");
+        assert.isOk(pop, "fixture: Zotero's author menu in the Info section");
+        try {
+            // The first author's row a quarter down the pane, then a right-click
+            // on it as people.spec.js makes one: Zotero's row handler
+            // (itemBox.js createContextMenuHandler -> handlePopupOpening) opens
+            // the menu at the click (openPopupAtScreen).
+            const cv = info.querySelector(".creator-type-value");
+            assert.isOk(cv, "fixture: an author row in the Info section");
+            pp.scrollTop += Math.round(cv.getBoundingClientRect().top - pp.getBoundingClientRect().top - pp.clientHeight / 4);
+            await settle();
+            const r = cv.getBoundingClientRect(), view = pp.getBoundingClientRect();
+            assert.isTrue(r.top > view.top && r.bottom < view.bottom, "fixture: the author row in view: " + JSON.stringify({ row: [R(r.top), R(r.bottom)], view: [R(view.top), R(view.bottom)] }));
+            cv.dispatchEvent(new win.MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2,
+                screenX: Math.round(win.mozInnerScreenX + r.left + 20), screenY: Math.round(win.mozInnerScreenY + r.top + 5) }));
+            const opened = await wvT.waitFor(() => pop.state === "open" || null, 5000, 50);
+            if (!opened && Zotero.isMac) this.skip();   // platform: macOS shows a context menu as a native NSMenu (#48), not a popup of Gecko's own
+            assert.isOk(opened, "fixture: the author menu opened: " + pop.state);
+            pop.hidePopup();
+            assert.isOk(await wvT.waitFor(() => pop.state === "closed" || null, 5000, 50), "fixture: and closed: " + pop.state);
+            await settle();
+            const pr = pop.getBoundingClientRect();
+            if (Zotero.isMac && !(pr.height > 0)) this.skip();   // platform: macOS shows a context menu as a native NSMenu (#48), never laid out by Gecko -- no closed box to take
+            assert.isAbove(pr.height, 0, "fixture: the closed menu keeps the box it was laid out in (else this test checks nothing): " + JSON.stringify([R(pr.top), R(pr.height)]));
+            // The user's scroll: the Language row at the top edge, half of it
+            // above (where the test above, run alone, finds the box at the edge).
+            const lab = info.querySelector("#itembox-field-language-label");
+            assert.isOk(lab, "fixture: the Info section's Language row");
+            const lr = lab.getBoundingClientRect();
+            pp.scrollTop += Math.round(lr.top - pp.getBoundingClientRect().top + lr.height / 2);
+            await settle();
+            const edge = pp.getBoundingClientRect().top, ib = info.querySelector("#info-box").getBoundingClientRect(), pb = pop.getBoundingClientRect();
+            const geo = JSON.stringify({ edge: R(edge), infoBox: [R(ib.top), R(ib.bottom)], menu: [R(pb.top), R(pb.bottom)], scrollTop: pp.scrollTop });
+            assert.isTrue(ib.top < edge && ib.bottom > edge, "fixture: the top edge inside the Info section's #info-box, the popupset's parent: " + geo);
+            assert.isAbove(pb.bottom, edge + 0.5, "fixture: the closed menu's box reaches below the top edge: " + geo);
+            const S = det._wvPinAnchor;
+            assert.isOk(S && S.view && S.view.el, "the anchor keeps the box at the top edge");
+            // Strings and booleans, not elements: with a XUL popup as the actual value the failure printed no line in
+            // the runner's log (four pre-fix runs, 2026-11-28; cause not found -- an element alone prints).
+            assert.strictEqual(pathOf(S.view.el.closest(POP)), "", "the anchor's box is no popup: " + pathOf(S.view.el) + " " + geo);
+            const el = atEdge(det);
+            assert.isOk(el, "a box at the top edge");
+            assert.strictEqual(pathOf(el.closest(POP)), "", "the test's box is no popup either: " + pathOf(el));
+            assert.isTrue(S.view.el === el, "the anchor holds the box the test measures: " + pathOf(S.view.el) + " / " + pathOf(el));
+            const d = await drag(LIB, det, el, 480);
+            assert.isAtMost(Math.abs(d.end), TOL(), pathOf(el) + " where it was after the drag: " + JSON.stringify(d));
+            assert.isAtMost(Math.abs(d.worst), TOL(), "and in every painted frame: " + JSON.stringify(d));
+        }
+        finally {
+            try { if (pop && pop.state !== "closed") pop.hidePopup(); } catch (e) {}
+        }
     });
 
     it("a reader tab's item pane, Related pinned: held across a drag of its splitter, still armed", async function () {

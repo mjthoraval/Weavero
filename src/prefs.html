@@ -185,7 +185,12 @@
     display: flex; flex-direction: row; flex-wrap: wrap;
     align-items: center; margin: 2px 0 4px;
   }
-  .wv-anntypes-row checkbox { flex: 0 0 33%; margin: 0; }
+  /* A long label takes the room it needs, the next box moves down (fr "Annotations manuscrites" wrapped
+     in its third, l10n-fit audit 2026-11-26). */
+  .wv-anntypes-row checkbox { flex: 1 0 auto; min-width: 33%; margin: 0; }
+  /* The collections funnel's default: the libraries it leaves out, and their Reset. */
+  .wv-cf-def-libs-row { display: flex; flex-direction: row; align-items: center; gap: 8px; margin: 2px 0 4px; }
+  .wv-cf-def-libs-row .wv-desc { margin: 0; }
   /* "Where a bookmarked collection appears": the description and the three
      choices sit indented under their title, so they read as one group
      (MJT 2026-09-25). */
@@ -375,6 +380,26 @@
     border-color: rgba(127, 127, 127, 0.75);
   }
   .wv-links { margin: 4px 0 0; }
+  /* Backups (prefs/index.ts bindBackups). Every element the script shows and
+     hides goes by `hidden`: a display rule here keeps its [hidden] twin. */
+  .wv-bk-warn { color: #b3261e; opacity: 1; }
+  @media (prefers-color-scheme: dark) { .wv-bk-warn { color: #ff8a80; } }
+  .wv-bk-btns { gap: 6px; flex-wrap: wrap; margin: 4px 0 4px; margin-inline-start: 24px; }
+  .wv-bk-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .wv-bk-panel {
+    margin: 6px 0 4px;
+    margin-inline-start: 24px;
+    padding: 8px 10px;
+    border: 1px solid rgba(127, 127, 127, 0.35);
+    border-radius: 5px;
+  }
+  .wv-bk-head { margin: 0 0 6px; user-select: text; -moz-user-select: text; }
+  .wv-bk-list { display: block; width: 100%; box-sizing: border-box; font: inherit; }
+  .wv-bk-list[hidden] { display: none; }
+  .wv-bk-opts { gap: 12px; margin-top: 6px; }
+  .wv-bk-preview { margin: 6px 0 0; padding-inline-start: 18px; user-select: text; -moz-user-select: text; }
+  .wv-bk-preview:empty { display: none; }
+  #wv-bk-status:empty { display: none; }
 </html:style>
 
   <html:div class="wv-nav" no-highlight="true">
@@ -382,7 +407,10 @@
     <html:button type="button" class="wv-nav-tab" data-target="wv-sec-filters"><html:span data-l10n-id="weavero-pref-nav-filters"/></html:button>
     <html:button type="button" class="wv-nav-tab" data-target="wv-sec-bookmarks"><html:span data-l10n-id="weavero-pref-nav-bookmarks"/></html:button>
     <html:button type="button" class="wv-nav-tab" data-target="wv-sec-tabswindows"><html:span data-l10n-id="weavero-pref-nav-tabs"/></html:button>
+    <html:button type="button" class="wv-nav-tab" data-target="wv-sec-feeds"><html:span data-l10n-id="weavero-pref-nav-feeds"/></html:button>
+    <html:button type="button" class="wv-nav-tab" data-target="wv-sec-people"><html:span data-l10n-id="weavero-pref-nav-people"/></html:button>
     <html:button type="button" class="wv-nav-tab" data-target="wv-sec-extras"><html:span data-l10n-id="weavero-pref-nav-extras"/></html:button>
+    <html:button type="button" class="wv-nav-tab" data-target="wv-sec-backups"><html:span data-l10n-id="weavero-pref-nav-backups"/></html:button>
   </html:div>
 
   <html:p class="wv-desc" style="margin-inline-start:0" data-l10n-id="weavero-pref-intro"/>
@@ -577,6 +605,61 @@
       <html:p class="wv-desc" data-l10n-id="weavero-pref-relations-children-scope-desc"/>
   </vbox>
   <vbox class="wv-block wv-subblock" data-gated-by="enableLinksAndRelations enableRelations" data-wv-in="links relations">
+      <checkbox data-l10n-id="weavero-pref-relations-references" native="true"
+        preference="extensions.zotero.weavero.enableReferences"/>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-relations-references-desc"/>
+  </vbox>
+  <vbox class="wv-block wv-subblock" data-gated-by="enableLinksAndRelations enableRelations enableReferences" data-wv-in="links relations">
+    <vbox class="wv-dep">
+      <checkbox data-l10n-id="weavero-pref-relations-references-marks" native="true"
+        preference="extensions.zotero.weavero.referencesBibliographyMarks"/>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-relations-references-marks-desc"/>
+    </vbox>
+  </vbox>
+  <vbox class="wv-block wv-subblock" data-gated-by="enableLinksAndRelations enableRelations enableReferences" data-wv-in="links relations">
+    <vbox class="wv-dep">
+      <checkbox data-l10n-id="weavero-pref-relations-references-section" native="true"
+        preference="extensions.zotero.weavero.referencesSection"/>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-relations-references-section-desc"/>
+    </vbox>
+  </vbox>
+  <vbox class="wv-block wv-subblock" data-gated-by="enableLinksAndRelations enableRelations enableReferences" data-wv-in="links relations">
+    <vbox class="wv-dep">
+      <checkbox data-l10n-id="weavero-pref-relations-references-citedby" native="true"
+        preference="extensions.zotero.weavero.referencesCitedBy"/>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-relations-references-citedby-desc"/>
+    </vbox>
+  </vbox>
+  <!-- Build Zotero's structure data for all PDFs (modules/sdt-build.ts, citations M5):
+       no `preference=`, since turning it on first shows the costs (prefs/index.ts
+       bindSdtBuild); hidden where Zotero has no Zotero.SDT.ensure. -->
+  <vbox id="wv-sdt-build-block" class="wv-block wv-subblock" data-gated-by="enableLinksAndRelations enableRelations enableReferences" data-wv-in="links relations">
+    <vbox class="wv-dep">
+      <checkbox id="wv-sdt-build" data-l10n-id="weavero-pref-relations-references-sdt-build" native="true"/>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-relations-references-sdt-build-desc"/>
+      <html:p id="wv-sdt-build-status" class="wv-desc" data-l10n-id="weavero-sdt-build-status-start" hidden="true"/>
+      <hbox id="wv-sdt-build-btns" align="center" hidden="true">
+        <html:button type="button" id="wv-sdt-build-pause" data-l10n-id="weavero-sdt-build-pause"/>
+        <html:button type="button" id="wv-sdt-build-stop" data-l10n-id="weavero-sdt-build-stop"/>
+      </hbox>
+    </vbox>
+  </vbox>
+  <!-- Remove Built Data (modules/sdt-build.ts, MJT 2026-11-24): what the built data
+       takes, measured when the pane opens, and a button that asks, then removes it
+       (prefs/index.ts bindSdtClean). Its own search block (rules/prefs-html.md), right
+       after the build option; shown where the build option is not (Zotero without
+       Zotero.SDT.ensure): the Cited by index is built there too. -->
+  <vbox id="wv-sdt-clean-block" class="wv-block wv-subblock" data-gated-by="enableLinksAndRelations enableRelations enableReferences" data-wv-in="links relations">
+    <vbox class="wv-dep">
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-relations-references-sdt-clean-desc"/>
+      <html:p id="wv-sdt-clean-size" class="wv-desc" data-l10n-id="weavero-sdt-clean-measuring" hidden="true"/>
+      <hbox align="center">
+        <html:button type="button" id="wv-sdt-clean" data-l10n-id="weavero-sdt-clean-button"/>
+      </hbox>
+      <html:p id="wv-sdt-clean-result" class="wv-desc" data-l10n-id="weavero-sdt-clean-measuring" hidden="true"/>
+    </vbox>
+  </vbox>
+  <vbox class="wv-block wv-subblock" data-gated-by="enableLinksAndRelations enableRelations" data-wv-in="links relations">
       <checkbox data-l10n-id="weavero-pref-relations-open-related" native="true"
         preference="extensions.zotero.weavero.enableOpenRelatedSubmenu"/>
       <html:p class="wv-desc" data-l10n-id="weavero-pref-relations-open-related-desc"/>
@@ -725,6 +808,11 @@
       <html:p class="wv-desc" data-l10n-id="weavero-pref-tabs-split-footer-desc"/>
   </vbox>
   <vbox class="wv-block" data-gated-by="enableTabsAndWindows" data-wv-in="tabs">
+      <checkbox data-l10n-id="weavero-pref-tabs-library-pin-name" native="true"
+        preference="extensions.zotero.weavero.pinnedLibraryTabName"/>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-tabs-library-pin-name-desc"/>
+  </vbox>
+  <vbox class="wv-block" data-gated-by="enableTabsAndWindows" data-wv-in="tabs">
       <checkbox data-l10n-id="weavero-pref-tabs-sessions" native="true"
         preference="extensions.zotero.weavero.enableTabSessions"/>
       <html:p class="wv-desc" data-l10n-id="weavero-pref-tabs-sessions-desc"/>
@@ -740,6 +828,11 @@
         preference="extensions.zotero.weavero.separateTaskbarButtons"/>
       <html:p class="wv-desc" data-l10n-id="weavero-pref-tabs-taskbar-buttons-desc" data-wv-native-l10n="weavero-pref-tabs-taskbar-buttons-desc-native"/>
       <html:p class="wv-desc wv-platform-note" hidden="true" data-l10n-id="weavero-pref-tabs-windows-only"/>
+  </vbox>
+  <vbox class="wv-block" data-gated-by="enableTabsAndWindows" data-wv-in="tabs">
+      <checkbox data-l10n-id="weavero-pref-tabs-progress-window" native="true"
+        preference="extensions.zotero.weavero.progressWindowButtons"/>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-tabs-progress-window-desc"/>
   </vbox>
   <vbox class="wv-block" data-gated-by="enableTabsAndWindows" data-wv-in="tabs">
       <checkbox data-l10n-id="weavero-pref-tabs-title-glyphs" native="true"
@@ -822,6 +915,118 @@
       preference="extensions.zotero.weavero.readerItemPane"/>
     <html:p class="wv-desc" data-l10n-id="weavero-pref-reader-pane-desc"/>
   </groupbox>
+
+  <!-- ============================ Feeds (modules/feeds.ts). The lists live in
+       <data dir>/weavero/feeds/settings.json, not in prefs: prefs.js binds
+       the text areas through the plugin (_wvFdSettingsGet / _wvFdSettingsSet). -->
+  <groupbox id="wv-sec-feeds" class="wv-top wv-head" data-wv-head="feeds">
+    <html:div class="wv-tophead">
+      <html:h2 data-l10n-id="weavero-pref-feeds-title"/>
+      <checkbox data-l10n-id="weavero-pref-feeds-enable" native="true"
+        preference="extensions.zotero.weavero.enableFeeds"/>
+    </html:div>
+    <html:div class="wv-master-card">
+      <html:p class="wv-master-desc" data-l10n-id="weavero-pref-feeds-desc"/>
+    </html:div>
+  </groupbox>
+  <vbox class="wv-block" data-gated-by="enableFeeds" data-wv-in="feeds">
+      <label><html:h3 data-l10n-id="weavero-pref-feeds-names-title"/></label>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-feeds-names-desc"/>
+      <html:textarea id="wv-fd-names" class="wv-fd-list" rows="2" spellcheck="false" style="width: 100%; box-sizing: border-box; font: inherit; min-height: 2.6em;"/>
+      <html:div id="wv-fd-names-count" class="wv-desc"/>
+  </vbox>
+  <vbox class="wv-block" data-gated-by="enableFeeds" data-wv-in="feeds">
+      <label><html:h3 data-l10n-id="weavero-pref-feeds-followed-title"/></label>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-feeds-followed-desc"/>
+      <html:textarea id="wv-fd-followed" class="wv-fd-list" rows="4" spellcheck="false" style="width: 100%; box-sizing: border-box; font: inherit; min-height: 4.6em;"/>
+  </vbox>
+  <vbox class="wv-block" data-gated-by="enableFeeds" data-wv-in="feeds">
+      <label><html:h3 data-l10n-id="weavero-pref-feeds-alerts-title"/></label>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-feeds-alerts-desc"/>
+      <html:textarea id="wv-fd-alerts" class="wv-fd-list" rows="3" spellcheck="false" style="width: 100%; box-sizing: border-box; font: inherit; min-height: 3.6em;"/>
+  </vbox>
+  <vbox class="wv-block" data-gated-by="enableFeeds" data-wv-in="feeds">
+      <checkbox data-l10n-id="weavero-pref-feeds-journals" native="true"
+        preference="extensions.zotero.weavero.feedsJournals"/>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-feeds-journals-desc"/>
+  </vbox>
+  <vbox class="wv-block" data-gated-by="enableFeeds" data-wv-in="feeds">
+      <label><html:h3 data-l10n-id="weavero-pref-feeds-watched-title"/></label>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-feeds-watched-desc"/>
+      <html:textarea id="wv-fd-watched" class="wv-fd-list" rows="2" spellcheck="false" style="width: 100%; box-sizing: border-box; font: inherit; min-height: 2.6em;"/>
+  </vbox>
+  <vbox class="wv-block" data-gated-by="enableFeeds" data-wv-in="feeds">
+      <label><html:h3 data-l10n-id="weavero-pref-feeds-cited-title"/></label>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-feeds-cited-desc"/>
+      <html:textarea id="wv-fd-cited" class="wv-fd-list" rows="2" spellcheck="false" style="width: 100%; box-sizing: border-box; font: inherit; min-height: 2.6em;"/>
+  </vbox>
+  <vbox class="wv-block wv-block-end" data-gated-by="enableFeeds" data-wv-in="feeds">
+      <label><html:h3 data-l10n-id="weavero-pref-feeds-export-title"/></label>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-feeds-export-desc"/>
+      <hbox align="center" style="gap: 6px;">
+        <html:button type="button" id="wv-fd-export" class="wv-fd-btn" data-l10n-id="weavero-pref-feeds-export"/>
+        <html:button type="button" id="wv-fd-export-as" class="wv-fd-btn" data-l10n-id="weavero-pref-feeds-export-as"/>
+        <html:button type="button" id="wv-fd-import" class="wv-fd-btn" data-l10n-id="weavero-pref-feeds-import"/>
+      </hbox>
+      <html:div id="wv-fd-status" class="wv-desc"/>
+  </vbox>
+
+  <!-- ============================ Researchers (modules/people.ts; shown as
+       "Researchers" since 2026-11-23, internal names stay "people"). The
+       records are in weavero/people.json, never in a library, not prefs. -->
+  <groupbox id="wv-sec-people" class="wv-top wv-head" data-wv-head="people">
+    <html:div class="wv-tophead">
+      <html:h2 data-l10n-id="weavero-pref-people-title"/>
+      <checkbox data-l10n-id="weavero-pref-people-enable" native="true"
+        preference="extensions.zotero.weavero.enablePeople"/>
+    </html:div>
+    <html:div class="wv-master-card">
+      <html:p class="wv-master-desc" data-l10n-id="weavero-pref-people-desc"/>
+    </html:div>
+  </groupbox>
+  <!-- The Researchers button in the collections pane's toolbar (people-toolbar.ts,
+       MJT 2026-11-27); its right-click hides it, this box brings it back. -->
+  <vbox class="wv-block" data-gated-by="enablePeople" data-wv-in="people">
+      <checkbox data-l10n-id="weavero-pref-people-toolbar-button" native="true"
+        preference="extensions.zotero.weavero.peopleToolbarButton"/>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-people-toolbar-button-desc"/>
+  </vbox>
+  <!-- How each place of the tab writes a researcher's name (people3, MJT
+       2026-11-24: "Last, First" by default everywhere, "offer display options
+       to change them all separately"): weavero.people.names.<place>, bound by
+       prefs/index.ts bindCharRadio. -->
+  <vbox class="wv-block" data-gated-by="enablePeople" data-wv-head="people-names" data-wv-in="people">
+      <label><html:h3 data-l10n-id="weavero-pref-people-names-title"/></label>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-people-names-desc"/>
+  </vbox>
+  <vbox class="wv-block" data-gated-by="enablePeople" data-wv-in="people people-names">
+      <label data-l10n-id="weavero-pref-people-names-list"/>
+      <radiogroup id="wv-pp-names-list" orient="horizontal" class="wv-mode-row">
+        <radio data-l10n-id="weavero-pref-people-names-last" value="last"/>
+        <radio data-l10n-id="weavero-pref-people-names-first" value="first"/>
+      </radiogroup>
+  </vbox>
+  <vbox class="wv-block" data-gated-by="enablePeople" data-wv-in="people people-names">
+      <label data-l10n-id="weavero-pref-people-names-heading"/>
+      <radiogroup id="wv-pp-names-title" orient="horizontal" class="wv-mode-row">
+        <radio data-l10n-id="weavero-pref-people-names-last" value="last"/>
+        <radio data-l10n-id="weavero-pref-people-names-first" value="first"/>
+      </radiogroup>
+  </vbox>
+  <vbox class="wv-block" data-gated-by="enablePeople" data-wv-in="people people-names">
+      <label data-l10n-id="weavero-pref-people-names-links"/>
+      <radiogroup id="wv-pp-names-links" orient="horizontal" class="wv-mode-row">
+        <radio data-l10n-id="weavero-pref-people-names-last" value="last"/>
+        <radio data-l10n-id="weavero-pref-people-names-first" value="first"/>
+      </radiogroup>
+  </vbox>
+  <vbox class="wv-block wv-block-end" data-gated-by="enablePeople" data-wv-in="people people-names">
+      <label data-l10n-id="weavero-pref-people-names-tree"/>
+      <radiogroup id="wv-pp-names-tree" orient="horizontal" class="wv-mode-row">
+        <radio data-l10n-id="weavero-pref-people-names-last" value="last"/>
+        <radio data-l10n-id="weavero-pref-people-names-first" value="first"/>
+      </radiogroup>
+  </vbox>
 
   <!-- ============================ Visual extras -->
   <groupbox id="wv-sec-extras" class="wv-top wv-head" data-wv-head="extras">
@@ -937,6 +1142,59 @@
         <html:label><html:span data-l10n-id="weavero-pref-collections-sticky-lead"/>&#160;<html:input id="wv-coll-sticky-max" type="number" min="1" max="10" step="1" style="width:4em"/>&#160;<html:span id="wv-coll-sticky-unit" data-l10n-id="weavero-pref-collections-sticky-unit" data-l10n-args='{"count":7}'/></html:label>
       </html:div>
       <html:p class="wv-desc" data-l10n-id="weavero-pref-collections-sticky-parents-desc"/>
+  </vbox>
+  <!-- Folders for saved searches, kept by Weavero (search-folders.ts, 2026-11-27): a trial,
+       on in pre-release builds (prefs-table.ts devOnly). -->
+  <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-in="extras x-collections">
+      <checkbox data-l10n-id="weavero-pref-collections-search-folders" native="true"
+        preference="extensions.zotero.weavero.collectionsSearchFolders"/>
+      <vbox class="wv-dep" data-gated-by="collectionsSearchFolders">
+        <checkbox data-l10n-id="weavero-pref-collections-search-folders-names" native="true"
+          preference="extensions.zotero.weavero.collectionsSearchFoldersNames"/>
+      </vbox>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-collections-search-folders-desc"/>
+  </vbox>
+  <!-- The Bookmarks pane above the collections tree (bookmarks-pane.ts, 2026-11-27): a trial,
+       on in pre-release builds (prefs-table.ts devOnly); it shows the library bookmarks, so
+       their switches grey it too. -->
+  <vbox class="wv-block" data-gated-by="enableVisualExtras enableLibraryBookmarks enableBookmarks" data-wv-in="extras x-collections">
+      <checkbox data-l10n-id="weavero-pref-collections-bookmarks-pane" native="true"
+        preference="extensions.zotero.weavero.collectionsBookmarksPane"/>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-collections-bookmarks-pane-desc"/>
+  </vbox>
+  <!-- The funnel above the collections pane (coll-funnel.ts, 2026-11-27): a trial, on in
+       pre-release builds (prefs-table.ts devOnly). Its default under it: the "Shown by default"
+       boxes and the libraries it leaves out, in step with the funnel's Use as Default; a
+       section's box is greyed with its own trial too. -->
+  <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-in="extras x-collections">
+      <checkbox data-l10n-id="weavero-pref-collections-funnel" native="true"
+        preference="extensions.zotero.weavero.collectionsFunnel"/>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-collections-funnel-desc"/>
+  </vbox>
+  <vbox class="wv-block" data-gated-by="enableVisualExtras collectionsFunnel" data-wv-in="extras x-collections">
+      <vbox class="wv-dep">
+        <html:div class="wv-show-row">
+          <html:span class="wv-show-label" data-l10n-id="weavero-pref-collfunnel-defaults-title"/>
+          <checkbox data-l10n-id="weavero-pref-collfunnel-show-collections" native="true"
+            preference="extensions.zotero.weavero.collFunnelShowCollections"/>
+          <checkbox data-l10n-id="weavero-pref-collfunnel-show-searches" native="true"
+            preference="extensions.zotero.weavero.collFunnelShowSearches"/>
+          <checkbox data-l10n-id="weavero-pref-collfunnel-show-feeds" native="true"
+            preference="extensions.zotero.weavero.collFunnelShowFeeds"/>
+          <checkbox data-l10n-id="weavero-pref-collfunnel-show-special" native="true"
+            preference="extensions.zotero.weavero.collFunnelShowSpecial"/>
+          <checkbox data-l10n-id="weavero-pref-collfunnel-show-bookmarks" native="true"
+            data-gated-by="collectionsBookmarksPane enableLibraryBookmarks enableBookmarks"
+            preference="extensions.zotero.weavero.collFunnelShowBookmarks"/>
+          <checkbox data-l10n-id="weavero-pref-collfunnel-show-folders" native="true"
+            data-gated-by="collectionsSearchFolders"
+            preference="extensions.zotero.weavero.collFunnelShowFolders"/>
+        </html:div>
+        <html:div class="wv-cf-def-libs-row">
+          <html:span id="wv-cf-def-libs" class="wv-desc"/>
+          <html:button type="button" id="wv-cf-def-libs-reset" data-l10n-id="weavero-pref-collfunnel-libs-reset"/>
+        </html:div>
+      </vbox>
   </vbox>
   <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-in="extras x-collections">
       <checkbox data-l10n-id="weavero-pref-collections-sticky-headers" native="true"
@@ -1075,16 +1333,26 @@
       preference="extensions.zotero.weavero.noteOutline"/>
     <html:p class="wv-desc" data-l10n-id="weavero-pref-notes-outline-desc"/>
   </vbox>
-  <vbox class="wv-block wv-block-end" data-gated-by="enableVisualExtras enableLinksAndRelations enableNotes" data-wv-in="extras notenav">
+  <vbox class="wv-block" data-gated-by="enableVisualExtras enableLinksAndRelations enableNotes" data-wv-in="extras notenav">
     <checkbox data-l10n-id="weavero-pref-notes-folding" native="true"
       preference="extensions.zotero.weavero.noteFolding"/>
     <html:p class="wv-desc" data-l10n-id="weavero-pref-notes-folding-desc"/>
+  </vbox>
+  <vbox class="wv-block wv-block-end" data-gated-by="enableVisualExtras enableLinksAndRelations enableNotes" data-wv-in="extras notenav">
+    <checkbox data-l10n-id="weavero-pref-notes-citations" native="true"
+      preference="extensions.zotero.weavero.noteLinkCitations"/>
+    <html:p class="wv-desc" data-l10n-id="weavero-pref-notes-citations-desc"><html:code data-l10n-name="scheme"/></html:p>
   </vbox>
 
   <!-- ============================ Reader annotations pane -->
   <groupbox class="wv-subsec wv-head" data-gated-by="enableVisualExtras" data-wv-head="annpane" data-wv-in="extras">
     <label><html:h2 data-l10n-id="weavero-pref-annpane-title"/></label>
   </groupbox>
+  <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-in="extras annpane">
+    <checkbox data-l10n-id="weavero-pref-annpane-reader-funnel" native="true"
+      preference="extensions.zotero.weavero.enableReaderAnnFilter"/>
+    <html:p class="wv-desc" data-l10n-id="weavero-pref-annpane-reader-funnel-desc"/>
+  </vbox>
   <vbox class="wv-block" data-gated-by="enableVisualExtras" data-wv-in="extras annpane">
     <checkbox data-l10n-id="weavero-pref-annpane-funnel" native="true"
       preference="extensions.zotero.weavero.enableAnnPaneFilter"/>
@@ -1114,6 +1382,68 @@
           preference="extensions.zotero.weavero.annListShowText"/>
       </html:div>
     </vbox>
+  </vbox>
+
+  <!-- ============================ Backups (modules/backups.ts, lib/backup.ts;
+       branch backups, MJT 2026-11-22). No master switch: Back Up Now, Restore,
+       Export and Import work whatever "Back up automatically" says, so the
+       blocks name their section in data-wv-in, which the collapse follows
+       (prefs/index.ts bindCollapse). The script fills where / last / status and
+       the Restore panel (bindBackups); a restore or an import waits for the
+       next start (the module comment says why). -->
+  <groupbox id="wv-sec-backups" class="wv-top wv-head" data-wv-head="backups">
+    <html:div class="wv-tophead">
+      <html:h2 data-l10n-id="weavero-pref-backups-title"/>
+    </html:div>
+    <html:div class="wv-master-card">
+      <html:p class="wv-master-desc" data-l10n-id="weavero-pref-backups-desc"/>
+    </html:div>
+  </groupbox>
+  <vbox class="wv-block" data-wv-in="backups">
+      <checkbox data-l10n-id="weavero-pref-backups-auto" native="true"
+        preference="extensions.zotero.weavero.backup.auto"/>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-backups-auto-desc"/>
+  </vbox>
+  <vbox class="wv-block" data-gated-by="backup.auto" data-wv-in="backups">
+      <html:div class="wv-dep">
+        <html:label><html:span data-l10n-id="weavero-pref-backups-keep-lead"/>&#160;<html:input id="wv-bk-keep" type="number" min="1" max="60" step="1" style="width:4em"/>&#160;<html:span id="wv-bk-keep-unit" data-l10n-id="weavero-pref-backups-keep-unit" data-l10n-args='{"count":7}'/></html:label>
+      </html:div>
+      <html:p class="wv-desc" data-l10n-id="weavero-pref-backups-keep-desc"/>
+  </vbox>
+  <vbox id="wv-bk-block" class="wv-block wv-block-end" data-wv-in="backups">
+      <label><html:h3 data-l10n-id="weavero-pref-backups-actions-title"/></label>
+      <html:div id="wv-bk-where" class="wv-desc wv-bk-line"/>
+      <html:div id="wv-bk-last" class="wv-desc wv-bk-line"/>
+      <html:div id="wv-bk-error" class="wv-desc wv-bk-line wv-bk-warn" hidden="true"/>
+      <html:div id="wv-bk-restored" class="wv-desc wv-bk-line" hidden="true"/>
+      <hbox align="center" class="wv-bk-btns">
+        <html:button type="button" id="wv-bk-now" data-l10n-id="weavero-pref-backups-now"/>
+        <html:button type="button" id="wv-bk-restore" data-l10n-id="weavero-pref-backups-restore"/>
+        <html:button type="button" id="wv-bk-export" data-l10n-id="weavero-pref-backups-export"/>
+        <html:button type="button" id="wv-bk-import" data-l10n-id="weavero-pref-backups-import"/>
+        <html:button type="button" id="wv-bk-open" data-l10n-id="weavero-pref-backups-open"/>
+      </hbox>
+      <html:div id="wv-bk-status" class="wv-desc wv-bk-line" role="status"/>
+      <html:div id="wv-bk-pending" class="wv-note" hidden="true">
+        <html:div id="wv-bk-pending-text"/>
+        <html:div class="wv-bk-row">
+          <html:button type="button" id="wv-bk-pending-restart" data-l10n-id="weavero-pref-backups-pending-restart"/>
+          <html:button type="button" id="wv-bk-pending-cancel" data-l10n-id="weavero-pref-backups-pending-cancel"/>
+        </html:div>
+      </html:div>
+      <html:div id="wv-bk-panel" class="wv-bk-panel" hidden="true">
+        <html:div id="wv-bk-panel-head" class="wv-bk-head"/>
+        <html:select id="wv-bk-list" class="wv-bk-list" size="6"/>
+        <hbox align="center" class="wv-bk-opts">
+          <checkbox id="wv-bk-opt-data" data-l10n-id="weavero-pref-backups-opt-data" checked="true"/>
+          <checkbox id="wv-bk-opt-settings" data-l10n-id="weavero-pref-backups-opt-settings" checked="true"/>
+        </hbox>
+        <html:ul id="wv-bk-preview" class="wv-bk-preview"/>
+        <html:div class="wv-bk-row">
+          <html:button type="button" id="wv-bk-go" data-l10n-id="weavero-pref-backups-go-restore"/>
+          <html:button type="button" id="wv-bk-cancel" data-l10n-id="weavero-pref-backups-cancel"/>
+        </html:div>
+      </html:div>
   </vbox>
 
   <!-- ============================ Debug (collapsible, very bottom) -->

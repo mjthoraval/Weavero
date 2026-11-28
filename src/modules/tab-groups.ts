@@ -35,8 +35,9 @@ import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from 
  *  (Zotero's `.tab` nodes + the pinned mirrors, Zotero_Tabs for the active
  *  tab and the order) or the reader window's deck strip (`.wv-window-tab`
  *  nodes, `win._wvWT` for both). The selection lives in `win[key]`, a Set
- *  of string tab IDs; `groupable` keeps the library tab out of the main
- *  window's selection. */
+ *  of string tab IDs; `groupable` keeps Zotero 9/10's fixed library tab out
+ *  of the main window's selection (on Zotero 11 a library tab is a tab like
+ *  any other, `wvIsFixedLibraryTab`). */
 interface WvTabSelModel {
     key: string;
     hit(p: any, e: any): { el: any; id: string } | null;
@@ -87,7 +88,7 @@ const WV_TABSEL_READER: WvTabSelModel = {
 };
 
 /** A tab surface for the group operations: the main window's bar (Zotero_Tabs,
- *  the library tab first, positions settled through Zotero_Tabs.move, the
+ *  Zotero 9/10's fixed library tab first, positions settled through Zotero_Tabs.move, the
  *  pinned-first and other-group rules) or the reader window's deck
  *  (`win._wvWT.tabs`, reordered in place, then re-rendered and persisted). */
 interface WvTabSurface {
@@ -115,8 +116,8 @@ const WV_SURFACE_MAIN: WvTabSurface = {
     find: (win, id) => { const Z = win && win.Zotero_Tabs; return (Z && Z._tabs && Z._tabs.find((t: any) => t && t.id === id)) || null; },
     groupable: (t) => !!t && !wvIsFixedLibraryTab(t.id),
     elements: (win) => Array.from(win.document.querySelectorAll("#tab-bar-container .tab[data-id]"), (el: any) => ({ id: el.getAttribute("data-id"), rect: () => el.getBoundingClientRect() })),
-    // Never before the library tab, never before a pinned tab, never inside
-    // another group's run.
+    // Never before Zotero 9/10's fixed library tab, never before a pinned tab,
+    // never inside another group's run.
     clampSlot: (p, win, nonMembers, slot) => p._wvTabGroupSlotSnap(win, nonMembers, Math.max(p._wvTabGroupMinSlot(win, nonMembers), slot)),
     // Settle each id at its exact index, left to right.
     reorder: (p, win, desired) => {
@@ -509,17 +510,27 @@ class _TabGroupsMixin {
             const on = !!(this as any)._getSelectedTabRing();
             // The group colours differ per theme (nova's AND the classic ones):
             // re-render chips and lines when the theme flips. One listener per
-            // window, calling the LIVE plugin (it survives reloads; a stale
-            // instance does nothing).
+            // window and INSTANCE, calling the live plugin, taken off by
+            // destroy (_wvTabGroupWinObserversOff). "One listener for the
+            // window's life" kept the first instance's function on the media
+            // query across every reload and disable: under zotero#6080 each
+            // theme change then called a dead object, and the next instance,
+            // finding the handle, never wired its own (2026-11-22). A handle of
+            // another instance (an older build has no teardown) is replaced.
+            // Guard: test/zz-stale-instance-calls.spec.js.
             try {
                 const win: any = doc.defaultView;
+                const tag = (this as any)._wvWireTag();
+                let mine = false;
+                try { mine = !!(win && win._wvThemeMQ && win._wvThemeMQ.tag === tag); } catch (e) {}
+                if (win && win._wvThemeMQ !== undefined && !mine) this._wvTabGroupWinObserversOff(win, "theme");
                 if (win && win.matchMedia && !win._wvThemeMQ) {
                     const mq = win.matchMedia("(prefers-color-scheme: dark)");
                     const fn = () => {
                         try { const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; if (p && !p._wvDestroyed) p._wvTabGroupApplyEverywhere(); } catch (e) {}
                     };
                     mq.addEventListener("change", fn);
-                    win._wvThemeMQ = { mq, fn };
+                    win._wvThemeMQ = { mq, fn, tag };
                 }
             } catch (e) {}
             // Narrow tabs: close buttons only on the selected tab (Firefox).
@@ -563,6 +574,9 @@ class _TabGroupsMixin {
                 // pinned" drag preview; never the UNPIN preview, which
                 // restores full width (tabs.ts, 1,4,0) -- hence the :not().
                 MIR + " { width: 28px; }",
+                // A pinned library tab with its name (tabs.ts, pinnedLibraryTabName,
+                // which sets its paddings): a pill as wide as its title.
+                MIR + "[data-wv-named] { width: auto; max-width: 200px; }",
                 // A mirror dragged OUT of the pinned region grows into a tab
                 // (the unpin preview; tabs.ts gives it the base widths): the
                 // nova paddings, the title 5.5px from the icon.
@@ -640,10 +654,13 @@ class _TabGroupsMixin {
                 // end (margin-inline-end: -padding/2). Zotero: 16px, 3px
                 // corners, 6px in. The title's end padding grows 22 -> 23px so
                 // it never runs under the bigger button.
-                // :not(:first-child): Zotero hides the LIBRARY tab's close with
-                // `.tab:first-child .tab-close { display: none }` -- a bare
-                // `.tab .tab-close { display: flex }` here out-ranked it and
-                // gave My Library an x (dev.6, caught in the screenshot).
+                // :not(:first-child): Zotero 10 hides its fixed LIBRARY tab's
+                // close with `.tab:first-child .tab-close { display: none }`
+                // (zotero.css 10.0.8) -- a bare `.tab .tab-close { display: flex }`
+                // here out-ranked it and gave My Library an x (dev.6, caught in
+                // the screenshot). Zotero 11 hides the close of any tab that
+                // can't be closed (`.tab:not(.closable) .tab-close`,
+                // _tabBar.scss), and its first tab can be any tab.
                 "#tab-bar-container .tab:not(:first-child) .tab-close,",
                 ".wv-window-tabs .wv-window-tab .wv-window-tab-close {",
                 "  width: 20px; height: 20px; inset-inline-end: 3px; border-radius: 50%;",
@@ -833,8 +850,14 @@ class _TabGroupsMixin {
         if (!win || win._wvCloseBtnPending) return;
         const doc = win.document;
         // Tab widths also change on a plain window resize (no mutation):
-        // one ResizeObserver per window, calling the LIVE plugin.
+        // one ResizeObserver per window and instance, calling the live plugin,
+        // disconnected by destroy (_wvTabGroupWinObserversOff; the same
+        // reload / zotero#6080 story as the theme listener above). One of
+        // another instance is replaced.
         try {
+            let mine = false;
+            try { mine = !!(win._wvCloseBtnRO && win._wvCloseBtnRO._wvTag === (this as any)._wvWireTag()); } catch (e) {}
+            if (win._wvCloseBtnRO && !mine) this._wvTabGroupWinObserversOff(win, "closeButtons");
             if (!win._wvCloseBtnRO && win.ResizeObserver) {
                 const ro = new win.ResizeObserver(() => {
                     try { const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; if (p && !p._wvDestroyed) p._wvScheduleCloseButtons(win); } catch (e) {}
@@ -843,7 +866,8 @@ class _TabGroupsMixin {
                 const t2 = doc.querySelector(".wv-window-tabs");
                 if (t1) ro.observe(t1);
                 if (t2) ro.observe(t2);
-                if (t1 || t2) win._wvCloseBtnRO = ro;
+                if (t1 || t2) { ro._wvTag = (this as any)._wvWireTag(); win._wvCloseBtnRO = ro; }
+                else { try { ro.disconnect(); } catch (e) {} }
             }
         } catch (e) {}
         win._wvCloseBtnPending = true;
@@ -2157,8 +2181,6 @@ class _TabGroupsMixin {
             // Another window: Zotero's own move there, which keeps a loaded
             // reader's document (zotero#6035). Within a window, as ever.
             if (wvNativeWindows() && tgtWin && tgtWin !== srcWin) {
-                // A tab Zotero won't move (a library tab it holds pinned) stays:
-                // moveToWindow recreates it there, then fails to close it here.
                 const t0 = srcWin.Zotero_Tabs && srcWin.Zotero_Tabs._tabs.find((x: any) => x && x.id === tabId);
                 // Since b08cc35a50 a pinned tab stays in its window (moveToWindow
                 // returns null for it): no move, nothing to file.
@@ -2434,10 +2456,10 @@ class _TabGroupsMixin {
             const nwSep = doc.createXULElement("menuseparator");
             place(nwSep);
             const row = this._wvNewWindowIconRow(doc, dark, [
-                { main: false, grp: false, tip: "Move to New Reader Window", fn: () => onPick({ newReaderWindow: true }) },
-                ...(groupsEnabled ? [{ main: false, grp: true, tip: "Move to a New Group in a New Reader Window", fn: () => onPick({ newReaderWindow: true, newGroup: true }) }] : []),
-                { main: true, grp: false, tip: "Move to New Main Window", fn: () => onPick({ newMainWindow: true }), gapBefore: true },
-                ...(groupsEnabled ? [{ main: true, grp: true, tip: "Move to a New Group in a New Main Window", fn: () => onPick({ newMainWindow: true, newGroup: true }) }] : []),
+                { main: false, grp: false, tip: wvStr("weavero-tabgroup-move-new-reader-window"), fn: () => onPick({ newReaderWindow: true }) },
+                ...(groupsEnabled ? [{ main: false, grp: true, tip: wvStr("weavero-tabgroup-move-new-group-reader-window"), fn: () => onPick({ newReaderWindow: true, newGroup: true }) }] : []),
+                { main: true, grp: false, tip: wvStr("weavero-tabgroup-move-new-main-window"), fn: () => onPick({ newMainWindow: true }), gapBefore: true },
+                ...(groupsEnabled ? [{ main: true, grp: true, tip: wvStr("weavero-tabgroup-move-new-group-main-window"), fn: () => onPick({ newMainWindow: true, newGroup: true }) }] : []),
             ]);
             place(row); added++;
         } catch (e) { Zotero.debug("[Weavero] _wvBuildMoveTargetsInto err: " + e); }
@@ -4060,7 +4082,8 @@ class _TabGroupsMixin {
      *  Move Tabs, a move-elsewhere menu; grouping happens in place) and the
      *  reader deck's "New Group". Adding tabs to an EXISTING group stays in Move
      *  Tabs, deliberately: this always means "make a new group out of these".
-     *  The library tab is never grouped. */
+     *  Zotero 9/10's fixed library tab is never grouped (on Zotero 11 a library
+     *  tab groups like any tab, `wvIsFixedLibraryTab`). */
     _wvTabGroupNewFromTabsOn(win: any, tabIDs: any[], s: WvTabSurface) {
         try {
             if (!win || !s.tabs(win) || !tabIDs || !tabIDs.length) return;
@@ -4131,7 +4154,7 @@ class _TabGroupsMixin {
 
 
     /** The minimum allowed insertion slot for a group within `nonMembers`:
-     *  after the library tab AND after every pinned tab — groups can't sit
+     *  after Zotero 9/10's fixed library tab AND after every pinned tab — groups can't sit
      *  before pinned tabs (Firefox rule; pins cluster at the left edge). */
     _wvTabGroupMinSlot(win: any, nonMembers: string[]) {
         // Past an older Zotero's fixed library tab (nonMembers[0]); from the far
@@ -4883,7 +4906,7 @@ class _TabGroupsMixin {
                 chip.style.setProperty("--wv-group-text", this._tabGroupTextHex(g && g.color));
                 const label = wvHtmlEl(doc, "span");
                 label.className = "wv-tgchip-label";
-                label.textContent = (g && g.name) || "Group";
+                label.textContent = (g && g.name) || wvStr("weavero-tabgroup-unnamed-short");
                 chip.appendChild(label);
                 ghost.appendChild(chip);
                 // Member titles (the tabs that would migrate, in source order).
@@ -5577,7 +5600,7 @@ class _TabGroupsMixin {
     async _wvTabGroupMoveToNewMainWindow(win: any, groupID: any) {
         try {
             if (!(this as any)._wvMultiMainOn()) return;   // Multiple main windows off
-            const s = (this as any)._wvSpawnMainWindowStart({ tabs: [{ type: "library", title: "My Library", data: { icon: "library" }, selected: true }] });
+            const s = (this as any)._wvSpawnMainWindowStart({ tabs: [{ type: "library", title: Zotero.getString("pane.collections.library"), data: { icon: "library" }, selected: true }] });
             if (!s) return;
             const newWin = await (this as any)._wvSpawnMainWindowWait(s, { wait: "init", timerWin: win });
             if (!newWin) return;   // spawn failed -- group untouched
@@ -5815,11 +5838,11 @@ class _TabGroupsMixin {
             // Brand-new-window targets as the shared icon-only row (a group
             // moves as itself, so no "+ New Group" variants here).
             subPop.appendChild(this._wvNewWindowIconRow(doc, dark, [
-                { main: false, grp: false, tip: "New Reader Window", fn: () => {
+                { main: false, grp: false, tip: wvStr("weavero-tabgroup-new-reader-window"), fn: () => {
                     try { closeFn(); } catch (er) {}
                     const p: any = live(); if (p) p._wvTabGroupMoveToNewWindow(win, groupID);
                 } },
-                { main: true, grp: false, tip: "New Main Window", gapBefore: true, fn: () => {
+                { main: true, grp: false, tip: wvStr("weavero-tabgroup-new-main-window"), gapBefore: true, fn: () => {
                     try { closeFn(); } catch (er) {}
                     const p: any = live(); if (p) p._wvTabGroupMoveToNewMainWindow(win, groupID);
                 } },
@@ -5908,9 +5931,9 @@ class _TabGroupsMixin {
             if (!g) return;
             const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
             (this as any)._wvShowRenameDialog(win, {
-                title: "Rename Tab Group",
+                title: wvStr("weavero-tabgroup-rename-title"),
                 name: g.name || "",
-                placeholder: "Group name",
+                placeholder: wvStr("weavero-tabgroup-rename-placeholder"),
                 swatches: WV_GROUP_COLORS.map((c: any) => ({
                     // the colour the chip will show (nova's with Firefox-style tabs)
                     hex: this._tabGroupColorHex(c.id), selected: c.id === g.color, radius: "4px",
@@ -6022,7 +6045,7 @@ class _TabGroupsMixin {
                     chip.style.background = this._tabGroupColorHex(g.color);
                     header.appendChild(chip);
                     const name = wvHtmlEl(doc, "span");
-                    name.textContent = g.name || "Unnamed group";
+                    name.textContent = g.name || wvStr("weavero-tabgroup-unnamed");
                     header.appendChild(name);
                     // Open-member count, like the library headers' counts.
                     const count = wvHtmlEl(doc, "span");
@@ -6097,7 +6120,7 @@ class _TabGroupsMixin {
             try { (this as any)._wvEnsureSavedWindowStyles(doc); } catch (e) {}
             const header = wvHtmlEl(doc, "div");
             header.className = "wv-tgmenu-header";
-            header.textContent = "Saved Tab Groups";
+            header.textContent = wvStr("weavero-tabgroup-saved-header");
             list.appendChild(header);
             const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
             const sections: any[] = [];
@@ -6135,7 +6158,7 @@ class _TabGroupsMixin {
                     // kind:"main" only satisfies the shared renderer;
                     // iconType:"none" suppresses its window glyph — a
                     // group isn't a window, the colour dot is its mark.
-                    label: g.name || "Unnamed group", tabs, kind: "main",
+                    label: g.name || wvStr("weavero-tabgroup-unnamed"), tabs, kind: "main",
                     iconType: "none",
                     gid: g.id, hex: this._tabGroupColorHex(g.color),
                 });
@@ -6175,7 +6198,7 @@ class _TabGroupsMixin {
                 hdr.setAttribute("draggable", "true");
                 // ↗ reopens the whole group.
                 const btn = wvHtmlEl(doc, "span", "wv-savedwin-reopen", "↗");
-                btn.setAttribute("title", "Reopen this saved group");
+                btn.setAttribute("title", wvStr("weavero-tabgroup-reopen"));
                 btn.addEventListener("click", (e: any) => {
                     try {
                         e.stopPropagation(); e.preventDefault();
@@ -6291,7 +6314,7 @@ class _TabGroupsMixin {
                 const tdot = wvHtmlEl(doc, "span", "wv-tgmenu-dot");
                 tdot.style.background = hex;
                 titleRow.appendChild(tdot);
-                const tname = wvHtmlEl(doc, "span", undefined, g.name || "Unnamed group", titleRow);
+                const tname = wvHtmlEl(doc, "span", undefined, g.name || wvStr("weavero-tabgroup-unnamed"), titleRow);
                 // Tab count, right-aligned — same figure as the chip badge.
                 const tcount = wvHtmlEl(doc, "span", "wv-tg-preview-count", String(entries.length), titleRow);
                 body.appendChild(titleRow);
@@ -6432,7 +6455,7 @@ class _TabGroupsMixin {
         for (const c of WV_GROUP_COLORS) {
             const sw = wvHtmlEl(doc, "div", "wv-tg-swatch" + (c.id === selected ? " wv-selected" : ""));
             sw.style.background = this._tabGroupColorHex(c.id);   // what the chip will show
-            sw.setAttribute("title", c.id);
+            sw.setAttribute("title", wvStr("weavero-tabgroup-color", { color: c.id }));
             sw.addEventListener("click", () => {
                 try {
                     for (const x of row.querySelectorAll(".wv-tg-swatch")) x.classList.remove("wv-selected");
@@ -6475,7 +6498,7 @@ class _TabGroupsMixin {
             const input = wvHtmlEl(doc, "input");
             input.className = "wv-tg-name-input";
             input.value = g.name || "";
-            input.setAttribute("placeholder", "Example: Literature review");
+            input.setAttribute("placeholder", wvStr("weavero-tabgroup-name-placeholder"));
             input.addEventListener("change", () => {
                 this._tabGroupUpdate(groupID, { name: input.value });
                 this._wvTabGroupApplyEverywhere();
@@ -6596,9 +6619,9 @@ class _TabGroupsMixin {
                 mkSep();
                 const info = wvHtmlEl(doc, "div");
                 info.className = "wv-tg-info wv-tg-footer";
-                info.textContent = (isActive ? "Active" : "Saved")
-                    + " · " + count + " tab" + (count === 1 ? "" : "s")
-                    + (winName ? " · in " + winName : "");
+                info.textContent = wvStr("weavero-tabgroup-status", { state: isActive ? "active" : "saved" })
+                    + " · " + wvStr("weavero-tabs-tab-count", { count })
+                    + (winName ? " · " + wvStr("weavero-tabgroup-home-window", { name: winName }) : "");
                 body.appendChild(info);
             } catch (e) {}
 
@@ -7012,7 +7035,37 @@ class _TabGroupsMixin {
 
     // ---- Teardown ---------------------------------------------------------------
 
+    /** The theme listener and the close-button ResizeObserver of `win` off
+     *  (_wvEnsureSelectedTabRing, _wvScheduleCloseButtons): destroy() for
+     *  every window that has them, main and reader windows alike, or a wiring
+     *  that found another instance's. */
+    _wvTabGroupWinObserversOff(win: any, which?: "theme" | "closeButtons") {
+        if (!win) return;
+        // A handle an older build made in a scope zotero#6080 has nuked is a
+        // dead object: reading it throws, so it goes before anything is read.
+        if (which !== "closeButtons") {
+            try {
+                const h = win._wvThemeMQ;
+                try { delete win._wvThemeMQ; } catch (e) {}
+                if (h && h.mq && h.fn) h.mq.removeEventListener("change", h.fn);
+            } catch (e) {}
+        }
+        if (which !== "theme") {
+            try {
+                const ro = win._wvCloseBtnRO;
+                try { delete win._wvCloseBtnRO; } catch (e) {}
+                if (ro) ro.disconnect();
+            } catch (e) {}
+        }
+    }
+
     _teardownTabGroups() {
+        try {
+            const en = Services.wm.getEnumerator(null);
+            while (en.hasMoreElements()) {
+                try { this._wvTabGroupWinObserversOff(en.getNext()); } catch (e) {}
+            }
+        } catch (e) {}
         try { this._unregisterTabGroupMenus(); } catch (e) {}
         try {
             const wins = wvMainWins();

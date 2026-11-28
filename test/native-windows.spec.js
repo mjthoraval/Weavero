@@ -180,10 +180,15 @@ describe("Weavero — native windows (zotero#6035)", () => {
         });
     });
 
-    // File: Zotero has New Tab and New Window there. Edit: Advanced Search in
-    // New Window stays (the port, MJT 2026-11-07), shown where Zotero has the
-    // route, and the shortcut sits on whichever line Settings gives it.
-    it("File: Weavero's entries stay hidden; Edit: Advanced Search in New Window shows, the shortcut follows the setting", async () => {
+    // File: Zotero has New Tab and New Window there, so Weavero's window entries
+    // stay hidden. File -> Researchers (pane.ts peopleEntry, branch people2) is
+    // no window entry: it shows after Zotero's own New Window whenever People is
+    // on -- this test, written before it, asserted EVERY File entry hidden and
+    // failed on both Zotero 11 and 10 from the People merge on (people4,
+    // 2026-11-24). Edit: Advanced Search in New Window stays (the port, MJT
+    // 2026-11-07), shown where Zotero has the route, and the shortcut sits on
+    // whichever line Settings gives it.
+    it("File: Weavero's window entries stay hidden, Researchers follows its switch; Edit: Advanced Search in New Window shows, the shortcut follows the setting", async () => {
         if (!wv._wvMenubarMenus) wvT.absent("_wvMenubarMenus");
         const doc = win.document;
         const anchor = doc.getElementById("menu_advancedSearch");
@@ -200,7 +205,19 @@ describe("Weavero — native windows (zotero#6035)", () => {
         const remap = Zotero.Prefs.get("weavero.advSearchShortcutNewWindow");
         try {
             await withNative(async () => {
-                for (const m of wv._wvMenubarMenus.file) assert.isFalse(show(m), "File entry shown");
+                const isPeople = (m) => m.l10nID === "weavero-menu-file-people";
+                // New Tab, New Reader Window, New Main Window and their separator.
+                const windowEntries = wv._wvMenubarMenus.file.filter((m) => !isPeople(m));
+                assert.isAtLeast(windowEntries.length, 4, "the window entries");
+                for (const m of windowEntries) assert.isFalse(show(m), "File entry shown: " + (m.l10nID || m.menuType));
+                const people = wv._wvMenubarMenus.file.find(isPeople);
+                assert.ok(people, "File -> Researchers");
+                for (const on of [true, false]) {
+                    await wvT.withPref("weavero.enablePeople", on, async () => {
+                        assert.strictEqual(!!wv._wvPeopleOn(), on, "People " + (on ? "on" : "off"));
+                        assert.strictEqual(show(people), on, "Researchers " + (on ? "shown with People on" : "hidden with People off"));
+                    });
+                }
                 if (!anchor) return;
                 const zp = win.ZoteroPane;
                 const run = async () => {

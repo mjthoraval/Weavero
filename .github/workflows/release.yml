@@ -17,9 +17,18 @@ name: Release
 #      single Ubuntu pass repeated what test.yml had just checked on six
 #      jobs, and cost ~10 minutes).
 #   4. It publishes the release and its XPI but leaves the update
-#      manifests alone (WV_RELEASE_STAGE): nobody is offered it yet. Install
-#      the published XPI, check it, then run flip.yml on the tag to switch
-#      the manifests on (2026-11-03, "stage, then flip").
+#      manifests alone: nobody is offered it yet. Install the published
+#      XPI, check it, then run flip.yml on the tag to switch the manifests
+#      on (2026-11-03, "stage, then flip").
+#
+# Two jobs (2026-11-22). `build` runs every third-party line of the release
+# -- npm's packages, the scaffold, the build -- with a READ-ONLY token, and
+# hands the XPI and the release notes on as an artifact. `publish` holds the
+# write token and runs no code of the repository's or npm's: GitHub's own
+# `gh` creates the release from the artifact, as the scaffold's release
+# command did (a draft, the XPI uploaded, then published; a pre-release when
+# the version has a "-"). Its environment, `release`, is where a required
+# reviewer goes (repository settings).
 
 on:
   workflow_dispatch:
@@ -28,39 +37,56 @@ on:
         description: "Tag to publish (e.g. v0.8.0)"
         required: true
 
-permissions:
-  contents: write     # create the release + upload assets
-  issues: write       # for release-comment notifications
-  pull-requests: write
-  actions: read       # read test.yml's result for the tag's commit
+# Nothing unless a job asks for it.
+permissions: {}
 
 # Same Node 24 opt-in as test.yml — see comment there.
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  release:
-    name: Build, test, publish
+  build:
+    name: Build and check (read-only)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read       # read test.yml's result for the tag's commit
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
+      # The input reaches a shell only through the environment, checked.
+      - name: Check the tag's form
+        env:
+          TAG: ${{ github.event.inputs.tag }}
+        shell: bash
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::Not a version tag: $TAG"
+            exit 1
+          fi
+
       - uses: actions/checkout@v7
         with:
           # Need the full history so the changelog generator can
           # walk back to the previous tag.
           fetch-depth: 0
-          # Optional manual-trigger path — check out the tag the
-          # user picked from the Actions UI.
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: refs/tags/${{ github.event.inputs.tag }}
+          # No token left on disk for the steps after this one.
+          persist-credentials: false
 
       - uses: actions/setup-node@v7
         with:
           node-version: lts/*
           cache: npm
 
+      # No install script of any package runs: esbuild and @swc/core load
+      # their platform binaries from their optional dependencies, which npm
+      # installs anyway; the scripts only verify them (es5-ext's prints a
+      # message, fsevents is macOS-only).
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       # The scaffold's update check off: a rate-limited answer crashes the
       # CLI before the build (ci/prepare.mjs).
@@ -70,38 +96,105 @@ jobs:
       - name: Type-check (regression gate)
         run: npm run typecheck
 
-      # The gate: test.yml green on this exact commit (its push run, any
-      # attempt -- a rerun of a flaky job counts). No suite run here.
+      # The gate: test.yml green on this exact commit, from a PUSH to main
+      # (any attempt -- a rerun of a flaky job counts). A pull request's run
+      # does not count: it runs the pull request's own copy of test.yml.
       - name: Require a green Test run on this commit
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           sha="$(git rev-parse HEAD)"
-          result="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow test.yml --commit "$sha" --limit 20 \
+          result="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow test.yml --commit "$sha" --event push --branch main --limit 20 \
             --json conclusion,status --jq '[.[] | select(.status == "completed") | .conclusion] | if index("success") then "success" else (.[0] // "none") end')"
           echo "test.yml on $sha: $result"
           if [ "$result" != "success" ]; then
-            echo "::error::test.yml has no green run on $sha (got: $result). Push main, wait for Test to pass, then run this workflow."
+            echo "::error::test.yml has no green push run on main for $sha (got: $result). Push main, wait for Test to pass, then run this workflow."
             exit 1
           fi
+
+      - name: The tag names package.json's version
+        id: version
+        shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          v="$(node -p "require('./package.json').version")"
+          if [ "v$v" != "$TAG" ]; then
+            echo "::error::package.json says $v, the tag is $TAG"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Build XPI
         run: npm run build
 
-      - name: Publish release
-        # Scaffold's release command, when run in CI with a
-        # GITHUB_TOKEN, creates the GitHub release tagged with
-        # the current `package.json` version, uploads the .xpi
-        # from `.scaffold/build/`, and updates the rolling
-        # `release` tag's `update.json`.
-        run: npm run release
+      # The release notes the scaffold's release command wrote: its
+      # changelog of the commits since the previous tag (changelogen's
+      # convention-based groups -- see zotero-plugin.config.ts).
+      - name: Release notes
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Tell the scaffold to skip its interactive bump prompt
-          # — the tag has already determined the version.
-          NODE_ENV: production
-          CI: "true"
-          # Stage only: the release and its XPI, not the update manifests
-          # (zotero-plugin.config.ts); flip.yml switches them on afterwards.
-          WV_RELEASE_STAGE: "1"
+          NOTES: ${{ github.workspace }}/release-out/notes.md
+        run: |
+          mkdir -p release-out
+          node --input-type=module -e '
+            import { Config, Release } from "zotero-plugin-scaffold";
+            import { writeFileSync } from "node:fs";
+            const ctx = await Config.loadConfig();
+            const b = ctx.release.bumpp;
+            b.tag = String(b.tag).replaceAll("%s", ctx.version);
+            b.commit = String(b.commit).replaceAll("%s", ctx.version);
+            writeFileSync(process.env.NOTES, String(await new Release(ctx).getChangelog() || ""));
+          '
+          cp .scaffold/build/weavero.xpi release-out/weavero.xpi
+          ls -la release-out
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-out
+          path: release-out
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish the release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # A required reviewer goes on this environment (repository settings).
+    environment: release
+    permissions:
+      contents: write     # create the release + upload the XPI
+
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: release-out
+          path: ${{ runner.temp }}/release-out
+
+      # No checkout, no npm: only gh, with the files the build job made.
+      - name: Publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag }}
+          VERSION: ${{ needs.build.outputs.version }}
+          OUT: ${{ runner.temp }}/release-out
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || [ "v$VERSION" != "$TAG" ]; then
+            echo "::error::Tag $TAG and version $VERSION do not agree"
+            exit 1
+          fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qx weavero.xpi; then
+              echo "::warning::Release $TAG already holds weavero.xpi: nothing uploaded"
+            else
+              gh release upload "$TAG" "$OUT/weavero.xpi" --repo "$GITHUB_REPOSITORY"
+            fi
+            exit 0
+          fi
+          kind=(--latest)
+          case "$VERSION" in *-*) kind=(--prerelease) ;; esac
+          gh release create "$TAG" "$OUT/weavero.xpi" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "Release v$VERSION" --notes-file "$OUT/notes.md" "${kind[@]}"

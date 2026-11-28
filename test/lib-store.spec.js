@@ -74,6 +74,34 @@ describe("Weavero — lib/store: one writer, three read answers", () => {
         try { await IOUtils.remove(r.movedTo); } catch (_) {}
     });
 
+    // Cited by's entries store (citations.1, work/citations-log-2026-11-21.md M1):
+    // one compressed file a PDF, as Firefox's session store writes its .jsonlz4.
+    it("a compressed document (mozlz4) reads back with decompress; a file that is not one, or cut short, is a parse error", async () => {
+        await lib.wvStoreChain(path);
+        const doc = { v: 1, x: Array.from({ length: 200 }, (_, i) => "Adams, J. 2016 Drop impact on a heated plate, part " + i + ". J. Test Mech. 812, 101-120.") };
+        await lib.wvStoreWrite(path, doc, { pretty: null, compress: true });
+        const bytes = await IOUtils.read(path);
+        assert.strictEqual(String.fromCharCode(...bytes.slice(0, 8)), "mozLz40\0", "mozlz4's magic number");
+        assert.isBelow(bytes.length, JSON.stringify(doc).length / 2, "compressed (" + bytes.length + " of " + JSON.stringify(doc).length + " bytes)");
+        const r = await lib.wvStoreRead(path, { decompress: true });
+        assert.strictEqual(r.status, "ok");
+        assert.deepEqual(r.doc, doc, "the same document back");
+        assert.isFalse(await IOUtils.exists(path + ".tmp"), "atomic: no temp file left");
+        // Not mozlz4 (another program's, a plain JSON file): its bytes read, it does not decompress.
+        await IOUtils.writeUTF8(path, JSON.stringify(doc), { tmpPath: path + ".tmp" });
+        const plain = await lib.wvStoreRead(path, { decompress: true, onParseError: "keep" });
+        assert.strictEqual(plain.status, "parse-error", "not mozlz4: " + plain.status);
+        assert.isTrue(await IOUtils.exists(path), "'keep' leaves it");
+        // Cut short (a write the system lost half of).
+        await lib.wvStoreWrite(path, doc, { pretty: null, compress: true });
+        await IOUtils.write(path, bytes.slice(0, Math.floor(bytes.length / 2)));
+        const cut = await lib.wvStoreRead(path, { decompress: true });
+        assert.strictEqual(cut.status, "parse-error", "cut short: " + cut.status);
+        assert.isOk(cut.movedTo, "moved aside by default");
+        assert.isFalse(await IOUtils.exists(path));
+        try { await IOUtils.remove(cut.movedTo); } catch (_) {}
+    });
+
     it("an unreadable file is KEPT and reported as io-error (after one retry)", async function () {
         this.timeout(10000);
         await lib.wvStoreWrite(path, { keep: "me" });

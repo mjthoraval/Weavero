@@ -23,43 +23,46 @@ import { wvCloneFor } from "../lib/xray";
 import { wvL10n, wvStr } from "../lib/l10n";
 import { wvIsRunnableFile, wvHasNoExtension, wvIsProgramHeader } from "../lib/open-guard";
 
+// What each scheme opens is said by the Settings pane's tooltips, weavero.ftl's
+// weavero-pref-links-scheme-<name> (the table held English `desc` texts nothing
+// read until the l10n branch, 2026-11-19).
 export const URL_SCHEMES = [
     // ---- Tier 1: bare-colon schemes (name:) -------------------------------
     { name: "magnet",   pref: "enableMagnetScheme",   sep: ":",
-      label: "magnet:",     desc: "Torrent magnet links" },
+      label: "magnet:", },
     { name: "mailto",   pref: "enableMailtoScheme",   sep: ":",
-      label: "mailto:",     desc: "Email addresses" },
+      label: "mailto:", },
     { name: "skype",    pref: "enableSkypeScheme",    sep: ":",
-      label: "skype:",      desc: "Skype calls / chats" },
+      label: "skype:", },
     { name: "sms",      pref: "enableSmsScheme",      sep: ":",
-      label: "sms:",        desc: "SMS messages" },
+      label: "sms:", },
     { name: "spotify",  pref: "enableSpotifyScheme",  sep: ":",
-      label: "spotify:",    desc: "Spotify tracks / playlists" },
+      label: "spotify:", },
     { name: "tel",      pref: "enableTelScheme",      sep: ":",
-      label: "tel:",        desc: "Phone numbers" },
+      label: "tel:", },
     // ---- Tier 2: slash schemes (name://) ----------------------------------
     { name: "discord",  pref: "enableDiscordScheme",  sep: "://",
-      label: "discord://",  desc: "Discord servers" },
+      label: "discord://", },
     { name: "evernote", pref: "enableEvernoteScheme", sep: "://",
-      label: "evernote://", desc: "Evernote notes" },
+      label: "evernote://", },
     { name: "figma",    pref: "enableFigmaScheme",    sep: "://",
-      label: "figma://",    desc: "Figma files" },
+      label: "figma://", },
     { name: "file",     pref: "enableFileScheme",     sep: "://",
-      label: "file://",     desc: "Local files" },
+      label: "file://", },
     { name: "ftp",      pref: "enableFtpScheme",      sep: "://",
-      label: "ftp://",      desc: "FTP servers" },
+      label: "ftp://", },
     { name: "msteams",  pref: "enableMsteamsScheme",  sep: "://",
-      label: "msteams://",  desc: "Microsoft Teams" },
+      label: "msteams://", },
     { name: "notion",   pref: "enableNotionScheme",   sep: "://",
-      label: "notion://",   desc: "Notion pages" },
+      label: "notion://", },
     { name: "obsidian", pref: "enableObsidianScheme", sep: "://",
-      label: "obsidian://", desc: "Obsidian notes" },
+      label: "obsidian://", },
     { name: "slack",    pref: "enableSlackScheme",    sep: "://",
-      label: "slack://",    desc: "Slack channels" },
+      label: "slack://", },
     { name: "vscode",   pref: "enableVscodeScheme",   sep: "://",
-      label: "vscode://",   desc: "VS Code workspaces / files" },
+      label: "vscode://", },
     { name: "zoommtg",  pref: "enableZoomScheme",     sep: "://",
-      label: "zoommtg://",  desc: "Zoom meetings" },
+      label: "zoommtg://", },
 ];
 
 // Better BibTeX export-translator IDs (stable, registered by the BBT plugin).
@@ -398,11 +401,16 @@ export const urlMethods = {
      *  review 2026-11-22). A file Zotero's own reader shows opens. A file the
      *  system would run (lib/open-guard.ts, or off Windows a program by its
      *  bit and content: `_wvRunsAsProgram`) is never opened from there: it is
-     *  refused with a notice. Any other file -- one Zotero cannot show, or shows only through
-     *  an external viewer the user set -- opens in another application only
-     *  after the user confirms, the real file name in front of them. Anything
-     *  that is not a stored file is not this check's. */
-    async _wvMayOpenAttachment(att: any, win?: any): Promise<boolean> {
+     *  refused with a notice. Any other file -- one Zotero cannot show, or
+     *  shows only through an external viewer the user set -- opens in another
+     *  application only after the user confirms, the real file name in front
+     *  of them. Anything that is not a stored file is not this check's.
+     *  `askExternal: false` opens that other file with no question, as Zotero's
+     *  own double-click does (zoteroPane.js viewAttachment): ONLY for a row that
+     *  names the attachment itself -- the reference menu's rows of a cited item's
+     *  files (MJT 2026-11-24, "Open, no question"). A program is refused all the
+     *  same. */
+    async _wvMayOpenAttachment(att: any, win?: any, opts?: { askExternal?: boolean }): Promise<boolean> {
         try {
             if (!att || !att.isAttachment || !att.isAttachment()) return true;
             if (!this._isOpenableFileAttachment(att)) return true;
@@ -419,6 +427,7 @@ export const urlMethods = {
                 return false;
             }
             if (type) return true;   // the external viewer the user chose for this type
+            if (opts && opts.askExternal === false) return true;
             return !!(this as any)._wvAskOpenExternal(win, name);
         } catch (e) {
             Zotero.debug("[Weavero] _wvMayOpenAttachment err: " + e);

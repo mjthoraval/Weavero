@@ -365,13 +365,13 @@ class _CountPopupsMixin {
     }
 
     _wvCountTitle(kind: WvCountKind, n: number, win?: any): string {
-        const pl = n === 1 ? "" : "s";
-        if (kind === "tags-manual") return n + (this._wvCountTagsSplit(win) ? " Manual Tag" : " Tag") + pl;
-        if (kind === "tags-auto") return n + " Automatic Tag" + pl;
-        if (kind === "backlinks") return n + " Backlink" + pl;
-        if (kind === "links") return n + " Item Link" + pl;   // the section's and column's name (2026-10-30)
-        if (kind === "extlinks") return n + " External Link" + pl;
-        return n + " Related";
+        const args = { count: n };
+        if (kind === "tags-manual") return wvStr(this._wvCountTagsSplit(win) ? "weavero-count-title-manual-tags" : "weavero-count-title-tags", args);
+        if (kind === "tags-auto") return wvStr("weavero-count-title-auto-tags", args);
+        if (kind === "backlinks") return wvStr("weavero-count-title-backlinks", args);
+        if (kind === "links") return wvStr("weavero-count-title-item-links", args);   // the section's and column's name (2026-10-30)
+        if (kind === "extlinks") return wvStr("weavero-count-title-ext-links", args);
+        return wvStr("weavero-count-related", args);
     }
 
     /** Zotero's icon for an item in a popup row (annotations by type and
@@ -435,10 +435,10 @@ class _CountPopupsMixin {
      *  whose text the file pushed out of view. */
     _wvCountSourceLabel(src: any, item: any): string {
         try {
-            if (src.id === item.id) return "This item";
-            if (src.isAnnotation && src.isAnnotation()) return src.getDisplayTitle() || "Annotation";
-            if (src.isNote && src.isNote()) return src.getNoteTitle() || "Note";
-            return src.getDisplayTitle() || "(untitled)";
+            if (src.id === item.id) return wvStr("weavero-count-this-item");
+            if (src.isAnnotation && src.isAnnotation()) return src.getDisplayTitle() || Zotero.ItemTypes.getLocalizedString("annotation");
+            if (src.isNote && src.isNote()) return src.getNoteTitle() || Zotero.ItemTypes.getLocalizedString("note");
+            return src.getDisplayTitle() || wvStr("weavero-common-untitled");
         }
         catch (e) { return ""; }
     }
@@ -450,7 +450,7 @@ class _CountPopupsMixin {
     _wvCountHeadChip(doc: any, head: any, src: any, item: any): string {
         try {
             if (!src || !src.isAnnotation || !src.isAnnotation() || (item && src.id === item.id)) return "";
-            const file = wvBlAttFile(src), pl = src.annotationPageLabel ? "p. " + src.annotationPageLabel : "";
+            const file = wvBlAttFile(src), pl = src.annotationPageLabel ? wvStr("weavero-count-page", { page: String(src.annotationPageLabel) }) : "";
             if (!file && !pl) return "";
             const chip = wvHtmlEl(doc, "span", "wv-count-group-chip", undefined, head);
             if (file) wvHtmlEl(doc, "span", "wv-count-group-file", file, chip);
@@ -553,6 +553,9 @@ class _CountPopupsMixin {
             // The library's assigned tag colours (name -> { color, position }).
             let tagColors: any = null;
             try { if (kind !== "related") tagColors = Zotero.Tags.getColors(item.libraryID); } catch (e) { tagColors = null; }
+            // Once per popup, not per row.
+            const untitled = wvStr("weavero-common-untitled");
+            const tagTip = (kind === "tags-manual" || kind === "tags-auto") ? wvStr("weavero-count-tag-filter-tip") : "";
             for (const g of groups) {
                 const box = wvHtmlEl(doc, "div", "wv-count-group", undefined, list);
                 if (!flat) {
@@ -572,7 +575,7 @@ class _CountPopupsMixin {
                     row.setAttribute("tabindex", "0");
                     if (kind === "related") {
                         row.appendChild(this._wvCountItemIcon(doc, win, ent));
-                        let t = "(untitled)";
+                        let t = untitled;
                         try { t = ent.getDisplayTitle() || t; } catch (e) {}
                         wvHtmlEl(doc, "span", "wv-rel-title", t, row);
                         // Both ends with their lineage on a rest or keyboard
@@ -631,7 +634,7 @@ class _CountPopupsMixin {
                         row.appendChild(this._wvCountTagIcon(doc, ent, tagColors));
                         const label = wvHtmlEl(doc, "span", "wv-rel-title", String(ent.tag), row);
                         if (tagColors && tagColors.get(String(ent.tag))) label.style.fontWeight = "600";
-                        row.title = "Filter the list by this tag";
+                        row.title = tagTip;
                         const activate = (e: any) => {
                             try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
                             close();
@@ -642,7 +645,7 @@ class _CountPopupsMixin {
                     }
                 }
             }
-            if (!total) wvHtmlEl(doc, "div", "wv-rel-empty", "Nothing here any more.", list);
+            if (!total) wvHtmlEl(doc, "div", "wv-rel-empty", wvStr("weavero-count-empty"), list);
         }
         panel.appendChild(container);
 

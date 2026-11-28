@@ -312,6 +312,14 @@ export const WV_PREF_OBSERVERS: WvPrefObserver[] = [
         },
     },
     {
+        // A pinned library tab's name (tabs.ts _wvSyncPinnedMirrors): the pins
+        // drawn again in every window.
+        keys: ["extensions.zotero.weavero.pinnedLibraryTabName"],
+        run(p: any) {
+            try { for (const w of Zotero.getMainWindows()) p._applyPinnedTabs(w); } catch (e) {}
+        },
+    },
+    {
         keys: ["extensions.zotero.weavero.enableTabGroups", "extensions.zotero.weavero.enableTabsAndWindows"],
         run(p: any, data: string) {
             // Tab groups — re-apply (self-gates; strips when off).
@@ -1087,6 +1095,21 @@ export const WV_PREF_OBSERVERS: WvPrefObserver[] = [
                 || data === "extensions.zotero.weavero.noteFolding"
                 || data === "extensions.zotero.weavero.enableVisualExtras") {
                 try { p._wvNoteNavRefreshAll(); } catch (e) {}
+            }
+        },
+    },
+    // The default attachment's options (attachments.ts, 1.2.1-defpane.1):
+    // the cached default / automatic pair goes (the master switch gates the
+    // default) and every item pane's Attachments and Notes sections redraw.
+    {
+        keys: ["extensions.zotero.weavero.enableDefaultChild", "extensions.zotero.weavero.defattMarkAuto",
+            "extensions.zotero.weavero.defattSortFirstDefault", "extensions.zotero.weavero.defattSortFirstAuto"],
+        run(p: any, data: string) {
+            if (data === "extensions.zotero.weavero.enableDefaultChild"
+                || data === "extensions.zotero.weavero.defattMarkAuto"
+                || data === "extensions.zotero.weavero.defattSortFirstDefault"
+                || data === "extensions.zotero.weavero.defattSortFirstAuto") {
+                try { p._wvDefattPrefChanged(); } catch (e) {}
             }
         },
     },

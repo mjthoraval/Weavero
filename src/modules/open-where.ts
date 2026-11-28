@@ -35,7 +35,9 @@ import { wvOpenWhere, wvAccel, WvOpenWhere } from "../lib/keys";
 import { winOf, wvIsTextEntry } from "../lib/dom";
 import { wvLivePlugin } from "../lib/live";
 import { wvListen } from "../lib/listen";
-import { wvIsLibraryTabID, wvItemsTreeEls } from "../lib/windows";
+import { wvIsLibraryTabID, wvItemsTreeEls, wvMainWins, wvNativeWindows } from "../lib/windows";
+import { wvL10n } from "../lib/l10n";
+import { wvSleep } from "../lib/timers";
 
 declare const Zotero: any;
 
@@ -63,6 +65,11 @@ function readerAtt(a: any): boolean {
 function external(a: any): boolean {
     try { return !!Zotero.Prefs.get("fileHandler." + a.attachmentReaderType); } catch (e) { return false; }
 }
+/** The items list's Open entries for several items (weavero.ftl). */
+const OPEN_SEVERAL_L10N = "weavero-menu-items-open-several";
+const OPEN_SEVERAL_ID = "wv-itemmenu-open-one-window";
+/** The kinds with a word of their own in that message; else attachment / item. */
+const OPEN_SEVERAL_KINDS = ["pdf", "epub", "snapshot", "note"];
 
 class _OpenWhereMixin {
     /** The open event `e` asks for (lib/keys.ts wvOpenWhere): "here", "beside",
@@ -496,6 +503,372 @@ class _OpenWhereMixin {
             const zp = win && win.ZoteroPane;
             if (zp && typeof zp.viewItems === "function") await zp.viewItems(items);
         } catch (e) { Zotero.debug("[Weavero] _wvOpenItemsBeside err: " + e); }
+    }
+
+    // ---- Several items at once: One New Window (MJT 2026-11-24) --------------
+    // "When I select multiple items, I have the option to open in tabs, or in a
+    // new window. But they all open in separate windows. I think that there
+    // should be an option to open them all in a single new window."
+    // Guard: test/open-several.spec.js.
+
+    /** What one selected item opens, as Zotero's "Open … in New Tab / New
+     *  Window" open it (locateMenu.js ViewItem `_getFirstUsableItem`): a note
+     *  itself; an attachment the reader shows (not a linked URL); for a regular
+     *  item the first such attachment of `getBestAttachments()` -- Weavero's
+     *  default attachment first (attachments.ts hoists it there), then Zotero's
+     *  order (item.js: PDFs, the parent's URL, the oldest). Synchronous, as the
+     *  menu labels itself while it opens; the items list's rows have their
+     *  children loaded. Null for anything else: an annotation, an item with no
+     *  such file. */
+    _wvOpenSeveralUsable(item: any): any {
+        const P: any = this;
+        try {
+            if (!item) return null;
+            if (item.isNote && item.isNote()) return item;
+            if (item.isAttachment && item.isAttachment()) return readerAtt(item) ? item : null;
+            if (!(item.isRegularItem && item.isRegularItem())) return null;
+            const cands: any[] = [];
+            try {
+                const best = P._wvGetBestAttachmentSync && P._wvGetBestAttachmentSync(item);
+                if (best) cands.push(best);
+            } catch (e) {}
+            const url = String((item.getField && item.getField("url")) || "");
+            const atts: any[] = [];
+            for (const id of (item.getAttachments() || [])) {
+                const a: any = Zotero.Items.get(id);
+                if (a && !a.deleted && a.attachmentLinkMode !== Zotero.Attachments.LINK_MODE_LINKED_URL) atts.push(a);
+            }
+            const key = (a: any) => ({
+                pdf: a.attachmentContentType === "application/pdf" ? 0 : 1,
+                url: (url && a.getField("url") === url) ? 0 : 1,
+                added: String(a.dateAdded || ""),
+            });
+            atts.sort((x: any, y: any) => {
+                const a = key(x), b = key(y);
+                if (a.pdf !== b.pdf) return a.pdf - b.pdf;
+                if (a.url !== b.url) return a.url - b.url;
+                return a.added < b.added ? -1 : (a.added > b.added ? 1 : 0);
+            });
+            for (const a of cands.concat(atts)) if (readerAtt(a)) return a;
+            return null;
+        } catch (e) { return null; }
+    }
+
+    /** What `items` open together: in selection order, each document or note
+     *  once (`_wvOpenSeveralUsable`), a note only where the library can be
+     *  edited (zoteroPane.js viewItems skips notes otherwise). `kind` names
+     *  them as Zotero's own label does (item-menu-viewAttachment): pdf, epub,
+     *  snapshot or note when all are of one kind, attachment for documents of
+     *  several kinds, item when notes and documents mix. `external`: one of
+     *  them opens in another application (Settings > General, "Open PDFs
+     *  using"), where no tab can show it. */
+    _wvOpenSeveralPlan(win: any, items: any[]): { entries: Array<{ item: any; type: string }>; kind: string; external: boolean } {
+        const entries: Array<{ item: any; type: string }> = [];
+        let ext = false;
+        let notesOK = true;
+        try {
+            const cv = win && win.ZoteroPane && win.ZoteroPane.collectionsView;
+            if (cv && cv.editable === false) notesOK = false;
+        } catch (e) {}
+        const seen = new Set<number>();
+        for (const it of (items || [])) {
+            const u = this._wvOpenSeveralUsable(it);
+            if (!u || seen.has(u.id)) continue;
+            const isNote = !!(u.isNote && u.isNote());
+            if (isNote && !notesOK) continue;
+            seen.add(u.id);
+            if (!isNote && external(u)) ext = true;
+            entries.push({ item: u, type: isNote ? "note" : String(u.attachmentReaderType || "") });
+        }
+        const types = new Set(entries.map((e) => e.type));
+        let kind = "item";
+        if (types.size === 1) kind = OPEN_SEVERAL_KINDS.includes(entries[0].type) ? entries[0].type : "attachment";
+        else if (types.size > 1) kind = types.has("note") ? "item" : "attachment";
+        return { entries, kind, external: ext };
+    }
+
+    /** One New Window can open: in Zotero's own windows (zotero#6035) with
+     *  Tabs and Windows on, else in Weavero's (Multiple main windows). */
+    _wvOpenSeveralWindowOK(): boolean {
+        const P: any = this;
+        try { return wvNativeWindows() ? !!P._getTabsAndWindowsMaster() : !!P._wvMultiMainOn(); }
+        catch (e) { return false; }
+    }
+
+    /** The items list's Open entries for SEVERAL items. Zotero builds "Open
+     *  PDFs in New Tab" and "Open PDFs in New Window" (locateMenu.js ViewItem:
+     *  `item-menu-viewAttachment`, args openIn "tab" / "window", marked
+     *  `zotero-locate`) afresh at the top of the menu at every opening. Where
+     *  two or more things open, Weavero relabels both for that opening, "Open 3
+     *  PDFs in New Tabs" and "Open 3 PDFs in Separate Windows" (marked
+     *  `data-wv-open-several`; their commands stay Zotero's), and puts its own
+     *  "Open 3 PDFs in One New Window" just before the window one. Nothing for
+     *  one item, for a selection of which one thing opens, when another
+     *  application opens some of it, or when no new window can open
+     *  (`_wvOpenSeveralWindowOK`): Zotero's entries stay as Zotero wrote them,
+     *  as they are again at the next opening without Weavero.
+     *  Built by hand, not through MenuManager: MenuManager puts a plugin's
+     *  entries at the END of this menu after its group separator, and one moved
+     *  up here would leave that separator dangling at the bottom of every items
+     *  menu. Ours carries `zotero-locate` too, so Zotero's own clean-up
+     *  (buildItemContextMenu removes the top `zotero-locate` entries before it
+     *  addresses the rest BY INDEX) takes it if popuphidden never came;
+     *  popuphidden removes it (pane.ts _setupItemsMenuForWindow). */
+    _wvOpenSeveralItemsMenu(doc: any, menu: any, selected: any[], win: any) {
+        try {
+            const old = doc.getElementById(OPEN_SEVERAL_ID);
+            if (old) old.remove();
+            if (!menu || !selected || selected.length < 2 || !this._wvOpenSeveralWindowOK()) return;
+            const plan = this._wvOpenSeveralPlan(win, selected);
+            if (plan.external || plan.entries.length < 2) return;
+            const count = plan.entries.length, kind = plan.kind;
+            const ids = selected.map((it: any) => it && it.id).filter((x: any) => x != null);
+            let mi: any = null;
+            const place = () => {
+                try {
+                    let tabs: any = null, wins: any = null;
+                    for (const x of Array.from(menu.children) as any[]) {
+                        if (x.localName !== "menuitem") continue;
+                        let where = x.getAttribute("data-wv-open-several");
+                        if (!where && x.getAttribute("data-l10n-id") === "item-menu-viewAttachment") {
+                            try {
+                                const a = JSON.parse(x.getAttribute("data-l10n-args") || "{}");
+                                where = a.openIn === "tab" ? "tabs" : (a.openIn === "window" ? "windows" : null);
+                            } catch (e) {}
+                        }
+                        if (where === "tabs" && !tabs) tabs = x;
+                        else if (where === "windows" && !wins) wins = x;
+                    }
+                    if (!tabs || !wins || tabs.hidden || wins.hidden) return;
+                    for (const [el, where] of [[tabs, "tabs"], [wins, "windows"]] as any[]) {
+                        const args = { count, kind, where };
+                        el.setAttribute("data-wv-open-several", where);
+                        if (el.getAttribute("data-l10n-id") !== OPEN_SEVERAL_L10N
+                                || el.getAttribute("data-l10n-args") !== JSON.stringify(args)) {
+                            wvL10n(el, OPEN_SEVERAL_L10N, args);
+                        }
+                    }
+                    if (!mi) {
+                        mi = doc.createXULElement("menuitem");
+                        mi.id = OPEN_SEVERAL_ID;
+                        mi.setAttribute("zotero-locate", "true");
+                        wvL10n(mi, OPEN_SEVERAL_L10N, { count, kind, where: "window" });
+                        mi.addEventListener("command", () => {
+                            try {
+                                const lp: any = wvLivePlugin();
+                                if (!lp) return;
+                                const items = ids.map((id: any) => Zotero.Items.get(id)).filter(Boolean);
+                                lp._wvOpenSeveralInOneWindow(win, items)
+                                    .catch((e: any) => Zotero.debug("[Weavero] One New Window err: " + e));
+                            } catch (e) { Zotero.debug("[Weavero] One New Window err: " + e); }
+                        });
+                    }
+                    if (mi.parentNode !== menu || mi.nextSibling !== wins) menu.insertBefore(mi, wins);
+                    // Its neighbour's classes: Zotero's icon for the kind
+                    // (locateMenu.js ViewItem.className), where the menu shows icons.
+                    const cls = wins.getAttribute("class");
+                    if (cls) { if (mi.getAttribute("class") !== cls) mi.setAttribute("class", cls); }
+                    else if (mi.hasAttribute("class")) mi.removeAttribute("class");
+                } catch (e) { Zotero.debug("[Weavero] open several menu err: " + e); }
+            };
+            place();
+            // Again once Zotero is surely done with its entries, as the Split
+            // View entry does (tab-split.ts _wvTabSplitItemsMenu); never into a
+            // menu that has closed (popuphidden took the entry away).
+            const again = () => { try { if (menu.state === "showing" || menu.state === "open") place(); } catch (e) {} };
+            try { win.setTimeout(again, 0); win.setTimeout(again, 60); } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvOpenSeveralItemsMenu err: " + e); }
+    }
+
+    /** "Open … in One New Window": ONE new main window holding what `items`
+     *  open as tabs in selection order, the first one selected (as Firefox's
+     *  replaceTabsWithWindow keeps the active tab active, Tabbrowser.sys.mjs).
+     *  Zotero 11: no library tab, as Zotero's own "Open in New Window" makes
+     *  none (`_wvOpenSeveralNative`). Zotero 9/10: a main window of Weavero's,
+     *  with the one fixed library tab every Zotero 9/10 main window has
+     *  (tabs.js 10.0.8, 'zotero-pane'). A document goes in as an unloaded
+     *  reader tab, as Zotero's session restore adds one (tabs.js
+     *  restoreState), so only the tab shown loads; a note opens through
+     *  ZoteroPane.openNote in that window (`_wvOpenSeveralNote`); an item with
+     *  nothing to open is skipped. The window, or null. */
+    async _wvOpenSeveralInOneWindow(srcWin: any, items: any[]): Promise<any> {
+        const P: any = this;
+        try {
+            const plan = this._wvOpenSeveralPlan(srcWin, items);
+            if (!plan.entries.length || !this._wvOpenSeveralWindowOK()) return null;
+            if (wvNativeWindows()) return await this._wvOpenSeveralNative(srcWin, plan.entries);
+            const w = await this._wvOpenSeveralNewWindow(srcWin);
+            if (!w || w.closed || P._wvDestroyed) return null;
+            const Z = w.Zotero_Tabs;
+            let first: { id: string; itemID: number; note: boolean } | null = null;
+            for (const e of plan.entries) {
+                let id: string | null = null;
+                try {
+                    if (e.type === "note") id = await this._wvOpenSeveralNote(w, e.item);
+                    else {
+                        const r = Z.add({ type: "reader-unloaded", data: { itemID: e.item.id }, select: false });
+                        id = (r && r.id) || null;
+                    }
+                }
+                catch (er) { Zotero.debug("[Weavero] One New Window: " + e.item.id + ": " + er); }
+                if (id && !first) first = { id, itemID: e.item.id, note: e.type === "note" };
+                if (P._wvDestroyed || w.closed) return w;
+            }
+            if (first) await this._wvOpenSeveralSelect(w, first);
+            return w;
+        } catch (e) { Zotero.debug("[Weavero] _wvOpenSeveralInOneWindow err: " + e); return null; }
+    }
+
+    /** One New Window on Zotero 11, opened as Zotero opens one. Zotero's "Open
+     *  in New Window" opens a main window whose only tab is the reader tab
+     *  (xpcom/reader.js _openInNewWindow: Zotero.openMainWindow with a
+     *  readerTabState; zoteroPane.js adds that tab alone, and a library tab
+     *  only in a window opened with nothing else to show -- openInitialLibraryTab
+     *  in the last `else`). So the first document seeds the window that way
+     *  and the others join it. Notes alone: Zotero seeds a note's window from a
+     *  noteTabState (xpcom/data/notes.js _openInNewWindow), but Weavero opens
+     *  note tabs through ZoteroPane.openNote only (AGENTS.md, hard invariant):
+     *  the window starts as Ctrl+N's, the notes open in it, then its library
+     *  tab closes (Zotero 11's library tabs are closable, tabs.js
+     *  createLibraryTab). The tabs end in selection order, the first selected.
+     *  MJT 2026-11-25: "If I open several PDF in a new window, they also get a
+     *  library tab. Why?" -- 1.3.0-peoplenet.7 opened every such window as
+     *  Ctrl+N's. The window, or null. */
+    async _wvOpenSeveralNative(srcWin: any, entries: Array<{ item: any; type: string }>): Promise<any> {
+        const P: any = this;
+        const seed = entries.find((e) => e.type !== "note") || null;
+        let w: any = null;
+        if (seed) {
+            w = Zotero.openMainWindow({ readerTabState: { itemID: seed.item.id } });
+            if (!(await this._wvOpenSeveralLoaded(w))) return null;
+        }
+        else w = await this._wvOpenSeveralNewWindow(srcWin);
+        if (!w || w.closed || P._wvDestroyed) return null;
+        const Z = w.Zotero_Tabs;
+        const tabs: Array<{ id: string; itemID: number; note: boolean }> = [];
+        for (const e of entries) {
+            let id: string | null = null;
+            try {
+                if (e === seed) {
+                    const t = (Z._tabs || []).find((x: any) => x && x.data && x.data.itemID === e.item.id && /^reader/.test(String(x.type || "")));
+                    id = t ? t.id : null;
+                }
+                else if (e.type === "note") id = await this._wvOpenSeveralNote(w, e.item);
+                else {
+                    const r = Z.add({ type: "reader-unloaded", data: { itemID: e.item.id }, select: false });
+                    id = (r && r.id) || null;
+                }
+            }
+            catch (er) { Zotero.debug("[Weavero] One New Window: " + e.item.id + ": " + er); }
+            if (id && !tabs.some((t) => t.id === id)) tabs.push({ id, itemID: e.item.id, note: e.type === "note" });
+            if (P._wvDestroyed || w.closed) return w;
+        }
+        if (!seed && tabs.length) {
+            const libs = (Z._tabs || []).filter((t: any) => t && Z._isLibraryTab(t) && !tabs.some((x) => x.id === t.id)).map((t: any) => t.id);
+            try { if (libs.length) Z.close(libs, { skipHistory: true }); }
+            catch (er) { Zotero.debug("[Weavero] One New Window: library tab: " + er); }
+        }
+        // Selection order: each tab moved to its place, left to right (tabs.js move).
+        tabs.forEach((t, i) => { try { Z.move(t.id, i); } catch (er) {} });
+        if (tabs.length) await this._wvOpenSeveralSelect(w, tabs[0]);
+        return w;
+    }
+
+    /** A window from Zotero.openMainWindow, waited for as Zotero waits for one
+     *  (xpcom/reader.js _openInNewWindow: its load, then ZoteroPane.loadedPromise,
+     *  which zoteroPane.js resolves once the window's first tabs are added).
+     *  Bounded; false when the window never got there. */
+    async _wvOpenSeveralLoaded(w: any, timeoutMs = 20000): Promise<boolean> {
+        const P: any = this;
+        const t0 = Date.now();
+        let pane: any = null;
+        while (Date.now() - t0 < timeoutMs && !P._wvDestroyed) {
+            if (!w || w.closed) return false;
+            try { if (w.ZoteroPane && w.ZoteroPane.loadedPromise && w.Zotero_Tabs) { pane = w.ZoteroPane; break; } } catch (e) {}
+            await wvSleep(100);
+        }
+        if (!pane) return false;
+        let done = false;
+        Promise.resolve(pane.loadedPromise).then(() => { done = true; }, () => {});
+        while (!done && Date.now() - t0 < timeoutMs && !P._wvDestroyed && !w.closed) await wvSleep(100);
+        return done && !w.closed;
+    }
+
+    /** A new main window with its library tab alone, once its pane is ready:
+     *  on Zotero 11 Ctrl+N's (ZoteroPane.newWindow: a window opened with a
+     *  library tab state, zotero#6035), used for a window of notes alone
+     *  (`_wvOpenSeveralNative`); on Zotero 9/10 Weavero's, through the one
+     *  spawn sequence (tabs.ts _wvSpawnMainWindowStart: a clean window on My
+     *  Library, raised as Ctrl+N's is). Null when none came. */
+    async _wvOpenSeveralNewWindow(srcWin: any): Promise<any> {
+        const P: any = this;
+        const ready = (w: any) => {
+            try { return !!(w && !w.closed && w.Zotero_Tabs && w.ZoteroPane && w.ZoteroPane.itemsView && w.ZoteroPane.collectionsView); }
+            catch (e) { return false; }
+        };
+        try {
+            if (wvNativeWindows()) {
+                const zp = srcWin && srcWin.ZoteroPane;
+                if (!zp || typeof zp.newWindow !== "function") return null;
+                const before = new Set(wvMainWins());
+                let w: any = zp.newWindow();
+                const t0 = Date.now();
+                while (Date.now() - t0 < 20000 && !P._wvDestroyed) {
+                    if (!w || w.closed) w = wvMainWins().find((x: any) => !before.has(x)) || null;
+                    if (ready(w)) return w;
+                    await wvSleep(100);
+                }
+                return null;
+            }
+            if (!P._wvMultiMainOn()) return null;
+            P._wvPrimeNewWindowLanding();
+            const s = P._wvSpawnMainWindowStart();
+            if (!s) return null;
+            P._wvRaiseNewMainWindow(s.before);
+            const w = await P._wvSpawnMainWindowWait(s, { wait: "init", timeoutMs: 20000, timerWin: srcWin });
+            const t0 = Date.now();
+            while (w && !ready(w) && Date.now() - t0 < 10000 && !P._wvDestroyed) await wvSleep(100);
+            return ready(w) ? w : null;
+        } catch (e) { Zotero.debug("[Weavero] _wvOpenSeveralNewWindow err: " + e); return null; }
+    }
+
+    /** A note as a tab of `w`, through ZoteroPane.openNote with openInWindow
+     *  false ONLY (CLAUDE.md, hard invariant), asked of that window's own pane:
+     *  Zotero 11 passes the pane's window on (zoteroPane.js openNote); Zotero
+     *  9/10's Notes.open takes the focused main window, pointed at `w` for the
+     *  call (tabs.ts _wvWithMainWindow). The tab's id, or null when Zotero put
+     *  none there: Zotero 10 never duplicates a note open in a tab, and only
+     *  shows that tab. */
+    async _wvOpenSeveralNote(w: any, note: any): Promise<string | null> {
+        const P: any = this;
+        const zp = w && w.ZoteroPane;
+        if (!zp || typeof zp.openNote !== "function") return null;
+        const run = () => zp.openNote(note.id, { openInWindow: false });
+        if (wvNativeWindows()) await run();
+        else await P._wvWithMainWindow(w, run);
+        const t = (w.Zotero_Tabs._tabs || []).find((x: any) => x && x.data && x.data.itemID === note.id && /^note/.test(String(x.type || "")));
+        return t ? t.id : null;
+    }
+
+    /** The new window's first tab selected. A note tab is loaded already; a
+     *  document loads as it is selected, and on Zotero 9/10 only in the main
+     *  window most recently activated (ReaderTab's constructor reads
+     *  Services.wm.getMostRecentWindow, xpcom/reader.js 10.0.8): wait for `w`
+     *  to come to the front, bounded, else select it when the window is first
+     *  activated (tabs.ts _wvDeferSelect, the restore's own way). */
+    async _wvOpenSeveralSelect(w: any, first: { id: string; itemID: number; note: boolean }) {
+        const P: any = this;
+        try {
+            const Z = w.Zotero_Tabs;
+            if (!tabIn(w, first.id)) return;
+            if (!first.note && !wvNativeWindows() && !(await P._wvAwaitFrontMain(w, 2000))) {
+                if (!w.closed) P._wvDeferSelect(w, first.itemID, Z._tabs.findIndex((t: any) => t && t.id === first.id));
+                return;
+            }
+            if (w.closed || P._wvDestroyed) return;
+            Z.select(first.id);
+            try { w.focus(); } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvOpenSeveralSelect err: " + e); }
     }
 }
 

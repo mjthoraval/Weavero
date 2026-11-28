@@ -30,14 +30,10 @@ describe("Weavero — no library text in logs, no download without a click", fun
         });
         await wvT.withPref("weavero.devBootTrace", true, async () => {
             wv._wvTraceFlush(tag);
-            // IOUtils.exists answers a promise: wvT.waitFor would take the promise
-            // itself for a yes (or its first, too-early answer). Poll the answer.
-            let written = false;
-            for (let i = 0; i < 50 && !written; i++) {
-                written = await IOUtils.exists(file());
-                if (!written) await wvT.sleep(100);
-            }
-            assert.isTrue(written, "written when asked for");
+            // The write is queued (lib/store.ts): poll the file itself.
+            let ok = false;
+            for (let i = 0; i < 50 && !ok; i++) { ok = await IOUtils.exists(file()); if (!ok) await wvT.sleep(100); }
+            assert.isTrue(ok, "written when asked for");
         });
     });
 
@@ -46,7 +42,7 @@ describe("Weavero — no library text in logs, no download without a click", fun
             assert.notInclude(wvT.src(m), "document.title", m + ": no window title in the trace");
         }
         assert.notMatch(wvT.src("_wvTabGroupMoveToNewWindow"), /name=\\?"\s*\+\s*\(?g\.name/, "no group name in the move log");
-        // (1.2.1: no reference cards' log -- 1.2.0 has no References cards.)
+        assert.notMatch(wvT.src("_wvRefsCardSwap"), /found\.text\s*\+/, "no PDF link text in the cards' log");
     });
 
     it("startup never downloads an engine icon; the Locate menu's first opening does", async function () {

@@ -83,7 +83,8 @@ describe("Weavero — colours from a library's data are colours only", function 
         const sinks = {
             _bmRenderLibChipBar: "bookmarks filter chip dot",
             _wvReaderRenderBmChipBar: "reader bookmarks chip dot",
-            _bmRenderItemRow: "bookmark row icon",
+            // The row's drawing, the dropdown's and the collections pane's (1.3.0-bmpane).
+            _bmRowParts: "bookmark row icon",
             _wvReaderBuildBmIcon: "reader bookmark row icon",
             _renderUnifiedSearchSection: "items-list filter tag dot",
             _wvRenderReaderFilterPopup: "reader filter tag dot",

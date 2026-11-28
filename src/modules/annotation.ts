@@ -1,4 +1,5 @@
 import { MD_REGEX, wvIsWebURL } from "../lib/links";
+import { wvOpenedInstance } from "../lib/compat";
 import { wvListen } from "../lib/listen";
 import { wvSelectLibraryTab } from "../lib/windows";
 import { normalize as wvNormalize } from "../lib/text";
@@ -22,6 +23,17 @@ import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from 
 // the prototype-mixin lift — see filter.ts for the same pattern).
 // Canonical definition: src/lib/links.ts (pure, Node-testable).
 const _MD_REGEX_DATA = MD_REGEX;
+
+/** The comment icon's tooltip, formatted once: _applyIconState runs for
+ *  every annotation row the items list paints. Not kept while the message
+ *  is missing (wvStr answers the id). */
+let _commentPopupTip = "";
+function commentPopupTip(): string {
+    if (_commentPopupTip) return _commentPopupTip;
+    const s = wvStr("weavero-ann-comment-popup");
+    if (s !== "weavero-ann-comment-popup") _commentPopupTip = s;
+    return s;
+}
 
 // Methods reach across mixin boundaries via `this.foo()` (e.g.
 // annotation methods call `this._getInlineLinks()` from prefs
@@ -322,7 +334,7 @@ class _AnnotationMixin {
         if (hasUrl) el.classList.add("wv-has-url");
         else el.classList.remove("wv-has-url");
 
-        const tooltip = "Comment popup";
+        const tooltip = commentPopupTip();
         if (el.title !== tooltip) el.title = tooltip;
 
         const existingSvg = el.querySelector(".wv-link-svg");
@@ -918,10 +930,15 @@ class _AnnotationMixin {
         }
     }
 
-    /** Open `item` in a NEW window, Zotero's own Shift rule (zoteroPane.js
-     *  viewItems): a note in a note window, an annotation in a reader window
-     *  at itself, a file attachment in a reader window, a regular item as its
-     *  best attachment. False when nothing opens in a window (a regular item
+    /** Open `item` in a window of its own, Zotero's own Shift rule
+     *  (zoteroPane.js viewItems): a note in a note window, an annotation in a
+     *  reader window at itself, a file attachment in a reader window, a
+     *  regular item as its best attachment. That is Zotero 9/10; on Zotero 11
+     *  the same calls open a main window holding only that reader or note tab
+     *  -- or, when the item is already open in a tab of any window, select and
+     *  focus that tab instead (xpcom/reader.js open, xpcom/data/notes.js open:
+     *  "A tab for the item in any window stands in for a window of its own").
+     *  False when nothing opens in a window (a regular item
      *  without a readable file): the caller falls back to its plain action.
      *  MJT 2026-10-26, Backlinks rows and the count popups: Shift+click or a
      *  middle click. */
@@ -936,7 +953,7 @@ class _AnnotationMixin {
             }
             if (item.isAnnotation && item.isAnnotation()) {
                 if (!item.parentItemID) return false;
-                const reader = await Zotero.Reader.open(item.parentItemID, { annotationID: item.key } as any, { openInWindow: true } as any);
+                const reader = wvOpenedInstance(await Zotero.Reader.open(item.parentItemID, { annotationID: item.key } as any, { openInWindow: true } as any));
                 await this._wvReaderSelectOnly(reader || this._wvReaderWindowFor(item.parentItemID), item.key);
                 return true;
             }

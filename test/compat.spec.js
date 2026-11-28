@@ -23,11 +23,12 @@ describe("Weavero — Firefox 153 compatibility", () => {
 
     before(async function () {
         if (!(Zotero.Weavero && Zotero.Weavero.plugin)) wvT.absent('!(Zotero.Weavero && Zotero.Weavero.plugin)');
-        // Zotero.Plugins.getRootURI resolves the installed XPI's jar: URI.
+        // wvT.rootURI resolves the installed add-on's root (Zotero.Plugins.getRootURI,
+        // or the AddonManager's where zotero#6080 removed it).
         // Deliberately NOT wrapped in a try/skip: a guard that quietly skips
         // itself when it cannot read the bundle is worse than no guard, since
         // it would report green while checking nothing.
-        const rootURI = await Zotero.Plugins.getRootURI("weavero@mjthoraval");
+        const rootURI = await wvT.rootURI();
         const res = await fetch(rootURI + "index.js");
         bundle = await res.text();
         expect(bundle.length, "bundle looks empty").to.be.above(1000);
@@ -35,6 +36,19 @@ describe("Weavero — Firefox 153 compatibility", () => {
 
     it("ships winOf() and the documentGlobal spelling", () => {
         expect(bundle).to.contain("documentGlobal");
+    });
+
+    // Firefox 153 refuses a jar:file: / file: subscript without allowUnsafeURL
+    // (bug 1974213); Zotero 11 lets it through only while its temporary
+    // security.allow_unsafe_subscript_loads stays on ("Zotero 11 for
+    // Developers", 2026-11-27). Without the option, the day the pref goes,
+    // Weavero loads nothing and says so only in a debug line (bootstrap.js's
+    // catch). Z11 freeze walk, 2026-11-28.
+    it("bootstrap.js loads index.js with allowUnsafeURL", async () => {
+        const rootURI = await wvT.rootURI();
+        const boot = await (await fetch(rootURI + "bootstrap.js")).text();
+        expect(boot, "bootstrap.js read").to.contain("index.js");
+        expect(boot).to.match(/loadSubScriptWithOptions\(\s*rootURI \+ "index\.js",\s*\{[^}]*allowUnsafeURL:\s*true/);
     });
 
     // FF153 paints plain panels' shadow ::part(content) and ignores the

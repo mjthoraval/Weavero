@@ -31,7 +31,17 @@ only. The number may be higher than the dev line predicted — that's expected.
 
 ## 3. Gates (all must pass before touching versions)
 
-- `npm test -- --exit-on-finish` → full suite green, no orphaned test Zotero.
+- `npm test -- --exit-on-finish` → full suite green, no orphaned test Zotero,
+  on both Zotero versions of the gate.
+- **A tested tree is reused (MJT 2026-11-20, "to get to a release faster").**
+  When the candidate differs from the last tree whose FULL runs passed on both
+  versions only by the version files -- `git diff --stat <tested> <candidate>`
+  lists nothing but `src/manifest.json`, `package.json`, `package-lock.json`
+  -- those runs satisfy the gate above: name them (commit, log, pass count,
+  per version) in the release notes draft and the registers instead of
+  running again. Any other file in that diff, a test-only change included,
+  means new full runs. CI's test.yml on the pushed commit stays the final
+  gate (§5); the companions gate below runs as before.
 - **Companions**: `npm run test:compat:bump`, then `npm run test:compat`, so the
   run tests what users install. Check each moved XPI's add-on ID and version
   against its pin, read the run, then commit the XPIs and PINS.json as

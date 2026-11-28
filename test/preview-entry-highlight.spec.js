@@ -97,24 +97,44 @@ describe("Weavero — a link preview tints the whole reference entry", function 
         }), rwin));
     }
 
+    /** Zotero 11 drops a hover's popup still rendering, and closes an open one,
+     *  when a page's structure data lands (pdf-view.js _handleDocumentPageData
+     *  -> _resetSemanticOverlayState bumps `_overlayRevision` and sets the popup
+     *  to null). Reproduced on 11.0-beta.4 by calling that reset: right after
+     *  the hover no popup ever opened, once it was up it closed before its link
+     *  zones (2026-11-20) -- the two CI-only failures of this spec, on the beta
+     *  jobs only (Ubuntu: "the preview popup opened" null; every platform: no
+     *  zone over the DOI in one picture). True when that happened since `rev`. */
+    const droppedByZotero = (rev) => typeof pv._overlayRevision === "number" && pv._overlayRevision !== rev;
+
     /** Hover-open `overlay` (chrome object) and wait for the popup and its
-     *  link zones. */
+     *  link zones. Only when a wait FAILS and Zotero dropped or closed the
+     *  popup meanwhile (droppedByZotero) is the hover made again, as the
+     *  user's pointer would; every other loss fails, and an open that
+     *  succeeds is never repeated. */
     async function open(overlay) {
-        await close();
-        await fire(overlay);
-        const st = await wvT.waitFor(() => { const s = state(); return s && s.image ? s : null; }, 15000, 50);
-        assert.isOk(st, "the preview popup opened");
-        const img = await wvT.waitFor(() => { const i = popupImg(); return i && i.clientWidth && i.getAttribute("src") === st.image ? i : null; }, 10000, 50);
-        assert.isOk(img, "the popup shows the picture");
-        const zone = await wvT.waitFor(() => {
-            for (const z of reader._iframeWindow.document.querySelectorAll(".preview-popup .wv-preview-linkzone")) if (z.title === DOI_URL) return z;
-            return null;
-        }, 5000, 50);
-        return {
-            image: String(st.image), width: Number(st.width), height: Number(st.height), x: Number(st.x), y: Number(st.y),
-            cw: img.clientWidth,
-            zone: zone ? { left: parseFloat(zone.style.left), top: parseFloat(zone.style.top), width: parseFloat(zone.style.width), height: parseFloat(zone.style.height) } : null,
-        };
+        for (let attempt = 1; ; attempt++) {
+            await close();
+            const rev = pv._overlayRevision;
+            await fire(overlay);
+            const again = (got) => !got && droppedByZotero(rev) && attempt < 3;
+            const st = await wvT.waitFor(() => { const s = state(); return s && s.image ? s : null; }, 15000, 50);
+            if (again(st)) continue;
+            assert.isOk(st, "the preview popup opened");
+            const img = await wvT.waitFor(() => { const i = popupImg(); return i && i.clientWidth && i.getAttribute("src") === st.image ? i : null; }, 10000, 50);
+            if (again(img)) continue;
+            assert.isOk(img, "the popup shows the picture");
+            const zone = await wvT.waitFor(() => {
+                for (const z of reader._iframeWindow.document.querySelectorAll(".preview-popup .wv-preview-linkzone")) if (z.title === DOI_URL) return z;
+                return null;
+            }, 5000, 50);
+            if (again(zone)) continue;
+            return {
+                image: String(st.image), width: Number(st.width), height: Number(st.height), x: Number(st.x), y: Number(st.y),
+                cw: img.clientWidth,
+                zone: zone ? { left: parseFloat(zone.style.left), top: parseFloat(zone.style.top), width: parseFloat(zone.style.width), height: parseFloat(zone.style.height) } : null,
+            };
+        }
     }
 
     /** The picture's pixels (decoded in the main window). */
@@ -171,16 +191,18 @@ describe("Weavero — a link preview tints the whole reference entry", function 
     const show = (p) => p ? "rgb(" + p.join(",") + ")" : "none";
 
     let on = null, off = null;
+    let ctxWas = null;
 
     before(async function () {
-        // CI + Linux only (1.2.0 gate, 2026-11-19, MJT: "Skip it on Linux CI, release"):
-        // on GitHub's Ubuntu runner with the Zotero beta the preview popup never opened
-        // (CI run 44537151777, both attempts: "the preview popup opened" null), so every
-        // case here failed in turn; Windows and macOS CI and local runs pass. To fix
-        // with the other CI skips (work/TODO.md).
-        if (Services.env.exists("CI") && Zotero.isLinux) this.skip();
         wv = wvT.plugin();
         for (const m of ["_wvPrevHlWanted", "_wvPrevHlBuild", "_wvPrevHlEntryFromLines", "_wvPrevHlFromPageData", "_wvWirePreviewLinkZones"]) wvT.method(m);
+        // The reader's item pane as a fresh profile has it, collapsed (zoteroPane.xhtml): the
+        // preview is drawn at the reader's page-width scale, and a spec that left the pane open
+        // (pane-lock.spec.js until 2026-11-27) made the DOI glyphs too small for the zone check
+        // (13 dark pixels, dev.99 triage). Put back in after().
+        const mw = Zotero.getMainWindow();
+        ctxWas = !!mw.ZoteroContextPane.collapsed;
+        mw.ZoteroContextPane.collapsed = true;
         const path = PathUtils.join(PathUtils.tempDir, "wv-prevhl-" + Date.now() + ".pdf");
         await IOUtils.writeUTF8(path, fixturePDF());
         made.push(await Zotero.Attachments.importFromFile({ file: Zotero.File.pathToFile(path) }));
@@ -207,6 +229,19 @@ describe("Weavero — a link preview tints the whole reference entry", function 
         pv.setLightTheme(null);
         pv.setColorScheme("light");
         await wvT.waitFor(() => !pv._iframeWindow.theme, 5000, 50);
+        // Zotero 11's structure data for both pages first: when it lands it
+        // resets the page's overlays and drops or closes a popup (see
+        // droppedByZotero). Settled on this machine by now; on GitHub's runners
+        // it came during the first cases. Bounded: a Zotero without it goes on.
+        const settled = () => {
+            const dd = pv._documentData;
+            if (!dd || !dd._semanticPages || typeof pv._resetSemanticOverlayState !== "function") return "no structure data here";
+            const busy = dd._semanticEntries ? dd._semanticEntries.size : 0;
+            return dd._semanticDocument && dd._semanticPages[0] && dd._semanticPages[1] && !busy ? "settled" : null;
+        };
+        const t0 = Date.now();
+        const how = await wvT.waitFor(settled, 60000, 50);
+        wvT.trace("[preview-entry-highlight] structure data: " + (how || "not settled") + " after " + (Date.now() - t0) + " ms");
     });
 
     after(async function () {
@@ -214,6 +249,7 @@ describe("Weavero — a link preview tints the whole reference entry", function 
         try { await close(); } catch (e) {}
         try { if (appearance) { pv.setLightTheme(appearance.light || null); pv.setColorScheme(appearance.forced || null); } } catch (e) {}
         try { wvT.closeReaderTab(reader); } catch (e) {}
+        try { if (ctxWas !== null) Zotero.getMainWindow().ZoteroContextPane.collapsed = ctxWas; } catch (e) {}
         await wvT.sleep(300);
         await wvT.erase(...made);
     });
@@ -262,8 +298,9 @@ describe("Weavero — a link preview tints the whole reference entry", function 
             destinationPosition: { pageIndex: 1, rects: [AREA] } };
         const got = await withoutPageData(() => wvT.withPref("weavero.previewEntryHighlight", true, () => open(target)));
         await close();
-        assert.equal(wv._wvPrevHlLastInfo.how, "text:bracket");
-        await assertEntryTinted(got, "text geometry");
+        const info = wv._wvPrevHlLastInfo;
+        assert.equal(info.how, "text:bracket");
+        await assertEntryTinted(got, "text geometry (last build: " + JSON.stringify(info.rects.map(r => r.map(Math.round))) + ")");
     });
 
     it("the gate off leaves Zotero's picture: the first line boxed dark, the rest of the entry unmarked", async function () {
@@ -276,12 +313,10 @@ describe("Weavero — a link preview tints the whole reference entry", function 
     });
 
     it("the link zones land on the DOI in Weavero's picture as in Zotero's", async function () {
-        // CI only (1.2.0 gate, 2026-11-19, MJT: "Skip on CI, release now", then "Ok to skip
-        // and fix after the release"): on GitHub's runners with the Zotero beta one of the
-        // two pictures had no zone over the DOI -- Ubuntu twice, then Windows twice --
-        // Weavero's in one run and Zotero's in another; local runs have both. A timing
-        // flake of the zones' injection, to fix (work/TODO.md).
-        if (Services.env.exists("CI")) this.skip();
+        // On GitHub's runners with the Zotero beta one of the two pictures had no
+        // zone over the DOI (1.2.0 gate: Ubuntu twice, Windows twice): Zotero
+        // closed the popup when the page's structure data landed (open(),
+        // droppedByZotero), before the zones went in.
         assert.isOk(on && on.zone, "a zone over the DOI in Weavero's popup");
         assert.isOk(off && off.zone, "and in Zotero's");
         for (const k of ["left", "top", "width", "height"]) assert.approximately(on.zone[k], off.zone[k], 0.5, "zone " + k);
@@ -540,11 +575,15 @@ describe("Weavero — a link preview tints the whole reference entry", function 
 
     /** As `open`, without waiting for the DOI's link zone (page 1 has none). */
     async function openNoZone(overlay) {
-        await close();
-        await fire(overlay);
-        const st = await wvT.waitFor(() => { const s = state(); return s && s.image ? s : null; }, 15000, 50);
-        assert.isOk(st, "the preview popup opened");
-        return { image: String(st.image), width: Number(st.width), height: Number(st.height), x: Number(st.x), y: Number(st.y) };
+        for (let attempt = 1; ; attempt++) {
+            await close();
+            const rev = pv._overlayRevision;
+            await fire(overlay);
+            const st = await wvT.waitFor(() => { const s = state(); return s && s.image ? s : null; }, 15000, 50);
+            if (!st && droppedByZotero(rev) && attempt < 3) continue;
+            assert.isOk(st, "the preview popup opened");
+            return { image: String(st.image), width: Number(st.width), height: Number(st.height), x: Number(st.x), y: Number(st.y) };
+        }
     }
 });
 

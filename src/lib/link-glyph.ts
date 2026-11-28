@@ -178,6 +178,25 @@ export function wvLinkGlyphUri(paint: string, size: number, backlink?: WvLinkGly
     return "data:image/svg+xml," + encodeURIComponent(wvLinkGlyphMarkup(paint, size, backlink));
 }
 
+/** The paper glyph of the References and Cited by sections (MJT 2026-11-20, "Implement B
+ *  for the references icons", of four pairs drawn beside the Refs plugin's own -- a page
+ *  with a list, a page with an arrow in): a page with two lines of text, shrunk toward the
+ *  top-left corner as the chain is, and the links glyphs' corner arrow -- OUT of it for
+ *  References (what this paper cites), INTO it for Cited by (who cites it), as Item Links
+ *  and Backlinks carry theirs. */
+export const WV_PAPER_PATHS = ["M3,2H11.5L17,7.5V20H3Z", "M11.5,2V7.5H17", "M6.5,11.5H13.5", "M6.5,15.5H13.5"];
+
+export function wvPaperGlyphUri(paint: string, size: number, arrow: "out" | "in"): string {
+    const s = WV_BACKLINK_CHAIN_SCALE;
+    const line = Object.keys(LINE).map(k => " " + k + '="' + (LINE as any)[k] + '"').join("");
+    return "data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="' + size + '" height="' + size
+        + '" viewBox="' + WV_LINK_VIEWBOX + '" fill="none" aria-hidden="true">'
+        + '<g transform="scale(' + s + ')" stroke="' + paint + '" stroke-width="' + (+(2 / s).toFixed(3)) + '"' + line + ">"
+        + WV_PAPER_PATHS.map(d => '<path d="' + d + '" fill="none"/>').join("") + "</g>"
+        + '<path d="' + (arrow === "out" ? WV_OUTLINK_ARROW_PATH : WV_BACKLINK_ARROW_PATH) + '" stroke="' + paint + '" stroke-width="2"' + line + "/>"
+        + "</svg>");
+}
+
 /** The copy-link menu entries' icon ("Copy Select Link", "Copy Open
  *  Link", "Copy Collection Link", "Copy Link to This Page", ...): stroked in
  *  `context-fill`, which Zotero's menu CSS paints like its own menu icons

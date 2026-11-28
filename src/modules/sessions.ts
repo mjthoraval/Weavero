@@ -197,13 +197,14 @@ class _TabSessionsMixin {
      *  recent first, MJT 2026-09-29); the reverse flag flips whichever it is. */
     _wvTabSessionSortDirInfo(mode: string, reverse: boolean): { asc: boolean; arrow: string; label: string } {
         const asc = mode === "name" ? !reverse : !!reverse;
-        const labels: any = {
-            created: ["Oldest first", "Newest first"],
-            name: ["A to Z", "Z to A"],
-            lastUsed: ["Least recent first", "Most recent first"],
+        // weavero.ftl weavero-session-sort-order, $order.
+        const orders: any = {
+            created: ["oldest", "newest"],
+            name: ["az", "za"],
+            lastUsed: ["leastRecent", "mostRecent"],
         };
-        const pair = labels[mode] || ["Ascending", "Descending"];
-        return { asc, arrow: asc ? "↑" : "↓", label: asc ? pair[0] : pair[1] };
+        const pair = orders[mode] || ["ascending", "descending"];
+        return { asc, arrow: asc ? "↑" : "↓", label: wvStr("weavero-session-sort-order", { order: asc ? pair[0] : pair[1] }) };
     }
 
     /** "Last used" = the last time the session was the active one (`lastUsed`,
@@ -258,6 +259,33 @@ class _TabSessionsMixin {
         return out;
     }
 
+    /** Zotero 11 pins the library tab of a window it opens fresh with no other
+     *  main window open (zoteroPane.js openInitialLibraryTab, `pinned:
+     *  _isFirstWindow`), and at startup that of a saved session's ONLY main
+     *  window, unless it has a pinned tab or the user unpinned that tab
+     *  (session.js pinOnlyWindowLibraryTab; pinning since zotero 0883f08887,
+     *  11.0-beta.5). Weavero's named sessions get a pin too, ONCE, by MJT's
+     *  rule rather than Zotero's (every session's first window, not only a
+     *  session of one window): the first time Weavero runs
+     *  on a Zotero that pins, each session's first window with a library comes
+     *  back with its library tab pinned (`pinHome`); the store then says so
+     *  (`zpin`), and every session saved afterwards keeps what the user had
+     *  (MJT 2026-11-22: "Apply the pin from Zotero the first time installed.
+     *  Then keep the user choice."). Guard: test/session-pins.spec.js. */
+    async _wvTabSessionMigrateZoteroPins(): Promise<boolean> {
+        const doc = this._wvTabSessionDoc;
+        if (!doc || doc.zpin || this._wvTabSessionReadOnly || !wvZoteroPinsTabs()) return false;
+        for (const s of doc.sessions || []) {
+            const first = (Array.isArray(s.windows) ? s.windows : []).find((w: any) => w && w.kind === "main" && !w.noLibrary);
+            if (!first) continue;
+            if (Array.isArray(first.libraryTabs) && first.libraryTabs.length) { if (first.libraryTabs[0]) first.libraryTabs[0].pinned = true; }
+            else first.pinHome = true;
+        }
+        doc.zpin = 1;
+        await this._wvTabSessionPersist();
+        return true;
+    }
+
     /** Atomic, serialized write of the current doc to disk (lib/store.ts). */
     _wvTabSessionPersist() {
         if (!this._wvTabSessionDoc) return Promise.resolve();
@@ -271,14 +299,15 @@ class _TabSessionsMixin {
             + Math.floor(Math.random() * 1e6).toString(36);
     }
 
-    /** Default "Session YYYY-MM-DD HH:MM". */
+    /** Default "Session YYYY-MM-DD HH:MM", in the UI language when created
+     *  (a stored name: nothing recognises it by its words). */
     _wvTabSessionDefaultName() {
         try {
             const d = new Date();
             const p = (n: number) => String(n).padStart(2, "0");
-            return "Session " + d.getFullYear() + "-" + p(d.getMonth() + 1) + "-"
-                + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
-        } catch (e) { return "Session"; }
+            return wvStr("weavero-session-default-name", { date: d.getFullYear() + "-" + p(d.getMonth() + 1) + "-"
+                + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes()) });
+        } catch (e) { return wvStr("weavero-session-unnamed"); }
     }
 
     // ---- Capture -----------------------------------------------------------
@@ -410,6 +439,16 @@ class _TabSessionsMixin {
             // with its library view (pane.ts, "Hidden collections").
             const hc = (this as any)._wvHidCapture ? (this as any)._wvHidCapture(w) : undefined;
             if (hc) state.hiddenColl = hc;
+            // And which saved-search folders are closed there (search-folders.ts).
+            const sf = (this as any)._wvSfCapture ? (this as any)._wvSfCapture(w) : undefined;
+            if (sf) state.sfOpen = sf;
+            // And its Bookmarks pane: folded, height, Bookmarks only, open folders
+            // (bookmarks-pane.ts).
+            const bp = (this as any)._wvBmpCapture ? (this as any)._wvBmpCapture(w) : undefined;
+            if (bp) state.bmPane = bp;
+            // And its collections funnel, when it departs from the default (coll-funnel.ts).
+            const cf = (this as any)._wvCfCapture ? (this as any)._wvCfCapture(w) : undefined;
+            if (cf) state.collFunnel = cf;
             // And its custom title (tabs.ts, "custom title is part of the
             // window's own saved state").
             const ct = (this as any)._wvWindowCustomTitle ? (this as any)._wvWindowCustomTitle(w) : null;
@@ -447,8 +486,10 @@ class _TabSessionsMixin {
             if (!libs.length) out.noLibrary = true;
             // With their places: a second library tab came back next to the first
             // (transition test 2026-11-07). And Zotero's own pin of a library tab
-            // (getState `pinned`, zotero 49b48f5d08): a single pinned one is recorded too.
-            else if (libs.length > 1 || libs.some((t: any) => t.pinned)) out.libraryTabs = libs.map((t: any) => ({ type: "library", title: t.title || "", data: t.data, selected: t.selected, index: all.indexOf(t), pinned: t.pinned ? true : undefined }));
+            // (getState `pinned`, zotero 49b48f5d08): a single pinned one is recorded too,
+            // and one with its own Show Tab Name choice (`data.wvPinName`, tabs.ts
+            // _wvLibTabPinNameSet), which rides in its data like the rest.
+            else if (libs.length > 1 || libs.some((t: any) => t.pinned || (t.data && typeof t.data.wvPinName === "boolean"))) out.libraryTabs = libs.map((t: any) => ({ type: "library", title: t.title || "", data: t.data, selected: t.selected, index: all.indexOf(t), pinned: t.pinned ? true : undefined }));
         } catch (e) {}
         return out;
     }
@@ -515,11 +556,13 @@ class _TabSessionsMixin {
 
     /** Convert session tab records → Zotero_Tabs.getState() shape (resolving
      *  itemKey→itemID), for `Zotero_Tabs.restoreState` / the dev-window queue.
-     *  CRITICAL: `restoreState` uses the array index as each tab's index and
-     *  expects the LIBRARY tab at index 0 (its hook just renames the existing
-     *  one). Without it the first reader tab is added at index 0 → throws
-     *  "'index' should be an integer > 0" and the entire rebuild aborts (teardown
-     *  already happened → an emptied window). So we always prepend it. */
+     *  CRITICAL on Zotero 9/10: `restoreState` uses the array index as each
+     *  tab's index and expects the LIBRARY tab at index 0 (its hook just renames
+     *  the existing fixed one, tabs.js 10.0.8). Without it the first reader tab
+     *  is added at index 0 → throws "'index' should be an integer > 0" and the
+     *  entire rebuild aborts (teardown already happened → an emptied window).
+     *  So we always prepend it. On Zotero 11 a library record becomes a library
+     *  tab of its own (tabs.js restoreState.library), at any index. */
     _wvTabSessionToGetStateTabs(recs: any[], libraryTitle?: string) {
         let lt = libraryTitle;
         if (lt == null) {
@@ -757,14 +800,23 @@ class _TabSessionsMixin {
         const before = S.getLastClosed ? S.getLastClosed() : null;
         await (this as any)._wvCloseQuietly(wins.filter((w: any) => w !== keep));
         const Z: any = keep.Zotero_Tabs;
-        // A library tab Zotero holds pinned can't be closed (and the one kept
-        // would carry its pin into a session without it): unpin them first; the
+        // The library tab that stays: the window's FIRST, chosen before the unpin
+        // below, which puts each unpinned tab after the pins still left (tabs.js
+        // setPinned) -- with two pinned library tabs the second became the first,
+        // stayed, and the window lost "zotero-pane" (2026-11-27, guard:
+        // test/pin-name-library-tabs.spec.js; later specs select that id).
+        let home = Z._tabs.find((t: any) => wvIsLibraryTabID(t.id));
+        // Zotero keeps a pinned tab from the USER's close only (tabs.js
+        // _isClosable; close() itself would close it), but the tab kept would
+        // carry its pin into a session without it: unpin them first; the
         // session's own records pin again what they held (_wvTabSessionReconstructNative).
         if (typeof Z.setPinned === "function") {
             for (const t of Z._tabs.slice()) { if (t && t.pinned) { try { Z.setPinned(t.id, false); } catch (_) {} } }
         }
-        if (!Z._tabs.some((t: any) => wvIsLibraryTabID(t.id))) await wvOpenLibraryView(keep);
-        const home = Z._tabs.find((t: any) => wvIsLibraryTabID(t.id));
+        if (!home) {
+            await wvOpenLibraryView(keep);
+            home = Z._tabs.find((t: any) => wvIsLibraryTabID(t.id));
+        }
         if (home) Z.select(home.id);
         const ids = Z._tabs.filter((t: any) => t !== home).map((t: any) => t.id);
         try { (this as any)._wvBlindAutomationTabClose(ids); } catch (_) {}
@@ -786,7 +838,7 @@ class _TabSessionsMixin {
             if (tabs.length && !tabs.some((t: any) => t.selected)) tabs[0].selected = true;
         }
         else if (Array.isArray(rec.libraryTabs) && rec.libraryTabs.length) tabs.splice(0, 1, ...rec.libraryTabs);
-        const wvMainState = { collection: rec.collection, columnPrefs: rec.columnPrefs, hiddenColl: rec.hiddenColl, title: rec.title || rec.name, tagsAuto: rec.tagsAuto, pinnedPane: rec.pinnedPane, paneOpen: rec.paneOpen,
+        const wvMainState = { collection: rec.collection, columnPrefs: rec.columnPrefs, hiddenColl: rec.hiddenColl, sfOpen: rec.sfOpen, bmPane: rec.bmPane, collFunnel: rec.collFunnel, title: rec.title || rec.name, tagsAuto: rec.tagsAuto, pinnedPane: rec.pinnedPane, paneOpen: rec.paneOpen,
             glyph: rec.glyph, glyphPicked: rec.glyphPicked, paneSizes: rec.paneSizes };
         return { kind: first ? "main-anchor" : "main-dev", tabs, geom: rec.geom || null, wvMainState };
     }
@@ -818,18 +870,28 @@ class _TabSessionsMixin {
             const libs = (first && first.libraryTabs) || [];
             const KZ: any = keep.Zotero_Tabs;
             const pinsAPI = typeof KZ.setPinned === "function";
+            // The window that stayed keeps its first library tab, the session's first.
+            // Found BEFORE the others join: a pinned one added goes before it while it
+            // is unpinned, and the search then took that one for it and left the
+            // first unpinned (2026-11-27, two pinned library tabs; guard:
+            // test/pin-name-library-tabs.spec.js).
+            const home = KZ._tabs.find((x: any) => x && wvIsLibraryTabID(x.id));
+            // Its Show Tab Name choice is the session's for it, or none: it still held
+            // the one of the session it leaves (tabs.ts _wvLibTabPinNameSet).
+            if (home) { try { P._wvLibTabPinNameSet(home, P._wvLibTabPinNameOwn(libs[0] || null)); } catch (_) {} }
+            // Zotero's own pin from the session's record (the teardown unpinned it), or
+            // the one-time pin of a session saved before Zotero pinned
+            // (_wvTabSessionMigrateZoteroPins). First, so the pins keep the saved order.
+            if (pinsAPI && home && !home.pinned && ((libs[0] && libs[0].pinned) || (first && first.pinHome))) {
+                try { KZ.setPinned(home.id, true); } catch (_) {}
+            }
             for (const t of libs.slice(1)) {
-                const at: any = { type: "library-unloaded", title: t.title || "", data: t.data || {}, select: !!t.selected };
+                // A copy: from now on the tab's data is its own, not the stored session's.
+                const at: any = { type: "library-unloaded", title: t.title || "", data: Object.assign({}, t.data || {}), select: !!t.selected };
                 if (Number.isInteger(t.index)) at.index = Math.min(t.index, KZ._tabs.length);
                 const r: any = KZ.add(at);
                 const nid = r && (r.id || (typeof r === "string" ? r : null));
                 if (pinsAPI && t.pinned && nid) { try { KZ.setPinned(nid, true); } catch (_) {} }
-            }
-            // The window that stayed keeps its first library tab: Zotero's own pin
-            // from the session's record (the teardown unpinned it).
-            if (pinsAPI && libs[0] && libs[0].pinned) {
-                const home = KZ._tabs.find((x: any) => x && wvIsLibraryTabID(x.id));
-                if (home && !home.pinned) { try { KZ.setPinned(home.id, true); } catch (_) {} }
             }
         } catch (e) { Zotero.debug("[Weavero] reconstruct library tabs err: " + e); }
         if (swapGroups) {
@@ -906,6 +968,13 @@ class _TabSessionsMixin {
             // gives the reused anchor THIS session's set), so the saved
             // collection is selected in the filtered tree.
             try { if ((this as any)._wvHidRestore) await (this as any)._wvHidRestore(w, entry.hiddenColl || null); } catch (_) {}
+            // The session's closed saved-search folders (absent = all open), same rule.
+            try { if ((this as any)._wvSfRestore) (this as any)._wvSfRestore(w, entry.sfOpen || null); } catch (_) {}
+            // The session's Bookmarks pane (absent = the defaults), same rule.
+            try { if ((this as any)._wvBmpRestore) (this as any)._wvBmpRestore(w, entry.bmPane || null); } catch (_) {}
+            // The session's collections funnel (absent = the default), same rule; before the
+            // collection is selected, so it is selected in the filtered tree.
+            try { if ((this as any)._wvCfRestore) await (this as any)._wvCfRestore(w, entry.collFunnel || null); } catch (_) {}
             // Custom title, same rule (absent = the default "Window N").
             try {
                 const want = entry.title || "";
@@ -1034,7 +1103,7 @@ class _TabSessionsMixin {
                     tabs: this._wvTabSessionToGetStateTabs(m.tabs),
                     // Carried into the spawned window so it restores its OWN
                     // collection + items-tree columns/sort, not the anchor's.
-                    wvMainState: { collection: m.collection, columnPrefs: m.columnPrefs, hiddenColl: m.hiddenColl, title: m.title, tagsAuto: m.tagsAuto, pinnedPane: m.pinnedPane, paneOpen: m.paneOpen },
+                    wvMainState: { collection: m.collection, columnPrefs: m.columnPrefs, hiddenColl: m.hiddenColl, sfOpen: m.sfOpen, bmPane: m.bmPane, collFunnel: m.collFunnel, title: m.title, tagsAuto: m.tagsAuto, pinnedPane: m.pinnedPane, paneOpen: m.paneOpen },
                     // Placement (2026-07-15) — the spawn path applies it;
                     // entries without one (legacy sessions) get maximized
                     // there instead of the tiny default window.
@@ -1084,6 +1153,7 @@ class _TabSessionsMixin {
      *  the target → make the target the active (tracked) session. */
     async _wvTabSessionSwitch(id: string) {
         await this._wvTabSessionInit();
+        try { await this._wvTabSessionMigrateZoteroPins(); } catch (e) { Zotero.debug("[Weavero] session pin migration err: " + e); }
         const sess = this._wvTabSessionList().find((s: any) => s.id === id);
         if (!sess) return;
         // Copy the target topology BEFORE any flush/autosave rewrites window
@@ -1129,7 +1199,7 @@ class _TabSessionsMixin {
     // ---- Small UI helpers --------------------------------------------------
 
     _wvTabSessionTabCountLabel(n: number) {
-        return n + (n === 1 ? " tab" : " tabs");
+        return wvStr("weavero-tabs-tab-count", { count: n });
     }
 
     /** "N windows · M tabs" (windows part omitted when unknown/1-and-
@@ -1138,7 +1208,7 @@ class _TabSessionsMixin {
     _wvTabSessionCountsLabel(nWins: number, nTabs: number) {
         const tabs = this._wvTabSessionTabCountLabel(nTabs);
         if (!nWins || nWins < 1) return tabs;
-        return nWins + (nWins === 1 ? " window" : " windows") + " · " + tabs;
+        return wvStr("weavero-window-count", { count: nWins }) + " · " + tabs;
     }
 
     _wvTabSessionCountWindows(s: any) {
@@ -1202,8 +1272,8 @@ class _TabSessionsMixin {
             const sess = this._wvTabSessionList().find((s: any) => s.id === id);
             if (!sess) return;
             const valObj = { value: sess.name || "" };
-            const ok = Services.prompt.prompt(win, "Rename Session",
-                "Session name:", valObj, null, {});
+            const ok = Services.prompt.prompt(win, wvStr("weavero-session-rename-title"),
+                wvStr("weavero-session-rename-label"), valObj, null, {});
             if (!ok) return;
             const name = (valObj.value || "").trim();
             if (name) this._wvTabSessionRename(id, name);
@@ -1214,8 +1284,8 @@ class _TabSessionsMixin {
         try {
             const sess = this._wvTabSessionList().find((s: any) => s.id === id);
             if (!sess) return;
-            const ok = Services.prompt.confirm(win, "Delete Session",
-                "Delete the saved session “" + sess.name + "”?");
+            const ok = Services.prompt.confirm(win, wvStr("weavero-session-delete-title"),
+                wvStr("weavero-session-delete-confirm", { name: String(sess.name) }));
             if (!ok) return;
             this._wvTabSessionDelete(id);
         } catch (e) { Zotero.debug("[Weavero] _wvTabSessionConfirmDelete err: " + e); }
@@ -1400,13 +1470,13 @@ class _TabSessionsMixin {
             const hdr = wvHtmlEl(doc, "div", "wv-cursess-header" + (sess ? " wv-sessmenu-active" : " wv-cursess-unsaved"));
             const dot = wvHtmlEl(doc, "span");
             dot.className = "wv-sessmenu-dot";
-            dot.textContent = "S";
+            dot.textContent = wvStr("weavero-session-dot");
             hdr.appendChild(dot);
             // Name first, then the "Current session" tag (right-aligned) — mirrors
             // the saved-session rows' name-left / meta-right layout.
             const label = wvHtmlEl(doc, "span");
             label.className = "wv-cursess-label";
-            label.textContent = sess ? (sess.name || this._wvTabSessionDefaultName()) : "Current session";
+            label.textContent = sess ? (sess.name || this._wvTabSessionDefaultName()) : wvStr("weavero-session-current");
             hdr.appendChild(label);
             // Tab count — like the saved-session rows, but a LIVE count of the
             // current workspace (main-window content tabs + reader-window tabs) so
@@ -1433,8 +1503,8 @@ class _TabSessionsMixin {
             // Only an ACTIVE session can be renamed; with none, no promise
             // and no empty menu (pre-release review 2026-10-05).
             if (sess) {
-                hdr.setAttribute("title", "Right-click to rename this session"
-                    + (createdFull ? "\nCreated: " + createdFull : ""));
+                hdr.setAttribute("title", wvStr("weavero-session-current-tip")
+                    + (createdFull ? "\n" + wvStr("weavero-session-created", { date: createdFull }) : ""));
                 hdr.style.cursor = "context-menu";
             }
             hdr.addEventListener("contextmenu", (e: any) => {
@@ -1464,7 +1534,7 @@ class _TabSessionsMixin {
 
             const header = wvHtmlEl(doc, "div");
             header.className = "wv-sessmenu-header";
-            const hTitle = wvHtmlEl(doc, "span", "wv-sessmenu-header-title", "Sessions", header);
+            const hTitle = wvHtmlEl(doc, "span", "wv-sessmenu-header-title", wvStr("weavero-session-header"), header);
             // Sort control at the header's right, the annotations pane's
             // pattern (MJT 2026-09-29, "like the annotations pane"): a
             // dropdown chip naming the kind (menu: Created / Name / Last used)
@@ -1474,7 +1544,7 @@ class _TabSessionsMixin {
             const sortRev = this._wvTabSessionSortReverse();
             const dirInfo = this._wvTabSessionSortDirInfo(sortMode, sortRev);
             const drop = wvHtmlEl(doc, "button", "wv-sessmenu-sortdrop");
-            drop.setAttribute("title", "Sort sessions");
+            drop.setAttribute("title", wvStr("weavero-session-sort-button"));
             drop.setAttribute("data-wv-sort", sortMode + (sortRev ? " reversed" : ""));
             const dropLab = wvHtmlEl(doc, "span", undefined, this._wvTabSessionSortLabel(sortMode), drop);
             const caret = wvHtmlEl(doc, "span", "wv-sessmenu-sortcaret", "▾");   // ▾
@@ -1488,7 +1558,7 @@ class _TabSessionsMixin {
             });
             header.appendChild(drop);
             const dir = wvHtmlEl(doc, "button", "wv-sessmenu-sortdir", dirInfo.arrow);
-            dir.setAttribute("title", dirInfo.label + " (click to reverse)");
+            dir.setAttribute("title", wvStr("weavero-session-sort-direction", { order: dirInfo.label }));
             dir.setAttribute("data-wv-dir", dirInfo.asc ? "asc" : "desc");
             dir.addEventListener("click", (e: any) => {
                 try {
@@ -1507,9 +1577,9 @@ class _TabSessionsMixin {
             // workspace as a new current session; the session you were in stays
             // saved in the list behind you.
             const save = wvHtmlEl(doc, "div", "wv-sessmenu-row");
-            save.setAttribute("title", "Open a fresh, empty workspace as a new session (the current session stays saved below)");
+            save.setAttribute("title", wvStr("weavero-session-new", null, "title"));
             const plus = wvHtmlEl(doc, "span", "wv-sessmenu-glyph", "+", save);
-            const saveName = wvHtmlEl(doc, "span", "wv-sessmenu-name", "New session", save);
+            const saveName = wvHtmlEl(doc, "span", "wv-sessmenu-name", wvStr("weavero-session-new"), save);
             save.addEventListener("click", (e: any) => {
                 try {
                     e.stopPropagation();
@@ -1522,6 +1592,10 @@ class _TabSessionsMixin {
 
             const activeId = this._wvTabSessionGetActiveId();
             const expandedSet = this._wvTabSessionExpanded || (this._wvTabSessionExpanded = new Set());
+            // The same words on every row: formatted once per render.
+            const dotLetter = wvStr("weavero-session-dot");
+            const tipCurrent = wvStr("weavero-session-row-current");
+            const tipSwitch = wvStr("weavero-session-row-switch");
             const mkRow = (s: any, autoSlot: boolean) => {
                 const isActive = s.id === activeId;
                 const n = this._wvTabSessionCountTabs(s);
@@ -1534,17 +1608,15 @@ class _TabSessionsMixin {
                 // last used (MJT 2026-09-29), in Zotero's Date Added format.
                 const createdFull = this._wvTabSessionDateLabel(s.created, false);
                 const usedFull = this._wvTabSessionDateLabel(this._wvTabSessionUsedAt(s), false);
-                row.setAttribute("title", (isActive
-                    ? "Current session — updates automatically as you open & close tabs"
-                    : "Switch to this session")
-                    + (createdFull ? "\nCreated: " + createdFull : "")
-                    + (usedFull ? "\nLast used: " + usedFull : ""));
+                row.setAttribute("title", (isActive ? tipCurrent : tipSwitch)
+                    + (createdFull ? "\n" + wvStr("weavero-session-created", { date: createdFull }) : "")
+                    + (usedFull ? "\n" + wvStr("weavero-session-last-used", { date: usedFull }) : ""));
                 const sid = s.id;
                 // Disclosure twisty (expand to see the tabs). Empty spacer when 0 tabs.
                 const tw = wvHtmlEl(doc, "span", "wv-sessmenu-twisty");
                 if (n > 0) {
                     tw.textContent = expanded ? "▾" : "▸";   // ▾ / ▸
-                    tw.setAttribute("title", expanded ? "Collapse" : "Show tabs");
+                    tw.setAttribute("title", wvStr("weavero-session-twisty", { state: expanded ? "expanded" : "collapsed" }));
                     tw.addEventListener("click", (e: any) => {
                         try {
                             e.stopPropagation();   // toggle only — don't switch the session
@@ -1556,14 +1628,14 @@ class _TabSessionsMixin {
                 row.appendChild(tw);
                 const dot = wvHtmlEl(doc, "span");
                 dot.className = "wv-sessmenu-dot";
-                dot.textContent = "S";
+                dot.textContent = dotLetter;
                 row.appendChild(dot);
                 const name = wvHtmlEl(doc, "span");
                 name.className = "wv-sessmenu-name";
-                name.textContent = s.name || "Untitled session";
+                name.textContent = s.name || wvStr("weavero-session-untitled");
                 // Sorting on a date: that date under the name (MJT 2026-09-29),
                 // short form (time only when today), as the annotations pane.
-                const dateKind = sortMode === "created" ? "Created" : sortMode === "lastUsed" ? "Last used" : "";
+                const dateKind = sortMode === "created" || sortMode === "lastUsed" ? sortMode : "";
                 const dateShort = dateKind
                     ? this._wvTabSessionDateLabel(sortMode === "created" ? s.created : this._wvTabSessionUsedAt(s), true) : "";
                 if (dateShort) {
@@ -1571,14 +1643,14 @@ class _TabSessionsMixin {
                     box.appendChild(name);
                     const date = wvHtmlEl(doc, "span");
                     date.className = "wv-sessmenu-date";
-                    date.textContent = dateKind + " " + dateShort;
+                    date.textContent = wvStr("weavero-session-date-line", { sort: dateKind, date: dateShort });
                     box.appendChild(date);
                     row.appendChild(box);
                 }
                 else row.appendChild(name);
                 const count = wvHtmlEl(doc, "span");
                 count.className = "wv-sessmenu-count";
-                const suffix = autoSlot ? " · auto" : "";
+                const suffix = autoSlot ? " · " + wvStr("weavero-session-auto-tag") : "";
                 count.textContent = this._wvTabSessionCountsLabel(this._wvTabSessionCountWindows(s), n) + suffix;
                 row.appendChild(count);
                 row.addEventListener("click", (e: any) => {
@@ -1651,7 +1723,7 @@ class _TabSessionsMixin {
                 if (item.getDisplayTitle) return item.getDisplayTitle();
             }
         } catch (e) {}
-        return rec.title || rec.itemKey || "Untitled";
+        return rec.title || rec.itemKey || wvStr("weavero-session-tab-untitled");
     }
 
     /** Render a session's tabs under its row, grouped by window — using the SAME
@@ -1666,8 +1738,8 @@ class _TabSessionsMixin {
                 const recs = w.tabs || [];
                 if (!recs.length) continue;
                 let label: string;
-                if (w.kind === "reader") { readerN++; label = w.name || (readerN > 1 ? "Reader window " + readerN : "Reader window"); }
-                else { mainN++; label = w.name || ("Window " + mainN); }
+                if (w.kind === "reader") { readerN++; label = w.name || (readerN > 1 ? wvStr("weavero-window-reader-default-name-numbered", { number: readerN }) : wvStr("weavero-window-reader-default-name")); }
+                else { mainN++; label = w.name || wvStr("weavero-window-default-name", { number: mainN }); }
                 const tabs: any[] = [];
                 for (const rec of recs) {
                     const id = Zotero.Items.getIDFromLibraryAndKey(rec.libraryID, rec.itemKey);
@@ -1683,16 +1755,19 @@ class _TabSessionsMixin {
                         },
                     });
                 }
-                // Every main window has an implicit "My Library" home tab that the
-                // session snapshot doesn't store — synthesize it so the saved view
-                // leads with it, matching the live all-windows list. (Reader windows
-                // have no home tab.) Clicking it focuses the library in the current
-                // main window.
+                // A "My Library" row ahead of a main window's documents, as the live
+                // all-windows list shows its library tab. On Zotero 9/10 every main
+                // window has its one fixed library tab (tabs.js 10.0.8, 'zotero-pane'),
+                // which the session snapshot doesn't store. On Zotero 11 a window can
+                // have none (its record says `noLibrary`, _wvTabSessionLibraryFields)
+                // or several -- yet the row is added for every main window record
+                // (a known gap, work/TODO.md 2026-11-25). Reader windows have none.
+                // Clicking it focuses the library in the first main window.
                 let libraryTab: any = null;
                 if (w.kind !== "reader") {
                     const live = Zotero.getMainWindows()[0];
                     libraryTab = {
-                        title: "My Library",
+                        title: Zotero.getString("pane.collections.library"),
                         iconFullClass: (((this as any)._wvAnchorLibIconClass(live) || "icon icon-css icon-library") + " tab-icon").replace(/\s+/g, " ").trim(),
                         onClick: () => {
                             try {
@@ -1743,7 +1818,7 @@ class _TabSessionsMixin {
                                 const rec: any = sec.wvRec;
                                 mk("weavero-menu-window-rename", () => {
                                     lp._wvShowRenameDialog(doc.defaultView, {
-                                        title: "Rename Window",
+                                        title: wvStr("weavero-window-rename-title"),
                                         name: rec.name || "",
                                         placeholder: sec.label,
                                         swatches: [],
@@ -1805,8 +1880,8 @@ class _TabSessionsMixin {
                                                             kind: isReader ? "reader" : "main",
                                                             tabs, count: tabs.length,
                                                             geom: rec.geom || null, glyph: null,
-                                                            wvMainState: (rec.collection || rec.columnPrefs || rec.hiddenColl || rec.title || typeof rec.tagsAuto === "boolean" || rec.pinnedPane || rec.paneOpen)
-                                                                ? { collection: rec.collection, columnPrefs: rec.columnPrefs, hiddenColl: rec.hiddenColl, title: rec.title, tagsAuto: rec.tagsAuto, pinnedPane: rec.pinnedPane, paneOpen: rec.paneOpen } : null,
+                                                            wvMainState: (rec.collection || rec.columnPrefs || rec.hiddenColl || rec.sfOpen || rec.bmPane || rec.collFunnel || rec.title || typeof rec.tagsAuto === "boolean" || rec.pinnedPane || rec.paneOpen)
+                                                                ? { collection: rec.collection, columnPrefs: rec.columnPrefs, hiddenColl: rec.hiddenColl, sfOpen: rec.sfOpen, bmPane: rec.bmPane, collFunnel: rec.collFunnel, title: rec.title, tagsAuto: rec.tagsAuto, pinnedPane: rec.pinnedPane, paneOpen: rec.paneOpen } : null,
                                                             sessionId: activeId, savedAt: Date.now(),
                                                         });
                                                         p2._wvSavedWindowsPersist();
@@ -1831,7 +1906,7 @@ class _TabSessionsMixin {
                                     try {
                                         const n = (rec.tabs || []).length;
                                         const ok = Services.prompt.confirm(doc.defaultView, "Weavero",
-                                            "Remove this window (" + n + " tab" + (n === 1 ? "" : "s") + ") from “" + (sess.name || "Session") + "”?");
+                                            wvStr("weavero-session-remove-window-confirm", { count: n, name: sess.name || wvStr("weavero-session-unnamed") }));
                                         if (!ok) return;
                                         sess.windows = (sess.windows || []).filter((x: any) => x !== rec);
                                         const p2: any = live();

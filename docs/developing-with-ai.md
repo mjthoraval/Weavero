@@ -144,8 +144,9 @@ Framing the agent fixes this at the root, three pieces:
    documentation list below. A local clone beats a web search every
    time: the agent greps the exact version you run.
 2. **Dictate standing rules it always remembers** — instruction files
-   (Claude Code reads `CLAUDE.md` from the repo root; other agents have
-   equivalents). Record how to build, how to test, the project's
+   (Claude Code reads `CLAUDE.md` from the repo root, most other agents
+   read `AGENTS.md`; Weavero keeps its instructions in one `AGENTS.md`
+   and a `CLAUDE.md` that imports it). Record how to build, how to test, the project's
    conventions, and every invariant you learn the hard way — this is
    the *context in which the agent takes decisions*, and it is reloaded
    every session, so no lesson has to be learned twice.
@@ -438,7 +439,9 @@ Three habits carried the most weight in Weavero's instruction files:
   agent-editing failure modes.
 
 **Weavero's instruction files are published.** The live agent workflow —
-the root [`CLAUDE.md`](https://github.com/mjthoraval/Weavero/blob/main/CLAUDE.md),
+the root [`AGENTS.md`](https://github.com/mjthoraval/Weavero/blob/main/AGENTS.md)
+(which [`CLAUDE.md`](https://github.com/mjthoraval/Weavero/blob/main/CLAUDE.md)
+imports, adding only the Claude Code specifics),
 the step-by-step skills in
 [`.claude/skills/`](https://github.com/mjthoraval/Weavero/tree/main/.claude/skills),
 the path-scoped rules in
@@ -496,7 +499,7 @@ exact syntax.
    every build — Zotero will not reinstall the same version id).
 3. **Force-reload with cache bypass** — the bytecode cache happily
    serves last build's code after an install. `zotero_plugin_reload`, or
-   `loadSubScriptWithOptions(rootURI + "bootstrap.js", {ignoreCache: true})`.
+   `loadSubScriptWithOptions(rootURI + "bootstrap.js", {ignoreCache: true, allowUnsafeURL: true})` (Zotero 11 refuses a jar:/file: script without `allowUnsafeURL` once its temporary pref goes).
 4. Verify through the bridge: is the new behavior live? any new errors
    in `zotero_read_errors`?
 
@@ -598,6 +601,6 @@ human reviews diffs, tests the gestures, and decides.
 | Worked example | [Weavero source](https://github.com/mjthoraval/Weavero) |
 
 *This page reflects the Weavero workflow as of August 2026 (Zotero 10).
-The instruction files it describes are published in the repo's `.claude/`
-directory. Corrections and additions welcome —
+The instruction files it describes are published in the repo: the root
+`AGENTS.md` and the `.claude/` directory. Corrections and additions welcome —
 [open an issue](https://github.com/mjthoraval/Weavero/issues).*

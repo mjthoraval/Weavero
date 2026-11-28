@@ -38,6 +38,7 @@ import { BM_HOVERCARD_CSS, WV_PIN_ICON_URI } from "./reader-panels";
 import { wvPopupHost, wvDismissTooltip, wvSetBoolAttr, wvWithin, wvHtmlEl } from "../lib/dom";
 import { wvOutsideClick, wvReachableDocs, wvDismissOff } from "../lib/dismiss";
 import { wvLivePlugin } from "../lib/live";
+import { wvOpenedInstance } from "../lib/compat";
 import { wvStoreWrite, wvStoreRead } from "../lib/store";
 import { wvTimeout } from "../lib/timers";
 import { wvMenuItem } from "../lib/menu";
@@ -47,6 +48,7 @@ import { wvSvgEl } from "../lib/svg";
 import { wvDataColor, wvSetIconFill } from "../lib/style";
 import { wvLinkColor, wvLinkClassRules } from "../lib/links";
 import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from "../lib/l10n";
+import { wvOutlineBuildFp } from "../lib/outline-build";
 
 // Gecko globals — not in the project's TS lib set (cf. tabs.ts).
 declare const IOUtils: any;
@@ -58,7 +60,7 @@ const BM_POPUP_ID = "wv-bookmarks-popup";       // the <panel>
 const BM_INNER_ID = "wv-bookmarks-inner";
 const BM_CHIP_POPUP_ID = "wv-bookmarks-chip-popup";   // sibling XUL <panel>
 const BM_CHIP_INNER_ID = "wv-bookmarks-chip-inner";
-const BM_STYLE_ID = "wv-bookmarks-style";
+export const BM_STYLE_ID = "wv-bookmarks-style";
 const BM_ROW_MENU_ID = "wv-bm-row-menu";
 // Annotation-type SVG glyphs — same paths the reader-sidebar chip popup
 // uses (kept in sync with RP_ANN_TYPE_SVG in reader-panels.ts).
@@ -409,8 +411,62 @@ const BM_EDITDLG_CSS = [
 ].join("");
 const BM_EDITDLG_STYLE_ID = "wv-bm-editdlg-style";
 
+/** Where the bookmarks' tools and list are drawn (bookmarks.ts _bmRenderTools / _bmListView):
+ *  the dropdown -- its filter state the plugin's, reset when it closes -- or a collections
+ *  column's pane (bookmarks-pane.ts) -- its window's. */
+export interface WvBmSurface {
+    kind: "popup" | "pane";
+    win: any;
+    /** The filter state: the search text, whether the search row is open, the chip bag. */
+    fs: { text: string; searchOpen: boolean; chips: any };
+    /** Redraw the tools and the list (a toggle, a sort). */
+    render(): void;
+    /** Redraw the list alone (typing in the search keeps its caret). */
+    refresh(): void;
+    /** The box the funnel's side popup opens beside (at its right edge). */
+    side(): any;
+    /** The funnel button drawn now, whose marks follow the chips. */
+    funnel(): any;
+    /** The side popup just opened (a pane dismisses it on an outside click). */
+    onChipOpen?(panel: any, anchorBtn: any): void;
+}
+
 class _BookmarksMixin {
     [k: string]: any;
+
+    /** The dropdown's filter state: the plugin fields it always kept. */
+    _bmPopupFs(): any {
+        const P: any = this;
+        return {
+            get text() { return P._bmLibFilterText || ""; },
+            set text(v: string) { P._bmLibFilterText = v; },
+            get searchOpen() { return !!P._bmLibSearchOpen; },
+            set searchOpen(v: boolean) { P._bmLibSearchOpen = v; },
+            get chips() { return P._bmLibChipStateBag || null; },
+            set chips(v: any) { P._bmLibChipStateBag = v; },
+        };
+    }
+
+    /** The dropdown as a surface (the tools' and the list's, _bmRenderTools). */
+    _bmPopupSurface(win: any): WvBmSurface {
+        return {
+            kind: "popup",
+            win,
+            fs: this._bmPopupFs(),
+            render: () => this._bmRenderPopupList(win),
+            refresh: () => this._bmRefreshPopupList(win),
+            side: () => win.document.getElementById(BM_POPUP_ID),
+            funnel: () => { const i = win.document.getElementById(BM_INNER_ID); return i ? i.querySelector(".wv-bm-iconbtn:has(.wv-bm-funnel-chev)") : null; },
+        };
+    }
+
+    /** The funnel's side popup is open for surface `sf`. */
+    _bmChipOpen(sf: WvBmSurface): boolean {
+        try {
+            const p = sf.win.document.getElementById(BM_CHIP_POPUP_ID);
+            return !!p && (p.getAttribute("data-wv-surface") || "popup") === sf.kind;
+        } catch (e) { return false; }
+    }
 
     // ---- File-backed store ------------------------------------------------
 
@@ -643,8 +699,8 @@ class _BookmarksMixin {
      *  Entry", "Move Outline Entry" (a reorder or re-indent), "Edit Outline
      *  Entry" (region, kind, spacing mark); a mix reads "Edit Outline". */
     _wvOlUndoLabel(changes: any[], docBefore: any, docAfter: any): string {
-        if (!docBefore && docAfter) return "Create Weavero Outline";
-        if (docBefore && !docAfter) return "Delete Weavero Outline";
+        if (!docBefore && docAfter) return wvStr("weavero-undo-outline-create");
+        if (docBefore && !docAfter) return wvStr("weavero-undo-outline-remove");
         let added = 0, removed = 0, renamed = 0, moved = 0, edited = 0;
         const without = (r: any, drop: string[]) => { const o: any = {}; for (const k of Object.keys(r)) if (!drop.includes(k)) o[k] = r[k]; return JSON.stringify(o); };
         for (const c of changes) {
@@ -654,10 +710,10 @@ class _BookmarksMixin {
             else if (without(c.before, ["indentLevel"]) === without(c.after, ["indentLevel"])) moved++;
             else edited++;
         }
-        const kinds = ([["Add", added], ["Delete", removed], ["Rename", renamed], ["Move", moved], ["Edit", edited]] as Array<[string, number]>).filter(k => k[1] > 0);
-        if (kinds.length !== 1) return "Edit Outline";
+        const kinds = ([["add", added], ["delete", removed], ["rename", renamed], ["move", moved], ["edit", edited]] as Array<[string, number]>).filter(k => k[1] > 0);
+        if (kinds.length !== 1) return wvStr("weavero-undo-outline-mixed");
         const [verb, n] = kinds[0];
-        return n === 1 ? verb + " Outline Entry" : verb + " " + n + " Outline Entries";
+        return wvStr("weavero-undo-outline-entries", { action: verb, count: n });
     }
 
     /** Called by `_wvOutlinePersist` before it writes: a step per document
@@ -845,7 +901,29 @@ class _BookmarksMixin {
             }
         };
         walk(tree, 0);
-        store[key] = { importedFrom, importedAt: new Date().toISOString(), entries };
+        // The BASE the user's edits start from (MJT 2026-11-24): which source,
+        // the extraction code's fingerprint with the structure data's stamp,
+        // and the entries as copied (title, level, page, position). Read by
+        // the planned "show my edits" / "newer extraction" / merge (plan P5);
+        // a doc without it is an older one.
+        let stamp = "";
+        try {
+            const it: any = Zotero.Items.getByLibraryAndKey(libraryID, itemKey);
+            const r: any = it && ((Zotero.Reader as any)._readers || []).find((x: any) => x && x.itemID === it.id && x._wvOutlineCache);
+            const c = r && r._wvOutlineCache;
+            if (c && typeof c.sdtStamp === "string") stamp = c.sdtStamp.replace(/\|code:[^|]*$/, "");
+        } catch (_) {}
+        const base = {
+            source: importedFrom,
+            version: wvOutlineBuildFp() + (stamp ? "|" + stamp : ""),
+            tree: entries.map((e: any) => ({ title: e.title, level: e.indentLevel,
+                page: e.position && Number.isInteger(e.position.pageIndex) ? e.position.pageIndex : null,
+                position: e.position ? JSON.parse(JSON.stringify(e.position)) : null })),
+        };
+        // `base` before `entries`: an undo recreates a document as its other
+        // fields then its entries (_wvOlUndoApply), and the copy must read back
+        // the same.
+        store[key] = { importedFrom, importedAt: new Date().toISOString(), base, entries };
         if (opts && opts.ownStep) {
             // Inside a gesture (an undo batch) it is recorded now, before the
             // batch's diff, so it stays a step of its own under the gesture's.
@@ -1158,7 +1236,7 @@ class _BookmarksMixin {
         // follows the page even while a custom label is showing -- otherwise
         // "Reset to Original Name" on a moved bookmark restored the old page's
         // name (2026-07-29). The visible label only follows when not renamed.
-        const auto = "Page " + pageLabel + (d.anchor === "bottom" ? " (bottom)" : "");
+        const auto = wvStr("weavero-bm-page-name", { page: String(pageLabel), anchor: d.anchor === "bottom" ? "bottom" : "top" });
         e.originalLabel = auto;
         if (!e.renamed) e.label = auto;
         await this._bmPersist();
@@ -1197,7 +1275,7 @@ class _BookmarksMixin {
                     // time. The resolver falls back to bm.pageLabel when no
                     // open reader matches.
                     const live = this._bmReaderPageLabel(bm, opts);
-                    return live ? ("Page " + live) : null;
+                    return live ? wvStr("weavero-bm-page-name", { page: String(live), anchor: "top" }) : null;
                 }
                 case "page": {
                     // Same live resolver as "position" (+ the anchor suffix).
@@ -1209,7 +1287,7 @@ class _BookmarksMixin {
                     // this covers every render in between.
                     const live = this._bmReaderPageLabel(bm, opts);
                     return live
-                        ? ("Page " + live + (bm.anchor === "bottom" ? " (bottom)" : ""))
+                        ? wvStr("weavero-bm-page-name", { page: String(live), anchor: bm.anchor === "bottom" ? "bottom" : "top" })
                         : null;
                 }
                 case "treerow": {
@@ -1522,7 +1600,7 @@ class _BookmarksMixin {
         const doc = this._bmReaderDoc(libraryID, itemKey);
         const folder = {
             id: "wv-" + Zotero.Utilities.randomString(8), type: "folder",
-            name: name || "New Folder", expanded: true, _section: section,
+            name: name || wvStr("weavero-bm-folder-default-name"), expanded: true, _section: section,
             created: new Date().toISOString(), children: [] as any[],
         };
         let arr: any[] = (section === "global" ? doc.global : doc.local);
@@ -1758,12 +1836,13 @@ class _BookmarksMixin {
             }
             if (isFolder) folders++; else bms++;
         }
-        const all: Array<[string, number]> = [["Add", added], ["Delete", removed], ["Rename", renamed], ["Move", moved], ["Edit", edited]];
+        const all: Array<[string, number]> = [["add", added], ["delete", removed], ["rename", renamed], ["move", moved], ["edit", edited]];
         const kinds = all.filter(k => k[1] > 0);
-        if (kinds.length !== 1) return "Edit Bookmarks";
+        if (kinds.length !== 1) return wvStr("weavero-undo-bm-mixed");
         const [verb, n] = kinds[0];
-        const noun = folders && !bms ? "Folder" : "Bookmark";
-        return n === 1 ? verb + " " + noun : verb + " " + n + " " + noun + "s";
+        return folders && !bms
+            ? wvStr("weavero-undo-bm-folders", { action: verb, count: n })
+            : wvStr("weavero-undo-bm-bookmarks", { action: verb, count: n });
     }
 
     /** Called by `_bmPersist` before it writes: diff every store key against
@@ -2108,14 +2187,22 @@ class _BookmarksMixin {
     /** Open the side chip-filter popup (a separate XUL panel) anchored
      *  to the right of the bookmarks popup so the bookmark list stays
      *  fully visible while filtering. The funnel button toggles it. */
-    _bmOpenLibChipPopup(win: any, anchorBtn: any) {
+    _bmOpenLibChipPopup(win: any, anchorBtn: any, sfIn?: WvBmSurface) {
         const doc: any = win && win.document;
         if (!doc) return;
-        if (doc.getElementById(BM_CHIP_POPUP_ID)) return;
-        const bmPanel = doc.getElementById(BM_POPUP_ID);
+        const sf = sfIn || this._bmPopupSurface(win);
+        // One side popup per document: another surface's goes (the dropdown's and a
+        // pane's never show together).
+        const cur = doc.getElementById(BM_CHIP_POPUP_ID);
+        if (cur && (cur.getAttribute("data-wv-surface") || "popup") === sf.kind) return;
+        if (cur) this._bmCloseLibChipPopup(win);
+        const bmPanel = sf.side();
         if (!bmPanel) return;
+        // Its sheet is the dropdown's (injected when the dropdown opens).
+        if (sf.kind !== "popup" && !doc.getElementById(BM_STYLE_ID)) this._bmEnsurePopupStyles(doc);
         const panel = doc.createXULElement("panel");
         panel.id = BM_CHIP_POPUP_ID;
+        panel.setAttribute("data-wv-surface", sf.kind);
         panel.setAttribute("animate", "false");
         panel.setAttribute("noautohide", "true");
         panel.setAttribute("consumeoutsideclicks", "false");
@@ -2124,7 +2211,8 @@ class _BookmarksMixin {
         panel.appendChild(inner);
         const host = wvPopupHost(doc);
         host.appendChild(panel);
-        this._bmRenderLibChipBar(doc, win, inner);
+        this._bmRenderLibChipBar(doc, win, inner, sf);
+        if (sf.onChipOpen) { try { sf.onChipOpen(panel, anchorBtn); } catch (_) {} }
         // Anchor the chip popup to the FUNNEL BUTTON inside the
         // bookmarks popup: its top edge lines up with the funnel
         // icon's top edge (clear visual link between the button
@@ -2145,12 +2233,14 @@ class _BookmarksMixin {
         }
     }
 
-    _bmCloseLibChipPopup(win?: any) {
+    /** `kind`: only that surface's side popup ("popup" / "pane"); none: whichever is open. */
+    _bmCloseLibChipPopup(win?: any, kind?: string) {
         win = win || Zotero.getMainWindow();
         const doc = win && win.document;
         if (!doc) return;
         const panel = doc.getElementById(BM_CHIP_POPUP_ID);
         if (!panel) return;
+        if (kind && (panel.getAttribute("data-wv-surface") || "popup") !== kind) return;
         try { panel.hidePopup(); } catch (_) {}
         try { panel.remove(); } catch (_) {}
     }
@@ -2159,8 +2249,13 @@ class _BookmarksMixin {
      *  parallel to `_wvReaderBmChipState` but scoped to the chrome-window
      *  popup. Lazy init; reset via `_bmLibResetChipState` on popup close. */
     _bmLibChipState() {
-        if (!this._bmLibChipStateBag) {
-            this._bmLibChipStateBag = {
+        return this._bmChipBagOf(this._bmPopupFs());
+    }
+
+    /** A surface's chip bag, made on first use (`fs.chips`; null = no chip). */
+    _bmChipBagOf(fs: any) {
+        if (!fs.chips) {
+            fs.chips = {
                 colors: new Set<string>(),
                 tags: new Set<string>(),
                 authors: new Set<string>(),
@@ -2171,7 +2266,7 @@ class _BookmarksMixin {
                 typesExcl: new Set<string>(),
             };
         }
-        return this._bmLibChipStateBag;
+        return fs.chips;
     }
 
     _bmLibResetChipState() {
@@ -2179,7 +2274,12 @@ class _BookmarksMixin {
     }
 
     _bmLibChipsActive(): boolean {
-        const s = this._bmLibChipStateBag;
+        return this._bmChipsOnOf(this._bmPopupFs());
+    }
+
+    /** Any chip on in a surface's filter state. */
+    _bmChipsOnOf(fs: any): boolean {
+        const s = fs && fs.chips;
         if (!s) return false;
         return (s.colors.size + s.tags.size + s.authors.size + s.types.size
             + (this as any)._wvBmChipExcl(s, "colors").size + (this as any)._wvBmChipExcl(s, "tags").size
@@ -2254,20 +2354,17 @@ class _BookmarksMixin {
      *  filter state; the bookmark list re-renders live via
      *  `_bmRefreshPopupList`. Layout mirrors the reader-sidebar chip
      *  popup (`_wvReaderRenderBmChipBar`). */
-    _bmRenderLibChipBar(doc: any, win: any, bar: any) {
+    _bmRenderLibChipBar(doc: any, win: any, bar: any, sfIn?: WvBmSurface) {
         while (bar.firstChild) bar.firstChild.remove();
-        const st = this._bmLibChipState();
+        const sf = sfIn || this._bmPopupSurface(win);
+        const st = this._bmChipBagOf(sf.fs);
         const facets = this._bmLibChipFacets();
         const TYPE_ORDER = ["highlight", "underline", "note", "text", "image", "ink"];
-        const TYPE_NAME: { [k: string]: string } = {
-            highlight: "Highlights", underline: "Underlines", note: "Notes",
-            text: "Text annotations", image: "Image annotations", ink: "Ink annotations",
-        };
         const anyFacets = facets.colors.size || facets.tags.size || facets.authors.size || facets.types.size;
         if (!anyFacets) {
             const empty = wvHtmlEl(doc, "div");
             empty.className = "wv-bm-chip-bar-lib-empty";
-            empty.textContent = "No filters available for the current bookmark list.";
+            empty.textContent = wvStr("weavero-bm-filter-none");
             bar.appendChild(empty);
             return;
         }
@@ -2283,19 +2380,19 @@ class _BookmarksMixin {
         const toggle = (set: Set<string>, key: string) => { if (set.has(key)) set.delete(key); else set.add(key); };
         const rerender = () => {
             try {
-                this._bmRefreshPopupList(win);
-                this._bmRenderLibChipBar(doc, win, bar);
+                sf.refresh();
+                this._bmRenderLibChipBar(doc, win, bar, sf);
                 // Funnel reflects "popup open OR any selection" (sticky bg
                 // tint via wv-active) AND "any chip selected" (blue dot via
                 // wv-bm-lib-filter-active). `:has(.wv-bm-funnel-chev)` picks
                 // the filter button — the prior selector matched the SEARCH
                 // button instead (it carries `.wv-bm-funnel-spacer`).
-                const fb = doc.getElementById(BM_INNER_ID)?.querySelector(".wv-bm-iconbtn:has(.wv-bm-funnel-chev)");
+                const fb = sf.funnel();
                 if (fb) {
                     fb.classList.toggle("wv-active",
-                        !!doc.getElementById(BM_CHIP_POPUP_ID) || this._bmLibChipsActive());
+                        this._bmChipOpen(sf) || this._bmChipsOnOf(sf.fs));
                     fb.classList.toggle("wv-bm-lib-filter-active",
-                        this._bmLibChipsActive());
+                        this._bmChipsOnOf(sf.fs));
                 }
             } catch (_) {}
         };
@@ -2333,7 +2430,7 @@ class _BookmarksMixin {
                 const btn: any = wvHtmlEl(doc, "button");
                 btn.type = "button";
                 btn.className = "wv-filter-opt wv-filter-opt-icon";
-                btn.setAttribute("title", c + " — " + facets.colors.get(c) + " annotation(s) — Alt+click to exclude");
+                btn.setAttribute("title", wvStr("weavero-bm-filter-chip-ann-tip", { name: c, count: facets.colors.get(c) }));
                 if (st.colors.has(c)) btn.dataset.selected = "true";
                 if ((this as any)._wvBmChipExcl(st, "colors").has(c)) btn.dataset.excluded = "true";
                 btn.appendChild((this as any)._wvNativeColorSwatch(doc, c));
@@ -2358,7 +2455,7 @@ class _BookmarksMixin {
                 const chip: any = wvHtmlEl(doc, "button");
                 chip.type = "button";
                 chip.className = "wv-filter-opt wv-filter-opt-icon";
-                chip.setAttribute("title", (TYPE_NAME[tp] || tp) + " — " + facets.types.get(tp) + " — Alt+click to exclude");
+                chip.setAttribute("title", wvStr("weavero-bm-filter-type-tip", { type: tp, count: facets.types.get(tp) }));
                 if (st.types.has(tp)) chip.dataset.selected = "true";
                 if ((this as any)._wvBmChipExcl(st, "types").has(tp)) chip.dataset.excluded = "true";
                 const svgStr = BM_ANN_TYPE_SVG[tp];
@@ -2396,7 +2493,7 @@ class _BookmarksMixin {
                 const chip = wvHtmlEl(doc, "span");
                 chip.className = "wv-bm-chip" + (st.tags.has(t) ? " selected" : "")
                     + ((this as any)._wvBmChipExcl(st, "tags").has(t) ? " excluded" : "");
-                chip.setAttribute("title", t + " — " + info.count + " bookmark(s) — Alt+click to exclude");
+                chip.setAttribute("title", wvStr("weavero-bm-filter-chip-tag-tip", { tag: t, count: info.count }));
                 // A synced tag colour: a hex colour, as a colour property.
                 const tagColor = wvDataColor(info.color);
                 if (tagColor) {
@@ -2419,7 +2516,7 @@ class _BookmarksMixin {
                 const chip = wvHtmlEl(doc, "span");
                 chip.className = "wv-bm-chip" + (st.authors.has(a) ? " selected" : "")
                     + ((this as any)._wvBmChipExcl(st, "authors").has(a) ? " excluded" : "");
-                chip.setAttribute("title", a + " — " + facets.authors.get(a) + " annotation(s) — Alt+click to exclude");
+                chip.setAttribute("title", wvStr("weavero-bm-filter-chip-ann-tip", { name: a, count: facets.authors.get(a) }));
                 chip.textContent = a;
                 chip.addEventListener("click", (e: any) => { (this as any)._wvBmChipToggle(st, "authors", a, !!e.altKey); rerender(); });
                 row.appendChild(chip);
@@ -2563,6 +2660,9 @@ class _BookmarksMixin {
                 }
             } catch (_) {}
         }
+        // The collections column's pane draws the store: every write redraws it
+        // (bookmarks-pane.ts; coalesced, and a no-op when the tree is unchanged).
+        try { if (typeof this._wvBmpStoreChanged === "function") this._wvBmpStoreChanged(); } catch (_) {}
         return this._bmWriteChain;
     }
 
@@ -2623,7 +2723,7 @@ class _BookmarksMixin {
             id: "wv-" + Zotero.Utilities.randomString(8),
             type: "library",
             libraryID,
-            label: label || ("Library " + libraryID),
+            label: label || wvStr("weavero-bm-library-fallback", { id: String(libraryID) }),
             created: new Date().toISOString(),
         });
         return true;
@@ -2653,6 +2753,29 @@ class _BookmarksMixin {
         }
     }
 
+    /** Bookmark a collections-tree row: a collection or a library / group / feed through the
+     *  collections menu's own paths (_bmBookmarkCollection, _bmBookmarkLibrary), any other row
+     *  -- a saved search, Unfiled, Duplicates, the Feeds row... -- as a "treerow", as a drop on
+     *  the toolbar button makes one. The pane's "Now showing" + (bookmarks-pane.ts). True when
+     *  a bookmark was added. */
+    async _bmBookmarkTreeRow(row: any): Promise<boolean> {
+        try {
+            await this._bmInit();
+            if (!row || !row.id) return false;
+            const n = this._bmFlatten().length;
+            if (typeof row.isCollection === "function" && row.isCollection()) await this._bmBookmarkCollection(row.ref);
+            else if (this._bmTreeRowIsLibrary(row) && row.ref && typeof row.ref.libraryID === "number") await this._bmBookmarkLibrary(row.ref.libraryID);
+            else if (this._bmTreeRowIsSpecial(row) || (typeof row.isFeeds === "function" && row.isFeeds())) {
+                const label = typeof row.getName === "function" ? String(row.getName()) : String(row.id);
+                if (this._bmAddTreeRowSync(String(row.id), row.ref ? row.ref.libraryID : null, label)) await this._bmPersist();
+            }
+            return this._bmFlatten().length > n;
+        } catch (e) {
+            Zotero.debug("[Weavero] _bmBookmarkTreeRow err: " + e);
+            return false;
+        }
+    }
+
     /** Remove an entry (anywhere in the tree). For a folder this drops it
      *  and its contents; folders are normally removed via _bmDeleteFolder. */
     async _bmRemove(id: string) {
@@ -2671,7 +2794,7 @@ class _BookmarksMixin {
         const folder = {
             id: "wv-" + Zotero.Utilities.randomString(8),
             type: "folder",
-            name: name || "New Folder",
+            name: name || wvStr("weavero-bm-folder-default-name"),
             expanded: true,
             created: new Date().toISOString(),
             children: [] as any[],
@@ -2882,7 +3005,7 @@ class _BookmarksMixin {
     _bmPromptName(win: any, title: string, initial: string) {
         try {
             const input = { value: initial || "" };
-            const ok = Services.prompt.prompt(win, title, "Name:", input, null, { value: false });
+            const ok = Services.prompt.prompt(win, title, wvStr("weavero-bm-prompt-name"), input, null, { value: false });
             if (!ok) return null;
             const v = (input.value || "").trim();
             return v || null;
@@ -2968,7 +3091,7 @@ class _BookmarksMixin {
             const pos = { x: 0, y: 0 };
             const header = wvHtmlEl(doc, "div");
             header.className = "wv-bm-editdlg-header";
-            header.textContent = opts.dialogTitle || "Edit Bookmark";
+            header.textContent = opts.dialogTitle || wvStr("weavero-bm-edit-title");
             box.appendChild(header);
             let dragging = false, lastX = 0, lastY = 0;
             header.addEventListener("pointerdown", (e: any) => {
@@ -2987,7 +3110,7 @@ class _BookmarksMixin {
             header.addEventListener("pointerup", endDrag);
             header.addEventListener("pointercancel", endDrag);
 
-            box.appendChild(cap(opts.titleCaption || "Title"));
+            box.appendChild(cap(opts.titleCaption || wvStr("weavero-bm-edit-title-caption")));
             const titleInput = wvHtmlEl(doc, "input", "wv-bm-editdlg-input");
             titleInput.setAttribute("type", "text");
             titleInput.value = String(opts.titleValue || "");
@@ -3012,10 +3135,10 @@ class _BookmarksMixin {
             if (originalTitle != null) {
                 origRow = wvHtmlEl(doc, "div");
                 origRow.className = "wv-bm-editdlg-origrow";
-                const ocap = wvHtmlEl(doc, "div", "wv-bm-editdlg-origcap", "Default title:");
+                const ocap = wvHtmlEl(doc, "div", "wv-bm-editdlg-origcap", wvStr("weavero-bm-edit-default-title"));
                 const olbl = wvHtmlEl(doc, "div", "wv-bm-editdlg-origlabel", originalTitle);
                 olbl.setAttribute("title", originalTitle);
-                const resetLink = wvHtmlEl(doc, "button", "wv-bm-editdlg-resetlink", "Reset to default");
+                const resetLink = wvHtmlEl(doc, "button", "wv-bm-editdlg-resetlink", wvStr("weavero-bm-edit-reset-default"));
                 resetLink.addEventListener("click", (e: any) => {
                     e.preventDefault();
                     titleInput.value = originalTitle;
@@ -3046,7 +3169,7 @@ class _BookmarksMixin {
 
             let commentInput: any = null;
             if (hasComment) {
-                box.appendChild(cap(opts.commentCaption || "Comment"));
+                box.appendChild(cap(opts.commentCaption || wvStr("weavero-bm-edit-comment-caption")));
                 commentInput = wvHtmlEl(doc, "textarea");
                 commentInput.className = "wv-bm-editdlg-textarea";
                 commentInput.setAttribute("rows", "4");
@@ -3055,8 +3178,8 @@ class _BookmarksMixin {
             }
 
             const btns = wvHtmlEl(doc, "div", "wv-bm-editdlg-buttons");
-            const cancelBtn = wvHtmlEl(doc, "button", "wv-bm-editdlg-btn", "Cancel");
-            const saveBtn = wvHtmlEl(doc, "button", "wv-bm-editdlg-btn wv-bm-editdlg-btn-primary", "Save");
+            const cancelBtn = wvHtmlEl(doc, "button", "wv-bm-editdlg-btn", wvStr("weavero-common-cancel"));
+            const saveBtn = wvHtmlEl(doc, "button", "wv-bm-editdlg-btn wv-bm-editdlg-btn-primary", wvStr("weavero-common-save"));
             btns.appendChild(cancelBtn);
             btns.appendChild(saveBtn);
             box.appendChild(btns);
@@ -3104,7 +3227,7 @@ class _BookmarksMixin {
             await this._bmInit();
             if (!this._bmDoc) return;
             this._bmShowEditDialog(win.document, win, {
-                dialogTitle: "Add Link Bookmark",
+                dialogTitle: wvStr("weavero-bm-add-link-title"),
                 titleValue: "",
                 urlValue: "",
                 urlCaption: "URL",
@@ -3221,7 +3344,7 @@ class _BookmarksMixin {
                                 // A Zotero DATA write: Zotero's own history
                                 // undoes it (Edit > Undo in the main window),
                                 // labelled with its edit-field message.
-                                try { ann.annotationComment = newComment; await ann.saveTx({ undoAction: "undo-action-edit-field", undoActionArgs: { field: "Comment", count: 1 } }); }
+                                try { ann.annotationComment = newComment; await ann.saveTx({ undoAction: "undo-action-edit-field", undoActionArgs: { field: wvStr("weavero-bm-edit-comment-caption"), count: 1 } }); }
                                 catch (e) { Zotero.debug("[Weavero] bm comment save err: " + e); }
                             }
                         } else if (newComment !== String(entry.comment || "")) {
@@ -3316,11 +3439,13 @@ class _BookmarksMixin {
      *  1.1.1 Show in Library, which stays in the row's menu), Shift a reader
      *  window, the middle button a tab in the background. A menu passes a
      *  stand-in: `{}` the plain open, `{ shiftKey: true }` a window,
-     *  `{ wvShowInLibrary: true }` Show in Library. */
-    async _bmActivateBookmark(bm: any, event: any) {
+     *  `{ wvShowInLibrary: true }` Show in Library. `win`: the main window the
+     *  click comes from (the collections column's pane, bookmarks-pane.ts) --
+     *  a library target is shown THERE, not in the window focused last. */
+    async _bmActivateBookmark(bm: any, event: any, win?: any) {
         try {
             if (!bm) return;
-            if (event && event.wvShowInLibrary) { await this._bmShowInLibrary(bm); return; }
+            if (event && event.wvShowInLibrary) { await this._bmShowInLibrary(bm, win); return; }
             const where = (this as any)._wvOpenWhere(event);
             if (where === null) return;   // macOS Control+click: the row's menu
             const from = (event && event.target && event.target.nodeType) ? event.target : null;
@@ -3346,7 +3471,7 @@ class _BookmarksMixin {
                 return;
             }
             // A collection, a saved search, an item with no file: the library.
-            await this._bmShowInLibrary(bm);
+            await this._bmShowInLibrary(bm, win);
         } catch (e) {
             Zotero.debug("[Weavero] _bmActivateBookmark err: " + e);
         }
@@ -3396,10 +3521,11 @@ class _BookmarksMixin {
         } catch (_) {}
     }
 
-    async _bmShowInLibrary(bm: any) {
+    /** `inWin`: the main window to show it in (default: the one focused last). */
+    async _bmShowInLibrary(bm: any, inWin?: any) {
         try {
             if (!bm) return;
-            const win = Zotero.getMainWindow();
+            const win = (inWin && !inWin.closed && inWin.ZoteroPane) ? inWin : Zotero.getMainWindow();
             const zp = win && win.ZoteroPane;
             if (!zp) return;
             // The library can be in another window than the reader asking.
@@ -3413,11 +3539,24 @@ class _BookmarksMixin {
                 try { await wvOpenLibraryView(win); } catch (_) {}
                 raise();
             };
+            // A collection or saved search hidden in this window (pane.ts, hidden
+            // collections) has no row to select: shown while it is selected
+            // (_wvHidReveal; recommendation 4 of work/collections-organization-
+            // 2026-11-27.md -- until 1.3.0-bmpane the click did nothing). The same for a
+            // library or special row the collections funnel left out (coll-funnel.ts).
+            const reveal = async (obj: any) => {
+                try { return !!obj && typeof (this as any)._wvHidReveal === "function" && await (this as any)._wvHidReveal(win, obj); }
+                catch (_) { return false; }
+            };
             if (bm.type === "library") {
                 await jumpToLibrary();
                 const cv = zp.collectionsView;
                 if (cv && typeof cv.selectLibrary === "function") {
-                    await cv.selectLibrary(bm.libraryID);
+                    let ok: any = false;
+                    try { ok = await cv.selectLibrary(bm.libraryID); } catch (_) {}
+                    // A library the funnel left out: Zotero's selectLibrary no longer shows it
+                    // by itself -- the fallbacks probe with it (second review 2026-11-28, 1).
+                    if (!ok) { try { await reveal(Zotero.Libraries.get(bm.libraryID)); } catch (_) {} }
                     this._bmPlaceCollectionRow(zp, "L" + bm.libraryID);
                 }
                 return;
@@ -3426,7 +3565,17 @@ class _BookmarksMixin {
                 await jumpToLibrary();
                 const cv = zp.collectionsView;
                 if (cv && typeof cv.selectByID === "function") {
-                    await cv.selectByID(bm.rowID);
+                    const search = /^S\d+$/.test(String(bm.rowID)) ? Zotero.Searches.get(parseInt(String(bm.rowID).slice(1), 10)) : null;
+                    const hidden = !!search && typeof (this as any)._wvHidIsHidden === "function" && (this as any)._wvHidIsHidden(search, win);
+                    let ok: any = false;
+                    if (!hidden) { try { ok = await cv.selectByID(bm.rowID); } catch (_) {} }
+                    if (!ok && search) await reveal(search);
+                    // A special row (the Trash, Unfiled, ...) or a library the collections funnel
+                    // left out (second review 2026-11-28, 4: a bookmark of the Trash did nothing).
+                    else if (!ok && typeof (this as any)._wvHidRevealTargetOf === "function") {
+                        const target = (this as any)._wvHidRevealTargetOf(bm.rowID);
+                        if (target) await reveal(target);
+                    }
                     this._bmPlaceCollectionRow(zp, String(bm.rowID));
                 }
                 return;
@@ -3437,7 +3586,13 @@ class _BookmarksMixin {
                     bm.libraryID, bm.collectionKey);
                 if (col && zp.collectionsView
                     && typeof zp.collectionsView.selectCollection === "function") {
-                    await zp.collectionsView.selectCollection(col.id);
+                    // Hidden through a hidden PARENT, Zotero's expandToCollection
+                    // admits the collection and then toggles a parent row that is
+                    // not there (`_rowMap` undefined): it throws. Not asked then.
+                    const hidden = typeof (this as any)._wvHidCollHiddenDeep === "function" && (this as any)._wvHidCollHiddenDeep(col, win);
+                    let ok: any = false;
+                    if (!hidden) { try { ok = await zp.collectionsView.selectCollection(col.id); } catch (_) {} }
+                    if (!ok) await reveal(col);
                     this._bmPlaceCollectionRow(zp, "C" + col.id);
                 }
                 return;
@@ -3585,8 +3740,8 @@ class _BookmarksMixin {
                     }
                 }
             }
-            const opened: any = await Zotero.Reader.open(t.attachment.id, t.location || null,
-                { openInWindow: !!openInWindow });
+            const opened: any = wvOpenedInstance(await Zotero.Reader.open(t.attachment.id, t.location || null,
+                { openInWindow: !!openInWindow }));
             // Position bookmarks drop a 📌 marker — show it after the
             // reader is ready. `Zotero.Reader.open` returns three things:
             //   1. A Reader instance (a new tab/window was created)
@@ -3694,9 +3849,11 @@ class _BookmarksMixin {
             if (bm.type === "text")     return { image: BM_TEXT_ICON, fill: "currentColor" };
             if (bm.type === "treerow") {
                 const theme = this._bmIsDark(win) ? "dark" : "light";
+                // F: the Feeds row (the pane's "Now showing" +, bookmarks-pane.ts).
                 const map: { [k: string]: string } = {
                     S: "search.svg", D: "duplicates.svg", U: "unfiled.svg",
                     T: "trash.svg", P: "publications.svg", Y: "retracted.svg",
+                    F: "feed-library.svg",
                 };
                 const name = map[(bm.rowID || "")[0]] || "search.svg";
                 return { image: "chrome://zotero/skin/collection-tree/16/" + theme + "/" + name };
@@ -3821,7 +3978,7 @@ class _BookmarksMixin {
             btn.id = BM_BTN_ID;
             btn.setAttribute("tabindex", "-1");
             btn.setAttribute("class", "zotero-tb-button");
-            btn.setAttribute("tooltiptext", "Bookmarks");
+            btn.setAttribute("tooltiptext", wvStr("weavero-bm-title"));
             const dataURI = "data:image/svg+xml," + encodeURIComponent(BOOKMARK_SVG);
             btn.style.setProperty("list-style-image", 'url("' + dataURI + '")');
             btn.style.setProperty("-moz-context-properties", "fill, stroke");
@@ -3978,8 +4135,9 @@ class _BookmarksMixin {
         win = win || Zotero.getMainWindow();
         const doc = win && win.document;
         if (!doc) return;
-        // Filter is transient — reset so the next open starts clean.
-        this._bmCloseLibChipPopup(win);
+        // Filter is transient — reset so the next open starts clean. Its own side
+        // popup only: a pane's (bookmarks-pane.ts) is the pane's.
+        this._bmCloseLibChipPopup(win, "popup");
         this._bmLibResetChipState();
         this._bmLibFilterText = "";
         this._bmLibSearchOpen = false;
@@ -4036,7 +4194,24 @@ class _BookmarksMixin {
         if (!inner) return;
         this._bmCloseAllFlyouts();
         while (inner.firstChild) inner.firstChild.remove();
+        this._bmRenderTools(doc, win, this._bmPopupSurface(win), inner);
 
+        const sep = wvHtmlEl(doc, "div");
+        sep.className = "wv-bm-sep";
+        inner.appendChild(sep);
+
+        const list = wvHtmlEl(doc, "div", "wv-bm-scroll", undefined, inner);
+
+        this._bmRenderPopupBody(doc, win, list);
+    }
+
+    /** The bookmarks' tools -- "+" (add), new folder, sort, search, the funnel -- and the
+     *  search row while it is open, appended to `inner`: ONE drawing and one behaviour for the
+     *  dropdown and the collections column's pane (bookmarks-pane.ts, MJT 2026-11-27: "The
+     *  same bookmarks button features should be brought also to the in-pane bookmarks").
+     *  `sf`: the surface they act on -- its filter state, its redraws, where the funnel's
+     *  side popup opens. */
+    _bmRenderTools(doc: any, win: any, sf: WvBmSurface, inner: any) {
         // Icon-only action row: "+" (add bookmarks) and folder-with-+
         // (new folder, the same glyph as Zotero's New Collection).
         const actions = wvHtmlEl(doc, "div");
@@ -4053,12 +4228,12 @@ class _BookmarksMixin {
             actions.appendChild(b);
             return b;
         };
-        const addBtn = mkIconBtn(BM_ADD_ICON, "Add Bookmarks…", () => {
+        const addBtn = mkIconBtn(BM_ADD_ICON, wvStr("weavero-bm-add-bookmarks-tip"), () => {
             this._bmShowDropdownAddMenu(win, addBtn);
         });
-        mkIconBtn(BM_NEW_FOLDER_ICON, "New Folder…", () => {
-            const name = this._bmPromptName(win, "New Folder", "New Folder");
-            if (name) this._bmAddFolder(name).then(() => this._bmRenderPopupList(win));
+        mkIconBtn(BM_NEW_FOLDER_ICON, wvStr("weavero-bm-new-folder-tip"), () => {
+            const name = this._bmPromptName(win, wvStr("weavero-bm-prompt-new-folder"), wvStr("weavero-bm-folder-default-name"));
+            if (name) this._bmAddFolder(name).then(() => sf.render());
         });
 
         // Sort button — same options as the reader's bookmark sections
@@ -4072,11 +4247,7 @@ class _BookmarksMixin {
         const sortBtn = wvHtmlEl(doc, "button");
         sortBtn.className = "wv-bm-iconbtn wv-bm-lib-sortbtn"
             + (sortMode !== "manual" ? " wv-active" : "");
-        sortBtn.setAttribute("title", sortMode === "manual"
-            ? "Sort bookmarks"
-            : ("Sorted by " + this._wvReaderBmSortFieldLabel(sortMode) + " ("
-                + (sortDir === "asc" ? "ascending" : "descending")
-                + ") — click to change (manual order is preserved)"));
+        sortBtn.setAttribute("title", wvStr("weavero-bm-sort-tip", { field: sortMode, dir: sortDir }));
         // Same img-with-data-URI approach as the funnel (inline SVG can
         // collapse in XUL panels); same glyph as the reader's sort button.
         const sortSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">'
@@ -4087,19 +4258,19 @@ class _BookmarksMixin {
         sortImg.setAttribute("height", "20");
         sortBtn.appendChild(sortImg);
         if (sortMode !== "manual") {
-            const lab = wvHtmlEl(doc, "span", "wv-bm-sortlabel", sortMode === "date" ? "Date" : "Name", sortBtn);
+            const lab = wvHtmlEl(doc, "span", "wv-bm-sortlabel", wvStr("weavero-bm-sort-short", { field: sortMode }), sortBtn);
             // The triangle is a DIRECT direction toggle (separate from the
             // menu-opening rest of the button) -- same split affordance as
             // the reader sections' sort button.
             const dirEl = wvHtmlEl(doc, "span", "wv-bm-sortdir", sortDir === "asc" ? "▲" : "▼");
-            dirEl.setAttribute("title", "Reverse sort order");
+            dirEl.setAttribute("title", wvStr("weavero-bm-sort-reverse"));
             dirEl.addEventListener("click", (e: any) => {
                 e.stopPropagation();
-                this._bmApplyLibrarySort(win, undefined, sortDir === "asc" ? "desc" : "asc");
+                this._bmApplyLibrarySort(win, undefined, sortDir === "asc" ? "desc" : "asc", sf);
             });
             sortBtn.appendChild(dirEl);
         }
-        sortBtn.addEventListener("click", () => this._bmShowSortMenu(win, sortBtn));
+        sortBtn.addEventListener("click", () => this._bmShowSortMenu(win, sortBtn, sf));
         actions.appendChild(sortBtn);
 
         // Funnel button — toggles the filter input row below. Mirrors the
@@ -4110,7 +4281,7 @@ class _BookmarksMixin {
         // the reader sidebar so the affordance reads identically —
         // including the amber Weavero-identity stem.
         const filterBtn = wvHtmlEl(doc, "button", "wv-bm-iconbtn");
-        filterBtn.setAttribute("title", "Filter bookmarks");
+        filterBtn.setAttribute("title", wvStr("weavero-bm-filter-tip"));
         // Render the funnel exactly like the +/folder icons: an <img>
         // pointing at a data:image/svg+xml URI. Inline SVG via
         // createElementNS works in HTML iframes but Gecko's chrome layer
@@ -4143,27 +4314,27 @@ class _BookmarksMixin {
         chevImg.className = "wv-bm-funnel-chev";
         filterBtn.appendChild(chevImg);
         filterBtn.addEventListener("click", () => {
-            const open = !!doc.getElementById(BM_CHIP_POPUP_ID);
+            const open = this._bmChipOpen(sf);
             if (open) {
                 this._bmCloseLibChipPopup(win);
-                this._bmLibResetChipState();
-                this._bmRefreshPopupList(win);
+                sf.fs.chips = null;
+                sf.refresh();
             } else {
-                this._bmOpenLibChipPopup(win, filterBtn);
+                this._bmOpenLibChipPopup(win, filterBtn, sf);
             }
             filterBtn.classList.toggle("wv-active",
-                !!doc.getElementById(BM_CHIP_POPUP_ID) || this._bmLibChipsActive());
+                this._bmChipOpen(sf) || this._bmChipsOnOf(sf.fs));
             // wv-active = popup-open OR any chip selected (sticky bg
             // tint). wv-bm-lib-filter-active = ONLY chip selected (blue
             // dot). Two states because the user needs the dot AFTER
             // closing the popup, when the bg-tint also clears.
             filterBtn.classList.toggle("wv-bm-lib-filter-active",
-                this._bmLibChipsActive());
+                this._bmChipsOnOf(sf.fs));
         });
-        if (doc.getElementById(BM_CHIP_POPUP_ID) || this._bmLibChipsActive()) {
+        if (this._bmChipOpen(sf) || this._bmChipsOnOf(sf.fs)) {
             filterBtn.classList.add("wv-active");
         }
-        if (this._bmLibChipsActive()) {
+        if (this._bmChipsOnOf(sf.fs)) {
             filterBtn.classList.add("wv-bm-lib-filter-active");
         }
         // Search button — toggles a search input row below the actions
@@ -4175,7 +4346,7 @@ class _BookmarksMixin {
         // gap sits between the +/folder add-cluster and the search +
         // funnel filter-cluster (instead of between search and funnel).
         searchBtn.className = "wv-bm-iconbtn wv-bm-funnel-spacer";
-        searchBtn.setAttribute("title", "Search bookmarks");
+        searchBtn.setAttribute("title", wvStr("weavero-bm-search-tip"));
         // Use Zotero's native `magnifier.svg` (the same icon the
         // library's main quick-search field shows) so the search
         // affordance reads consistently across the UI. `<img>` in the
@@ -4188,11 +4359,11 @@ class _BookmarksMixin {
         searchImg.setAttribute("height", "20");
         searchBtn.appendChild(searchImg);
         searchBtn.addEventListener("click", () => {
-            this._bmLibSearchOpen = !this._bmLibSearchOpen;
-            if (!this._bmLibSearchOpen) this._bmLibFilterText = "";
-            this._bmRenderPopupList(win);
+            sf.fs.searchOpen = !sf.fs.searchOpen;
+            if (!sf.fs.searchOpen) sf.fs.text = "";
+            sf.render();
         });
-        if (this._bmLibSearchOpen || (this._bmLibFilterText && this._bmLibFilterText.length)) {
+        if (sf.fs.searchOpen || (sf.fs.text && sf.fs.text.length)) {
             searchBtn.classList.add("wv-active");
         }
         actions.appendChild(searchBtn);
@@ -4204,41 +4375,41 @@ class _BookmarksMixin {
         // chip filter (both must match). `_bmRefreshPopupList` only
         // rebuilds the list, so the input keeps focus + caret on every
         // keystroke.
-        if (this._bmLibSearchOpen) {
+        if (sf.fs.searchOpen) {
             const searchRow = wvHtmlEl(doc, "div", "wv-bm-search");
             const searchInput: any = wvHtmlEl(doc, "input", "wv-bm-search-input");
             searchInput.setAttribute("type", "text");
-            searchInput.setAttribute("placeholder", "Search bookmarks…");
-            searchInput.value = this._bmLibFilterText || "";
+            searchInput.setAttribute("placeholder", wvStr("weavero-bm-search-placeholder"));
+            searchInput.value = sf.fs.text || "";
             // Clear ("x") button -- same grey-circle-white-x as the reader
             // search boxes and the native annotation search; visible only
             // while there's a query. Clears + keeps the field open/focused.
             const clearBtn: any = wvHtmlEl(doc, "button", "wv-bm-search-clear");
             clearBtn.setAttribute("type", "button");
-            clearBtn.setAttribute("title", "Clear search");
-            clearBtn.setAttribute("aria-label", "Clear search");
+            clearBtn.setAttribute("title", wvStr("weavero-common-clear-search"));
+            clearBtn.setAttribute("aria-label", wvStr("weavero-common-clear-search"));
             clearBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="#808080"/><line x1="4" y1="4" x2="10" y2="10" stroke-width="1.5" stroke="#fff"/><line x1="10" y1="4" x2="4" y2="10" stroke-width="1.5" stroke="#fff"/></svg>';
             const syncClear = () => { clearBtn.classList.toggle("wv-visible", !!String(searchInput.value || "")); };
             clearBtn.addEventListener("click", (e: any) => {
                 e.preventDefault(); e.stopPropagation();
                 searchInput.value = "";
-                this._bmLibFilterText = "";
+                sf.fs.text = "";
                 syncClear();
-                this._bmRefreshPopupList(win);
+                sf.refresh();
                 try { searchInput.focus(); } catch (_) {}
             });
             searchInput.addEventListener("input", () => {
-                this._bmLibFilterText = searchInput.value;
+                sf.fs.text = searchInput.value;
                 syncClear();
-                this._bmRefreshPopupList(win);
+                sf.refresh();
             });
             searchInput.addEventListener("keydown", (e: any) => {
                 if (e.key === "Escape" && searchInput.value) {
                     e.stopPropagation();
                     searchInput.value = "";
-                    this._bmLibFilterText = "";
+                    sf.fs.text = "";
                     syncClear();
-                    this._bmRefreshPopupList(win);
+                    sf.refresh();
                 }
             });
             searchRow.appendChild(searchInput);
@@ -4247,14 +4418,6 @@ class _BookmarksMixin {
             inner.appendChild(searchRow);
             win.setTimeout(() => { try { searchInput.focus(); searchInput.select(); } catch (_) {} }, 0);
         }
-
-        const sep = wvHtmlEl(doc, "div");
-        sep.className = "wv-bm-sep";
-        inner.appendChild(sep);
-
-        const list = wvHtmlEl(doc, "div", "wv-bm-scroll", undefined, inner);
-
-        this._bmRenderPopupBody(doc, win, list);
     }
 
     /** Render just the scrollable list (folders/items or filtered flat list)
@@ -4281,25 +4444,43 @@ class _BookmarksMixin {
      *  both text and chip filters are active, BOTH must match. */
     _bmRenderPopupBody(doc: any, win: any, list: any) {
         while (list.firstChild) list.firstChild.remove();
-        const root = this._bmGetAll();
-        if (!root.length) {
+        const v = this._bmListView(this._bmPopupFs());
+        if (v.kind === "empty") {
             const empty = wvHtmlEl(doc, "div");
             empty.className = "wv-bm-empty";
-            empty.textContent = "No bookmarks yet. Use ＋ Add Bookmarks…";
+            empty.textContent = wvStr("weavero-bm-empty-library");
             list.appendChild(empty);
             return;
         }
-        // Display-only sort (shared "library" pref, same semantics as the
-        // reader sections): a sorted view flattens folders; the stored
-        // manual order is untouched.
+        if (v.kind === "none") {
+            const empty = wvHtmlEl(doc, "div");
+            empty.className = "wv-bm-search-empty";
+            empty.textContent = v.message;
+            list.appendChild(empty);
+            return;
+        }
+        if (v.kind === "flat") {
+            for (const n of v.nodes) this._bmRenderItemRow(doc, win, list, n, 0);
+            return;
+        }
+        this._bmRenderInto(doc, win, list, v.nodes, 0);
+    }
+
+    /** What a bookmarks list shows -- the dropdown's and the pane's (bookmarks-pane.ts): the
+     *  store's tree in the display sort (the shared "library" pref; a sort flattens the
+     *  folders, the stored manual order untouched), or, with a search or filter chips on,
+     *  the bookmarks matching BOTH, flat. `fs`: the surface's filter state. */
+    _bmListView(fs: any): { kind: "empty" | "none" | "flat" | "tree"; nodes: any[]; message: string } {
+        const root = this._bmGetAll();
+        if (!root.length) return { kind: "empty", nodes: [], message: "" };
         const sortMode = this._wvReaderBmSortMode("library");
         const displayRoot = sortMode === "manual" ? root
             : this._wvBmSortNodesForDisplay(null, root, sortMode, this._wvReaderBmSortDir("library"));
-        const q = (this._bmLibFilterText || "").trim().toLowerCase();
-        const chipsOn = this._bmLibChipsActive();
+        const q = String((fs && fs.text) || "").trim().toLowerCase();
+        const chipsOn = this._bmChipsOnOf(fs);
         if (q || chipsOn) {
-            const st = chipsOn ? this._bmLibChipState() : null;
-            let any = false;
+            const st = chipsOn ? this._bmChipBagOf(fs) : null;
+            const out: any[] = [];
             const walk = (arr: any[]) => {
                 for (const n of (arr || [])) {
                     if (!n) continue;
@@ -4309,22 +4490,18 @@ class _BookmarksMixin {
                         if (t.indexOf(q) < 0) continue;
                     }
                     if (st && !this._wvBmNodeMatchesChips(n, st)) continue;
-                    this._bmRenderItemRow(doc, win, list, n, 0);
-                    any = true;
+                    out.push(n);
                 }
             };
             walk(displayRoot);
-            if (!any) {
-                const empty = wvHtmlEl(doc, "div");
-                empty.className = "wv-bm-search-empty";
-                empty.textContent = q
-                    ? "No bookmarks match \"" + (this._bmLibFilterText || "") + "\"."
-                    : "No bookmarks match the current filter.";
-                list.appendChild(empty);
+            if (!out.length) {
+                return { kind: "none", nodes: [], message: q
+                    ? wvStr("weavero-bm-search-no-match", { query: (fs && fs.text) || "" })
+                    : wvStr("weavero-bm-filter-no-match") };
             }
-            return;
+            return { kind: "flat", nodes: out, message: "" };
         }
-        this._bmRenderInto(doc, win, list, displayRoot, 0);
+        return { kind: "tree", nodes: displayRoot, message: "" };
     }
 
     /** Render ONE level of entries into a container. Children of folders
@@ -4404,7 +4581,7 @@ class _BookmarksMixin {
             } else {
                 const empty = wvHtmlEl(doc, "div");
                 empty.className = "wv-bm-empty";
-                empty.textContent = "(empty)";
+                empty.textContent = wvStr("weavero-bm-folder-empty");
                 finner.appendChild(empty);
             }
             panel.addEventListener("mouseenter", () => this._bmCancelCloseTimer());
@@ -4491,10 +4668,11 @@ class _BookmarksMixin {
         });
     }
 
-    _bmRenderItemRow(doc: any, win: any, container: any, bm: any, _level: number) {
-        const row = wvHtmlEl(doc, "div");
-        row.className = "wv-bm-row";
-
+    /** A bookmark row's drawing: its icon (the target's), its label (link colour, the "in
+     *  <file>" suffix, the tooltip with the comment) and, for a target that is gone, the ⚠
+     *  badge. ONE drawing for the dropdown's rows and the collections column's pane
+     *  (bookmarks-pane.ts); the caller places them and wires the events. */
+    _bmRowParts(doc: any, win: any, bm: any): { icon: any; label: any; labelText: string; missing: boolean; badge: any } {
         const ic = this._bmIconInfo(bm, win);
         const icon = wvHtmlEl(doc, "img");
         icon.setAttribute("src", ic.image);
@@ -4526,8 +4704,8 @@ class _BookmarksMixin {
         // row reads as "spot — in <doc>" without breaking row rhythm.
         const parentTitle = this._bmParentAttachmentTitle(bm);
         if (parentTitle) {
-            const sub = wvHtmlEl(doc, "span", "wv-bm-sublabel", " — in " + parentTitle, label);
-            label.setAttribute("title", labelText + " — in " + parentTitle);
+            const sub = wvHtmlEl(doc, "span", "wv-bm-sublabel", wvStr("weavero-bm-sublabel-in", { title: parentTitle }), label);
+            label.setAttribute("title", wvStr("weavero-bm-row-in-tip", { label: labelText, title: parentTitle }));
         } else {
             label.setAttribute("title", labelText);
         }
@@ -4542,19 +4720,28 @@ class _BookmarksMixin {
             }
         } catch (_) {}
 
+        // Orphan bookmark — its Zotero target was deleted/purged: a ⚠ badge,
+        // the row marked by the caller (dim + strikethrough via CSS); clicking
+        // flashes instead of silently no-opping. Remove via the right-click menu.
+        const missing = this._bmTargetMissing(bm);
+        let badge: any = null;
+        if (missing) {
+            badge = wvHtmlEl(doc, "span", "wv-bm-missing-badge", "⚠");
+            badge.setAttribute("title", wvStr("weavero-bm-missing-tip-library"));
+            label.setAttribute("title", wvStr("weavero-bm-missing-suffix", { text: label.getAttribute("title") || labelText }));
+        }
+        return { icon, label, labelText, missing, badge };
+    }
+
+    _bmRenderItemRow(doc: any, win: any, container: any, bm: any, _level: number) {
+        const row = wvHtmlEl(doc, "div");
+        row.className = "wv-bm-row";
+        const { icon, label, missing, badge } = this._bmRowParts(doc, win, bm);
         row.appendChild(icon);
         row.appendChild(label);
-
-        // Orphan bookmark — its Zotero target was deleted/purged. Mark the row
-        // (dim + strikethrough via CSS) and append a ⚠ badge; clicking flashes
-        // instead of silently no-opping. Remove via the right-click menu.
-        const missing = this._bmTargetMissing(bm);
         if (missing) {
             row.classList.add("wv-bm-missing");
-            const warn = wvHtmlEl(doc, "span", "wv-bm-missing-badge", "⚠");
-            warn.setAttribute("title", "This bookmark's target no longer exists. Right-click → Delete Bookmark to remove it.");
-            row.appendChild(warn);
-            label.setAttribute("title", (label.getAttribute("title") || labelText) + " — target no longer exists");
+            row.appendChild(badge);
         }
 
         // Hovering a non-folder cancels any pending sibling-folder open.
@@ -4602,21 +4789,26 @@ class _BookmarksMixin {
         container.appendChild(row);
     }
 
+    /** A folder row's icon and name: one drawing for the dropdown and the pane
+     *  (bookmarks-pane.ts), as _bmRowParts. */
+    _bmFolderParts(doc: any, bm: any): { icon: any; label: any } {
+        const icon = wvHtmlEl(doc, "img");
+        icon.setAttribute("src", BM_FOLDER_ICON);
+        icon.setAttribute("width", "16");
+        icon.setAttribute("height", "16");
+        icon.setAttribute("style",
+            "flex:0 0 auto;-moz-context-properties:fill;fill:currentColor;");
+        const label = wvHtmlEl(doc, "div");
+        label.className = "wv-bm-label";
+        label.textContent = bm.name || wvStr("weavero-bm-folder-unnamed");
+        label.setAttribute("title", label.textContent);
+        return { icon, label };
+    }
+
     _bmRenderFolderRow(doc: any, win: any, container: any, bm: any, level: number) {
         const row = wvHtmlEl(doc, "div");
         row.className = "wv-bm-row wv-bm-folder";
-
-        const folderIcon = wvHtmlEl(doc, "img");
-        folderIcon.setAttribute("src", BM_FOLDER_ICON);
-        folderIcon.setAttribute("width", "16");
-        folderIcon.setAttribute("height", "16");
-        folderIcon.setAttribute("style",
-            "flex:0 0 auto;-moz-context-properties:fill;fill:currentColor;");
-
-        const label = wvHtmlEl(doc, "div");
-        label.className = "wv-bm-label";
-        label.textContent = bm.name || "Folder";
-        label.setAttribute("title", label.textContent);
+        const { icon: folderIcon, label } = this._bmFolderParts(doc, bm);
 
         // Right-side chevron, Firefox-style (the flyout opens on hover/click).
         // Built with createElementNS — innerHTML doesn't auto-set the SVG
@@ -4683,16 +4875,19 @@ class _BookmarksMixin {
      *  are deliberately untouched: sort is per-tab there (their Global
      *  sections own their state); the pref written here only seeds tabs that
      *  haven't shown their bookmarks pane yet. */
-    _bmApplyLibrarySort(win: any, field?: string, dir?: "asc" | "desc") {
+    _bmApplyLibrarySort(win: any, field?: string, dir?: "asc" | "desc", sf?: WvBmSurface) {
         this._wvReaderSetBmSort("library", field, dir);
-        this._bmRenderPopupList(win);
+        if (sf) sf.render();
+        else this._bmRenderPopupList(win);
+        // One pref for the dropdown and the panes: every pane follows (bookmarks-pane.ts).
+        try { if (typeof this._wvBmpRefreshAll === "function") this._wvBmpRefreshAll(); } catch (_) {}
     }
 
     /** Sort menu for the library popup — same field/direction layout as the
      *  reader sections' sort menu (no Location: library bookmarks have no
      *  in-document position). Acts on the "library" pref (the popup's own
      *  state; reader tabs are per-tab and unaffected). */
-    _bmShowSortMenu(win: any, anchorBtn: any) {
+    _bmShowSortMenu(win: any, anchorBtn: any, sf?: WvBmSurface) {
         try {
             const doc: any = win.document;
             doc.getElementById(BM_ROW_MENU_ID)?.remove();
@@ -4700,7 +4895,7 @@ class _BookmarksMixin {
             menu.id = BM_ROW_MENU_ID;
             const curField = this._wvReaderBmSortMode("library");
             const curDir = this._wvReaderBmSortDir("library");
-            const apply = (field?: string, dir?: "asc" | "desc") => this._bmApplyLibrarySort(win, field, dir);
+            const apply = (field?: string, dir?: "asc" | "desc") => this._bmApplyLibrarySort(win, field, dir, sf);
             const add = (l10nID: string, checked: boolean, fn: any, disabled?: boolean) => {
                 const mi = doc.createXULElement("menuitem");
                 wvL10n(mi, l10nID);
@@ -4780,7 +4975,7 @@ class _BookmarksMixin {
             }
             // Zotero's own "Show in Library" (general-show-in-library, a value in 9.0, 10 and 11).
             add({ zotero: wvZoteroText("general-show-in-library") }, () => {
-                this._bmShowInLibrary(bm);
+                this._bmShowInLibrary(bm, win);
                 this._bmHidePopup(win);
             }, this._bmShowInLibraryIcon(bm, win));
             menu.appendChild(doc.createXULElement("menuseparator"));
@@ -4808,7 +5003,7 @@ class _BookmarksMixin {
             menu.appendChild(doc.createXULElement("menuseparator"));
             this._bmAppendAddBookmarkSubmenu(doc, menu, win);
             add("weavero-menu-bm-new-folder", () => {
-                const name = this._bmPromptName(win, "New Folder", "New Folder");
+                const name = this._bmPromptName(win, wvStr("weavero-bm-prompt-new-folder"), wvStr("weavero-bm-folder-default-name"));
                 if (name) this._bmAddFolder(name).then(() => this._bmRenderPopupList(win));
             }, BM_MENU_NEWFOLDER_ICON);
             const host = wvPopupHost(doc);
@@ -4845,11 +5040,11 @@ class _BookmarksMixin {
                 menu.appendChild(mi);
             };
             add("weavero-menu-bm-rename-folder", () => {
-                const name = this._bmPromptName(win, "Rename Folder", bm.name || "");
+                const name = this._bmPromptName(win, wvStr("weavero-bm-prompt-rename-folder"), bm.name || "");
                 if (name) this._bmRenameFolder(bm.id, name).then(() => this._bmRenderPopupList(win));
             }, BM_RENAME_ICON);
             add("weavero-menu-bm-new-subfolder", () => {
-                const name = this._bmPromptName(win, "New Folder", "New Folder");
+                const name = this._bmPromptName(win, wvStr("weavero-bm-prompt-new-folder"), wvStr("weavero-bm-folder-default-name"));
                 if (name) this._bmAddFolder(name, bm.id).then(() => this._bmRenderPopupList(win));
             }, BM_MENU_NEWFOLDER_ICON);
             menu.appendChild(doc.createXULElement("menuseparator"));
@@ -4860,9 +5055,8 @@ class _BookmarksMixin {
                 if (count > 0) {
                     let ok = false;
                     try {
-                        ok = Services.prompt.confirm(win, "Delete Folder",
-                            'Delete the folder "' + (bm.name || "Folder") + '" and its '
-                            + count + " item" + (count === 1 ? "" : "s") + "?");
+                        ok = Services.prompt.confirm(win, wvStr("weavero-bm-delete-folder-title"),
+                            wvStr("weavero-bm-delete-folder-confirm", { name: bm.name || wvStr("weavero-bm-folder-unnamed"), count }));
                     } catch (e) { ok = false; }
                     if (!ok) return;
                 }
@@ -4871,7 +5065,7 @@ class _BookmarksMixin {
             menu.appendChild(doc.createXULElement("menuseparator"));
             this._bmAppendAddBookmarkSubmenu(doc, menu, win);
             add("weavero-menu-bm-new-folder", () => {
-                const name = this._bmPromptName(win, "New Folder", "New Folder");
+                const name = this._bmPromptName(win, wvStr("weavero-bm-prompt-new-folder"), wvStr("weavero-bm-folder-default-name"));
                 if (name) this._bmAddFolder(name).then(() => this._bmRenderPopupList(win));
             }, BM_MENU_NEWFOLDER_ICON);
             const host = wvPopupHost(doc);
@@ -4901,7 +5095,7 @@ class _BookmarksMixin {
             };
             this._bmAppendAddBookmarkSubmenu(doc, menu, win);
             add("weavero-menu-bm-new-folder", () => {
-                const name = this._bmPromptName(win, "New Folder", "New Folder");
+                const name = this._bmPromptName(win, wvStr("weavero-bm-prompt-new-folder"), wvStr("weavero-bm-folder-default-name"));
                 if (name) this._bmAddFolder(name).then(() => this._bmRenderPopupList(win));
             }, BM_MENU_NEWFOLDER_ICON);
             const host = wvPopupHost(doc);
@@ -4922,6 +5116,9 @@ class _BookmarksMixin {
      *  bookmarkable as a generic "treerow". */
     _bmTreeRowIsSpecial(tr: any) {
         try {
+            // Another plugin's row built on a saved search (a combination row,
+            // "S<id>:combo<n>") is no row to come back to (pane.ts _wvCollRowStandsForRef, F6).
+            if (!(this as any)._wvCollRowStandsForRef(tr)) return false;
             const f = (n: string) => typeof tr[n] === "function" && tr[n]();
             return !!(tr && (f("isSearch") || f("isDuplicates") || f("isUnfiled")
                 || f("isTrash") || f("isPublications") || f("isRetracted")

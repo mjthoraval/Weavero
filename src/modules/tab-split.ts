@@ -44,6 +44,7 @@
 import { wvHtmlEl, wvBoolAttrOn, wvSetBoolAttr, winOf } from "../lib/dom";
 import { wvListen, wvListener, wvUnlisten } from "../lib/listen";
 import { wvLivePlugin } from "../lib/live";
+import { wvOpenedInstance } from "../lib/compat";
 import { wvUIRoot, wvUIRootsPrune } from "../lib/ui-roots";
 import { wvInjectStyle, wvRemoveStyle } from "../lib/style";
 import { wvWrap, wvUnwrap } from "../lib/wrap";
@@ -53,12 +54,27 @@ import { wvL10n, wvStr, wvAttr, wvDataLabel, wvZoteroLabel, wvZoteroText } from 
 import { WV_TAB_DOCK_CSS } from "./tab-split-dock";
 import { wvMMRegister } from "../lib/menu";
 import { WV_SPLIT_ICON, WV_SPLIT_SEPARATE_ICON, WV_SPLIT_REVERSE_ICON } from "../lib/split-glyph";
+import { refsActIconURI } from "./refs";
 
 declare const Zotero: any;
 declare const Services: any;
 
 const PREF = "weavero.tabSplits";
 const ENABLE_PREF = "weavero.enableSplitView";
+/** The items list's Open entries (_wvItemsMenuOpenIcons): the file at the line's
+ *  end, Zotero's own attachment-type icon, light and dark, 12 px from the words
+ *  at least. One column, so the end is the entry's own (the References menu's two
+ *  columns put it right after the words instead: refs.ts CARD_CSS). */
+const ITEMS_OPEN_STYLE_ID = "wv-itemmenu-open-style";
+const ITEMS_OPEN_TYPES = ["pdf", "epub", "snapshot", "note"];
+const ITEMS_OPEN_FILE: Record<string, string> = { pdf: "attachment-pdf", epub: "attachment-epub", snapshot: "attachment-snapshot", note: "note" };
+const ITEMS_OPEN_CSS = [
+    "#zotero-itemmenu > menuitem > .wv-itemmenu-file { flex: none; box-sizing: content-box; width: 16px; height: 16px; margin-inline-start: auto; padding-inline-start: 12px; background: center / 16px 16px no-repeat content-box; }",
+    ...ITEMS_OPEN_TYPES.map((t) => "#zotero-itemmenu > menuitem > .wv-itemmenu-file[data-type=\"" + t + "\"] { background-image: url(\"chrome://zotero/skin/item-type/16/light/" + ITEMS_OPEN_FILE[t] + ".svg\"); }"),
+    "@media (prefers-color-scheme: dark) {",
+    ...ITEMS_OPEN_TYPES.map((t) => "  #zotero-itemmenu > menuitem > .wv-itemmenu-file[data-type=\"" + t + "\"] { background-image: url(\"chrome://zotero/skin/item-type/16/dark/" + ITEMS_OPEN_FILE[t] + ".svg\"); }"),
+    "}",
+].join("\n");
 const STYLE_ID = "wv-tsplit-style";
 const LAYER_ID = "wv-tsplit-layer";
 const GHOST_ID = "wv-tsplit-ghost";
@@ -385,6 +401,8 @@ function descOf(t: any): string | null {
     try {
         if (!t) return null;
         if (wvIsLibraryTabID(t.id) || baseType(t) === "library") return "lib";
+        // The window's People tab (people.ts): one per window, no item.
+        if (baseType(t) === "wvpeople") return "people";
         const iid = t.data && t.data.itemID;
         const it = iid ? Zotero.Items.get(iid) : null;
         return it ? baseType(t) + ":" + it.libraryID + "/" + it.key : null;
@@ -905,6 +923,63 @@ class _TabSplitMixin {
         this._wvTabSplitSync(win);
     }
 
+    /** Side `tabID` of split `s` may be closed from the split's menu: a tab the user may
+     *  close (Zotero's rule, tabs.js canClose: not pinned, not a tab Zotero keeps open),
+     *  and not a side the split took off the pins (it goes back there) -- the tabs Close
+     *  Both Tabs leaves open. */
+    _wvTabSplitSideClosable(win: any, s: WvTabSplit, tabID: any): boolean {
+        try {
+            const P: any = this;
+            const t = tabIn(win, tabID);
+            if (!t || !s || (s.left !== tabID && s.right !== tabID)) return false;
+            if (wvIsFixedLibraryTab(t.id) || t.closable === false || t.pinned) return false;
+            if ((s.pins || []).some((p) => (p.side === "left" ? s.left : s.right) === tabID)) return false;
+            try { if (typeof P._wvTabIsPinned === "function" && P._wvTabIsPinned(win, t)) return false; } catch (e) {}
+            const Z: any = win.Zotero_Tabs;
+            if (typeof Z.canClose === "function") return !!Z.canClose(tabID);
+            // Zotero 10 has no canClose: its library tab carries no `closable` and no close
+            // button.
+            return !(wvIsLibraryTabID(t.id) || /^library(-|$)/.test(String(t.type || ""))) || t.closable === true;
+        } catch (e) { return false; }
+    }
+
+    /** "Close Tab" in a side's menu (MJT 2026-11-19, "an option at the bottom right to
+     *  close only this tab in the split view, thus going back to the other tab in the
+     *  split view to normal view"): tab `tabID` of split `splitID` closed, the other
+     *  side's tab then alone in the normal view, selected. The locked tab's split
+     *  (tab-split-dock.ts) as Separate Tabs and Close Both Tabs treat it: the locked side
+     *  closed ends the lock (Separate Tabs on it ends it too) and the other tab shows
+     *  alone; the other side closed keeps the lock (Close Both Tabs is not offered there:
+     *  the locked tab stays), the locked tab selected, beside it what the lock shows after
+     *  any closed tab (the tab used before). False when nothing was closed. */
+    _wvTabSplitCloseSide(win: any, splitID: string, tabID: any): boolean {
+        try {
+            const P: any = this;
+            const s = this._wvTabSplits(win).find((x) => x.id === splitID);
+            if (!s || s.picker || !s.right) return false;
+            if (!this._wvTabSplitSideClosable(win, s, tabID)) return false;
+            const Z: any = win.Zotero_Tabs;
+            const other = s.left === tabID ? s.right : s.left;
+            if (isDock(s)) {
+                const d = P._wvTabDockOf(win);
+                if (d && d.lib === tabID) {
+                    P._wvTabDockEnd(win, true);
+                    if (other && Z.selectedID !== other) Z.select(other);
+                }
+                else if (d && Z.selectedID !== d.lib) Z.select(d.lib);
+            }
+            else {
+                // The split first: the tab selected then is drawn alone, as after Separate Tabs.
+                this._wvTabSplitRemove(win, s.id);
+                if (other && Z.selectedID !== other) Z.select(other);
+            }
+            this._wvTabSplitRing("close tab " + tabID + " of " + splitID + ": " + other + " left");
+            Z.close([tabID]);
+            this._wvTabSplitSync(win);
+            return true;
+        } catch (e) { Zotero.debug("[Weavero] _wvTabSplitCloseSide err: " + e); return false; }
+    }
+
     /** Draw `win` for its selected tab: the split it is part of side by side, or
      *  the deck as Zotero has it. Idempotent; runs on every tab event. */
     _wvTabSplitSync(win: any) {
@@ -1009,7 +1084,12 @@ class _TabSplitMixin {
             // suspends rAF, and the layer (splitter, footer, picker) would never draw.
             win.setTimeout(() => { const lp = live(); if (lp) lp._wvTabSplitDrawLayer(win); }, 0);
         } catch (e) { Zotero.debug("[Weavero] _wvTabSplitSync err: " + e); }
-        finally { win._wvTSplitSyncing = false; }
+        finally {
+            win._wvTSplitSyncing = false;
+            // The paper open beside a citing paper, marked in it (refs.ts
+            // _wvRefsBesideApply): after this pass, off its task.
+            try { win.setTimeout(() => { const lp: any = live(); if (lp && typeof lp._wvRefsBesideSyncWin === "function") lp._wvRefsBesideSyncWin(win); }, 0); } catch (e) {}
+        }
     }
 
     /** Load an unloaded reader side in place, without selecting it (item 18): what
@@ -1029,10 +1109,10 @@ class _TabSplitMixin {
             try { Z._update(); } catch (e) {}
             this._wvTabSplitRing("partner " + ot.id + " loads in place beside " + Z.selectedID);
             ot.loadPromise = (async () => {
-                const r: any = await Zotero.Reader.open(ot.data.itemID, null, {
+                const r: any = wvOpenedInstance(await Zotero.Reader.open(ot.data.itemID, null, {
                     tabID: ot.id, title: ot.title, tabIndex: idx, allowDuplicate: true, primaryViewState,
                     secondViewState: ot.data.secondViewState, preventJumpback: true, openInBackground: true, window: win,
-                } as any);
+                } as any));
                 if (r && r._initPromise) await r._initPromise;
                 Z.markAsLoaded(ot.id);
                 const lp = live();
@@ -1400,7 +1480,7 @@ class _TabSplitMixin {
             const sp = H("div", "wv-tsplit-splitter", layer);
             sp.setAttribute("role", "separator");
             sp.setAttribute("aria-orientation", "vertical");
-            sp.setAttribute("aria-label", "Resize split view tabs");
+            sp.setAttribute("aria-label", wvStr("weavero-split-splitter-label"));
             sp.setAttribute("aria-controls", s.left);
             sp.setAttribute("tabindex", "0");
             sp.addEventListener("pointerdown", (e: any) => { const lp = live(); if (lp) lp._wvTabSplitDragStart(win, s, sp, e); });
@@ -1423,13 +1503,13 @@ class _TabSplitMixin {
                 title.textContent = ot.title || "";
                 const more = H("button", "wv-tsplit-more", ft);
                 more.textContent = "⋯";
-                more.setAttribute("title", "Split view");
-                more.setAttribute("aria-label", "Split view menu");
+                more.setAttribute("title", wvStr("weavero-split-footer-more", null, "title"));
+                more.setAttribute("aria-label", wvStr("weavero-split-footer-more", null, "aria-label"));
                 ft.addEventListener("mousedown", (e: any) => {
                     if (e.button !== 0 || e.target === more) return;
                     try { Z.select(otherID); } catch (er) {}
                 });
-                more.addEventListener("click", (e: any) => { e.stopPropagation(); const lp = live(); if (lp) lp._wvTabSplitFooterMenu(win, s, more); });
+                more.addEventListener("click", (e: any) => { e.stopPropagation(); const lp = live(); if (lp) lp._wvTabSplitFooterMenu(win, s, more, otherID); });
             }
             this._wvTabSplitPlaceLayer(win);
         } catch (e) { Zotero.debug("[Weavero] _wvTabSplitDrawLayer err: " + e); }
@@ -3334,7 +3414,8 @@ class _TabSplitMixin {
         } catch (e) {}
     }
 
-    _wvTabSplitFooterMenu(win: any, s: WvTabSplit, anchor: any) {
+    /** The split's own menu, from the "⋯" in side `tabID`'s footer. */
+    _wvTabSplitFooterMenu(win: any, s: WvTabSplit, anchor: any, tabID?: any) {
         try {
             const doc = win.document;
             let pop: any = doc.getElementById("wv-tsplit-menu");
@@ -3351,6 +3432,8 @@ class _TabSplitMixin {
             };
             add("weavero-menu-split-separate-tabs", () => live()._wvTabSplitSeparate(win, s.id), WV_SPLIT_SEPARATE_ICON);
             add("weavero-menu-split-reverse", () => live()._wvTabSplitReverse(win, s.id), WV_SPLIT_REVERSE_ICON);
+            // This side's tab alone (MJT 2026-11-19); not on a side whose tab stays open.
+            if (tabID && this._wvTabSplitSideClosable(win, s, tabID)) add("weavero-menu-split-close-tab", () => live()._wvTabSplitCloseSide(win, s.id, tabID));
             // (Not for a locked tab's split: the locked tab stays.)
             if (!isDock(s)) add("weavero-menu-split-close-both", () => live()._wvTabSplitCloseBoth(win, s.id));
             // "Follow Selected Item" and "Keep Document in New Tab" (tab-split-follow.ts).
@@ -3387,20 +3470,23 @@ class _TabSplitMixin {
         const cancel = () => { const lp = live(); if (lp) { lp._wvTabSplitRemove(win, s.id); lp._wvTabSplitSync(win); } };
         const close = H("button", "wv-tsplit-close", pk);
         close.textContent = "✕";
-        close.setAttribute("title", "Cancel");
+        close.setAttribute("title", wvStr("weavero-common-cancel"));
         close.addEventListener("click", cancel);
-        H("h2", "", pk).textContent = "Add Split View";
-        H("p", "", pk).textContent = "Choose a tab to show beside this one.";
+        H("h2", "", pk).textContent = wvStr("weavero-split-picker-title");
+        H("p", "", pk).textContent = wvStr("weavero-split-picker-desc");
         const input = H("input", "", pk);
         input.setAttribute("type", "search");
-        input.setAttribute("placeholder", "Search open tabs");
+        input.setAttribute("placeholder", wvStr("weavero-split-picker-search"));
         const list = H("div", "wv-tsplit-list", pk);
         const tabs = Z._tabs.filter((t: any) => t && t.id !== s.left && !this._wvTabSplitOf(win, t.id));
+        // Zotero's own name for the library tab when the tab has no title.
+        let myLibrary = "";
+        try { myLibrary = String(Zotero.getString("pane.collections.library") || ""); } catch (e) {}
         const render = () => {
             list.textContent = "";
             const q = String(input.value || "").toLowerCase();
             for (const t of tabs) {
-                const title = String(t.title || (wvIsLibraryTabID(t.id) ? "My Library" : ""));
+                const title = String(t.title || (wvIsLibraryTabID(t.id) ? myLibrary : ""));
                 if (q && title.toLowerCase().indexOf(q) < 0) continue;
                 const row = H("div", "wv-tsplit-row", list);
                 row.setAttribute("tabindex", "0");
@@ -3417,7 +3503,7 @@ class _TabSplitMixin {
                 row.addEventListener("click", pick);
                 row.addEventListener("keydown", (e: any) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
             }
-            if (!list.firstChild) H("p", "", list).textContent = "No other open tab.";
+            if (!list.firstChild) H("p", "", list).textContent = wvStr("weavero-split-picker-empty");
         };
         input.addEventListener("input", render);
         pk.addEventListener("keydown", (e: any) => { if (e.key === "Escape") { e.preventDefault(); cancel(); } });
@@ -3710,7 +3796,7 @@ class _TabSplitMixin {
     _wvTabSplitTooltip(win: any, tabID: any, label: string): string {
         const s = this._wvTabSplitOf(win, tabID);
         if (!s || s.picker || !s.right) return label;
-        return label + ", Split view " + (s.left === tabID ? "left" : "right");
+        return wvStr("weavero-split-tab-tip", { label, side: s.left === tabID ? "left" : "right" });
     }
 
     // ---- Ways in ---------------------------------------------------------
@@ -3793,15 +3879,20 @@ class _TabSplitMixin {
             mi.addEventListener("command", () => { const lp = live(); if (lp) lp._wvTabSplitOpenItem(win, it); });
             const place = () => {
                 try {
-                    let after: any = null;
+                    // Before Zotero's "Open … in New Window", right after its "Open …"
+                    // (MJT 2026-11-20, "Open in split view should be before the open in
+                    // new window", as the References menus and buttons have it).
+                    let after: any = null, winEntry: any = null;
                     for (const x of menu.querySelectorAll(":scope > menuitem")) {
                         if (x.getAttribute("data-l10n-id") !== "item-menu-viewAttachment" || x.hidden) continue;
                         const args = x.getAttribute("data-l10n-args") || "";
-                        if (/"openIn"\s*:\s*"window"/.test(args)) after = x;
+                        if (/"openIn"\s*:\s*"window"/.test(args)) { if (!winEntry) winEntry = x; }
                         else if (!after) after = x;
                     }
+                    if (!after) after = winEntry;
                     if (after) {
-                        if (after.nextSibling !== mi) menu.insertBefore(mi, after.nextSibling);
+                        if (winEntry && winEntry !== after) { if (winEntry.previousSibling !== mi) menu.insertBefore(mi, winEntry); }
+                        else if (after.nextSibling !== mi) menu.insertBefore(mi, after.nextSibling);
                         // Its neighbour's icon, aligned with it (item 17, MJT
                         // 2026-11-12: "Add icons for Open in Split View"): Zotero's
                         // own class for the attachment type (locateMenu.js
@@ -3821,6 +3912,77 @@ class _TabSplitMixin {
             win.setTimeout(place, 0);
             win.setTimeout(place, 60);
         } catch (e) { Zotero.debug("[Weavero] _wvTabSplitItemsMenu err: " + e); }
+    }
+
+    /** The items list's Open entries drawn as the References menu draws its own
+     *  (MJT 2026-11-22: "Make the right click open options in the items list
+     *  with consistent icons as in Refs"; refs.ts _wvRefsMenu): WHERE it opens on
+     *  the left -- the References buttons' tab / split view / window drawings
+     *  (refsActIconURI) -- and WHAT opens, Zotero's attachment-type icon, at the
+     *  line's end. Zotero's "Open … in New Tab / New Window" (locateMenu.js
+     *  ViewItem: `item-menu-viewAttachment`, its args' openIn "tab" / "window";
+     *  an external viewer's "Open …" is left as Zotero draws it) and Weavero's
+     *  "Open … in Split View" (#wv-itemmenu-split). Zotero builds its entries
+     *  afresh at each opening (_addViewOption), asynchronously: run again
+     *  after it, as _wvTabSplitItemsMenu places its entry. Only where the menu
+     *  shows icons (Zotero's class on the entry; none on macOS). */
+    _wvItemsMenuOpenIcons(doc: any, menu: any, win: any) {
+        const self: any = this;
+        const run = () => {
+            try {
+                // A timer or the one-shot listener of an instance gone since: nothing.
+                if (self._wvDestroyed || !menu || !menu.isConnected) return;
+                wvInjectStyle(doc, ITEMS_OPEN_STYLE_ID, ITEMS_OPEN_CSS);
+                for (const mi of Array.from(menu.querySelectorAll(":scope > menuitem")) as any[]) {
+                    let where: string | null = null, type: string | null = null;
+                    try {
+                        const args = JSON.parse(mi.getAttribute("data-l10n-args") || "{}");
+                        if (mi.id === "wv-itemmenu-split") { where = "split"; type = args.type; }
+                        // Several items (open-where.ts _wvOpenSeveralItemsMenu):
+                        // Zotero's two relabelled, and One New Window.
+                        else if (mi.getAttribute("data-l10n-id") === "weavero-menu-items-open-several") {
+                            where = args.where === "tabs" ? "tab" : "window"; type = args.kind;
+                        }
+                        else if (mi.getAttribute("data-l10n-id") === "item-menu-viewAttachment"
+                            && (args.openIn === "tab" || args.openIn === "window")) {
+                            where = args.openIn; type = args.attachmentType;
+                        }
+                    } catch (e) {}
+                    if (!where || !mi.hasAttribute("class")) continue;
+                    // A mixed selection ("Open Attachments in New Tab"): the where
+                    // alone, no file to show.
+                    if (!ITEMS_OPEN_TYPES.includes(String(type))) type = null;
+                    const uri = 'url("' + refsActIconURI(where) + '")';
+                    if (mi.style.getPropertyValue("--menuitem-icon") !== uri) {
+                        mi.style.setProperty("--menuitem-icon", uri);
+                        mi.style.setProperty("list-style-image", uri);
+                        mi.style.setProperty("-moz-context-properties", "fill, fill-opacity");
+                        mi.style.setProperty("fill", "var(--fill-secondary)");
+                    }
+                    // A menuitem builds its children when its popup first shows,
+                    // clearing what it holds (met by the reference menu's file icons,
+                    // 2026-11-22): build first.
+                    if (!mi.renderedOnce && typeof mi.render === "function") { try { mi.render(); } catch (e) {} }
+                    let f = mi.querySelector(":scope > .wv-itemmenu-file");
+                    if (!type) { if (f) f.remove(); continue; }
+                    if (!f) {
+                        f = wvHtmlEl(doc, "span", "wv-itemmenu-file");
+                        f.setAttribute("aria-hidden", "true");
+                        mi.appendChild(f);
+                    }
+                    if (f.getAttribute("data-type") !== type) f.setAttribute("data-type", String(type));
+                }
+            } catch (e) { Zotero.debug("[Weavero] items menu open icons err: " + e); }
+        };
+        run();
+        try {
+            win.setTimeout(run, 0);
+            win.setTimeout(run, 60);
+            win.setTimeout(run, 200);
+            // Once, not a keyed listener: this opening's (the wiring recordings
+            // record the keyed ones on Zotero's elements).
+            menu.addEventListener("popupshown", (e: any) => { if (e.target === menu) run(); }, { once: true });
+        } catch (e) {}
     }
 
     /** A zotero:// link a split can show: an attachment or note to open, or an
@@ -4319,6 +4481,7 @@ class _TabSplitMixin {
                     delete (w as any)._wvTSplitCtxSent;
                     this._wvTabSplitObserve(w, false);
                     wvRemoveStyle(doc, STYLE_ID);
+                    wvRemoveStyle(doc, ITEMS_OPEN_STYLE_ID);   // the items list's Open entries (_wvItemsMenuOpenIcons)
                     for (const id of [LAYER_ID, "wv-tsplit-menu", "wv-tsplit-pills"]) { const e = doc.getElementById(id); if (e) e.remove(); }
                     if ((w as any)._wvTSplitPillRO) { try { (w as any)._wvTSplitPillRO.disconnect(); } catch (e) {} delete (w as any)._wvTSplitPillRO; }
                     delete (w as any)._wvTSplitKeeping;

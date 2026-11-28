@@ -173,10 +173,12 @@ documented in detail at [Developing with AI](developing-with-ai).
 
 **Where is the code for this feature?** One module:
 [`src/modules/attachments.ts`](https://github.com/mjthoraval/Weavero/blob/main/src/modules/attachments.ts)
-— the marker tag, the resolution wraps, the reparent guard, the hoist and
-the ▷ marker, with the design invariants documented in its header comment.
-Its regression tests are
-[`test/default-attachment.spec.js`](https://github.com/mjthoraval/Weavero/blob/main/test/default-attachment.spec.js).
+— the marker tag, the resolution wraps, the reparent guard, the hoist, the
+▷ marker and the item pane's marks and menu, with the design invariants
+documented in its comments. Its regression tests are
+[`test/default-attachment.spec.js`](https://github.com/mjthoraval/Weavero/blob/main/test/default-attachment.spec.js)
+and, for the item pane,
+[`test/default-attachment-pane.spec.js`](https://github.com/mjthoraval/Weavero/blob/main/test/default-attachment-pane.spec.js).
 
 ## Chronology of the problem and its solutions
 
@@ -310,7 +312,9 @@ The same standard applied to the plugin's own solution.
   itself is wrapped, not individual buttons.
 - **Visible:** the ▶️ marker on the chosen child, the dimmed ▷ on the
   automatic alternative, and the first-row position make the state
-  inspectable at a glance.
+  inspectable at a glance — in the items list and in the item pane's
+  Attachments and Notes sections alike, where a right-click on a row sets
+  or clears the pick too.
 - **Contract-tested:** the invariants above are locked by the automated
   suite, and this page publishes the reasoning.
 

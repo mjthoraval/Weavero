@@ -59,5 +59,11 @@ describe("Weavero — link scanning stays linear on crafted text", function () {
         assert.isFalse(wv.hasURI('<svg xmlns="http://www.w3.org/2000/svg">'), "no link inside a namespace value");
         assert.isTrue(wv.hasURI('<svg xmlns="http://www.w3.org/2000/svg"> see https://example.org'), "a real link beside it");
     });
-    // (1.2.1: the reference-entry case is not here -- 1.2.0 has no References.)
+
+    it("a crafted reference entry is scanned in bounded time", () => {
+        const lib = wvT.lib();
+        if (!lib || typeof lib.wvRefsUrlsIn !== "function") wvT.absent("lib.wvRefsUrlsIn");
+        timed("reference entry", () => lib.wvRefsUrlsIn(wv.URL_REGEX, "https://)".repeat(16000)));
+        assert.deepEqual(lib.wvRefsUrlsIn(wv.URL_REGEX, "Smith 2020, https://example.org/x.").map((h) => h.url), ["https://example.org/x"]);
+    });
 });

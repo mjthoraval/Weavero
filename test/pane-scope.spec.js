@@ -707,7 +707,7 @@ describe("Weavero — item-pane sections widen to the children and annotations",
         assert.isTrue(bs.open, "not folded");
     });
 
-    // The block takes the item pane's row geometry (src-ts.md "Item-pane
+    // The block takes the item pane's row geometry (src-ts-ui.md "Item-pane
     // sections take Zotero's row geometry"): a heading where a native row
     // sits, its rows one 16 px step in, hung on the guide under its icon.
     it("the children's block sits at Zotero's row geometry, its rows on the guide line under each heading's icon", async function () {
@@ -744,7 +744,7 @@ describe("Weavero — item-pane sections widen to the children and annotations",
         // A long part name never widens the pane: it is cut, its count
         // stays in view (MJT's dev pane, dev.100: the block took the Tags
         // section from 422 to 514 px in a 475-px pane; the dev.52 rule,
-        // src-ts.md / backlinks.ts `contain: inline-size`).
+        // src-ts-ui.md / backlinks.ts `contain: inline-size`).
         const LN = await note("WVSC " + "very long note title words ".repeat(12), "x", P.id);
         try {
             await tag(LN, "wvsc-long");

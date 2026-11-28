@@ -182,6 +182,17 @@ export const PLUGIN_CSS = [
     "  background: rgba(255, 255, 255, 0.08);",
     "}",
     "." + BTN_TREE_CLASS + " { font-size: 12px; vertical-align: middle; }",
+    // The default-attachment marks on the rows of the item pane's
+    // Attachments and Notes sections (attachments.ts _wvDefPaneDecorate):
+    // a box on the title's line, as tall as it (the clicky-item mixin's
+    // `.label`: padding-block 2px, one line), so a marked row is no taller;
+    // `contain: inline-size` with its own width (item-pane sections rule),
+    // the ▶️ emoji's own (17.85 px at 13 px, Windows, measured 2026-11-20),
+    // the ▷ centred in the same; the ▷ dimmed as the items list's.
+    ".wv-defpane-mark { flex: none; display: inline-flex; align-items: center; justify-content: center;"
+        + " box-sizing: content-box; height: 1lh; padding-block: 2px; width: 1.4em; contain: inline-size;"
+        + " white-space: nowrap; overflow: visible; user-select: none; }",
+    ".wv-defpane-mark[data-wv-mark='auto'] { opacity: .5; }",
     // Active-filter accent dot on the filter toolbar button — mirrors
     // the reader filter button's `.wv-rf-active` dot. The dot element is
     // always present; only shown when the button is `.wv-filter-tb-active`.
@@ -205,13 +216,19 @@ export const PLUGIN_CSS = [
     // and Zotero's own Advanced Search funnel slid under this one (Zotero
     // 10.0.8, a 960-px window: slot 146 px, contents 166 px, 14 px of
     // overlap; Zotero 11 the same below a ~1000-px window).
-    // (1) The button is as narrow as Zotero's plain toolbar buttons, its ▾
-    // drawn in the icon's lower corner. Zotero gives every menu button of
-    // that toolbar 40 px (`#zotero-items-toolbar toolbarbutton[type="menu"]`);
-    // the doubled id out-ranks it. `type="menu"` stays: it is the toggle.
-    "#wv-filter-tb-button#wv-filter-tb-button { width: 28px; min-width: 28px; }",
+    // (1) The button is as narrow as Zotero's plain toolbar buttons. Zotero
+    // gives every menu button of that toolbar 40 px (`#zotero-items-toolbar
+    // toolbarbutton[type="menu"]`); the doubled id out-ranks it. `type="menu"`
+    // stays: it is the toggle. Its ▾ BESIDE the icon, centred on it, as the
+    // reader toolbar's funnel draws it (reader-panels.ts .wv-rf-chev: the
+    // funnel, then the chevron, 8 px, in a 28-px button) and as the 40-px
+    // button had it: 2 + 16 + 8 + 2 = 28 px. Until 1.3.0-peoplenet.10 the ▾
+    // sat in the icon's lower corner (MJT 2026-11-25: "The arrow position for
+    // the funnel in the library tab is different from before, and from the
+    // one in a reader tab").
+    "#wv-filter-tb-button#wv-filter-tb-button { width: 28px; min-width: 28px; padding-inline: 2px; justify-content: flex-start; align-items: center; }",
     "#wv-filter-tb-button > .toolbarbutton-menu-dropmarker {",
-    "  position: absolute; inset-inline-end: 0; bottom: 2px; margin: 0;",
+    "  position: static; margin: 0; flex: none;",
     "}",
     // (2) The search's contents follow its slot. Zotero means them to
     // (`quick-search-textbox #search-wrapper { min-width: 0 }`, "Let the
@@ -1046,10 +1063,13 @@ export const PLUGIN_CSS = [
     "  -moz-context-properties: fill, fill-opacity;",
     "  fill: var(--fill-secondary);",
     "}",
-    // Backlinks (issue #60): neutral like Annotations. Every icon column
-    // needs a rule here or its header paints black (invisible on the dark
-    // theme: shipped so in 0.22.3-dev.4..11, MJT 2026-10-22). Not an accent:
-    // the Zotero-link brown and Related's wood are one colour on dark.
+    // Backlinks (issue #60): neutral like Annotations. Every CONTEXT-FILL
+    // icon column needs a rule here or its header paints black (invisible on
+    // the dark theme: shipped so in 0.22.3-dev.4..11, MJT 2026-10-22). Not an
+    // accent: the Zotero-link brown and Related's wood are one colour on dark.
+    // A fixed-colour icon needs none -- a fill rule is inert on it: the feeds'
+    // In Library column draws the library icon in My Library's blue, as
+    // Zotero's own is in both themes (feeds.ts; 2026-11-24).
     // Guard: test/column-header-icons.spec.js.
     ".virtualized-table-header .cell[class*=\"weaveroBacklinks\"] .icon-bg {",
     "  fill: var(--fill-secondary); stroke: var(--fill-secondary);",
@@ -2385,6 +2405,21 @@ export const PLUGIN_CSS = [
     "#wv-tab-library-tooltip .wv-tab-tooltip-libname {",
     "  margin: 0 !important;",
     "  font-weight: 600;",
+    "}",
+    // The item type's icon in front of the title (tabs.ts _wvTabTooltipTitleEl):
+    // inline on the first line, a wrapped title hanging under its text. The
+    // native `.tooltip-label` has no padding (measured 2026-11-24, Zotero 10.0.8
+    // and 11.0-beta.5: flow-root, padding and margin 0). Only the box is sized:
+    // Zotero's `.icon-item-type` rules draw the image, themed.
+    "#wv-tab-library-tooltip .wv-tab-tooltip-typed {",
+    "  padding-inline-start: 20px;",
+    "  text-indent: -20px;",
+    "}",
+    "#wv-tab-library-tooltip .wv-tab-tooltip-type {",
+    "  width: 16px;",
+    "  height: 16px;",
+    "  margin-inline-end: 4px;",
+    "  text-indent: 0;",
     "}",
     // File-type popup: small floating row of icon buttons under the
     // funnel. Mounts inside the tabs-menu panel so clicks on it

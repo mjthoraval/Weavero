@@ -45,7 +45,7 @@ const OUTLINE_W_DEF = 200, OUTLINE_W_MIN = 120, OUTLINE_W_MAX = 480;
 const NN_KEYS = ["noteNav:down", "noteNav:change", "noteNav:scroll", "noteNav:ctx", "noteNav:over", "noteNav:out"];
 // What Weavero adds to the note's own menu (#editor-menu), taken out again
 // on every open and close: Zotero rebuilds the menu's own items each time.
-const NN_MENU_ITEMS = ":scope > [id^='wv-note-heading-link'], :scope > [id^='wv-note-fold'], :scope > #wv-note-unfold-all";
+const NN_MENU_ITEMS = ":scope > [id^='wv-note-heading-link'], :scope > [id^='wv-note-fold'], :scope > #wv-note-unfold-all, :scope > [id^='wv-note-cite']";
 
 // Per-editor state, keyed by the <note-editor> element: never an expando on
 // Zotero's element, and gone with it.
@@ -536,6 +536,10 @@ class _NoteNavMixin {
             const st = this._wvNnState(ne);
             st.ctxOrd = this._wvNnOrdOf(iframe.contentDocument, e.target);
             st.ctxAt = Date.now();
+            // Where, for the link under the pointer (note-cite.ts): viewport
+            // coordinates of the editor's own document.
+            st.ctxX = typeof e.clientX === "number" ? e.clientX : null;
+            st.ctxY = typeof e.clientY === "number" ? e.clientY : null;
         }
         catch (er) {}
     }
@@ -547,8 +551,11 @@ class _NoteNavMixin {
         try {
             if (e.target !== menu) return;   // a submenu opening bubbles here
             for (const el of menu.querySelectorAll(NN_MENU_ITEMS)) el.remove();
-            this._wvNnFoldMenuAdd(ne, iframe, menu);
             const st = this._wvNnState(ne);
+            // The link entries at the top, the note-wide ones at the end:
+            // citations for every link, then Fold All / Unfold All.
+            this._wvNcMenuAdd(ne, iframe, menu, st);
+            this._wvNnFoldMenuAdd(ne, iframe, menu);
             if (st.ctxOrd < 0 || Date.now() - st.ctxAt > 3000) return;
             if (!this._wvNoteHeadingLinksOn()) return;
             const ord = st.ctxOrd;
@@ -802,7 +809,7 @@ class _NoteNavMixin {
         const hadFocus = !!(doc.activeElement && list.contains(doc.activeElement));
         list.replaceChildren();
         if (!rows.length) {
-            wvHtmlEl(doc, "div", "wv-note-outline-empty", "No headings in this note.", list);
+            wvHtmlEl(doc, "div", "wv-note-outline-empty", wvStr("weavero-notenav-empty"), list);
             st.current = -2;
             return;
         }
@@ -835,11 +842,12 @@ class _NoteNavMixin {
                 for (const a of r.parents) shown.add(a);
             }
             if (!shown.size) {
-                wvHtmlEl(doc, "div", "wv-note-outline-empty", "No headings match the search.", list);
+                wvHtmlEl(doc, "div", "wv-note-outline-empty", wvStr("weavero-notenav-no-match"), list);
                 st.current = -2;
                 return;
             }
         }
+        const untitled = wvStr("weavero-common-untitled");   // once per render, not per row
         keyed.forEach((r: any, i: number) => {
             const kids = i + 1 < keyed.length && keyed[i + 1].depth > r.depth;
             const row = wvHtmlEl(doc, "div", "wv-note-outline-row", undefined, list);
@@ -863,7 +871,7 @@ class _NoteNavMixin {
                 tw.classList.add("wv-nn-kids");
                 if (st.shut.has(r.key)) tw.classList.add("wv-nn-shut");
             }
-            const lab = wvHtmlEl(doc, "span", "wv-note-outline-label", r.text || "(untitled)", row);
+            const lab = wvHtmlEl(doc, "span", "wv-note-outline-label", r.text || untitled, row);
             lab.setAttribute("title", r.text || "");
         });
         st.current = -2;   // re-mark on the next spy pass
@@ -883,17 +891,18 @@ class _NoteNavMixin {
         // goes with the panel.
         wvHtmlEl(doc, "style", undefined, OUTLINE_CSS, panel);
         const bar = wvHtmlEl(doc, "div", "wv-note-outline-bar", undefined, panel);
-        wvHtmlEl(doc, "span", "wv-note-outline-title", "Outline", bar);
+        wvHtmlEl(doc, "span", "wv-note-outline-title", wvStr("weavero-notenav-title"), bar);
+        const filterText = wvStr("weavero-notenav-filter");
         const mag = wvHtmlEl(doc, "button", "wv-note-outline-search-btn", undefined, bar);
         mag.setAttribute("type", "button");
-        mag.setAttribute("title", "Filter headings");
-        mag.setAttribute("aria-label", "Filter headings");
+        mag.setAttribute("title", filterText);
+        mag.setAttribute("aria-label", filterText);
         const sbox = wvHtmlEl(doc, "div", "wv-note-outline-search", undefined, panel);
         const sin = wvHtmlEl(doc, "input", "wv-note-outline-search-input", undefined, sbox);
         // type=search: Zotero 11 draws its own clear button (src-ts.md).
         sin.setAttribute("type", "search");
-        sin.setAttribute("placeholder", "Filter headings");
-        sin.setAttribute("aria-label", "Filter headings");
+        sin.setAttribute("placeholder", filterText);
+        sin.setAttribute("aria-label", filterText);
         // A rebuild keeps a running search on screen.
         const query = String(this._wvNnState(ne).query || "");
         if (query) { sin.value = query; panel.setAttribute("data-wv-searching", "true"); }
@@ -1014,8 +1023,8 @@ class _NoteNavMixin {
                 btn = idoc.createElement("button");
                 btn.className = "toolbar-button wv-nn-outline-toggle";
                 btn.setAttribute("type", "button");
-                btn.setAttribute("title", "Toggle Outline");
-                btn.setAttribute("aria-label", "Toggle Outline");
+                btn.setAttribute("title", wvStr("weavero-notenav-toggle"));
+                btn.setAttribute("aria-label", wvStr("weavero-notenav-toggle"));
                 btn.setAttribute("data-wv-tag", this._wvWireTag());
                 // Zotero's res/icons/20/sidebar.svg (note editor + reader),
                 // unflipped: the panel it shows is on the LEFT.
@@ -1431,7 +1440,7 @@ class _NoteNavMixin {
             try { res = JSON.parse(String(wj.__wvHeadingEnsureId(ord))); } catch (e) {}
             if (!res || !res.id) {
                 if (res && res.error === "read-only") {
-                    this._showLinkWarning("This note is read-only, so its heading cannot get a link anchor.");
+                    this._showLinkWarning(wvStr("weavero-notenav-heading-link-readonly"));
                 }
                 return null;
             }
@@ -1479,7 +1488,7 @@ class _NoteNavMixin {
             }
             await new Promise((r) => win.setTimeout(r, 200));
         }
-        if (sawEditor) this._showLinkWarning("The heading this link points to is no longer in the note.");
+        if (sawEditor) this._showLinkWarning(wvStr("weavero-notenav-heading-missing"));
         return false;
     }
 

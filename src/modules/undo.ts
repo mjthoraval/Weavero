@@ -96,9 +96,23 @@ class _UndoMixin {
     _wvUndoStacks(): Map<string, WvUndoScopeState> {
         let s = Zotero._wvUndoState;
         // An update keeps the stacks (destroy's _wvReleaseGlobalState); under
-        // zotero#6080 the old instance's Map dies with its scope: start afresh.
+        // zotero#6080 the old instance's Map dies with its scope, so the old
+        // instance left them as a JSON string instead: read it back once.
         try { if (s && (Components as any).utils.isDeadWrapper(s)) s = null; } catch (e) { s = null; }
-        return s || (Zotero._wvUndoState = new Map());
+        if (!s) {
+            s = new Map();
+            try {
+                const j = Zotero._wvUndoStateJSON;
+                if (typeof j === "string" && j) {
+                    for (const [scope, st] of JSON.parse(j)) {
+                        if (typeof scope === "string" && st) s.set(scope, { undo: Array.isArray(st.undo) ? st.undo : [], redo: Array.isArray(st.redo) ? st.redo : [], busy: false });
+                    }
+                }
+            } catch (e) { Zotero.debug("[Weavero] undo hand-over read err: " + e); }
+            try { delete Zotero._wvUndoStateJSON; } catch (e) {}
+            Zotero._wvUndoState = s;
+        }
+        return s;
     }
 
     _wvUndoScopeState(scope: string): WvUndoScopeState {

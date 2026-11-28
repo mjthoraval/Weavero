@@ -29,7 +29,7 @@ One meaning for each modifier wherever Weavero opens something — `zotero://` l
 | **Alone** | opens it | **beside**: a new split view of this tab and the target | a new window | a new tab in the background |
 | **A link inside the same PDF, EPUB or snapshot** | jumps there | the document's second view (Zotero's split of one file) | a coupled second reader window | the document at that place, in a background tab |
 
-Rows in lists keep their selection clicks (in the items list, Ctrl+click and Shift+click still select rows): use Ctrl+Enter (⌘+Return) there to open the selected item beside. Zotero's own Enter, Shift+Enter and double-click are unchanged. A middle click on a note opens it in front: Zotero's note opener has no background mode. A web link opens in the browser whatever the modifier; Alt keeps its own meanings; on macOS, Control+click is the context menu.
+Rows in lists keep their selection clicks (in the items list, Ctrl+click and Shift+click still select rows): use Ctrl+Enter (⌘+Return) there to open the selected item beside. Zotero's own Enter, Shift+Enter and double-click are unchanged, except for a note: Shift+Enter or Shift+double-click opens it the other way from *Settings → General → Open notes in new windows instead of tabs*, as Shift does for a PDF (Zotero opens a note window either way; [forum 128815](https://forums.zotero.org/discussion/128815)). A middle click on a note opens it in front: Zotero's note opener has no background mode. A web link opens in the browser whatever the modifier; Alt keeps its own meanings; on macOS, Control+click is the context menu.
 
 ## Filter your library and reader
 
@@ -54,6 +54,10 @@ Pinned tabs, named colour-coded **tab groups**, multi-select tabs, and a structu
 ## Extras
 
 Items-tree columns for annotation / tag / related counts, an *Added By* badge for annotations in group libraries with per-user colours, a Firefox-style hidden title bar, *Open in External Viewer*, a Plugins Manager with a search box (Ctrl+F), cards showing author, GitHub owner, version and last update, a remembered time frame for Recent Updates, its sidebar back on Zotero 11, in a normal resizable window, a *View → Layout* menu that follows the tab (the reader's Sidebar, Context Pane and colour/tag selector in a reader tab, the library's panes in the library tab), and a PDF outline text highlight.
+
+## Backups
+
+Zotero's backups and sync do not include Weavero's own data (bookmarks, outlines, tab groups, sessions, feeds lists) or its settings, so Weavero keeps copies itself: once a day and before each update, in its data folder (`weavero/backups/`), the last 7 daily copies kept. *Settings → Weavero → Backups* backs up now, restores a copy after showing what would change (the current state is backed up first, so a restore can be undone), and exports or imports everything as one file. A restore is written when Zotero starts again, before Weavero reads its data. Details: the [README](https://github.com/mjthoraval/Weavero#backups-of-weaveros-data).
 
 ## Install
 

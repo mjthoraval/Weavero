@@ -54,6 +54,27 @@ describe("Weavero — teardown keeps the text inside link / markdown spans", () 
         assert.isOk(sdoc.getElementById("n2"), "the native sibling stays");
     });
 
+    // A section locked at the bottom (pane-lock.ts): a plugin's
+    // `item-pane-custom-section` has no id and, locked, `wv-panelock-locked`
+    // as its only class. The sweep took it for a Weavero shell and unwrapped
+    // it: its `collapsible-section` left loose in the item pane, the wrapper
+    // gone (citations.22 -> .23 upgrade, 2026-11-22). Weavero sets no data-pane.
+    it("an item-pane section ([data-pane]) keeps its element, whatever its classes: only the wv- classes go", () => {
+        sdoc.body.innerHTML = '<div id="scroller">'
+            + '<div data-pane="plugin-x-feeds" class="wv-panelock-locked" style="--wv-panelock-h: 200px">'
+            + '<div class="head-like" data-pane="plugin-x-feeds"><span class="title">Why relevant</span></div><div class="body-like">body</div></div>'
+            + '<div data-pane="abstract" class="wv-panelock-locked wv-panelock-closed"><span>Abstract text</span></div>'
+            + '</div>';
+        wv._wvStripWindowChrome({ document: sdoc });
+        const sc = sdoc.getElementById("scroller");
+        const panes = [...sc.children];
+        assert.deepEqual(panes.map((p) => p.dataset.pane), ["plugin-x-feeds", "abstract"], "both sections still the scroller's children, in place");
+        assert.strictEqual(panes[0].children.length, 2, "the custom section keeps its header and body inside it");
+        assert.strictEqual(panes[0].querySelector(".title").textContent, "Why relevant");
+        assert.isNull(sc.querySelector("[class*='wv-']"), "the wv- classes are gone");
+        assert.equal(panes[1].textContent, "Abstract text");
+    });
+
     it("a reload never leaks UI glyphs into native containers (the scope button's chevron, the tabs-menu twisties)", () => {
         // Form elements are built with createElement: the chrome-document
         // innerHTML sanitizer silently drops <input> / <button>.

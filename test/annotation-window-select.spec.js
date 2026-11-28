@@ -64,4 +64,27 @@ describe("Weavero — an annotation opened in a reader window is the only one se
         assert.deepEqual(ir._state.selectedAnnotationIDs.slice(), [a3.key], "the third alone, not the range from the first");
         assert.isFalse(!!ir._keyboardManager.shift, "the stale Shift state cleared for the navigation");
     });
+
+    // zotero#6080: Reader.open resolves with { instance, tabID, win } (canary 40b5f3a1: the
+    // case above selected all three there, annotation.ts handed the wrapper on as the
+    // reader). A stand-in of that shape over today's open; lib/compat.ts wvOpenedInstance.
+    it("the same when Reader.open resolves as on zotero#6080 ({ instance, tabID, win })", async function () {
+        const R = /** @type {any} */ (Zotero.Reader);
+        const cur = R.open;
+        R.open = async function () {
+            const r = await cur.apply(this, arguments);
+            return r && typeof r.navigate === "function" ? { instance: r, tabID: r.tabID, win: r._window } : r;
+        };
+        try {
+            const w0 = windowFor();
+            if (w0 && w0._internalReader) w0._internalReader._keyboardManager.shift = true;
+            assert.isTrue(await wv._wvOpenItemInNewWindow(a2), "opened through the #6080 shape");
+            const w = await wvT.waitFor(() => windowFor(), 20000);
+            assert.isOk(w, "the window reader");
+            await settled(w);
+            await wvT.sleep(800);
+            assert.deepEqual(w._internalReader._state.selectedAnnotationIDs.slice(), [a2.key], "the second alone");
+        }
+        finally { R.open = cur; }
+    });
 });

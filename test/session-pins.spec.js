@@ -60,6 +60,47 @@ describe("Weavero — a session keeps its pinned tabs", () => {
         assert.isTrue(reader.tabs.length === 1 && !!reader.tabs[0].selected, "a window with no library tab: its first document");
     });
 
+    // MJT 2026-11-22: "Apply the pin from Zotero the first time installed. Then keep the
+    // user choice." Zotero 11 pins the library tab of a window it opens with no other main
+    // window open, and at startup that of a saved session's only main window (zoteroPane.js
+    // openInitialLibraryTab, session.js pinOnlyWindowLibraryTab; since 0883f08887). Weavero's
+    // rule: a session saved before that gets My Library pinned once; one saved afterwards
+    // keeps its state.
+    it("sessions saved before Zotero pinned get My Library pinned once; later ones keep the user's choice", async function () {
+        this.timeout(120000);
+        const doc = wv._wvTabSessionDoc;
+        const old = { id: "wv-zpin-old-" + Date.now(), name: "wv-zpin-old", created: 1, modified: 1, windows: [{ kind: "main", tabs: [] }] };
+        delete doc.zpin;
+        doc.sessions.push(old);
+        if (!zpins()) {
+            assert.isFalse(await wv._wvTabSessionMigrateZoteroPins(), "no migration where Zotero pins nothing");
+            assert.notOk(doc.zpin, "and the store is not marked");
+            assert.notOk(old.windows[0].pinHome);
+            return;
+        }
+        assert.isTrue(await wv._wvTabSessionMigrateZoteroPins(), "migrated");
+        assert.isTrue(!!old.windows[0].pinHome, "the old session's first window: My Library pinned");
+        assert.equal(doc.zpin, 1, "the store is marked");
+        assert.isFalse(await wv._wvTabSessionMigrateZoteroPins(), "once only");
+        const homeOf = (w) => w.Zotero_Tabs._tabs.find(t => wvT.lib().wvIsLibraryTabID ? wvT.lib().wvIsLibraryTabID(t.id) : String(t.type).startsWith("library"));
+        const homePinned = () => Zotero.getMainWindows().some(w => { const h = homeOf(w); return !!(h && h.pinned); });
+        await wv._wvTabSessionSwitch(old.id);
+        assert.isOk(await wvT.waitFor(() => homePinned() || null, 8000), "the old session comes back with My Library pinned");
+        // The user unpins it and saves: that choice stays.
+        const w0 = Zotero.getMainWindows().find(w => { const h = homeOf(w); return h && h.pinned; });
+        /** @type {any} */ (w0.Zotero_Tabs).setPinned(homeOf(w0).id, false);
+        const s = await wv._wvTabSessionSaveAs("wv-zpin-new");
+        const nid = (s && s.id) || wv._wvTabSessionList().find(x => x.name === "wv-zpin-new").id;
+        const nrec = wv._wvTabSessionList().find(x => x.id === nid);
+        const nmain = nrec.windows.find(w => w.kind === "main" && !w.noLibrary);
+        assert.notOk(nmain.pinHome, "a session saved now has no one-time pin");
+        assert.notOk(nmain.libraryTabs && nmain.libraryTabs[0] && nmain.libraryTabs[0].pinned, "and records My Library unpinned");
+        await wv._wvTabSessionSwitch(old.id);
+        assert.isOk(await wvT.waitFor(() => homePinned() || null, 8000), "pinned again in the old session");
+        await wv._wvTabSessionSwitch(nid);
+        assert.isOk(await wvT.waitFor(() => !homePinned() || null, 8000), "unpinned in the session saved unpinned");
+    });
+
     it("a switch away and back brings the pin back, and only that one", async function () {
         this.timeout(90000);
         await Zotero.Reader.open(a.id, null, /** @type {any} */ ({ openInBackground: false }));

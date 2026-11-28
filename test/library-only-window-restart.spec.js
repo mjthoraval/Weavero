@@ -36,10 +36,24 @@ describe("Weavero — a library-only main window comes back after a restart", fu
         const lvf = Zotero.Prefs.get("lastViewedFolder");
         const coll = new Zotero.Collection();   // the user library by default
         coll.name = "WV library-only probe collection";
-        await coll.saveTx();
+        // skipSelect: Zotero's tree selects a new collection in the main window
+        // (collectionTree notify 'add'), and that selection's lastViewedFolder
+        // write comes after its items load -- late enough, once in a full
+        // Zotero 10 run, to land after the new window's own write and before
+        // its tree read it ("its own collection: L1", dev.99 triage 2026-11-27).
+        await coll.saveTx({ skipSelect: true });
         // The window's collection is not the last one viewed elsewhere:
         // Zotero's tree selects that one when it mounts, after the restore.
+        // A selection that changes the row writes lastViewedFolder after its
+        // items load: waited for, so that no write of it is left to land after
+        // the new window's own (none is pending when the row was already My Library).
+        const L1 = "L" + Zotero.Libraries.userLibraryID;
+        const moved = rowOf(win) !== L1;
         await win.ZoteroPane.collectionsView.selectLibrary(Zotero.Libraries.userLibraryID);
+        if (moved) {
+            assert.ok(await wvT.waitFor(() => Zotero.Prefs.get("lastViewedFolder") === L1, 5000),
+                "fixture: the main window's selection written before the spawn: " + Zotero.Prefs.get("lastViewedFolder"));
+        }
         // What the quit flush saves for such a window: the library tab, and
         // the window's own view state.
         const s = wv._wvSpawnMainWindowStart({ tabs: [LIB_TAB], wvMainState: { collection: "C" + coll.id, tagsAuto: false, title: "WV library-only probe" } });

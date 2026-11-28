@@ -1053,7 +1053,8 @@ describe("Weavero — default child (attachments, notes, links)", () => {
     // That promise rests on _wvUnwireDefaultAttachment + _wvUnwireReparentGuard
     // (the onShutdown pair) restoring Zotero's own functions BY IDENTITY —
     // not by equivalent behavior — across all five patch surfaces:
-    // getBestAttachment, getBestAttachments, the getAttachments hoist, each
+    // getBestAttachment, getBestAttachments, the getAttachments hoist (and the
+    // getNotes one since 1.2.1-defpane.1), each
     // window's ItemTree _renderCell (▷ marker), and the reparent-guard
     // notifier observer. Verified live on the real profile 2026-08-05 (a probe
     // item's getAttachments order reverted to native after unwire, hoisted
@@ -1071,8 +1072,10 @@ describe("Weavero — default child (attachments, notes, links)", () => {
             const origBest = proto._wvOrigGetBestAttachment;
             const origPlural = proto._wvOrigGetBestAttachments;
             const origAtts = proto._wvDefattOrigGetAtts;
+            const origNotes = proto._wvDefattOrigGetNotes;
             expect(origBest, "singular original stashed").to.be.a("function");
             expect(origAtts, "getAttachments original stashed").to.be.a("function");
+            expect(origNotes, "getNotes original stashed (the notes hoist, 1.2.1-defpane.1)").to.be.a("function");
             // ▷ marker: capture per-window renderer state before unwire.
             const renderers = [];
             for (const win of Zotero.getMainWindows()) {
@@ -1119,10 +1122,11 @@ describe("Weavero — default child (attachments, notes, links)", () => {
                 expect(proto.getBestAttachment, "singular restored").to.equal(origBest);
                 expect(proto.getBestAttachments, "plural restored").to.equal(origPlural);
                 expect(proto.getAttachments, "hoist unwrapped").to.equal(origAtts);
+                expect(proto.getNotes, "notes hoist unwrapped").to.equal(origNotes);
                 for (const k of ["_wvDefaultAttFn", "_wvDefaultAttPluralFn",
                     "_wvDefaultAttWired", "_wvOrigGetBestAttachment",
                     "_wvOrigGetBestAttachments", "_wvDefattOrigGetAtts",
-                    "_wvDefattGetAttsFn"]) {
+                    "_wvDefattGetAttsFn", "_wvDefattOrigGetNotes", "_wvDefattGetNotesFn"]) {
                     expect(proto[k], k + " deleted").to.equal(undefined);
                 }
                 expect(Z._wvDefattReparentObsID, "notifier observer gone")

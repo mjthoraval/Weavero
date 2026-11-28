@@ -133,6 +133,17 @@ describe("Weavero — the progress window has real minimize and maximize buttons
             const { d, pw } = await openQueue();
             pw.document.getElementById("minimize-button").click();
             const m = await wvT.waitFor(() => minimized(pw) || pw.closed, 10000);
+            if (!m && !pw.closed) {
+                // A runner with no window manager cannot minimize anything (GitHub's Ubuntu
+                // xvfb, 1.3.0-beta.1 CI, both Zoteros, twice): a direct minimize() tells it
+                // apart from Weavero's button doing nothing.
+                pw.minimize();
+                const can = await wvT.waitFor(() => minimized(pw), 3000);
+                if (!can) this.skip();
+                pw.restore();
+                await wvT.waitFor(() => !minimized(pw), 3000);
+                assert.fail("the window can minimize, but its own Minimize button did not minimize it");
+            }
             assert.isOk(m, "something happened");
             assert.isFalse(pw.closed, "the window stays open");
             assert.isTrue(minimized(pw), "minimized");

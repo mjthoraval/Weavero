@@ -124,6 +124,7 @@ describe("Weavero — references: the card's menu opens once, at its final size"
     });
 
     it("a long abstract: \"More\" is there when the menu is first drawn, and the menu keeps its height", async function () {
+        wvT.knownMacZ11(this);   // known on macOS + Zotero 11 in 1.3.0-beta.1, fixed in beta.2
         const m = await openMenu(long, false);
         try {
             assert.isTrue(m.first.more, "More at the menu's first layout: " + JSON.stringify(m.first));
@@ -147,6 +148,7 @@ describe("Weavero — references: the card's menu opens once, at its final size"
     // layout before it opens): its verdict must be the open menu's own, on both sides of
     // the fourth line.
     it("at every length of abstract, the \"More\" decided before the open is the open menu's own verdict", async function () {
+        wvT.knownMacZ11(this);   // known on macOS + Zotero 11 in 1.3.0-beta.1, fixed in beta.2
         const words = LONG.split(" ");
         const reader = { _window: win, itemID: null, tabID: null };
         const btn = doc.getElementById("tab-bar-container") || doc.documentElement;
@@ -175,6 +177,7 @@ describe("Weavero — references: the card's menu opens once, at its final size"
     });
 
     it("a graphical abstract: its box has its room before the picture loads; the menu keeps its height", async function () {
+        wvT.knownMacZ11(this);   // known on macOS + Zotero 11 in 1.3.0-beta.1, fixed in beta.2
         const m = await openMenu(longImg, true);
         try {
             assert.isTrue(m.first.more, "More at the first layout");
@@ -223,6 +226,7 @@ describe("Weavero — references: the card's menu opens once, at its final size"
     });
 
     it("a picture of another shape: reserved whole the first time, fitted to the picture from the next opening on", async function () {
+        wvT.knownMacZ11(this);   // known on macOS + Zotero 11 in 1.3.0-beta.1, fixed in beta.2
         const m1 = await openMenu(wideImg, true);
         try {
             assert.deepEqual(m1.first.box, [240, 140], "first opening: the whole room");

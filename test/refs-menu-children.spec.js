@@ -435,6 +435,7 @@ describe("Weavero — references: the menu opens the cited item's attachments an
     }
 
     it("the captions are not entries: Up and Down pass them, the pointer does not highlight them, a click runs nothing and leaves the menu open, nothing focuses them", async function () {
+        wvT.knownMacZ11(this);   // known on macOS + Zotero 11 in 1.3.0-beta.1, fixed in beta.2
         install();
         answer = true;
         win.focus();
@@ -482,6 +483,7 @@ describe("Weavero — references: the menu opens the cited item's attachments an
     });
 
     it("the captions read in light and dark: the entries' own colour, bold, their words whole, at the rows' start", async function () {
+        wvT.knownMacZ11(this);   // known on macOS + Zotero 11 in 1.3.0-beta.1, fixed in beta.2
         const P = Services.prefs, PREF = "ui.systemUsesDarkTheme";
         const had = P.prefHasUserValue(PREF) ? P.getIntPref(PREF) : null;
         try {

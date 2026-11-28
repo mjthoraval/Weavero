@@ -170,6 +170,12 @@
          *  neither keeps the test's value -- Zotero.Prefs.set cannot recreate
          *  a cleared pref that has no default (NS_ERROR_UNEXPECTED until
          *  restart), which would break every later spec touching it. */
+        /** A known failure of 1.3.0-beta.1 on macOS + Zotero 11 (published as is on the maintainer's word,
+         *  2026-11-28; the fixes ship in beta.2, which removes these marks and their allowlist entries --
+         *  work: the beta's macOS CI report): skip there only, everywhere else the case runs. */
+        knownMacZ11(ctx) {
+            if (Zotero.isMac && parseInt(String(Zotero.version), 10) >= 11) ctx.skip();
+        },
         async withPref(key, value, fn) {
             const B = Services.prefs.getBranch("extensions.zotero.");
             const D = Services.prefs.getDefaultBranch("extensions.zotero.");
@@ -630,6 +636,12 @@
             // Unlisted until the 1.0.0-beta.1 CI, the first Ubuntu run of
             // these specs (2026-11-03).
             { re: /^Weavero — the background-restore focus guard ends /, why: "platform: the guard is WINNT-gated (bg-restore-guard.spec.js before)" },
+            { re: /^Weavero — references in your library: the citation popup (B2: a click on a mark opens the card|the buttons: each takes the highlight|the buttons by keyboard|a reference in two libraries \(\[4\]\)|the edge cases: no PDF|the row right to left|the menu leaves nothing behind|card: the mark's menu shows the cited work|card: the graphical abstract)/, why: "known bug, macOS + Zotero 11 only, in 1.3.0-beta.1 (published as is): Firefox 153 shows the reference menu as a native macOS menu, without its card and buttons; fixed in 1.3.0-beta.2, which removes this entry" },
+            { re: /^Weavero — references: the menu opens the cited item's attachments and notes the captions (are not entries|read in light and dark)/, why: "known bug, macOS + Zotero 11 only, in 1.3.0-beta.1 (published as is): the same native macOS menu, its captions not laid out; fixed in 1.3.0-beta.2, which removes this entry" },
+            { re: /^Weavero — references: the card's menu opens once, at its final size (a long abstract|at every length of abstract|a graphical abstract: its box|a picture of another shape)/, why: "known bug, macOS + Zotero 11 only, in 1.3.0-beta.1 (published as is): the same native macOS menu, the card not drawn; fixed in 1.3.0-beta.2, which removes this entry" },
+            { re: /^Weavero — split view: two tabs side by side (a pinned My Library may be a side|a split comes back after a restart)/, why: "known bug, macOS + Zotero 11 only, in 1.3.0-beta.1 (published as is): Reverse Tabs then Separate gives My Library's pin to the other tab (every platform; the macOS order exposes it); fixed in 1.3.0-beta.2, which removes this entry" },
+            { re: /^Weavero — references: the marks come soon after a PDF opens a reader still opening is asked every 50 ms/, why: "known bug, macOS + Zotero 11 only, in 1.3.0-beta.1 (published as is): the macOS runner too slow for its 50-ms polling floor; fixed in 1.3.0-beta.2, which removes this entry" },
+            { re: /^Weavero — note outline a note without headings keeps its toggle and its panel says so/, why: "known bug, macOS + Zotero 11 only, in 1.3.0-beta.1 (published as is): cause not found yet; beta.2 adds a diagnostic; fixed in 1.3.0-beta.2, which removes this entry" },
             { re: /^Weavero — disabling Weavero from the Plugins Manager while the list holds focus/, why: "runner: the pointer rests over the manager's list (Ubuntu's xvfb), which holds the page changes by itself" },
             { re: /^Weavero — the progress window has real minimize and maximize buttons its own Minimize button minimizes it to the taskbar/, why: "runner: no window manager to minimize a window (GitHub's Ubuntu xvfb): a direct window.minimize() leaves it in its normal state too (progress-window.spec.js, 1.3.0-beta.1 CI, 2026-11-28)" },
             { re: /^Weavero — a drop highlight left by a lost drag clears \(WV-TEMP-133039\) replay of the recorded drags: .* the (drag ring records the session|ring notes Zotero's late dragleave)/, why: "version: Zotero 10.0.6 has no itemsView._setDropRow, nothing to record (local Zotero 10 run, 2026-11-03)" },

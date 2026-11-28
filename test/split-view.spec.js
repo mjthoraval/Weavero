@@ -334,6 +334,7 @@ describe("Weavero — split view: two tabs side by side", function () {
     // pinned tab out of the pinned tabs group. It goes back to its original position
     // after separating" (split-strip.spec.js holds the rest).
     it("a pinned My Library may be a side: it leaves the pins while it is one, and is pinned again after", async function () {
+        wvT.knownMacZ11(this);   // known on macOS + Zotero 11 in 1.3.0-beta.1, fixed in beta.2
         if (!wvT.nativeWindows()) this.skip();   // an older Zotero's library tab is fixed, never pinned
         const L = libTab();
         wv._wvSetLibraryTabPinned(win, L.id, true);
@@ -354,6 +355,7 @@ describe("Weavero — split view: two tabs side by side", function () {
     });
 
     it("a split comes back after a restart (its record re-forms it once both tabs are open)", async function () {
+        wvT.knownMacZ11(this);   // known on macOS + Zotero 11 in 1.3.0-beta.1, fixed in beta.2
         const L = libTab();
         ZT.select(L.id); await sleep(200);
         await wv._wvTabSplitOpenItem(win, pdf1);

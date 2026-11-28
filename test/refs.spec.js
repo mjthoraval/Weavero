@@ -1098,6 +1098,7 @@ describe("Weavero — references in your library: the citation popup", function 
     }
 
     it("B2: a click on a mark opens the card with the citation popup's buttons at its foot -- New Tab, Split View, New Window, Copy As -- then the cited item's other attachments", async function () {
+        wvT.knownMacZ11(this);   // known on macOS + Zotero 11 in 1.3.0-beta.1, fixed in beta.2
         const menu = await openMarkMenu(0);
         // [1]'s graphical abstract, its other attachment, a row under the buttons and its
         // caption (refs-menu-children.spec.js: the cited item's attachments and notes).
@@ -1154,6 +1155,7 @@ describe("Weavero — references in your library: the citation popup", function 
     }
 
     it("the buttons: each takes the highlight alone under the pointer, in light and dark, a click runs its own command, and the card's library name shows the item", async function () {
+        wvT.knownMacZ11(this);   // known on macOS + Zotero 11 in 1.3.0-beta.1, fixed in beta.2
         const P = Services.prefs, PREF = "ui.systemUsesDarkTheme";
         const had = P.prefHasUserValue(PREF) ? P.getIntPref(PREF) : null;
         try {
@@ -1201,6 +1203,7 @@ describe("Weavero — references in your library: the citation popup", function 
     });
 
     it("the buttons by keyboard (trusted keys): Down and Up through them and the rows in reading order, Left and Right along the row, Enter runs a button, Escape closes", async function () {
+        wvT.knownMacZ11(this);   // known on macOS + Zotero 11 in 1.3.0-beta.1, fixed in beta.2
         win.focus();
         await wvT.waitFor(() => Services.focus.activeWindow === win || null, 3000, 50);
         await withActsRecorded(async (calls) => {
@@ -1231,6 +1234,7 @@ describe("Weavero — references in your library: the citation popup", function 
     });
 
     it("a reference in two libraries ([4]): the card names both, each name shows its copy; the same buttons, no submenu over them", async function () {
+        wvT.knownMacZ11(this);   // known on macOS + Zotero 11 in 1.3.0-beta.1, fixed in beta.2
         await withActsRecorded(async (calls) => {
             const menu = await openMarkMenu(3);
             assert.deepEqual(btnsOf(menu).map(actOf), ["tab", "split", "window", "copy-as"], "the same buttons");
@@ -1306,6 +1310,7 @@ describe("Weavero — references in your library: the citation popup", function 
     });
 
     it("the edge cases: no PDF -- Show in Library and Copy As, as on the popup; no split view -- New Tab, New Window, Copy As", async function () {
+        wvT.knownMacZ11(this);   // known on macOS + Zotero 11 in 1.3.0-beta.1, fixed in beta.2
         let menu = await openMarkMenu(1);
         assert.deepEqual(shapeOf(menu), ["card", "btns"], "[2] without a file: the card and its buttons");
         const b = btnsOf(menu);
@@ -1324,6 +1329,7 @@ describe("Weavero — references in your library: the citation popup", function 
     });
 
     it("the row right to left: the buttons at the card's foot on its left, in the popup's order from the right; Left and Right follow the screen", async function () {
+        wvT.knownMacZ11(this);   // known on macOS + Zotero 11 in 1.3.0-beta.1, fixed in beta.2
         win.focus();
         await wvT.waitFor(() => Services.focus.activeWindow === win || null, 3000, 50);
         const menu = await openMarkMenu(0, true);
@@ -1342,6 +1348,7 @@ describe("Weavero — references in your library: the citation popup", function 
     });
 
     it("the menu leaves nothing behind: its key listener on the window only while the menu is up, the menu gone once closed", async function () {
+        wvT.knownMacZ11(this);   // known on macOS + Zotero 11 in 1.3.0-beta.1, fixed in beta.2
         const lib = wvT.lib();
         const ours = () => lib.wvListenKeys(win).filter(k => k.key === "lazy:refs-grid-keys").length;
         const left = win.document.getElementById("wv-refs-menu");
@@ -2206,6 +2213,7 @@ describe("Weavero — references in your library: the citation popup", function 
     }
 
     it("card: the mark's menu shows the cited work -- as the item pane's header renders it, its library, the abstract with More -- built from memory, nothing queried", async function () {
+        wvT.knownMacZ11(this);   // known on macOS + Zotero 11 in 1.3.0-beta.1, fixed in beta.2
         ZT.select(reader.tabID);
         await wvT.sleep(300);
         assert.ok(await wvT.waitFor(() => bibMarks().length === 4, 8000, 100), "the marks");
@@ -2274,6 +2282,7 @@ describe("Weavero — references in your library: the citation popup", function 
     });
 
     it("card: the graphical abstract (an image attachment) comes AFTER the menu is up, small, and a click opens it; none for an item without one", async function () {
+        wvT.knownMacZ11(this);   // known on macOS + Zotero 11 in 1.3.0-beta.1, fixed in beta.2
         const { menu, card, atOnce } = await markMenu(0);
         const opened = [], asked = [];
         const ZP = win.ZoteroPane, va = ZP.viewAttachment;

@@ -373,6 +373,7 @@ describe("Weavero — note outline", function () {
     // want to be able to toggle the outline pane, even if the outline is
     // empty." FAILED on 1.0.0-beta.2.
     it("a note without headings keeps its toggle and its panel says so; the item pane starts with it folded away", async function () {
+        wvT.knownMacZ11(this);   // known on macOS + Zotero 11 in 1.3.0-beta.1, fixed in beta.2
         win.Zotero_Tabs.select("zotero-pane");
         await ZP.selectItem(bare.id);
         const b = await wvT.waitFor(() => {

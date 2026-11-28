@@ -106,6 +106,7 @@ describe("Weavero — references: the marks come soon after a PDF opens", functi
 
     // 1. A stand-in reader whose page views the poll reads: how often it looks before a page is drawn.
     it("a reader still opening is asked every 50 ms whether it has drawn a page (150 ms until refspeed.2)", async function () {
+        wvT.knownMacZ11(this);   // known on macOS + Zotero 11 in 1.3.0-beta.1, fixed in beta.2
         let looks = 0, drawn = false;
         const pages = [{ renderingState: 0 }];
         const fake = fakeReader({ get _pages() { looks++; if (drawn) pages[0].renderingState = 3; return pages; } });

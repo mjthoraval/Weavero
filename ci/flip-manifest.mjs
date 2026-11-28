@@ -26,7 +26,28 @@ if ("v" + version !== tag) {
     console.error("the XPI is " + version + ", the tag " + tag + ": refusing");
     process.exit(1);
 }
-const z = (manifest.applications && manifest.applications.zotero) || {};
+const z = { ...((manifest.applications && manifest.applications.zotero) || {}) };
+// MAX_VERSION (flip.yml's optional `max_version`): Zotero's way to declare a
+// released version compatible with the next major once it is feature-frozen
+// -- "If no changes are required, you can simply update strict_max_version in
+// your plugin's update manifest without releasing a new version"
+// (https://www.zotero.org/support/dev/zotero_11_for_developers, 2026-11-27).
+// Only a raise, only the form Zotero asks for ("N.0.*", never higher):
+// anything else is refused rather than written.
+const maxOverride = (process.env.MAX_VERSION || "").trim();
+if (maxOverride) {
+    const major = (v) => parseInt(String(v || "0"), 10);
+    if (!/^\d+\.0\.\*$/.test(maxOverride)) {
+        console.error("max_version must read N.0.* (e.g. 11.0.*): " + maxOverride);
+        process.exit(1);
+    }
+    if (z.strict_max_version && major(maxOverride) < major(z.strict_max_version)) {
+        console.error("max_version " + maxOverride + " is lower than the XPI's " + z.strict_max_version + ": refusing");
+        process.exit(1);
+    }
+    console.log("strict_max_version: " + (z.strict_max_version || "(none)") + " -> " + maxOverride + " (max_version)");
+    z.strict_max_version = maxOverride;
+}
 const hash = "sha512:" + crypto.createHash("sha512").update(fs.readFileSync(xpi)).digest("hex");
 const repo = process.env.GITHUB_REPOSITORY || "mjthoraval/Weavero";
 const entry = {

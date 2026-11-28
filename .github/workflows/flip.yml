@@ -15,6 +15,10 @@ on:
       tag:
         description: "Tag whose XPI the manifests should offer (e.g. v1.0.0-beta.2)"
         required: true
+      max_version:
+        description: "Optional: declare this version compatible up to N.0.* (e.g. 11.0.*) once Zotero N is feature-frozen and tested, without a new release. Empty = the XPI's own range."
+        required: false
+        default: ""
 
 permissions:
   contents: write     # upload the manifests to the `release` tag
@@ -43,7 +47,20 @@ jobs:
           gh release download "${{ github.event.inputs.tag }}" --repo "$GITHUB_REPOSITORY" --pattern weavero.xpi --dir "$RUNNER_TEMP/flip"
           unzip -p "$RUNNER_TEMP/flip/weavero.xpi" manifest.json > "$RUNNER_TEMP/flip/manifest.json"
 
+      # max_version reaches the shell only through the environment, checked.
+      - name: Check the max version's form
+        shell: bash
+        env:
+          MAX_VERSION: ${{ github.event.inputs.max_version }}
+        run: |
+          if [[ -n "$MAX_VERSION" ]] && ! [[ "$MAX_VERSION" =~ ^[0-9]+\.0\.\*$ ]]; then
+            echo "::error::max_version must read N.0.* (e.g. 11.0.*): $MAX_VERSION"
+            exit 1
+          fi
+
       - name: Write the manifests for it
+        env:
+          MAX_VERSION: ${{ github.event.inputs.max_version }}
         run: node ci/flip-manifest.mjs "$RUNNER_TEMP/flip/weavero.xpi" "$RUNNER_TEMP/flip/manifest.json" "${{ github.event.inputs.tag }}" "$RUNNER_TEMP/flip/out"
 
       - name: Replace them on the release tag

@@ -12,7 +12,7 @@
 // the split tabs" (Firefox refuses a pinned tab in a split: tabsplitview.mjs addTabs).
 describe("Weavero — split view in the tab strip", function () {
     this.timeout(200000);
-    let wv, win, doc, ZT, pdf1, pdf2, pdf3, note, prevSplit, ow, oh;
+    let wv, win, doc, ZT, pdf1, pdf2, pdf3, note, prevSplit, ow, oh, libWasPinned;
     const sleep = (ms) => new Promise(r => win.setTimeout(r, ms));
     const waitFor = async (fn, ms, what) => {
         const t0 = Date.now();
@@ -42,6 +42,13 @@ describe("Weavero — split view in the tab strip", function () {
         ow = win.outerWidth; oh = win.outerHeight;
         try { win.resizeTo(1920, 1040); } catch (er) {}
         await sleep(600);
+        // My Library starts unpinned, whatever ran before: a fresh Zotero 11 pins its library
+        // tab itself, and the strip's cases (3, 7) are written for an unpinned one. They
+        // passed only when an earlier spec had unpinned it (GitHub's shard 3/3 and a run of
+        // this file alone failed both, 2026-11-28). Given back in after().
+        const L0 = libTab();
+        libWasPinned = !!(L0 && wv._wvTabIsPinned(win, L0));
+        if (libWasPinned) { await pin(L0, false); await sleep(300); }
         pdf1 = await wvT.createTestPDFItem("wv-ss-1");
         pdf2 = await wvT.createTestPDFItem("wv-ss-2");
         pdf3 = await wvT.createTestPDFItem("wv-ss-3");
@@ -68,6 +75,7 @@ describe("Weavero — split view in the tab strip", function () {
         try { if (prevSplit === undefined) Zotero.Prefs.clear("weavero.enableSplitView"); else Zotero.Prefs.set("weavero.enableSplitView", prevSplit); } catch (er) {}
         try { Zotero.Prefs.clear("weavero.tabSplits"); } catch (er) {}
         try { win.resizeTo(ow, oh); } catch (er) {}
+        try { const L = libTab(); if (libWasPinned && L && !wv._wvTabIsPinned(win, L)) await pin(L, true); } catch (er) {}
         await sleep(300);
     });
 
